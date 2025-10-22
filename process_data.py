@@ -69,36 +69,28 @@ def fetch_events(username, password, match_ids):
 # ==============================================================================
 
 def create_match_summary(events_df):
-    """Creates a summary DataFrame with details and gameweek labels for each match."""
+    """Creates a summary DataFrame with details and REVERSED gameweek labels."""
     print("Processing: Creating match summary...")
     matches_summary = []
     unique_match_ids = events_df['matchId'].unique()
 
-    # Sort match IDs if possible, assuming higher ID means later match (adjust if needed)
-    # If match IDs aren't chronological, this might need a different sorting key later
     try:
-        # Attempt to sort numerically, converting to numeric if necessary
         sorted_match_ids = sorted(pd.to_numeric(unique_match_ids, errors='coerce').dropna())
     except:
-        # Fallback if conversion/sorting fails
-        sorted_match_ids = unique_match_ids 
+        sorted_match_ids = unique_match_ids
 
     for match_id in tqdm(sorted_match_ids, desc="Summarizing Matches"):
         match_df = events_df[events_df['matchId'] == match_id].copy()
         if match_df.empty: continue
-
         teams = match_df['team.name'].unique()
         if len(teams) < 2: continue
-        # Simple assignment, assuming first is home, second is away - might need refinement if order varies
-        home_team, away_team = teams[0], teams[1] 
-
+        home_team, away_team = teams[0], teams[1]
         match_df['matchTimestamp'] = pd.to_datetime(match_df.get('matchTimestamp'), errors='coerce')
         match_df.sort_values(by='matchTimestamp', inplace=True)
-        if match_df.empty or match_df['matchTimestamp'].isna().all(): 
-            match_date = "Unknown Date" # Handle missing date info
+        if match_df.empty or match_df['matchTimestamp'].isna().all():
+            match_date = "Unknown Date"
         else:
-             match_date = match_df['matchTimestamp'].iloc[0].strftime('%Y-%m-%d')
-             
+            match_date = match_df['matchTimestamp'].iloc[0].strftime('%Y-%m-%d')
         goals_df = match_df[match_df.get('shot.isGoal') == True]
         goal_counts = goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
         home_score = goal_counts.get(home_team, 0)
@@ -107,35 +99,37 @@ def create_match_summary(events_df):
             'matchId': match_id, 'home_team': home_team, 'away_team': away_team,
             'date': match_date, 'score': f"{home_score} - {away_score}"
         })
-        
+
     if not matches_summary:
         print("Warning: No matches found to create summary.")
-        return pd.DataFrame() # Return empty DataFrame if no summaries were created
+        return pd.DataFrame()
 
     matches_summary_df = pd.DataFrame(matches_summary)
-    
-    # --- Gameweek Calculation Logic ---
-    print("Calculating Gameweeks...")
-    gameweek_labels = []
+
+    # --- Gameweek Calculation Logic (Reversed) ---
+    print("Calculating Gameweeks (in reverse order)...")
+    temp_gameweek_numbers = []
     current_gameweek = 1
     teams_seen_this_gameweek = set()
-    
-    # Iterate through the DataFrame (assuming it's chronologically sorted)
+
+    # First pass: determine the gameweek number for each match chronologically
     for index, row in matches_summary_df.iterrows():
         home = row['home_team']
         away = row['away_team']
-        
-        # If either team has played in this gameweek already, start the next one
         if home in teams_seen_this_gameweek or away in teams_seen_this_gameweek:
             current_gameweek += 1
-            teams_seen_this_gameweek = {home, away} # Reset for the new gameweek
+            teams_seen_this_gameweek = {home, away}
         else:
-            # Add teams to the current gameweek set
             teams_seen_this_gameweek.add(home)
             teams_seen_this_gameweek.add(away)
-            
-        gameweek_labels.append(f"GW{current_gameweek}")
-        
+        temp_gameweek_numbers.append(current_gameweek)
+
+    # Find the maximum gameweek number
+    max_gameweek = current_gameweek # The last value assigned is the max
+
+    # Second pass: assign the reversed labels
+    gameweek_labels = [f"GW{max_gameweek - gw_num + 1}" for gw_num in temp_gameweek_numbers]
+
     matches_summary_df['Gameweek'] = gameweek_labels
     # --- End Gameweek Logic ---
 
