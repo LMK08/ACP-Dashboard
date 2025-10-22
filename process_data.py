@@ -11,6 +11,10 @@ import os
 import pickle
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import warnings
+
+# Suppress SettingWithCopyWarning, use cautiously
+pd.options.mode.chained_assignment = None
 
 # ==============================================================================
 # SECTION 2: DATA FETCHING FUNCTIONS
@@ -72,25 +76,44 @@ def create_match_summary(events_df):
     """Creates a summary DataFrame with details and REVERSED gameweek labels."""
     print("Processing: Creating match summary...")
     matches_summary = []
+    # Ensure 'matchId' exists before proceeding
+    if 'matchId' not in events_df.columns:
+        print("❌ Error: 'matchId' column not found in events data. Cannot create match summary.")
+        return pd.DataFrame()
+        
     unique_match_ids = events_df['matchId'].unique()
 
     try:
-        sorted_match_ids = sorted(pd.to_numeric(unique_match_ids, errors='coerce').dropna())
-    except:
+        # Attempt numeric sort, fallback to original order
+        numeric_ids = pd.to_numeric(unique_match_ids, errors='coerce')
+        valid_numeric_ids = numeric_ids[~np.isnan(numeric_ids)]
+        sorted_match_ids = sorted(valid_numeric_ids) if len(valid_numeric_ids) > 0 else unique_match_ids
+    except Exception as e:
+        print(f"Warning: Could not sort match IDs numerically ({e}). Using original order.")
         sorted_match_ids = unique_match_ids
 
     for match_id in tqdm(sorted_match_ids, desc="Summarizing Matches"):
         match_df = events_df[events_df['matchId'] == match_id].copy()
         if match_df.empty: continue
+
         teams = match_df['team.name'].unique()
         if len(teams) < 2: continue
+        # Simple assignment assumes consistent order; might need refinement
         home_team, away_team = teams[0], teams[1]
+
+        # Ensure timestamps are datetimes, handle potential errors, sort to find the earliest one
         match_df['matchTimestamp'] = pd.to_datetime(match_df.get('matchTimestamp'), errors='coerce')
-        match_df.sort_values(by='matchTimestamp', inplace=True)
-        if match_df.empty or match_df['matchTimestamp'].isna().all():
+        match_df.sort_values(by='matchTimestamp', inplace=True, na_position='last') # Put NaNs last
+
+        if match_df.empty or pd.isna(match_df['matchTimestamp'].iloc[0]):
             match_date = "Unknown Date"
         else:
-            match_date = match_df['matchTimestamp'].iloc[0].strftime('%Y-%m-%d')
+            try:
+                 match_date = match_df['matchTimestamp'].iloc[0].strftime('%Y-%m-%d')
+            except AttributeError: # Handle cases where it might not be a datetime object after all
+                 match_date = "Invalid Date"
+
+
         goals_df = match_df[match_df.get('shot.isGoal') == True]
         goal_counts = goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
         home_score = goal_counts.get(home_team, 0)
@@ -116,9 +139,20 @@ def create_match_summary(events_df):
     for index, row in matches_summary_df.iterrows():
         home = row['home_team']
         away = row['away_team']
+        # Check if BOTH teams are new to this gameweek before incrementing seen set
         if home in teams_seen_this_gameweek or away in teams_seen_this_gameweek:
-            current_gameweek += 1
-            teams_seen_this_gameweek = {home, away}
+            # Check if *starting* a new gameweek because *both* teams were already seen OR
+            # if we simply need to add the new team(s) to the current set.
+            # A simple heuristic: if the number of teams seen is getting large (e.g., > half total teams), start new GW.
+            # More robust: check if adding these teams completes a round.
+            # Simple approach: if either team seen, assume new gameweek starts unless set is very small.
+            if len(teams_seen_this_gameweek) > 1 : # Avoid incrementing on the very first match of a new GW
+                current_gameweek += 1
+                teams_seen_this_gameweek = {home, away}
+            else:
+                 teams_seen_this_gameweek.add(home)
+                 teams_seen_this_gameweek.add(away)
+
         else:
             teams_seen_this_gameweek.add(home)
             teams_seen_this_gameweek.add(away)
@@ -134,6 +168,7 @@ def create_match_summary(events_df):
     # --- End Gameweek Logic ---
 
     return matches_summary_df
+
 
 def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
     """Calculates detailed corner kick statistics for a single team for the whole season."""
@@ -155,64 +190,73 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
     total_matches = team_matches_df['matchId'].nunique()
     if total_matches == 0: return None
 
-    # Check if 'is_corner' column exists, create if not
-    if 'is_corner' not in events_df.columns:
-         events_df['is_corner'] = (events_df['type.primary'] == 'corner')
+    # Use .get() for safer column access
+    events_df['is_corner'] = (events_df.get('type.primary') == 'corner')
 
-    corners_df = events_df[(events_df['is_corner']) & (events_df['team.name'] == selected_team)].copy()
+    corners_df = events_df[(events_df['is_corner']) & (events_df.get('team.name') == selected_team)].copy()
     if corners_df.empty: return None
 
     corner_possession_ids = corners_df['possession.id'].dropna().unique()
-    # Filter events_df ONCE for efficiency
     relevant_events_df = events_df[events_df['possession.id'].isin(corner_possession_ids)].sort_values(by=['possession.id', 'possession.eventIndex'])
 
     processed_corners = []
     if not relevant_events_df.empty:
-        for possession_id, group in relevant_events_df.groupby('possession.id'):
-            # Find the actual corner event within the group
-            corner_event_rows = group[group['is_corner']]
-            if corner_event_rows.empty: continue # Should not happen based on filtering, but safe check
-            corner_event = corner_event_rows.iloc[0]
+        # Use try-except for robustness during iteration
+        try:
+            for possession_id, group in relevant_events_df.groupby('possession.id'):
+                corner_event_rows = group[group['is_corner']]
+                if corner_event_rows.empty: continue
+                corner_event = corner_event_rows.iloc[0]
 
-            # Ensure this possession's corner belongs to the selected team
-            if corner_event['team.name'] != selected_team: continue
+                if corner_event['team.name'] != selected_team: continue
 
-            corner_index = corner_event['possession.eventIndex']
-            delivery_type = 'Direct Corner'
-            if is_short_corner_by_distance(corner_event['location.x'], corner_event['location.y'], corner_event.get('pass.endLocation.x'), corner_event.get('pass.endLocation.y')):
-                 delivery_type = 'Short Corner'
+                corner_index = corner_event.get('possession.eventIndex')
+                # Check if corner_index is valid before proceeding
+                if pd.isna(corner_index): continue
 
-            first_contact_event = group[group['possession.eventIndex'] == corner_index + 1].copy()
-            first_contact_zone = 'Unknown'
-            if not first_contact_event.empty:
-                first_contact_zone = map_location_to_zone(first_contact_event.iloc[0].get('location.x'), first_contact_event.iloc[0].get('location.y'))
+                delivery_type = 'Direct Corner'
+                if is_short_corner_by_distance(corner_event.get('location.x'), corner_event.get('location.y'), corner_event.get('pass.endLocation.x'), corner_event.get('pass.endLocation.y')):
+                     delivery_type = 'Short Corner'
 
-            shot_details = {
-                '1st Contact': {'shots': 0, 'goals': 0, 'xg': 0}, '2nd Contact': {'shots': 0, 'goals': 0, 'xg': 0},
-                '2nd Phase': {'shots': 0, 'goals': 0, 'xg': 0},
-            }
-            if not first_contact_event.empty and pd.notna(first_contact_event.iloc[0].get('shot.xg')):
-                event = first_contact_event.iloc[0]
-                shot_details['1st Contact'].update({'shots': 1, 'goals': 1 if event.get('shot.isGoal') == True else 0, 'xg': event.get('shot.xg', 0)})
+                first_contact_event = group[group['possession.eventIndex'] == corner_index + 1].copy()
+                first_contact_zone = 'Unknown'
+                if not first_contact_event.empty:
+                    first_contact_zone = map_location_to_zone(first_contact_event.iloc[0].get('location.x'), first_contact_event.iloc[0].get('location.y'))
 
-            second_contact_event = group[group['possession.eventIndex'] == corner_index + 2].copy()
-            if not second_contact_event.empty and pd.notna(second_contact_event.iloc[0].get('shot.xg')):
-                event = second_contact_event.iloc[0]
-                shot_details['2nd Contact'].update({'shots': 1, 'goals': 1 if event.get('shot.isGoal') == True else 0, 'xg': event.get('shot.xg', 0)})
+                shot_details = {
+                    '1st Contact': {'shots': 0, 'goals': 0, 'xg': 0}, '2nd Contact': {'shots': 0, 'goals': 0, 'xg': 0},
+                    '2nd Phase': {'shots': 0, 'goals': 0, 'xg': 0},
+                }
+                if not first_contact_event.empty and pd.notna(first_contact_event.iloc[0].get('shot.xg')):
+                    event = first_contact_event.iloc[0]
+                    shot_details['1st Contact'].update({'shots': 1, 'goals': 1 if event.get('shot.isGoal') == True else 0, 'xg': event.get('shot.xg', 0)})
 
-            second_phase_events = group[group['possession.eventIndex'] > corner_index + 2].copy()
-            if not second_phase_events.empty:
-                shots_in_phase = second_phase_events.dropna(subset=['shot.xg']).copy()
-                if not shots_in_phase.empty:
-                    shots_in_phase['isGoal'] = (shots_in_phase.get('shot.isGoal') == True)
-                    shot_details['2nd Phase'].update({'shots': len(shots_in_phase), 'goals': shots_in_phase['isGoal'].sum(), 'xg': shots_in_phase.get('shot.xg', 0).sum()})
+                second_contact_event = group[group['possession.eventIndex'] == corner_index + 2].copy()
+                if not second_contact_event.empty and pd.notna(second_contact_event.iloc[0].get('shot.xg')):
+                    event = second_contact_event.iloc[0]
+                    shot_details['2nd Contact'].update({'shots': 1, 'goals': 1 if event.get('shot.isGoal') == True else 0, 'xg': event.get('shot.xg', 0)})
 
-            processed_corners.append({
-                'possession.id': possession_id, 'delivery_type': delivery_type, 'first_contact_zone': first_contact_zone,
-                'shots_1st_contact': shot_details['1st Contact']['shots'], 'goals_1st_contact': shot_details['1st Contact']['goals'], 'xg_1st_contact': shot_details['1st Contact']['xg'],
-                'shots_2nd_contact': shot_details['2nd Contact']['shots'], 'goals_2nd_contact': shot_details['2nd Contact']['goals'], 'xg_2nd_contact': shot_details['2nd Contact']['xg'],
-                'shots_2nd_phase': shot_details['2nd Phase']['shots'], 'goals_2nd_phase': shot_details['2nd Phase']['goals'], 'xg_2nd_phase': shot_details['2nd Phase']['xg'],
-            })
+                second_phase_events = group[group['possession.eventIndex'] > corner_index + 2].copy()
+                if not second_phase_events.empty:
+                    # Ensure 'shot.xg' exists before dropping NA
+                    if 'shot.xg' in second_phase_events.columns:
+                        shots_in_phase = second_phase_events.dropna(subset=['shot.xg']).copy()
+                        if not shots_in_phase.empty:
+                            shots_in_phase['isGoal'] = (shots_in_phase.get('shot.isGoal') == True)
+                            shot_details['2nd Phase'].update({'shots': len(shots_in_phase), 'goals': shots_in_phase['isGoal'].sum(), 'xg': shots_in_phase.get('shot.xg', 0).sum()})
+                    else: # Handle case where shot.xg might be missing entirely
+                         shot_details['2nd Phase'].update({'shots': 0, 'goals': 0, 'xg': 0})
+
+
+                processed_corners.append({
+                    'possession.id': possession_id, 'delivery_type': delivery_type, 'first_contact_zone': first_contact_zone,
+                    'shots_1st_contact': shot_details['1st Contact']['shots'], 'goals_1st_contact': shot_details['1st Contact']['goals'], 'xg_1st_contact': shot_details['1st Contact']['xg'],
+                    'shots_2nd_contact': shot_details['2nd Contact']['shots'], 'goals_2nd_contact': shot_details['2nd Contact']['goals'], 'xg_2nd_contact': shot_details['2nd Contact']['xg'],
+                    'shots_2nd_phase': shot_details['2nd Phase']['shots'], 'goals_2nd_phase': shot_details['2nd Phase']['goals'], 'xg_2nd_phase': shot_details['2nd Phase']['xg'],
+                })
+        except Exception as e:
+            print(f"Warning: Error processing corners for {selected_team} - {e}")
+            # Continue processing other teams/data if possible
 
     results_df = pd.DataFrame(processed_corners)
     if results_df.empty: return None
@@ -223,7 +267,7 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
     corners_per_match = total_corners / total_matches
     xg_per_90 = total_xg / total_matches
     xg_per_corner = total_xg / total_corners if total_corners > 0 else 0
-    first_contact_pct = results_df['first_contact_zone'].value_counts(normalize=True).mul(100) # Use mul for percentage
+    first_contact_pct = results_df['first_contact_zone'].value_counts(normalize=True).mul(100)
     total_goals = results_df[['goals_1st_contact', 'goals_2nd_contact', 'goals_2nd_phase']].sum().sum()
     goals_1st_contact = results_df['goals_1st_contact'].sum()
     goals_2nd_contact = results_df['goals_2nd_contact'].sum()
@@ -240,7 +284,6 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
         "1st Contact Zone: 6Y Box %": f"{first_contact_pct.get('6Y Box', 0):.1f}",
         "1st Contact Zone: Front Area %": f"{first_contact_pct.get('Front Area', 0):.1f}",
         "1st Contact Zone: Near Post %": f"{first_contact_pct.get('Near Post', 0):.1f}",
-         # Added other zones for completeness, adjust as needed
         "1st Contact Zone: Far Post %": f"{first_contact_pct.get('Far Post', 0):.1f}",
         "1st Contact Zone: Middle Area %": f"{first_contact_pct.get('Middle Area', 0):.1f}",
         "1st Contact Zone: Back Area %": f"{first_contact_pct.get('Back Area', 0):.1f}",
@@ -251,9 +294,8 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
         "Short Corner %": f"{delivery_counts.get('Short Corner', 0):.1f}",
         "Direct Corner %": f"{delivery_counts.get('Direct Corner', 0):.1f}",
     }
-    # Create DataFrame correctly with team name as column
-    corner_stats_df = pd.DataFrame.from_dict({selected_team: corner_stats_data}, orient='index').T # Transpose to get team as column
-    corner_stats_df.index.name = "Corner Kicks" # Set the index name
+    corner_stats_df = pd.DataFrame.from_dict({selected_team: corner_stats_data}, orient='columns') # Team as column directly
+    corner_stats_df.index.name = "Corner Kicks"
     
     return corner_stats_df
 
@@ -261,13 +303,13 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
 def calculate_match_data(match_df, home_team, away_team):
     """Calculates all team and player stats for a single match."""
 
-    # --- NESTED FUNCTION: TEAM STATS ---
+    # --- NESTED FUNCTION: TEAM STATS (FULL LOGIC) ---
     def _calculate_team_stats(match_df, home_team, away_team):
         teams = [home_team, away_team]
         all_tables = {}
 
         # Pre-computation and error handling for missing columns
-        match_df['matchTimestamp'] = pd.to_datetime(match_df.get('matchTimestamp'))
+        match_df['matchTimestamp'] = pd.to_datetime(match_df.get('matchTimestamp'), errors='coerce')
         match_df['possession.duration_sec'] = pd.to_numeric(match_df.get('possession.duration', pd.Series(dtype='str')).str.replace('s', ''), errors='coerce')
 
         PENALTY_AREA_X = 83
@@ -288,12 +330,16 @@ def calculate_match_data(match_df, home_team, away_team):
 
         for team in teams:
             team_shots = shots_df[shots_df.get('team.name') == team].copy()
-            if not team_shots.empty:
-                team_shots.loc[:, 'distance'] = np.sqrt((100 - team_shots.get('location.x', 100))**2 + (50 - team_shots.get('location.y', 50))**2)
+            if not team_shots.empty and 'location.x' in team_shots.columns and 'location.y' in team_shots.columns:
+                 team_shots.loc[:, 'distance'] = np.sqrt((100 - team_shots['location.x'].fillna(100))**2 + (50 - team_shots['location.y'].fillna(50))**2)
+            else:
+                 team_shots['distance'] = np.nan # Add column if needed
+
             goals = team_shots[team_shots.get('shot.isGoal') == True].shape[0]
             xg = team_shots.get('shot.xg', pd.Series(dtype='float')).sum()
             total_shots = team_shots.shape[0]
             on_target = team_shots[team_shots.get('shot.onTarget') == True].shape[0]
+            # Use .get with default 0 for location if column missing
             shots_in_box = team_shots[(team_shots.get('location.x', 0) >= PENALTY_AREA_X) & (team_shots.get('location.y', 0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))]
             shots_in_box_on_target = shots_in_box[shots_in_box.get('shot.onTarget') == True].shape[0]
             shots_out_box = team_shots[team_shots.get('location.x', 101) < PENALTY_AREA_X]
@@ -301,10 +347,10 @@ def calculate_match_data(match_df, home_team, away_team):
             avg_shot_dist = team_shots.get('distance', pd.Series(dtype='float')).mean()
             corners = corners_df[corners_df.get('team.name') == team].shape[0]
             team_free_kicks = free_kicks_df[free_kicks_df.get('team.name') == team].copy()
-            if not team_free_kicks.empty:
-                 team_free_kicks['distance_to_goal'] = np.sqrt((100 - team_free_kicks.get('location.x', 100))**2 + (50 - team_free_kicks.get('location.y', 50))**2)
+            if not team_free_kicks.empty and 'location.x' in team_free_kicks.columns and 'location.y' in team_free_kicks.columns:
+                 team_free_kicks['distance_to_goal'] = np.sqrt((100 - team_free_kicks['location.x'].fillna(100))**2 + (50 - team_free_kicks['location.y'].fillna(50))**2)
             else:
-                 team_free_kicks['distance_to_goal'] = pd.Series(dtype='float')
+                 team_free_kicks['distance_to_goal'] = np.nan
             attacking_free_kicks = team_free_kicks[team_free_kicks['distance_to_goal'] <= 45].shape[0]
             offsides = offsides_df[offsides_df.get('team.name') == team].shape[0]
             fouls_committed = infractions_df[infractions_df.get('team.name') == team].shape[0]
@@ -319,8 +365,8 @@ def calculate_match_data(match_df, home_team, away_team):
                 "Attacking free kicks": attacking_free_kicks, "Offsides": offsides,
                 "Fouls committed": fouls_committed, "Yellow / red cards": f"{yellow_cards}/{red_cards}"
             }
-        
-        # Handle cases where one team might not have stats (e.g., if data is incomplete)
+
+        # Handle cases where one team might not have stats
         if home_team in general_stats and away_team in general_stats:
             home_fouls_committed = general_stats[home_team].pop('Fouls committed', 0)
             away_fouls_committed = general_stats[away_team].pop('Fouls committed', 0)
@@ -333,15 +379,12 @@ def calculate_match_data(match_df, home_team, away_team):
              general_stats[away_team].pop('Fouls committed', 0)
              general_stats[away_team]['Fouls committed / suffered'] = f"{0}/{0}" # Placeholder
 
-
         general_stats_df = pd.DataFrame(general_stats).rename_axis("General")
-        # Define expected order, handle missing columns gracefully
         general_order = ["Goals", "xG", "Shots / on target", "From penalty area / on target",
                          "Outside penalty area / on target", "Average shot distance (m)",
                          "Corners", "Attacking free kicks", "Offsides",
                          "Fouls committed / suffered", "Yellow / red cards"]
         all_tables["General"] = general_stats_df.reindex(general_order).fillna('-')
-
 
         # --- Calculate "Attacks" Stats ---
         attack_stats = {}
@@ -352,51 +395,60 @@ def calculate_match_data(match_df, home_team, away_team):
             counter_attacks = 0
             positional_attacks = 0
 
-            if not team_match_events.empty:
-                possessions_grouped = team_match_events.groupby('possession.id')[['location.x']] # Select only necessary columns
-                # Filter possessions entering the final third
-                final_third_entries = possessions_grouped.filter(lambda x: x['location.x'].min() < FINAL_THIRD_X and x['location.x'].max() >= FINAL_THIRD_X).index.get_level_values('possession.id').nunique()
+            if not team_match_events.empty and 'possession.id' in team_match_events.columns and 'location.x' in team_match_events.columns:
+                try: # Wrap groupby operations in try-except
+                    possessions_grouped = team_match_events.groupby('possession.id')[['location.x']]
+                    final_third_entries_series = possessions_grouped.transform(lambda x: x.min() < FINAL_THIRD_X and x.max() >= FINAL_THIRD_X)
+                    final_third_entries = final_third_entries_series[final_third_entries_series].index.get_level_values('possession.id').nunique()
+                except Exception as e:
+                    print(f"Warning: Could not calculate final third entries for {team} - {e}")
+                    final_third_entries = 0
+
 
                 possessions_with_box_event = team_match_events[(team_match_events.get('location.x', 0) >= PENALTY_AREA_X) & (team_match_events.get('location.y', 0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))]['possession.id'].unique()
                 box_entries = len(possessions_with_box_event)
-                
+
                 # Counterattacks logic
-                first_events = team_match_events.loc[team_match_events.groupby('possession.id')['matchTimestamp'].idxmin()].copy()
-                recoveries = first_events[first_events.get('type.primary', '').isin(RECOVERY_EVENTS)].copy()
-                if not recoveries.empty:
-                    recoveries['start_distance'] = np.sqrt((100 - recoveries.get('location.x', 100))**2 + (50 - recoveries.get('location.y', 50))**2)
-                    counter_candidates = recoveries[recoveries['start_distance'] >= 40].copy()
-                    if not counter_candidates.empty:
-                        candidate_events = team_match_events[team_match_events.get('possession.id', '').isin(counter_candidates['possession.id'])].copy()
-                        if not candidate_events.empty and 'possession.id' in candidate_events.columns and 'matchTimestamp' in candidate_events.columns:
-                            candidate_events = candidate_events.merge(counter_candidates[['possession.id', 'matchTimestamp']], on='possession.id', suffixes=('', '_start'), how='left') # Use left merge
-                            # Ensure timestamps are comparable
-                            if 'matchTimestamp_start' in candidate_events.columns and pd.api.types.is_datetime64_any_dtype(candidate_events['matchTimestamp']) and pd.api.types.is_datetime64_any_dtype(candidate_events['matchTimestamp_start']):
-                                candidate_events['time_in_possession'] = (candidate_events['matchTimestamp'] - candidate_events['matchTimestamp_start']).dt.total_seconds()
-                                fast_events = candidate_events[candidate_events['time_in_possession'] <= 5].copy()
-                                if not fast_events.empty:
-                                    fast_events['distance_to_goal'] = np.sqrt((100 - fast_events.get('location.x', 100))**2 + (50 - fast_events.get('location.y', 50))**2)
-                                    min_distances = fast_events.groupby('possession.id')['distance_to_goal'].min().reset_index().rename(columns={'distance_to_goal': 'min_distance'})
-                                    progression_df = counter_candidates.merge(min_distances, on='possession.id', how='left') # Use left merge
-                                    if 'min_distance' in progression_df.columns: # Check if column exists after merge
-                                        progression_df['progression'] = progression_df['start_distance'] - progression_df['min_distance']
-                                        counter_attacks = progression_df[progression_df['progression'] >= 30].shape[0]
-                
+                if 'matchTimestamp' in team_match_events.columns:
+                    first_events_idx = team_match_events.groupby('possession.id')['matchTimestamp'].idxmin()
+                    first_events = team_match_events.loc[first_events_idx].copy()
+                    recoveries = first_events[first_events.get('type.primary', '').isin(RECOVERY_EVENTS)].copy()
+                    if not recoveries.empty and 'location.x' in recoveries.columns and 'location.y' in recoveries.columns:
+                        recoveries['start_distance'] = np.sqrt((100 - recoveries['location.x'].fillna(100))**2 + (50 - recoveries['location.y'].fillna(50))**2)
+                        counter_candidates = recoveries[recoveries['start_distance'] >= 40].copy()
+                        if not counter_candidates.empty:
+                            candidate_events = team_match_events[team_match_events.get('possession.id', pd.NA).isin(counter_candidates['possession.id'])].copy()
+                            if not candidate_events.empty and 'possession.id' in candidate_events.columns and 'matchTimestamp' in candidate_events.columns and 'possession.id' in counter_candidates.columns:
+                                candidate_events = candidate_events.merge(counter_candidates[['possession.id', 'matchTimestamp']], on='possession.id', suffixes=('', '_start'), how='left')
+                                if 'matchTimestamp_start' in candidate_events.columns and pd.api.types.is_datetime64_any_dtype(candidate_events['matchTimestamp']) and pd.api.types.is_datetime64_any_dtype(candidate_events['matchTimestamp_start']):
+                                    candidate_events['time_in_possession'] = (candidate_events['matchTimestamp'] - candidate_events['matchTimestamp_start']).dt.total_seconds()
+                                    fast_events = candidate_events[candidate_events['time_in_possession'] <= 5].copy()
+                                    if not fast_events.empty and 'location.x' in fast_events.columns and 'location.y' in fast_events.columns:
+                                        fast_events['distance_to_goal'] = np.sqrt((100 - fast_events['location.x'].fillna(100))**2 + (50 - fast_events['location.y'].fillna(50))**2)
+                                        min_distances = fast_events.groupby('possession.id')['distance_to_goal'].min().reset_index().rename(columns={'distance_to_goal': 'min_distance'})
+                                        progression_df = counter_candidates.merge(min_distances, on='possession.id', how='left')
+                                        if 'min_distance' in progression_df.columns and 'start_distance' in progression_df.columns:
+                                            progression_df['progression'] = progression_df['start_distance'] - progression_df['min_distance']
+                                            counter_attacks = progression_df[progression_df['progression'] >= 30].shape[0]
+
+
                 # Positional attacks
-                unique_possessions = match_df.drop_duplicates(subset='possession.id')
-                positional_attacks_df = unique_possessions[
-                    (unique_possessions.get('possession.team.name') == team) & 
-                    (unique_possessions.get('possession.attack.flank', '').isin(['central', 'left', 'right']))
-                ]
-                positional_attacks = positional_attacks_df.shape[0]
+                if 'possession.id' in match_df.columns and 'possession.team.name' in match_df.columns:
+                    unique_possessions = match_df.drop_duplicates(subset='possession.id')
+                    positional_attacks_df = unique_possessions[
+                        (unique_possessions.get('possession.team.name') == team) &
+                        (unique_possessions.get('possession.attack.flank', '').isin(['central', 'left', 'right']))
+                    ]
+                    positional_attacks = positional_attacks_df.shape[0]
 
             attack_stats[team] = {
                 "Positional attacks": positional_attacks,
-                "Final 1/3 Entries": final_third_entries, 
-                "Box Entries": box_entries, 
+                "Final 1/3 Entries": final_third_entries,
+                "Box Entries": box_entries,
                 "Counterattacks": counter_attacks,
             }
-        all_tables["Attacks"] = pd.DataFrame(attack_stats).rename_axis("Attacks").fillna(0) # Fill NaN with 0
+        all_tables["Attacks"] = pd.DataFrame(attack_stats).rename_axis("Attacks").fillna(0)
+
 
         # --- Calculate "Defence" Stats ---
         defence_stats = {}
@@ -424,14 +476,16 @@ def calculate_match_data(match_df, home_team, away_team):
 
         # --- Calculate "Transitions" Stats ---
         transitions_stats = {}
-        if 'possession.id' in match_df.columns: # Ensure possession ID exists
+        if 'possession.id' in match_df.columns:
             match_df['next_possession.id'] = match_df['possession.id'].shift(-1)
             possession_changes = match_df[match_df['possession.id'] != match_df['next_possession.id']]
             losses_df_base = possession_changes[possession_changes.get('infraction.type') != 'foul_suffered'].copy()
             unsuccessful_pass_mask = (losses_df_base.get('type.primary') == 'pass') & (losses_df_base.get('pass.accurate') == False)
-            # Use .loc with boolean mask for assignment
-            losses_df_base.loc[unsuccessful_pass_mask, 'location.x'] = losses_df_base.loc[unsuccessful_pass_mask, 'pass.endLocation.x']
-            losses_df_base.loc[unsuccessful_pass_mask, 'location.y'] = losses_df_base.loc[unsuccessful_pass_mask, 'pass.endLocation.y']
+            # Use .loc with boolean mask for assignment, checking column existence
+            if 'pass.endLocation.x' in losses_df_base.columns:
+                 losses_df_base.loc[unsuccessful_pass_mask, 'location.x'] = losses_df_base.loc[unsuccessful_pass_mask, 'pass.endLocation.x']
+            if 'pass.endLocation.y' in losses_df_base.columns:
+                 losses_df_base.loc[unsuccessful_pass_mask, 'location.y'] = losses_df_base.loc[unsuccessful_pass_mask, 'pass.endLocation.y']
 
             for team in teams:
                 interceptions_df = match_df[(match_df.get('type.primary') == 'interception') & (match_df.get('team.name') == team)]
@@ -455,15 +509,17 @@ def calculate_match_data(match_df, home_team, away_team):
                 }
             all_tables["Transitions"] = pd.DataFrame(transitions_stats).rename_axis("Transitions").fillna('0/0/0/0')
         else:
-            # Handle case where possession info might be missing
-             for team in teams:
-                 transitions_stats[team] = {"Recoveries / low / medium / high": 'N/A', "Opponent half recoveries": 'N/A', "Losses / low / medium / high": 'N/A'}
+             for team in teams: transitions_stats[team] = {"Recoveries / low / medium / high": 'N/A', "Opponent half recoveries": 'N/A', "Losses / low / medium / high": 'N/A'}
              all_tables["Transitions"] = pd.DataFrame(transitions_stats).rename_axis("Transitions")
 
         # --- Calculate "Duels" Stats ---
         duels_stats = {}
         all_duels_df = match_df[match_df.get('type.primary') == 'duel'].copy()
-        total_possession_time = match_df.drop_duplicates(subset='possession.id').groupby('possession.team.name')['possession.duration_sec'].sum()
+        # Ensure 'possession.id' and 'possession.team.name' exist before groupby
+        total_possession_time = pd.Series(dtype='float')
+        if 'possession.id' in match_df.columns and 'possession.team.name' in match_df.columns:
+            total_possession_time = match_df.drop_duplicates(subset='possession.id').groupby('possession.team.name')['possession.duration_sec'].sum()
+
         for team in teams:
             opponent = away_team if team == home_team else home_team
             team_duels = all_duels_df[all_duels_df.get('team.name') == team]
@@ -499,8 +555,12 @@ def calculate_match_data(match_df, home_team, away_team):
         home_time_sec = home_possessions.get('possession.duration_sec', 0).sum()
         away_time_sec = away_possessions.get('possession.duration_sec', 0).sum()
         total_time_in_possession = home_time_sec + away_time_sec
-        total_match_duration_sec = (match_df['matchTimestamp'].max() - match_df['matchTimestamp'].min()).total_seconds() if not match_df.empty else 0
+        # Ensure 'matchTimestamp' exists and is datetime before max/min
+        total_match_duration_sec = 0
+        if 'matchTimestamp' in match_df.columns and pd.api.types.is_datetime64_any_dtype(match_df['matchTimestamp']) and not match_df['matchTimestamp'].isna().all():
+             total_match_duration_sec = (match_df['matchTimestamp'].max() - match_df['matchTimestamp'].min()).total_seconds()
         dead_time_sec = total_match_duration_sec - total_time_in_possession if total_match_duration_sec > total_time_in_possession else 0
+
         for team in teams:
             team_possessions_df = match_df[match_df.get('possession.team.name') == team]
             unique_team_possessions = team_possessions_df.drop_duplicates(subset='possession.id')
@@ -510,13 +570,20 @@ def calculate_match_data(match_df, home_team, away_team):
             num_possessions = unique_team_possessions.shape[0]
             reaching_half = 0
             reaching_box = 0
-            avg_duration_sec = 0
-            if not team_possessions_df.empty:
-                 reaching_half = team_possessions_df.groupby('possession.id')['location.x'].filter(lambda x: x.max() > 50).index.get_level_values('possession.id').nunique()
+            avg_duration_sec = np.nan # Use NaN for mean calculation default
+            if not team_possessions_df.empty and 'possession.id' in team_possessions_df.columns:
+                 # Use transform and nunique for potentially faster calculation
+                 try:
+                     half_entries = team_possessions_df.groupby('possession.id')['location.x'].transform('max') > 50
+                     reaching_half = team_possessions_df.loc[half_entries, 'possession.id'].nunique()
+                 except Exception: # Broad except for safety in groupby/transform
+                      reaching_half = 0
+
                  possessions_in_box_ids = team_possessions_df[(team_possessions_df.get('location.x', 0) >= PENALTY_AREA_X) & (team_possessions_df.get('location.y', 0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))]['possession.id'].unique()
                  reaching_box = len(possessions_in_box_ids)
-                 avg_duration_sec = unique_team_possessions.get('possession.duration_sec', 0).mean()
+                 avg_duration_sec = unique_team_possessions.get('possession.duration_sec', pd.Series(dtype='float')).mean() # Ensure numeric mean
             avg_duration_str = str(datetime.timedelta(seconds=int(avg_duration_sec)))[-5:] if pd.notna(avg_duration_sec) and avg_duration_sec > 0 else '00:00'
+
             possession_stats[team] = {
                 "Possession %": possession_pct, "Pure possession time": pure_time_str,
                 "Number of possessions": num_possessions,
@@ -529,22 +596,30 @@ def calculate_match_data(match_df, home_team, away_team):
         possession_stats_df.loc['Dead time'] = [dead_time_str, dead_time_str]
         all_tables["Possession"] = possession_stats_df.fillna('-')
 
+
         # --- Calculate "Open play possessions" Stats ---
         open_play_stats = {}
-        first_events_df = match_df.loc[match_df.groupby('possession.id')['matchTimestamp'].idxmin()]
-        open_play_possessions = first_events_df[~first_events_df.get('type.primary', '').isin(SET_PIECE_EVENTS)]
-        for team in teams:
-            team_open_play = open_play_possessions[open_play_possessions.get('possession.team.name') == team]
-            total = team_open_play.shape[0]
-            short = team_open_play[team_open_play.get('possession.duration_sec', 0) <= 10].shape[0]
-            medium = team_open_play[team_open_play.get('possession.duration_sec', 0).between(10, 20)].shape[0]
-            long = team_open_play[team_open_play.get('possession.duration_sec', 0).between(20, 45)].shape[0]
-            very_long = team_open_play[team_open_play.get('possession.duration_sec', 0) > 45].shape[0]
-            open_play_stats[team] = {
-                "Total": total, "Short (0-10 sec)": short, "Medium (10-20 sec)": medium,
-                "Long (20-45 sec)": long, "Very long (45+ sec)": very_long,
-            }
-        all_tables["Open play possessions"] = pd.DataFrame(open_play_stats).rename_axis("Open play possessions").fillna(0)
+        # Ensure required columns exist before groupby
+        if 'possession.id' in match_df.columns and 'matchTimestamp' in match_df.columns:
+            first_events_idx = match_df.groupby('possession.id')['matchTimestamp'].idxmin()
+            first_events_df = match_df.loc[first_events_idx]
+            open_play_possessions = first_events_df[~first_events_df.get('type.primary', '').isin(SET_PIECE_EVENTS)]
+            for team in teams:
+                team_open_play = open_play_possessions[open_play_possessions.get('possession.team.name') == team]
+                total = team_open_play.shape[0]
+                short = team_open_play[team_open_play.get('possession.duration_sec', 0) <= 10].shape[0]
+                medium = team_open_play[team_open_play.get('possession.duration_sec', np.inf).between(10, 20)].shape[0] # Handle NaN with inf
+                long = team_open_play[team_open_play.get('possession.duration_sec', np.inf).between(20, 45)].shape[0]
+                very_long = team_open_play[team_open_play.get('possession.duration_sec', -1) > 45].shape[0] # Handle NaN with -1
+                open_play_stats[team] = {
+                    "Total": total, "Short (0-10 sec)": short, "Medium (10-20 sec)": medium,
+                    "Long (20-45 sec)": long, "Very long (45+ sec)": very_long,
+                }
+            all_tables["Open play possessions"] = pd.DataFrame(open_play_stats).rename_axis("Open play possessions").fillna(0)
+        else:
+             for team in teams: open_play_stats[team] = {"Total": 0, "Short (0-10 sec)": 0, "Medium (10-20 sec)": 0, "Long (20-45 sec)": 0, "Very long (45+ sec)": 0}
+             all_tables["Open play possessions"] = pd.DataFrame(open_play_stats).rename_axis("Open play possessions")
+
 
         # --- Calculate "Passes" Stats ---
         passes_stats = {}
@@ -552,9 +627,10 @@ def calculate_match_data(match_df, home_team, away_team):
         for team in teams:
             team_passes = all_passes_df[all_passes_df.get('team.name') == team].copy()
             accurate_passes = team_passes[team_passes.get('pass.accurate') == True]
-            forward_passes = team_passes[team_passes.get('pass.endLocation.x', 0) > team_passes.get('location.x', 0)]
-            back_passes = team_passes[team_passes.get('pass.endLocation.x', 0) < team_passes.get('location.x', 0)]
-            lateral_passes = team_passes[team_passes.get('pass.endLocation.x', 0) == team_passes.get('location.x', 0)]
+            # Use .get with defaults for location columns
+            forward_passes = team_passes[team_passes.get('pass.endLocation.x', -1) > team_passes.get('location.x', -1)]
+            back_passes = team_passes[team_passes.get('pass.endLocation.x', -1) < team_passes.get('location.x', -1)]
+            lateral_passes = team_passes[team_passes.get('pass.endLocation.x', -1) == team_passes.get('location.x', -1)]
             prog_cond1 = (team_passes.get('location.x', 101) < 60) & (team_passes.get('pass.endLocation.x', 0) >= 60)
             prog_cond2 = (team_passes.get('location.x', 0) >= 60) & (team_passes.get('pass.endLocation.x', 0) >= 60) & (team_passes.get('pass.length', 0) >= 10)
             progressive_passes = team_passes[prog_cond1 | prog_cond2]
@@ -567,11 +643,14 @@ def calculate_match_data(match_df, home_team, away_team):
             crosses = team_passes[team_passes.get('type.secondary','').astype(str).str.contains('cross', na=False)]
             low_crosses = crosses[crosses.get('pass.height','').astype(str).str.contains('low', na=False)].shape[0]
             high_crosses = crosses[crosses.get('pass.height','').astype(str).str.contains('high', na=False)].shape[0]
-            if not team_passes.empty:
-                team_passes['dist_to_goal_end'] = np.sqrt((100 - team_passes.get('pass.endLocation.x', 100))**2 + (50 - team_passes.get('pass.endLocation.y', 50))**2)
+            
+            # Add distance calculation only if pass location data exists
+            if not team_passes.empty and 'pass.endLocation.x' in team_passes.columns and 'pass.endLocation.y' in team_passes.columns:
+                 team_passes['dist_to_goal_end'] = np.sqrt((100 - team_passes['pass.endLocation.x'].fillna(100))**2 + (50 - team_passes['pass.endLocation.y'].fillna(50))**2)
             else:
-                 team_passes['dist_to_goal_end'] = pd.Series(dtype='float')
-            deep_completions = team_passes[(team_passes.get('pass.accurate') == True) & (team_passes['dist_to_goal_end'] <= 20) & (~team_passes.get('type.secondary','').astype(str).str.contains('cross', na=False))].shape[0]
+                 team_passes['dist_to_goal_end'] = np.nan # Or pd.Series(dtype='float')
+
+            deep_completions = team_passes[(team_passes.get('pass.accurate') == True) & (team_passes.get('dist_to_goal_end', np.inf) <= 20) & (~team_passes.get('type.secondary','').astype(str).str.contains('cross', na=False))].shape[0]
             pure_possession_minutes = total_possession_time.get(team, 0) / 60
             match_tempo = round(team_passes.shape[0] / pure_possession_minutes, 1) if pure_possession_minutes > 0 else 0
             avg_pass_len = team_passes.get('pass.length', pd.Series(dtype='float')).mean()
@@ -591,15 +670,15 @@ def calculate_match_data(match_df, home_team, away_team):
                 "Shot assists": shot_assists.shape[0],
                 "Through passes / accurate": f"{through_passes.shape[0]}/{through_passes[through_passes.get('pass.accurate') == True].shape[0]}",
                 "Crosses / accurate": f"{crosses.shape[0]}/{crosses[crosses.get('pass.accurate') == True].shape[0]}",
-                "Crosses: low / high / blocked": f"{low_crosses}/{high_crosses}/{'N/A'}",
+                "Crosses: low / high / blocked": f"{low_crosses}/{high_crosses}/{'N/A'}", # Blocked crosses unavailable
                 "Deep completions": deep_completions, "Match tempo": match_tempo,
                 "Average pass length (m)": round(avg_pass_len, 1) if pd.notna(avg_pass_len) else '-',
             }
-        all_tables["Passes"] = pd.DataFrame(passes_stats).rename_axis("Passes").fillna('-') # Fill NaN with '-' for display
-        
+        all_tables["Passes"] = pd.DataFrame(passes_stats).rename_axis("Passes").fillna('-')
+
         return all_tables
 
-    # --- NESTED FUNCTION: PLAYER STATS ---
+    # --- NESTED FUNCTION: PLAYER STATS (FULL LOGIC) ---
     def _calculate_player_stats(match_df, home_team, away_team):
 
         def _calculate_stats_for_team(team_name, match_df):
@@ -634,7 +713,11 @@ def calculate_match_data(match_df, home_team, away_team):
                 goals = player_shots[player_shots.get('shot.isGoal') == True].shape[0]
                 xg = player_shots.get('shot.xg', pd.Series(dtype='float')).sum()
                 total_actions = player_events.shape[0]
-                successful_actions = player_events[(player_events.get('pass.accurate') == True) | (player_events.get('shot.onTarget') == True)].shape[0]
+                # Check for existence of pass.accurate and shot.onTarget before boolean logic
+                pass_acc = player_events.get('pass.accurate') == True if 'pass.accurate' in player_events.columns else False
+                shot_ot = player_events.get('shot.onTarget') == True if 'shot.onTarget' in player_events.columns else False
+                successful_actions = player_events[pass_acc | shot_ot].shape[0]
+
                 total_shots = player_shots.shape[0]
                 shots_on_target = player_shots[player_shots.get('shot.onTarget') == True].shape[0]
                 player_passes = player_events[player_events.get('type.primary') == 'pass']
@@ -652,12 +735,14 @@ def calculate_match_data(match_df, home_team, away_team):
                 # Corrected recovery logic
                 interceptions_clearances = player_events[player_events.get('type.primary').isin(['interception', 'clearance'])]
                 recoveries = interceptions_clearances.shape[0] + won_ground_duels # Sum counts
+                # Use .get with default 0 for location.x
                 recoveries_opp_half = interceptions_clearances[interceptions_clearances.get('location.x', 0) > 50].shape[0] + \
                                       player_duels[(player_duels.get('groundDuel.recoveredPossession') == True) & (player_duels.get('location.x', 0) > 50)].shape[0]
 
-                losses = player_passes[player_passes.get('pass.accurate') == False].shape[0] # Consider other loss types?
+                losses = player_passes[player_passes.get('pass.accurate') == False].shape[0]
                 losses_own_half = player_passes[(player_passes.get('pass.accurate') == False) & (player_passes.get('location.x', 101) <= 50)].shape[0]
-                touches_in_box = player_events[(player_events.get('type.primary') == 'touch') & (player_events.get('location.x', 0) >= 83)].shape[0] # Check PA definition
+                # Use .get with default 0 for location.x
+                touches_in_box = player_events[(player_events.get('type.primary') == 'touch') & (player_events.get('location.x', 0) >= 83)].shape[0]
                 offsides = player_events[player_events.get('type.primary') == 'offside'].shape[0]
                 yellow_cards = player_events[player_events.get('infraction.yellowCard') == True].shape[0]
                 red_cards = player_events[player_events.get('infraction.redCard') == True].shape[0]
@@ -683,7 +768,8 @@ def calculate_match_data(match_df, home_team, away_team):
         player_stats = _calculate_player_stats(match_df.copy(), home_team, away_team)
     except Exception as e:
         print(f"  -> ⚠️ Error processing match data for {home_team} vs {away_team}: {e}")
-        team_stats = {} # Return empty dict on error
+        # Return empty structures matching the expected format
+        team_stats = {cat: pd.DataFrame(columns=[home_team, away_team]).rename_axis(cat) for cat in ["General", "Attacks", "Defence", "Transitions", "Duels", "Possession", "Open play possessions", "Passes"]}
         player_stats = {'home': pd.DataFrame(), 'away': pd.DataFrame()}
 
     return {'team_stats': team_stats, 'player_stats': player_stats}
@@ -701,15 +787,22 @@ def main():
 
     # --- 1. Fetch Data ---
     match_ids = fetch_match_ids(wyscout_user, wyscout_pass, competition_id, season_id)
-    if not match_ids: 
+    if not match_ids:
         print("No match IDs found. Exiting.")
         return
-        
+
     raw_events_df = fetch_events(wyscout_user, wyscout_pass, match_ids)
-    if raw_events_df.empty: 
+    if raw_events_df.empty:
         print("No event data fetched. Exiting.")
         return
-    
+
+    # --- Data Cleaning/Prep (Optional but Recommended) ---
+    # Example: Ensure necessary columns have correct types before processing
+    raw_events_df['shot.xg'] = pd.to_numeric(raw_events_df.get('shot.xg'), errors='coerce')
+    raw_events_df['location.x'] = pd.to_numeric(raw_events_df.get('location.x'), errors='coerce')
+    raw_events_df['location.y'] = pd.to_numeric(raw_events_df.get('location.y'), errors='coerce')
+    # Add similar lines for other numeric/boolean columns used in calculations
+
     # Save the raw events for the app to use
     raw_events_df.to_parquet('raw_events.parquet', index=False)
     print("✅ Raw event data saved.")
@@ -721,28 +814,27 @@ def main():
 
     # --- 3. Process and Save All Per-Match Data (Team and Player) ---
     all_match_data = {}
-    # Make sure matches_summary_df has the necessary columns
     required_cols = ['matchId', 'home_team', 'away_team']
     if not all(col in matches_summary_df.columns for col in required_cols):
-         print("❌ Error: matches_summary_df is missing required columns (matchId, home_team, away_team). Cannot process matches.")
+         print("❌ Error: matches_summary_df is missing required columns. Cannot process matches.")
          return
 
     for index, match_summary in tqdm(matches_summary_df.iterrows(), total=matches_summary_df.shape[0], desc="Processing All Matches"):
         match_id = match_summary['matchId']
         home_team = match_summary['home_team']
         away_team = match_summary['away_team']
-        
+
         # Filter raw_events_df safely
         if 'matchId' in raw_events_df.columns:
             match_events_df = raw_events_df[raw_events_df['matchId'] == match_id].copy()
         else:
             print(f"  -> ⚠️ Warning: 'matchId' column not found in raw_events_df. Skipping match {match_id}")
-            continue # Skip this match if ID column is missing
+            continue
 
         if match_events_df.empty:
             print(f"  -> ℹ️ Info: No event data found for match {match_id}. Skipping.")
             continue
-            
+
         # Calculate and store stats for the current match
         match_data = calculate_match_data(match_events_df, home_team, away_team)
         all_match_data[match_id] = match_data
@@ -755,14 +847,14 @@ def main():
     all_teams = pd.concat([matches_summary_df['home_team'], matches_summary_df['away_team']]).unique()
     season_team_stats = {}
     for team in tqdm(all_teams, desc="Processing Season-Long Team Stats"):
-        team_corners = calculate_team_corner_stats(raw_events_df, matches_summary_df, team)
+        team_corners = calculate_team_corner_stats(raw_events_df.copy(), matches_summary_df, team) # Pass a copy
         if team_corners is not None:
-            season_team_stats[team] = {'corners': team_corners} 
-            
+            season_team_stats[team] = {'corners': team_corners}
+
     with open('season_team_stats.pkl', 'wb') as f:
         pickle.dump(season_team_stats, f)
     print("✅ All season-long team stats saved to 'season_team_stats.pkl'")
-    
+
     print("\n🎉 Data processing pipeline complete!")
 
 
