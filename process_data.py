@@ -111,11 +111,35 @@ def create_match_summary(events_df):
             except AttributeError:
                  match_date = "Invalid Date"
 
-        # Get score
-        goals_df = match_df[match_df.get('shot.isGoal') == True]
-        goal_counts = goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
-        home_score = goal_counts.get(home_team, 0)
-        away_score = goal_counts.get(away_team, 0)
+        # --- Updated Score Calculation ---
+        # 1. Goals from shots (excluding penalties if they are handled separately)
+        shot_goals_df = match_df[
+            (match_df.get('shot.isGoal') == True) &
+            (match_df.get('type.primary') != 'penalty') # Avoid double counting if penalties also have shot.isGoal
+        ].copy()
+        shot_goal_counts = shot_goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
+
+        # 2. Goals from penalties
+        penalty_goals_df = match_df[
+            (match_df.get('type.primary') == 'penalty') &
+            (match_df.get('shot.isGoal') == True) # Ensure the penalty was actually scored
+        ].copy()
+        penalty_goal_counts = penalty_goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
+
+        # 3. Own goals (scored *by* the opponent)
+        own_goals_df = match_df[match_df.get('type.primary') == 'own_goal'].copy()
+        # Count how many own goals each team conceded
+        own_goals_conceded_counts = own_goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
+
+        # Calculate final score
+        home_score = shot_goal_counts.get(home_team, 0) + \
+                     penalty_goal_counts.get(home_team, 0) + \
+                     own_goals_conceded_counts.get(away_team, 0) # Own goals *against* away team add to home score
+
+        away_score = shot_goal_counts.get(away_team, 0) + \
+                     penalty_goal_counts.get(away_team, 0) + \
+                     own_goals_conceded_counts.get(home_team, 0) # Own goals *against* home team add to away score
+        # --- End Updated Score Calculation ---
 
         matches_summary.append({
             'matchId': match_id, 'home_team': home_team, 'away_team': away_team, 'score': f"{home_score} - {away_score}"
