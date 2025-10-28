@@ -39,6 +39,107 @@ def load_data():
     except FileNotFoundError as e:
         st.error(f"❌ Error: A data file was not found. Please run `process_data.py` first. Missing file: {e.filename}")
         return None, None, None, None
+# ==============================================================================
+# 2. Trendline Viz
+# ==============================================================================
+
+# app.py (Add these functions)
+import scipy.stats # For linear regression trend line
+
+# --- NEW FUNCTION: Calculate Rolling xG ---
+@st.cache_data # Cache the results for performance
+def calculate_rolling_xg(season_events_df, matches_summary_df, team_name, window_size=10):
+    """Calculates rolling xG For and Conceded for a team over the season."""
+    
+    # 1. Filter for shots and ensure xG is numeric
+    shots_df = season_events_df[season_events_df.get('type.primary') == 'shot'].copy()
+    shots_df['shot.xg'] = pd.to_numeric(shots_df.get('shot.xg'), errors='coerce').fillna(0)
+    
+    # 2. Calculate xG per team per match
+    xg_per_match = shots_df.groupby(['matchId', 'team.name'])['shot.xg'].sum().unstack(fill_value=0)
+    
+    # 3. Merge with match summary to get dates and opponents
+    team_matches_df = matches_summary_df[
+        (matches_summary_df['home_team'] == team_name) | (matches_summary_df['away_team'] == team_name)
+    ].copy()
+    
+    # Ensure date is datetime, handle potential errors
+    team_matches_df['date'] = pd.to_datetime(team_matches_df['date'], errors='coerce')
+    team_matches_df.dropna(subset=['date'], inplace=True) # Remove matches with invalid dates
+    team_matches_df.sort_values(by='date', inplace=True)
+    
+    # Merge xG data
+    team_matches_df = team_matches_df.merge(xg_per_match, on='matchId', how='left').fillna(0)
+    
+    # 4. Determine xG For and xG Conceded
+    xg_for = []
+    xg_conceded = []
+    
+    for index, row in team_matches_df.iterrows():
+        home = row['home_team']
+        away = row['away_team']
+        # Use .get(column, 0) for safe access in case a team column doesn't exist after merge
+        home_xg = row.get(home, 0)
+        away_xg = row.get(away, 0)
+        
+        if home == team_name:
+            xg_for.append(home_xg)
+            xg_conceded.append(away_xg)
+        else: # Team must be away team
+            xg_for.append(away_xg)
+            xg_conceded.append(home_xg)
+            
+    team_matches_df['xg_for'] = xg_for
+    team_matches_df['xg_conceded'] = xg_conceded
+    
+    # 5. Calculate Rolling Averages
+    team_matches_df['xg_for_roll'] = team_matches_df['xg_for'].rolling(window=window_size, min_periods=1).mean()
+    team_matches_df['xg_conceded_roll'] = team_matches_df['xg_conceded'].rolling(window=window_size, min_periods=1).mean()
+    
+    # 6. Prepare data for trend line (numeric representation of dates)
+    # Convert dates to ordinal numbers for regression
+    team_matches_df['date_ordinal'] = team_matches_df['date'].apply(lambda date: date.toordinal())
+    
+    return team_matches_df[['date', 'date_ordinal', 'xg_for_roll', 'xg_conceded_roll']]
+
+
+# --- NEW FUNCTION: Plot Rolling xG ---
+def plot_rolling_xg(rolling_df, team_name):
+    """Generates the Matplotlib figure for rolling xG trends."""
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    fig.set_facecolor('#f5f1e9')
+    ax.set_facecolor('#f5f1e9')
+
+    # Plot rolling averages
+    ax.plot(rolling_df['date'], rolling_df['xg_for_roll'], marker='o', linestyle='-', color='#d62828', label=f'{team_name} xG For (Roll Avg)')
+    ax.plot(rolling_df['date'], rolling_df['xg_conceded_roll'], marker='o', linestyle='-', color='#003049', label=f'{team_name} xG Conceded (Roll Avg)')
+
+    # Calculate and plot trend lines (Linear Regression)
+    # Trend for xG For
+    valid_for = rolling_df.dropna(subset=['xg_for_roll']) # Drop NaNs for regression
+    if len(valid_for) > 1: # Need at least 2 points for a line
+        slope_for, intercept_for, _, _, _ = scipy.stats.linregress(valid_for['date_ordinal'], valid_for['xg_for_roll'])
+        ax.plot(rolling_df['date'], intercept_for + slope_for * rolling_df['date_ordinal'], linestyle='--', color='#f77f00', label='Trend (xG For)')
+
+    # Trend for xG Conceded
+    valid_conceded = rolling_df.dropna(subset=['xg_conceded_roll'])
+    if len(valid_conceded) > 1:
+        slope_con, intercept_con, _, _, _ = scipy.stats.linregress(valid_conceded['date_ordinal'], valid_conceded['xg_conceded_roll'])
+        ax.plot(rolling_df['date'], intercept_con + slope_con * rolling_df['date_ordinal'], linestyle='--', color='#fcbf49', label='Trend (xG Conceded)')
+
+    # Formatting
+    ax.set_title(f'{team_name} Rolling xG Trend', fontsize=16, weight='bold')
+    ax.set_ylabel('Expected Goals (xG)', fontsize=12)
+    ax.legend(loc='upper left')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    
+    # Improve date formatting on x-axis
+    fig.autofmt_xdate()
+    plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y-%m-%d'))
+    plt.gca().xaxis.set_major_locator(plt.matplotlib.dates.MonthLocator(interval=2)) # Show ticks every 2 months
+
+    return fig
 
 # ==============================================================================
 # 3. PLOTTING FUNCTIONS
@@ -182,12 +283,29 @@ if raw_events_df is not None:
         
         st.header(f"Season Report: {selected_team}")
         
-        # Season Shotmap
+        # Season Shotmap (Existing Code)
         st.subheader("Season Shot Map")
         st.pyplot(create_season_shotmap(raw_events_df, selected_team), use_container_width=True)
 
-        # Season-long tables (e.g., Corners)
+        # --- NEW: Rolling xG Trend Plot ---
+        st.subheader("Rolling xG Trend")
+        # Add a slider to control the rolling window size
+        rolling_window = st.slider("Select Rolling Window Size (Matches)", min_value=3, max_value=20, value=10, step=1)
+
+        # Calculate the rolling data
+        rolling_xg_df = calculate_rolling_xg(raw_events_df, matches_summary_df, selected_team, window_size=rolling_window)
+
+        if not rolling_xg_df.empty:
+            # Generate and display the plot
+            fig_rolling_xg = plot_rolling_xg(rolling_xg_df, selected_team)
+            st.pyplot(fig_rolling_xg, use_container_width=True)
+        else:
+            st.warning("Not enough match data available to calculate rolling xG trends.")
+        # --- END NEW PLOT ---
+
+        # Season-long tables (Existing Code)
         st.subheader("Season-Long Stats")
+        # ... (rest of your existing code for corner stats etc.) ...
         if selected_team in season_team_stats and 'corners' in season_team_stats[selected_team]:
             st.markdown("**Corner Kick Summary**")
             st.dataframe(season_team_stats[selected_team]['corners'])
