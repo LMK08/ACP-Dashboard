@@ -164,9 +164,9 @@ def create_season_shots_against_shotmap(season_events_df, matches_summary_df, te
     total_xg_against = round(pd.to_numeric(opponent_shots_df.get('shot.xg'), errors='coerce').sum(), 2)
     goals_against = opponent_shots_df[opponent_shots_df.get('shot.isGoal') == True].shape[0]
     xg_per_shot_against = round(total_xg_against / total_shots_against, 3) if total_shots_against > 0 else 0
-    subtitle = f"Liga 3 Portugal, 2025/26 | Total xGA: {total_xg_against} | Goals Against: {goals_against}"
+    subtitle = f"Liga 3 Portugal, 2025/26 | Total xGA: {total_xg_against} | Goals: {goals_against}"
 
-    ax_pitch.set_title(f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
+    ax_pitch.set_title(f"{team_to_analyze} Shots Against Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
 
     return fig
 
