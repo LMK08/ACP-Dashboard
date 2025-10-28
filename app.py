@@ -10,6 +10,7 @@ from matplotlib.lines import Line2D
 import matplotlib.colors as mcolors
 from matplotlib.table import Table
 import datetime # Add this line
+import matplotlib.gridspec as gridspec # Add this line
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
@@ -775,7 +776,7 @@ if raw_events_df is not None:
             fig_corner_right = plot_corner_analysis(raw_events_df, selected_team, 'right')
             st.pyplot(fig_corner_right, use_container_width=True)
         # --- END Corner Analysis ---
-        
+
         # ... (rest of your existing code for corner stats etc.) ...
         if selected_team in season_team_stats and 'corners' in season_team_stats[selected_team]:
             st.markdown("**Corner Kick Summary**")
