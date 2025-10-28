@@ -136,10 +136,10 @@ if raw_events_df is not None:
     if analysis_type == 'Match Analysis':
         # --- Match Selection ---
         # Create a more informative display name including Gameweek
-        matches_summary_df['display_name'] = matches_summary_df['Gameweek'] + " | " + matches_summary_df['home_team'] + " vs " + matches_summary_df['away_team'] + " (" + matches_summary_df['score'] + ")"
+        matches_summary_df['display_name'] = matches_summary_df['home_team'] + " vs " + matches_summary_df['away_team'] + " (" + matches_summary_df['score'] + ")"
         
         # Sort matches for the dropdown, potentially by Gameweek then date/ID
-        matches_summary_df.sort_values(by=['Gameweek', 'matchId'], inplace=True) # Ensure consistent order
+        matches_summary_df.sort_values(by=['matchId'], inplace=True)
                                  
         selected_match_display = st.sidebar.selectbox("Select a Match", matches_summary_df['display_name'])
 
