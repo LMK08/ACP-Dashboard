@@ -407,7 +407,7 @@ def create_season_shotmap(season_events_df, team_to_analyze):
 # ==============================================================================
 # 4. STREAMLIT APP UI
 # ==============================================================================
-st.title("⚽ Liga 3 Match & Season Analysis")
+st.title("Atlético CP Analysis")
 
 # --- Load Data ---
 raw_events_df, matches_summary_df, all_match_data, season_team_stats = load_data()
