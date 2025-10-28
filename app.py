@@ -209,9 +209,10 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     return stats_df_raw, stats_df_pct
 
 
-# --- NEW FUNCTION: Plot Radar Chart ---
-def plot_radar_chart(params, values_raw, values_pct, team_name, title, color):
-    """Generates a single radar chart figure using Matplotlib."""
+# app.py (Replace the existing plot_radar_chart function)
+
+def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league="Liga 3 Portugal", season="2025/26"):
+    """Generates a single radar chart figure using Matplotlib, matching the notebook style."""
 
     num_params = len(params)
     angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist()
@@ -219,7 +220,7 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title, color):
 
     plot_values_pct = values_pct + values_pct[:1] # Close the plot
 
-    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True)) # Adjusted size slightly
     fig.set_facecolor('#f5f1e9')
     ax.set_facecolor('#f5f1e9')
 
@@ -230,30 +231,58 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title, color):
     ax.spines['polar'].set_color('gray')
     ax.set_yticks([25, 50, 75])
     ax.set_yticklabels(["25th", "50th", "75th"], color="grey", size=10)
-    ax.set_rlabel_position(angles[0]* 1.1) # Move percentile labels slightly out
+    # R-label position might need slight adjustment depending on font size
+    ax.set_rlabel_position(angles[0] * 180/np.pi + 10) # Position radial labels slightly off axis 0
     ax.set_thetagrids([], []) # Hide default angle labels
+
+    # --- ADDED: Custom Label Distances (based on your examples) ---
+    # Combine distances from all your examples into one dictionary
+    LABEL_DISTANCES = {
+        # Offensive
+        "xG per Shot": 106, "Crosses": 107,
+        # Distribution
+        "Directness": 106, "Avg Out-of-Possession Action Height": 108,
+        "Avg In-Possession Action Height": 122, "Final 1/3 Entries": 117,
+        # Defensive
+        "Shots Against": 106, "xG per Shot Against": 108, "PPDA": 110,
+        "Quick Recoveries": 110,
+        # Default
+        "DEFAULT": 115 # Adjusted default slightly for potentially more labels
+    }
+
+    # Add parameter labels (percentiles) with custom distances
+    for angle, param, percentile in zip(angles[:-1], params, values_pct):
+        percentile_val = int(round(percentile, 0))
+        # --- UPDATED: Label format ---
+        label_text = f"{param}\n({percentile_val}th %-tile)"
+        distance = LABEL_DISTANCES.get(param, LABEL_DISTANCES["DEFAULT"])
+        # Adjust alignment based on angle to prevent overlap
+        ha_align = 'left' if (np.degrees(angle) > 100 and np.degrees(angle) < 260) else 'right'
+        ha_align = 'center' if (abs(np.degrees(angle) - 90) < 10 or abs(np.degrees(angle) - 270) < 10) else ha_align
+        ax.text(angle, distance, label_text, ha=ha_align, va='center', size=10) # Adjusted size slightly
 
     # Plot the data
     ax.plot(angles, plot_values_pct, color=color, linewidth=2, linestyle='solid')
-    ax.fill(angles, plot_values_pct, color=color, alpha=0.4)
+    # --- UPDATED: Alpha value ---
+    ax.fill(angles, plot_values_pct, color=color, alpha=0.6) # Matched alpha=0.6
 
-    # Add parameter labels (percentiles)
-    for angle, param, percentile in zip(angles[:-1], params, values_pct):
-        percentile_val = int(round(percentile, 0))
-        label_text = f"{param}\n({percentile_val}th)" # Simplified label
-        # Adjust label distance based on angle for better spacing
-        ha_align = 'left' if (angle > np.pi/2 and angle < 3*np.pi/2) else 'right'
-        ha_align = 'center' if (abs(angle - np.pi/2) < 0.1 or abs(angle - 3*np.pi/2) < 0.1) else ha_align
-        ax.text(angle, 115, label_text, ha=ha_align, va='center', size=10) # Adjusted distance and size
+    # --- ADDED: Raw value labels ---
+    for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
+         # Format raw value appropriately (handle percentages)
+         raw_display = f'{value_raw}%' if '%' in str(value_raw) else f'{value_raw}'
+         # Place raw value inside the radar near the 95th percentile line for consistency
+         ax.text(angle, 95, raw_display, ha='center', va='top', size=9, weight='bold', # Adjusted size
+                 bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
 
-    # Add raw value labels near the center
-    #for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
-        # Place raw value inside the radar near the percentile point
-       # ax.text(angle, value_pct - 5 , f'{value_raw}', ha='center', va='top', size=9, weight='bold',
-         #       bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
+    # --- ADDED: Footer text ---
+    footer_text = "@lucaskimball | Data via Wyscout | Values in parentheses are percentile rank vs. other Liga 3 teams"
+    fig.text(0.02, 0.02, footer_text, ha='left', va='bottom', fontsize=9, color='gray') # Adjusted size
 
-    ax.set_title(f"{team_name}\n{title}", size=16, weight='bold', pad=30)
-    
+    # --- UPDATED: Title formatting ---
+    report_date = datetime.date.today().strftime("%Y-%m-%d")
+    full_title = f"{team_name}\n{title_suffix} | {league} {season} (As of: {report_date})"
+    ax.set_title(full_title, size=18, weight='bold', pad=40) # Adjusted size and padding
+
     return fig
 
 
@@ -479,58 +508,80 @@ if raw_events_df is not None:
         if selected_team in stats_df_raw.index and selected_team in stats_df_pct.index:
             col_r1, col_r2, col_r3 = st.columns(3)
 
-            # Define parameters for each radar
+            # Define parameters for each radar (ensure these match columns in stats_df_raw)
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
-            distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Final 1/3 Entries', 'Losses'] # Removed height params
-            defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA']
+            distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Final 1/3 Entries', 'Losses']
+            defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA'] # Removed Quick Recoveries, Avg Recovery Dist for now if missing
 
             # Get data for the selected team
             team_stats_raw = stats_df_raw.loc[selected_team]
             team_stats_pct = stats_df_pct.loc[selected_team]
 
+            # Define league/season (can be dynamic later if needed)
+            current_league = "Liga 3 Portugal"
+            current_season = "2025/26"
+
             with col_r1:
                 st.markdown("**Offensive Radar**")
-                # Ensure all params exist before plotting
                 valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
                 if valid_offensive_params:
+                     # --- UPDATED CALL ---
                      fig_off = plot_radar_chart(
                          valid_offensive_params,
-                         team_stats_raw[valid_offensive_params].tolist(),
-                         team_stats_pct[valid_offensive_params].tolist(),
-                         selected_team, "Offensive Style", '#e60000' # Red
+                         team_stats_raw[valid_offensive_params].tolist(), # Raw values
+                         team_stats_pct[valid_offensive_params].tolist(), # Percentile values
+                         selected_team, "Offensive Radar", '#e60000', # Title Suffix, Color
+                         league=current_league, season=current_season # Pass league/season
                      )
                      st.pyplot(fig_off, use_container_width=True)
-                else:
-                     st.warning("Missing data for offensive radar.")
+                else: st.warning("Missing data for offensive radar.")
 
 
             with col_r2:
                 st.markdown("**Distribution Radar**")
                 valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
                 if valid_distribution_params:
-                    fig_dist = plot_radar_chart(
+                     # Format Ball Possession for raw display
+                     raw_dist_values = team_stats_raw[valid_distribution_params].tolist()
+                     poss_index = valid_distribution_params.index('Ball Possession') # Find index
+                     raw_dist_values[poss_index] = f"{raw_dist_values[poss_index]:.0f}%" # Add % sign
+
+                     # --- UPDATED CALL ---
+                     fig_dist = plot_radar_chart(
                         valid_distribution_params,
-                        team_stats_raw[valid_distribution_params].tolist(),
+                        raw_dist_values, # Use formatted raw values
                         team_stats_pct[valid_distribution_params].tolist(),
-                        selected_team, "Distribution Style", '#0077b6' # Blue
+                        selected_team, "Distribution Radar", '#0077b6', # Blue
+                        league=current_league, season=current_season
                     )
-                    st.pyplot(fig_dist, use_container_width=True)
-                else:
-                     st.warning("Missing data for distribution radar.")
+                     st.pyplot(fig_dist, use_container_width=True)
+                else: st.warning("Missing data for distribution radar.")
 
             with col_r3:
                 st.markdown("**Defensive Radar**")
                 valid_defensive_params = [p for p in defensive_params if p in team_stats_raw.index]
                 if valid_defensive_params:
-                    fig_def = plot_radar_chart(
+                     # Format Duel Win % for raw display
+                     raw_def_values = team_stats_raw[valid_defensive_params].tolist()
+                     try: # Add try-except in case columns aren't present
+                         aerial_idx = valid_defensive_params.index('Aerial Duel Win %')
+                         raw_def_values[aerial_idx] = f"{raw_def_values[aerial_idx]:.0f}%"
+                     except ValueError: pass # Ignore if column not found
+                     try:
+                         def_idx = valid_defensive_params.index('Defensive Duel Win %')
+                         raw_def_values[def_idx] = f"{raw_def_values[def_idx]:.0f}%"
+                     except ValueError: pass # Ignore if column not found
+
+                     # --- UPDATED CALL ---
+                     fig_def = plot_radar_chart(
                         valid_defensive_params,
-                        team_stats_raw[valid_defensive_params].tolist(),
+                        raw_def_values, # Use formatted raw values
                         team_stats_pct[valid_defensive_params].tolist(),
-                        selected_team, "Defensive Style", '#52A736' # Green
+                        selected_team, "Defensive Radar", '#52A736', # Green
+                        league=current_league, season=current_season
                     )
-                    st.pyplot(fig_def, use_container_width=True)
-                else:
-                     st.warning("Missing data for defensive radar.")
+                     st.pyplot(fig_def, use_container_width=True)
+                else: st.warning("Missing data for defensive radar.")
         else:
             st.warning(f"Could not find calculated radar statistics for {selected_team}.")
         # --- END RADARS ---
