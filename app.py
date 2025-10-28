@@ -9,6 +9,7 @@ from mplsoccer import Pitch
 from matplotlib.lines import Line2D
 import matplotlib.colors as mcolors
 from matplotlib.table import Table
+import datetime # Add this line
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
