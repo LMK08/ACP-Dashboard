@@ -73,27 +73,18 @@ def fetch_events(username, password, match_ids):
 # ==============================================================================
 
 def create_match_summary(events_df):
-    """Creates a summary DataFrame with details and REVERSED gameweek labels based on blocks of 10."""
-    print("Processing: Creating match summary...")
+    """Creates a summary DataFrame (no date, no gameweek)"""
+    print("Processing: Creating match summary (natural order, no date, no gameweek)...")
     matches_summary = []
     # Ensure 'matchId' exists before proceeding
     if 'matchId' not in events_df.columns:
         print("❌ Error: 'matchId' column not found in events data. Cannot create match summary.")
         return pd.DataFrame()
 
-    unique_match_ids = events_df['matchId'].unique()
+    # Get unique match IDs IN THE ORDER THEY APPEAR in the events_df
+    unique_match_ids = events_df.drop_duplicates(subset=['matchId'], keep='first')['matchId'].tolist()
 
-    try:
-        # Attempt numeric sort (assuming higher ID = later match)
-        numeric_ids = pd.to_numeric(unique_match_ids, errors='coerce')
-        valid_numeric_ids = numeric_ids[~np.isnan(numeric_ids)]
-        # Sort valid numeric IDs ASCENDINGLY (earliest first)
-        sorted_match_ids = sorted(valid_numeric_ids) if len(valid_numeric_ids) > 0 else unique_match_ids
-    except Exception as e:
-        print(f"Warning: Could not sort match IDs numerically ({e}). Using original order.")
-        sorted_match_ids = unique_match_ids
-
-    for match_id in tqdm(sorted_match_ids, desc="Summarizing Matches"):
+    for match_id in tqdm(unique_match_ids, desc="Summarizing Matches"): # Iterate in natural order
         match_df = events_df[events_df['matchId'] == match_id].copy()
         if match_df.empty: continue
 
@@ -101,48 +92,33 @@ def create_match_summary(events_df):
         if len(teams) < 2: continue
         home_team, away_team = teams[0], teams[1] # Assumes consistent order
 
-        # Get date
-        match_df['matchTimestamp'] = pd.to_datetime(match_df.get('matchTimestamp'), errors='coerce')
-        match_df.sort_values(by='matchTimestamp', inplace=True, na_position='last')
-        match_date = "Unknown Date"
-        if not match_df.empty and pd.notna(match_df['matchTimestamp'].iloc[0]):
-            try:
-                 match_date = match_df['matchTimestamp'].iloc[0].strftime('%Y-%m-%d')
-            except AttributeError:
-                 match_date = "Invalid Date"
+        home_score = 0
+        away_score = 0
 
-        # --- Updated Score Calculation ---
-        # 1. Goals from shots (excluding penalties if they are handled separately)
-        shot_goals_df = match_df[
-            (match_df.get('shot.isGoal') == True) &
-            (match_df.get('type.primary') != 'penalty') # Avoid double counting if penalties also have shot.isGoal
+        # --- Refined Score Calculation ---
+        goal_events = match_df[
+            ((match_df.get('type.primary') == 'shot') & (match_df.get('shot.isGoal') == True)) |
+            ((match_df.get('type.primary') == 'penalty') & (match_df.get('shot.isGoal') == True)) |
+            (match_df.get('type.primary') == 'own_goal')
         ].copy()
-        shot_goal_counts = shot_goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
 
-        # 2. Goals from penalties
-        penalty_goals_df = match_df[
-            (match_df.get('type.primary') == 'penalty') &
-            (match_df.get('shot.isGoal') == True) # Ensure the penalty was actually scored
-        ].copy()
-        penalty_goal_counts = penalty_goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
-
-        # 3. Own goals (scored *by* the opponent)
-        own_goals_df = match_df[match_df.get('type.primary') == 'own_goal'].copy()
-        # Count how many own goals each team conceded
-        own_goals_conceded_counts = own_goals_df.get('team.name', pd.Series(dtype='str')).value_counts()
-
-        # Calculate final score
-        home_score = shot_goal_counts.get(home_team, 0) + \
-                     penalty_goal_counts.get(home_team, 0) + \
-                     own_goals_conceded_counts.get(away_team, 0) # Own goals *against* away team add to home score
-
-        away_score = shot_goal_counts.get(away_team, 0) + \
-                     penalty_goal_counts.get(away_team, 0) + \
-                     own_goals_conceded_counts.get(home_team, 0) # Own goals *against* home team add to away score
-        # --- End Updated Score Calculation ---
+        if not goal_events.empty:
+            for index, goal in goal_events.iterrows():
+                event_type = goal.get('type.primary')
+                event_team = goal.get('team.name')
+                if event_type == 'own_goal':
+                    if event_team == home_team: away_score += 1
+                    elif event_team == away_team: home_score += 1
+                else:
+                    if event_team == home_team: home_score += 1
+                    elif event_team == away_team: away_score += 1
+        # --- End Refined Score Calculation ---
 
         matches_summary.append({
-            'matchId': match_id, 'home_team': home_team, 'away_team': away_team, 'score': f"{home_score} - {away_score}"
+            'matchId': match_id,
+            'home_team': home_team,
+            'away_team': away_team,
+            'score': f"{home_score} - {away_score}"
         })
 
     if not matches_summary:
@@ -150,19 +126,9 @@ def create_match_summary(events_df):
         return pd.DataFrame()
 
     matches_summary_df = pd.DataFrame(matches_summary)
-    # Ensure DataFrame index is reset if sorting based on matchId caused gaps
-    matches_summary_df.reset_index(drop=True, inplace=True)
+    # The DataFrame index (0 to N) now reflects the natural order
 
-    # --- Gameweek Calculation Logic (Blocks of 10 from the end) ---
-    print("Calculating Gameweeks (blocks of 10, reversed)...")
-    n_matches = len(matches_summary_df)
-    matches_per_gw = 10
-
-    # Calculate gameweek number based on index from the END
-    # // is integer division. (n_matches - 1 - index) gives position from end (0-based)
-    gameweek_numbers = ((n_matches - 1 - matches_summary_df.index) // matches_per_gw) + 1
-    matches_summary_df['Gameweek'] = [f"GW{num}" for num in gameweek_numbers]
-    # --- End Gameweek Logic ---
+    # --- Gameweek Calculation Logic REMOVED ---
 
     return matches_summary_df
 
