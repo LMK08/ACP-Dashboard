@@ -103,41 +103,70 @@ def calculate_rolling_xg(season_events_df, matches_summary_df, team_name, window
     return team_matches_df[['date', 'date_ordinal', 'xg_for_roll', 'xg_conceded_roll']]
 
 
-# --- NEW FUNCTION: Plot Rolling xG ---
-def plot_rolling_xg(rolling_df, team_name):
-    """Generates the Matplotlib figure for rolling xG trends."""
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
+# app.py (Add this function)
+
+# --- NEW FUNCTION: Plot Season Shots AGAINST Map ---
+def create_season_shots_against_shotmap(season_events_df, matches_summary_df, team_to_analyze):
+    """Generates a Matplotlib figure for a full season shots AGAINST map."""
+
+    # 1. Identify opponent shots
+    # Get matches involving the team
+    team_match_ids = matches_summary_df[
+        (matches_summary_df['home_team'] == team_to_analyze) | (matches_summary_df['away_team'] == team_to_analyze)
+    ]['matchId'].unique()
+
+    # Filter events for those matches
+    relevant_events = season_events_df[season_events_df['matchId'].isin(team_match_ids)]
+
+    # Filter for shots NOT taken by the team_to_analyze (i.e., opponent shots)
+    opponent_shots_df = relevant_events[
+        (relevant_events.get('type.primary') == 'shot') &
+        (relevant_events.get('team.name') != team_to_analyze) &
+        (~relevant_events.get('type.secondary','').astype(str).str.contains('penalty', na=False)) # Exclude penalties
+    ].copy().reset_index(drop=True)
+
+    if opponent_shots_df.empty:
+        print(f"Debug: No opponent shots found for {team_to_analyze}") # Add print for debugging
+        return None # Return None if no opponent shots found
+
+    # 2. Create the plot (Similar to the 'Shots For' map)
+    fig = plt.figure(figsize=(12, 12))
     fig.set_facecolor('#f5f1e9')
-    ax.set_facecolor('#f5f1e9')
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True)
+    # Flip coordinates if needed - Wyscout usually has shots going left-to-right
+    # If shots appear on wrong half, invert pitch.draw() or coordinates
+    ax_pitch = fig.add_subplot()
+    pitch.draw(ax=ax_pitch)
 
-    # Plot rolling averages
-    ax.plot(rolling_df['date'], rolling_df['xg_for_roll'], marker='o', linestyle='-', color='#d62828', label=f'{team_name} xG For (Roll Avg)')
-    ax.plot(rolling_df['date'], rolling_df['xg_conceded_roll'], marker='o', linestyle='-', color='#003049', label=f'{team_name} xG Conceded (Roll Avg)')
+    # 3. Plotting logic (using same colormap)
+    XG_MAX = 0.8
+    colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]
+    nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
 
-    # Calculate and plot trend lines (Linear Regression)
-    # Trend for xG For
-    valid_for = rolling_df.dropna(subset=['xg_for_roll']) # Drop NaNs for regression
-    if len(valid_for) > 1: # Need at least 2 points for a line
-        slope_for, intercept_for, _, _, _ = scipy.stats.linregress(valid_for['date_ordinal'], valid_for['xg_for_roll'])
-        ax.plot(rolling_df['date'], intercept_for + slope_for * rolling_df['date_ordinal'], linestyle='--', color='#f77f00', label='Trend (xG For)')
+    for index, shot in opponent_shots_df.iterrows():
+        # Wyscout coordinates: (0,0) bottom-left, (100,100) top-right. Shots usually L->R.
+        # Plotting on half pitch needs coordinates relative to attacking goal (usually right side)
+        x, y = shot.get('location.x'), shot.get('location.y')
+        xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
+        is_goal = shot.get('shot.isGoal') == True
 
-    # Trend for xG Conceded
-    valid_conceded = rolling_df.dropna(subset=['xg_conceded_roll'])
-    if len(valid_conceded) > 1:
-        slope_con, intercept_con, _, _, _ = scipy.stats.linregress(valid_conceded['date_ordinal'], valid_conceded['xg_conceded_roll'])
-        ax.plot(rolling_df['date'], intercept_con + slope_con * rolling_df['date_ordinal'], linestyle='--', color='#fcbf49', label='Trend (xG Conceded)')
+        # Skip if coordinates or xG are invalid
+        if pd.isna(x) or pd.isna(y) or pd.isna(xg):
+            continue
 
-    # Formatting
-    ax.set_title(f'{team_name} Rolling xG Trend', fontsize=16, weight='bold')
-    ax.set_ylabel('Expected Goals (xG)', fontsize=12)
-    ax.legend(loc='upper left')
-    ax.grid(True, linestyle='--', alpha=0.6)
-    
-    # Improve date formatting on x-axis
-    fig.autofmt_xdate()
-    plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y-%m-%d'))
-    plt.gca().xaxis.set_major_locator(plt.matplotlib.dates.MonthLocator(interval=2)) # Show ticks every 2 months
+        color = cmap(min(xg / XG_MAX, 1.0))
+        edge_color = 'green' if is_goal else 'black' # Simpler edge: goal or not goal
+        pitch.scatter(x, y, s=150, facecolor=color, edgecolor=edge_color, linewidth=1.5, ax=ax_pitch, zorder=3, alpha=0.7)
+
+    # 4. Titles and Stats
+    total_shots_against = len(opponent_shots_df)
+    total_xg_against = round(pd.to_numeric(opponent_shots_df.get('shot.xg'), errors='coerce').sum(), 2)
+    goals_against = opponent_shots_df[opponent_shots_df.get('shot.isGoal') == True].shape[0]
+    xg_per_shot_against = round(total_xg_against / total_shots_against, 3) if total_shots_against > 0 else 0
+    subtitle = f"Liga 3 Portugal, 2025/26 | Total xGA: {total_xg_against} | Goals Against: {goals_against}"
+
+    ax_pitch.set_title(f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
 
     return fig
 
@@ -280,28 +309,34 @@ if raw_events_df is not None:
         # --- Team Selection ---
         all_teams = sorted(pd.concat([matches_summary_df['home_team'], matches_summary_df['away_team']]).unique())
         selected_team = st.sidebar.selectbox("Select a Team", all_teams)
-        
+
         st.header(f"Season Report: {selected_team}")
-        
-        # Season Shotmap (Existing Code)
-        st.subheader("Season Shot Map")
-        st.pyplot(create_season_shotmap(raw_events_df, selected_team), use_container_width=True)
 
-        # --- NEW: Rolling xG Trend Plot ---
+        # --- NEW: Side-by-Side Shot Maps ---
+        st.subheader("Season Shot Maps (Non-Penalty)")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown(f"**Shots FOR {selected_team}**")
+            fig_shots_for = create_season_shotmap(raw_events_df, selected_team)
+            if fig_shots_for:
+                st.pyplot(fig_shots_for, use_container_width=True)
+            else:
+                st.warning("No shots found FOR this team.")
+
+        with col2:
+            st.markdown(f"**Shots AGAINST {selected_team}**")
+            # Pass matches_summary_df to the new function
+            fig_shots_against = create_season_shots_against_shotmap(raw_events_df, matches_summary_df, selected_team)
+            if fig_shots_against:
+                st.pyplot(fig_shots_against, use_container_width=True)
+            else:
+                st.warning("No shots found AGAINST this team.")
+        # --- END SHOT MAPS ---
+
+
         st.subheader("Rolling xG Trend")
-        # Add a slider to control the rolling window size
-        rolling_window = st.slider("Select Rolling Window Size (Matches)", min_value=3, max_value=20, value=10, step=1)
-
-        # Calculate the rolling data
-        rolling_xg_df = calculate_rolling_xg(raw_events_df, matches_summary_df, selected_team, window_size=rolling_window)
-
-        if not rolling_xg_df.empty:
-            # Generate and display the plot
-            fig_rolling_xg = plot_rolling_xg(rolling_xg_df, selected_team)
-            st.pyplot(fig_rolling_xg, use_container_width=True)
-        else:
-            st.warning("Not enough match data available to calculate rolling xG trends.")
-        # --- END NEW PLOT ---
+      
 
         # Season-long tables (Existing Code)
         st.subheader("Season-Long Stats")
