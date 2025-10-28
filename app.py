@@ -334,8 +334,6 @@ if raw_events_df is not None:
                 st.warning("No shots found AGAINST this team.")
         # --- END SHOT MAPS ---
 
-
-        st.subheader("Rolling xG Trend")
       
 
         # Season-long tables (Existing Code)
