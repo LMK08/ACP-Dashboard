@@ -44,66 +44,220 @@ def load_data():
 # ==============================================================================
 
 # app.py (Add these functions)
-import scipy.stats # For linear regression trend line
+import scipy.stats # For percentile ranks if needed, though pandas rank is used
 
-# --- NEW FUNCTION: Calculate Rolling xG ---
+# --- NEW FUNCTION: Calculate Season Team Stats (Combined for Radars) ---
 @st.cache_data # Cache the results for performance
-def calculate_rolling_xg(season_events_df, matches_summary_df, team_name, window_size=10):
-    """Calculates rolling xG For and Conceded for a team over the season."""
+def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
+    """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars."""
     
-    # 1. Filter for shots and ensure xG is numeric
-    shots_df = season_events_df[season_events_df.get('type.primary') == 'shot'].copy()
-    shots_df['shot.xg'] = pd.to_numeric(shots_df.get('shot.xg'), errors='coerce').fillna(0)
+    print("Calculating team radar stats...") # Add print for debugging cache
+    all_teams_stats = {}
     
-    # 2. Calculate xG per team per match
-    xg_per_match = shots_df.groupby(['matchId', 'team.name'])['shot.xg'].sum().unstack(fill_value=0)
+    # --- Data Prep ---
+    teams = season_events_df['team.name'].unique()
+    # Ensure matchId exists before nunique
+    matches_played = season_events_df.groupby('team.name')['matchId'].nunique() if 'matchId' in season_events_df.columns else pd.Series(dtype='int')
+
+    # Convert relevant columns safely
+    season_events_df['possession.duration_sec'] = pd.to_numeric(season_events_df.get('possession.duration', pd.Series(dtype='str')).str.replace('s', ''), errors='coerce')
+    season_events_df['location.x'] = pd.to_numeric(season_events_df.get('location.x'), errors='coerce')
+    season_events_df['location.y'] = pd.to_numeric(season_events_df.get('location.y'), errors='coerce')
+    season_events_df['pass.endLocation.x'] = pd.to_numeric(season_events_df.get('pass.endLocation.x'), errors='coerce')
+    season_events_df['pass.endLocation.y'] = pd.to_numeric(season_events_df.get('pass.endLocation.y'), errors='coerce')
+    season_events_df['pass.length'] = pd.to_numeric(season_events_df.get('pass.length'), errors='coerce')
+    season_events_df['shot.xg'] = pd.to_numeric(season_events_df.get('shot.xg'), errors='coerce')
+
+    # Pre-calculate possession time and losses (from distribution radar logic)
+    total_possession_time_per_team = season_events_df.drop_duplicates(subset='possession.id').groupby('possession.team.name')['possession.duration_sec'].sum()
+    league_total_in_play_time = total_possession_time_per_team.sum()
     
-    # 3. Merge with match summary to get dates and opponents
-    team_matches_df = matches_summary_df[
-        (matches_summary_df['home_team'] == team_name) | (matches_summary_df['away_team'] == team_name)
-    ].copy()
-    
-    # Ensure date is datetime, handle potential errors
-    team_matches_df['date'] = pd.to_datetime(team_matches_df['date'], errors='coerce')
-    team_matches_df.dropna(subset=['date'], inplace=True) # Remove matches with invalid dates
-    team_matches_df.sort_values(by='date', inplace=True)
-    
-    # Merge xG data
-    team_matches_df = team_matches_df.merge(xg_per_match, on='matchId', how='left').fillna(0)
-    
-    # 4. Determine xG For and xG Conceded
-    xg_for = []
-    xg_conceded = []
-    
-    for index, row in team_matches_df.iterrows():
-        home = row['home_team']
-        away = row['away_team']
-        # Use .get(column, 0) for safe access in case a team column doesn't exist after merge
-        home_xg = row.get(home, 0)
-        away_xg = row.get(away, 0)
+    losses_df = pd.DataFrame() # Initialize empty
+    if 'possession.id' in season_events_df.columns:
+        season_events_df['next_possession.id'] = season_events_df['possession.id'].shift(-1)
+        possession_changes = season_events_df[season_events_df['possession.id'] != season_events_df['next_possession.id']]
+        losses_df = possession_changes[possession_changes.get('infraction.type') != 'foul_suffered'].copy()
+
+    # Pre-calculate opponent events for defensive stats
+    # Create opponent name column if it doesn't exist (handle potential merge issues)
+    if 'opponentTeam.name' not in season_events_df.columns and 'matchId' in season_events_df.columns:
+         temp_summary = matches_summary_df[['matchId', 'home_team', 'away_team']].copy()
+         temp_summary.rename(columns={'home_team':'ht', 'away_team':'at'}, inplace=True) # Short names to avoid conflict
+         season_events_df = season_events_df.merge(temp_summary, on='matchId', how='left')
+         season_events_df['opponentTeam.name'] = np.where(season_events_df['team.name'] == season_events_df['ht'], season_events_df['at'], season_events_df['ht'])
+         season_events_df.drop(columns=['ht', 'at'], inplace=True) # Drop temporary columns
+
+
+    # --- Loop Through Teams ---
+    for team in teams:
+        team_events = season_events_df[season_events_df.get('team.name') == team]
+        # Ensure opponentTeam.name exists before filtering
+        opponent_events = season_events_df[season_events_df.get('opponentTeam.name') == team] if 'opponentTeam.name' in season_events_df.columns else pd.DataFrame()
+
+        games = matches_played.get(team, 0)
+        if games == 0: continue
+
+        # --- Offensive Stats ---
+        team_shots = team_events[team_events.get('type.primary') == 'shot']
+        shots = team_shots.shape[0] / games
+        goals = team_shots[team_shots.get('shot.isGoal') == True].shape[0] / games
+        xg = team_shots['shot.xg'].sum() / games
+        xg_per_shot = xg / shots if shots > 0 else 0
+        PENALTY_AREA_X=83; PENALTY_AREA_Y1, PENALTY_AREA_Y2 = (21, 79)
+        actions_in_box = team_events[(team_events['location.x'].fillna(0) >= PENALTY_AREA_X) & (team_events['location.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
+        team_passes = team_events[team_events.get('type.primary') == 'pass']
+        passes_into_box = team_passes[(team_passes['pass.endLocation.x'].fillna(0) >= PENALTY_AREA_X) & (team_passes['pass.endLocation.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
+        crosses = team_passes[team_passes.get('type.secondary','').astype(str).str.contains('cross', na=False)].shape[0] / games
+        team_duels_off = team_events[team_events.get('type.primary') == 'duel']
+        dribbles = team_duels_off[team_duels_off.get('groundDuel.takeOn') == True].shape[0] / games
+
+        # --- Distribution Stats ---
+        passes_per_match = team_passes.shape[0] / games
+        # Progressive Passes (using simpler definition for broader compatibility)
+        prog_cond1 = (team_passes['location.x'].fillna(101) < 60) & (team_passes['pass.endLocation.x'].fillna(0) >= 60)
+        prog_cond2 = (team_passes['location.x'].fillna(0) >= 60) & (team_passes['pass.endLocation.x'].fillna(0) >= 60) & (team_passes['pass.length'].fillna(0) >= 10)
+        progressive_passes = team_passes[prog_cond1 | prog_cond2].shape[0] / games
         
-        if home == team_name:
-            xg_for.append(home_xg)
-            xg_conceded.append(away_xg)
-        else: # Team must be away team
-            xg_for.append(away_xg)
-            xg_conceded.append(home_xg)
-            
-    team_matches_df['xg_for'] = xg_for
-    team_matches_df['xg_conceded'] = xg_conceded
-    
-    # 5. Calculate Rolling Averages
-    team_matches_df['xg_for_roll'] = team_matches_df['xg_for'].rolling(window=window_size, min_periods=1).mean()
-    team_matches_df['xg_conceded_roll'] = team_matches_df['xg_conceded'].rolling(window=window_size, min_periods=1).mean()
-    
-    # 6. Prepare data for trend line (numeric representation of dates)
-    # Convert dates to ordinal numbers for regression
-    team_matches_df['date_ordinal'] = team_matches_df['date'].apply(lambda date: date.toordinal())
-    
-    return team_matches_df[['date', 'date_ordinal', 'xg_for_roll', 'xg_conceded_roll']]
+        # Directness (Simplified - requires pass.length)
+        directness = team_passes['pass.length'].mean() # Using average pass length as proxy
+
+        team_possession_sec = total_possession_time_per_team.get(team, 0)
+        ball_possession_pct = (team_possession_sec / league_total_in_play_time) * 100 if league_total_in_play_time > 0 else 0 # Corrected %
+
+        final_third_entries = 0
+        if 'possession.id' in team_events.columns and 'location.x' in team_events.columns:
+            try:
+                possessions_grouped = team_events.groupby('possession.id')[['location.x']]
+                valid_groups = possessions_grouped.filter(lambda x: not x['location.x'].isna().all())
+                if not valid_groups.empty:
+                     final_third_entries_series = valid_groups.groupby('possession.id')['location.x'].transform(lambda x: x.min() < 66.6 and x.max() >= 66.6)
+                     final_third_entries = final_third_entries_series[final_third_entries_series].index.get_level_values('possession.id').nunique() / games
+            except Exception: final_third_entries = 0 # Handle potential errors
+
+        avg_in_possession_height = team_events['location.x'].mean() # Simplified
+        avg_out_of_possession_height = 0 # Placeholder - requires more complex opponent phase logic
+
+        losses = losses_df[losses_df.get('team.name') == team].shape[0] / games if not losses_df.empty else 0
+
+        # --- Defensive Stats ---
+        goals_against=0; xg_against=0; shots_against=0; xg_per_shot_against=0;
+        aerial_duel_win_pct=0; defensive_duel_win_pct=0; interceptions=0; fouls=0; ppda=np.inf;
+        
+        if not opponent_events.empty:
+            opponent_shots = opponent_events[opponent_events.get('type.primary') == 'shot']
+            goals_against = opponent_shots[opponent_shots.get('shot.isGoal') == True].shape[0] / games
+            xg_against = opponent_shots['shot.xg'].sum() / games
+            shots_against = opponent_shots.shape[0] / games
+            xg_per_shot_against = xg_against / shots_against if shots_against > 0 else 0
+
+        team_duels_def = team_events[team_events.get('type.primary') == 'duel']
+        aerial_duels = team_duels_def[team_duels_def.get('type.secondary','').astype(str).str.contains('aerial', na=False)]
+        total_aerial_duels = aerial_duels.shape[0]
+        won_aerial_duels_count = aerial_duels[aerial_duels.get('aerialDuel.firstTouch') == True].shape[0]
+        aerial_duel_win_pct = (won_aerial_duels_count / total_aerial_duels) * 100 if total_aerial_duels > 0 else 0
+
+        defensive_duels = team_duels_def[team_duels_def.get('groundDuel.duelType') == 'defensive_duel']
+        total_defensive_duels = defensive_duels.shape[0]
+        won_defensive_duels_count = defensive_duels[(defensive_duels.get('groundDuel.recoveredPossession') == True) | (defensive_duels.get('groundDuel.stoppedProgress') == True)].shape[0]
+        defensive_duel_win_pct = (won_defensive_duels_count / total_defensive_duels) * 100 if total_defensive_duels > 0 else 0
+        
+        interceptions = team_events[team_events.get('type.primary') == 'interception'].shape[0] / games
+        fouls = team_events[team_events.get('type.primary') == 'infraction'].shape[0] / games
+
+        # PPDA
+        in_high_press_zone = season_events_df['location.x'].fillna(0) >= 40
+        opponent_passes_df = opponent_events[(opponent_events.get('type.primary') == 'pass') & in_high_press_zone[opponent_events.index]] # Align index for boolean mask
+        team_def_actions_df = team_events[in_high_press_zone[team_events.index]] # Align index
+        def_actions_for_ppda = team_def_actions_df[team_def_actions_df.get('type.primary').isin(['infraction', 'interception', 'duel'])].shape[0]
+        ppda = opponent_passes_df.shape[0] / def_actions_for_ppda if def_actions_for_ppda > 0 else np.inf # Use inf for zero actions
+
+        # Store all calculated stats
+        all_teams_stats[team] = {
+            # Offensive
+            'Goals': goals, 'xG': xg, 'xG per Shot': xg_per_shot, 'Shots': shots,
+            'Actions in Box': actions_in_box, 'Passes into Box': passes_into_box,
+            'Crosses': crosses, 'Dribbles': dribbles,
+            # Distribution
+            'Passes': passes_per_match, 'Progressive Passes': progressive_passes,
+            'Directness': directness, 'Ball Possession': ball_possession_pct,
+            'Final 1/3 Entries': final_third_entries,
+            #'Avg In-Possession Action Height': avg_in_possession_height, # Simplified/removed
+            #'Avg Out-of-Possession Action Height': avg_out_of_possession_height, # Simplified/removed
+            'Losses': losses,
+            # Defensive
+            'Goals Against': goals_against, 'xG Against': xg_against,
+            'xG per Shot Against': xg_per_shot_against, 'Shots Against': shots_against,
+            'Aerial Duel Win %': aerial_duel_win_pct, 'Defensive Duel Win %': defensive_duel_win_pct,
+            'Interceptions': interceptions, 'Fouls': fouls, 'PPDA': ppda,
+        }
+
+    # --- Convert to DataFrame ---
+    stats_df_raw = pd.DataFrame.from_dict(all_teams_stats, orient='index').fillna(0).round(2)
+    # Replace inf PPDA with a high number or NaN if preferred for ranking
+    stats_df_raw.replace([np.inf, -np.inf], 999, inplace=True) # Replace inf with high value
+
+    # --- Calculate Percentiles ---
+    stats_df_pct = stats_df_raw.copy()
+    # Invert metrics where lower is better before ranking
+    metrics_to_invert_pct = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses']
+    stats_df_pct[metrics_to_invert_pct] = -stats_df_pct[metrics_to_invert_pct]
+
+    for col in stats_df_pct.columns:
+        # Use pandas rank method for percentiles
+        stats_df_pct[col] = stats_df_pct[col].rank(pct=True) * 100
+
+    return stats_df_raw, stats_df_pct
 
 
-# app.py (Add this function)
+# --- NEW FUNCTION: Plot Radar Chart ---
+def plot_radar_chart(params, values_raw, values_pct, team_name, title, color):
+    """Generates a single radar chart figure using Matplotlib."""
+
+    num_params = len(params)
+    angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist()
+    angles += angles[:1] # Close the plot
+
+    plot_values_pct = values_pct + values_pct[:1] # Close the plot
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    fig.set_facecolor('#f5f1e9')
+    ax.set_facecolor('#f5f1e9')
+
+    # Plot grid and labels
+    ax.set_xticks(angles[:-1])
+    ax.set_ylim(0, 100)
+    ax.grid(color='gray', linestyle='--', linewidth=0.5)
+    ax.spines['polar'].set_color('gray')
+    ax.set_yticks([25, 50, 75])
+    ax.set_yticklabels(["25th", "50th", "75th"], color="grey", size=10)
+    ax.set_rlabel_position(angles[0]* 1.1) # Move percentile labels slightly out
+    ax.set_thetagrids([], []) # Hide default angle labels
+
+    # Plot the data
+    ax.plot(angles, plot_values_pct, color=color, linewidth=2, linestyle='solid')
+    ax.fill(angles, plot_values_pct, color=color, alpha=0.4)
+
+    # Add parameter labels (percentiles)
+    for angle, param, percentile in zip(angles[:-1], params, values_pct):
+        percentile_val = int(round(percentile, 0))
+        label_text = f"{param}\n({percentile_val}th)" # Simplified label
+        # Adjust label distance based on angle for better spacing
+        ha_align = 'left' if (angle > np.pi/2 and angle < 3*np.pi/2) else 'right'
+        ha_align = 'center' if (abs(angle - np.pi/2) < 0.1 or abs(angle - 3*np.pi/2) < 0.1) else ha_align
+        ax.text(angle, 115, label_text, ha=ha_align, va='center', size=10) # Adjusted distance and size
+
+    # Add raw value labels near the center
+    #for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
+        # Place raw value inside the radar near the percentile point
+       # ax.text(angle, value_pct - 5 , f'{value_raw}', ha='center', va='top', size=9, weight='bold',
+         #       bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
+
+    ax.set_title(f"{team_name}\n{title}", size=16, weight='bold', pad=30)
+    
+    return fig
+
+
+
 
 # --- NEW FUNCTION: Plot Season Shots AGAINST Map ---
 def create_season_shots_against_shotmap(season_events_df, matches_summary_df, team_to_analyze):
@@ -311,6 +465,75 @@ if raw_events_df is not None:
         selected_team = st.sidebar.selectbox("Select a Team", all_teams)
 
         st.header(f"Season Report: {selected_team}")
+
+        # --- Calculate Radar Stats (Run Once) ---
+        # Ensure raw_events_df and matches_summary_df are available
+        if raw_events_df is not None and matches_summary_df is not None:
+             stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
+        else:
+             stats_df_raw, stats_df_pct = pd.DataFrame(), pd.DataFrame() # Empty DFs if data failed load
+
+        # --- NEW: Radar Charts ---
+        st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
+
+        if selected_team in stats_df_raw.index and selected_team in stats_df_pct.index:
+            col_r1, col_r2, col_r3 = st.columns(3)
+
+            # Define parameters for each radar
+            offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
+            distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Final 1/3 Entries', 'Losses'] # Removed height params
+            defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA']
+
+            # Get data for the selected team
+            team_stats_raw = stats_df_raw.loc[selected_team]
+            team_stats_pct = stats_df_pct.loc[selected_team]
+
+            with col_r1:
+                st.markdown("**Offensive Radar**")
+                # Ensure all params exist before plotting
+                valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
+                if valid_offensive_params:
+                     fig_off = plot_radar_chart(
+                         valid_offensive_params,
+                         team_stats_raw[valid_offensive_params].tolist(),
+                         team_stats_pct[valid_offensive_params].tolist(),
+                         selected_team, "Offensive Style", '#e60000' # Red
+                     )
+                     st.pyplot(fig_off, use_container_width=True)
+                else:
+                     st.warning("Missing data for offensive radar.")
+
+
+            with col_r2:
+                st.markdown("**Distribution Radar**")
+                valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
+                if valid_distribution_params:
+                    fig_dist = plot_radar_chart(
+                        valid_distribution_params,
+                        team_stats_raw[valid_distribution_params].tolist(),
+                        team_stats_pct[valid_distribution_params].tolist(),
+                        selected_team, "Distribution Style", '#0077b6' # Blue
+                    )
+                    st.pyplot(fig_dist, use_container_width=True)
+                else:
+                     st.warning("Missing data for distribution radar.")
+
+            with col_r3:
+                st.markdown("**Defensive Radar**")
+                valid_defensive_params = [p for p in defensive_params if p in team_stats_raw.index]
+                if valid_defensive_params:
+                    fig_def = plot_radar_chart(
+                        valid_defensive_params,
+                        team_stats_raw[valid_defensive_params].tolist(),
+                        team_stats_pct[valid_defensive_params].tolist(),
+                        selected_team, "Defensive Style", '#52A736' # Green
+                    )
+                    st.pyplot(fig_def, use_container_width=True)
+                else:
+                     st.warning("Missing data for defensive radar.")
+        else:
+            st.warning(f"Could not find calculated radar statistics for {selected_team}.")
+        # --- END RADARS ---
 
         # --- NEW: Side-by-Side Shot Maps ---
         st.subheader("Season Shot Maps (Non-Penalty)")
