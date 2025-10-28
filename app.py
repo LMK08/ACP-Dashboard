@@ -210,6 +210,155 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     return stats_df_raw, stats_df_pct
 
 
+# app.py (Add this function)
+
+# --- NEW FUNCTION: Plot Corner Analysis (One Side) ---
+def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3 Portugal", season="2025/26"):
+    """Generates a Matplotlib figure for corner analysis (pitch + table) for one side."""
+
+    # --- Helper to categorize corner ---
+    def categorize_corner(row, side):
+        end_x = row.get('pass.endLocation.x')
+        end_y = row.get('pass.endLocation.y')
+        # Use pass length if available, otherwise estimate distance for short check
+        pass_len = row.get('pass.length')
+        if pd.isna(pass_len) and pd.notna(row.get('location.x')): # Estimate length if missing
+             start_x = row.get('location.x', 0)
+             start_y = row.get('location.y', 0)
+             PITCH_LENGTH_M, PITCH_WIDTH_M = 105.0, 68.0
+             pass_len = np.sqrt(((end_x - start_x) * (PITCH_LENGTH_M / 100.0))**2 + ((end_y - start_y) * (PITCH_WIDTH_M / 100.0))**2)
+
+        if pd.isna(end_x) or pd.isna(end_y): return 'Other' # Cannot categorize without end location
+
+        PENALTY_AREA_X = 83
+        SIX_YARD_BOX_Y1, SIX_YARD_BOX_Y2 = (36, 64) # Wyscout 6y box y-coords (approx)
+        SHORT_CORNER_MAX_DIST_FROM_START = 20 # Threshold in meters
+
+        # Check if short based on estimated distance or if ends outside PA
+        if end_x < PENALTY_AREA_X or (pd.notna(pass_len) and pass_len < SHORT_CORNER_MAX_DIST_FROM_START):
+            return 'Short'
+
+        third_of_box = (SIX_YARD_BOX_Y2 - SIX_YARD_BOX_Y1) / 3
+        near_thresh = SIX_YARD_BOX_Y1 + third_of_box
+        far_thresh = SIX_YARD_BOX_Y2 - third_of_box
+
+        if side == 'left': # Corner taken from y < 50
+            if end_y < near_thresh: return 'Near Post'
+            elif end_y > far_thresh: return 'Far Post'
+            else: return 'Middle'
+        elif side == 'right': # Corner taken from y > 50
+             if end_y > far_thresh: return 'Near Post' # Near post is high Y for right corner
+             elif end_y < near_thresh: return 'Far Post' # Far post is low Y for right corner
+             else: return 'Middle'
+        return 'Other'
+
+    # --- Filter Data ---
+    if side == 'left':
+        side_corners_df = season_events_df[
+            (season_events_df.get('team.name') == team_to_analyze) &
+            (season_events_df.get('type.primary') == 'corner') &
+            (season_events_df.get('location.y', 101) < 50) # Location y < 50 for left
+        ].copy()
+    else: # Right side
+        side_corners_df = season_events_df[
+            (season_events_df.get('team.name') == team_to_analyze) &
+            (season_events_df.get('type.primary') == 'corner') &
+            (season_events_df.get('location.y', -1) >= 50) # Location y >= 50 for right
+        ].copy()
+
+    if side_corners_df.empty:
+        # Return a placeholder figure indicating no data
+        fig, ax = plt.subplots(figsize=(10, 5))
+        fig.set_facecolor('#f5f1e9')
+        ax.set_facecolor('#f5f1e9')
+        ax.text(0.5, 0.5, f'No {side} corners found for {team_to_analyze}', ha='center', va='center', fontsize=14)
+        ax.axis('off')
+        return fig
+
+    side_corners_df['zone'] = side_corners_df.apply(categorize_corner, axis=1, side=side)
+
+    # --- Create Summary Table ---
+    if 'player.name' in side_corners_df.columns:
+        corner_takers = side_corners_df.groupby('player.name').agg(
+            Total=('id', 'count'),
+            Short=('zone', lambda x: (x == 'Short').sum()),
+            Near=('zone', lambda x: (x == 'Near Post').sum()),
+            Middle=('zone', lambda x: (x == 'Middle').sum()),
+            Far=('zone', lambda x: (x == 'Far Post').sum()),
+        ).sort_values(by='Total', ascending=False).fillna(0).astype(int) # Ensure integer counts
+    else:
+        # Create empty df if player name is missing
+        corner_takers = pd.DataFrame(columns=['Total', 'Short', 'Near', 'Middle', 'Far'])
+
+
+    # --- Visualization ---
+    fig = plt.figure(figsize=(16, 8)) # Adjusted figsize
+    fig.set_facecolor('#f5f1e9')
+    gs = gridspec.GridSpec(1, 2, width_ratios=[0.6, 0.4])
+    ax_pitch = fig.add_subplot(gs[0, 0])
+    ax_table = fig.add_subplot(gs[0, 1])
+    ax_table.axis('off')
+
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2)
+    pitch.draw(ax=ax_pitch)
+
+    zone_colors = {'Short': 'blue', 'Near Post': 'orange', 'Middle': 'red', 'Far Post': 'yellow', 'Other': 'grey'}
+
+    # Plot corner end locations as bubbles
+    for idx, corner in side_corners_df.iterrows():
+         if pd.notna(corner.get('pass.endLocation.x')) and pd.notna(corner.get('pass.endLocation.y')):
+             pitch.scatter(
+                x=corner['pass.endLocation.x'], y=corner['pass.endLocation.y'],
+                s=200, # Reduced size slightly
+                color=zone_colors.get(corner['zone'], 'gray'),
+                edgecolor='black',
+                ax=ax_pitch, zorder=3, alpha=0.7
+            )
+
+    # --- Titles and Legend ---
+    # fig.suptitle(f"{team_to_analyze} Corner Kick Analysis", fontsize=20, weight='bold', y=0.98) # Title moved lower
+    ax_pitch.set_title(f"Corners from the {side.capitalize()} Side | {league} {season}", fontsize=14)
+
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='Short'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Near Post'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Middle'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='yellow', markersize=10, label='Far Post'),
+         Line2D([0], [0], marker='o', color='w', markerfacecolor='grey', markersize=10, label='Other/Outside PA'),
+    ]
+    ax_pitch.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.01), frameon=False, fontsize=10)
+
+    # --- Render the Summary Table ---
+    ax_table.set_title("Corner Taker Summary", fontsize=14, weight='bold')
+    if not corner_takers.empty:
+        table = Table(ax_table, bbox=[0, 0, 1, 0.9], loc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(10) # Reduced font size
+
+        # Prepare data including header and index (player name)
+        table_data = [['Player'] + list(corner_takers.columns)] + \
+                     [[idx] + list(row) for idx, row in corner_takers.iterrows()]
+
+        col_widths = [0.4] + [0.12] * 5 # Player gets 40%, others share 60%
+
+        for i, row_list in enumerate(table_data):
+            for j, cell_text in enumerate(row_list):
+                is_header = (i == 0)
+                weight = 'bold' if is_header or j == 0 else 'normal'
+                facecolor = '#e0e0e0' if is_header else ['#fdfdfd', '#f0f0f0'][i % 2]
+                loc = 'left' if j == 0 else 'center'
+
+                cell = table.add_cell(i, j, width=col_widths[j], height=1.0/len(table_data), text=cell_text, loc=loc,
+                                      facecolor=facecolor, edgecolor='w', fontproperties={'weight': weight})
+        ax_table.add_table(table)
+    else:
+         ax_table.text(0.5, 0.5, "No corner takers found.", ha='center', va='center')
+
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout slightly
+
+    return fig
+
 # app.py (Replace the existing plot_radar_chart function)
 
 def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league="Liga 3 Portugal", season="2025/26"):
@@ -611,8 +760,22 @@ if raw_events_df is not None:
 
       
 
-        # Season-long tables (Existing Code)
-        st.subheader("Season-Long Stats")
+        # --- NEW: Corner Analysis ---
+        st.subheader("Corner Kick Analysis")
+        col_c1, col_c2 = st.columns(2)
+
+        with col_c1:
+            st.markdown("**Corners from Left Side**")
+            # Pass necessary dfs and selected team
+            fig_corner_left = plot_corner_analysis(raw_events_df, selected_team, 'left')
+            st.pyplot(fig_corner_left, use_container_width=True)
+
+        with col_c2:
+            st.markdown("**Corners from Right Side**")
+            fig_corner_right = plot_corner_analysis(raw_events_df, selected_team, 'right')
+            st.pyplot(fig_corner_right, use_container_width=True)
+        # --- END Corner Analysis ---
+        
         # ... (rest of your existing code for corner stats etc.) ...
         if selected_team in season_team_stats and 'corners' in season_team_stats[selected_team]:
             st.markdown("**Corner Kick Summary**")
