@@ -404,7 +404,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
     ax.set_title(f'Team Strength Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel('Attacking Strength (Goals & xG For per Match)', fontsize=12)
     ax.set_ylabel('Defending Strength (Goals & xG Against per Match)', fontsize=12)
-    ax.grid(True, linestyle='--', alpha=0.5); plt.tight_layout(); return fig
+    #ax.grid(True, linestyle='--', alpha=0.5); plt.tight_layout(); return fig
 
 
 # ==============================================================================
