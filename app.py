@@ -378,11 +378,29 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
     y_min, y_max = stats_df['Defending Strength'].min(), stats_df['Defending Strength'].max()
     x_padding = (x_max - x_min) * 0.1; y_padding = (y_max - y_min) * 0.1
     ax.set_xlim(x_min - x_padding, x_max + x_padding); ax.set_ylim(y_max + y_padding, y_min - y_padding) # Inverted Y
-    net_strength_diff = stats_df['Attacking Strength'] - stats_df['Defending Strength']
-    min_diff = np.floor(net_strength_diff.quantile(0.05) * 10) / 10; max_diff = np.ceil(net_strength_diff.quantile(0.95) * 10) / 10
-    plot_xlim = np.array(ax.get_xlim())
-    for c in np.arange(min_diff, max_diff + 0.1, 0.1): y = plot_xlim - c; ax.plot(plot_xlim, y, color='lightgray', linestyle=':', zorder=1, lw=1)
+    # --- (NEW) Diagonal Lines Logic ---
+    # Get the final plot limits *after* setting them
+    x_min, x_max = ax.get_xlim()
+    y_max, y_min = ax.get_ylim() # Remember y-axis is inverted (y_max < y_min)
 
+    # Calculate the 'c' value (c = x - y) for all four corners of the plot
+    c_top_left = x_min - y_max
+    c_top_right = x_max - y_max
+    c_bottom_left = x_min - y_min
+    c_bottom_right = x_max - y_min
+
+    # Find the minimum and maximum 'c' values, rounded to nearest 0.1
+    min_c = np.floor(min([c_top_left, c_top_right, c_bottom_left, c_bottom_right]) * 10) / 10
+    max_c = np.ceil(max([c_top_left, c_top_right, c_bottom_left, c_bottom_right]) * 10) / 10
+
+    # Draw lines for every 'c' value in the calculated range
+    for c in np.arange(min_c, max_c + 0.1, 0.1):
+        # Use axline to draw an infinite line with slope 1 passing through (0, -c)
+        # Matplotlib will automatically clip it to the plot boundaries
+        ax.axline((0, -c), slope=1, color='lightgray', linestyle=':', zorder=1, lw=1)
+    # --- (END NEW) Diagonal Lines Logic ---
+
+    
     stats_df_to_plot = stats_df
     if teams_to_include:
         valid_teams = [t for t in teams_to_include if t in stats_df.index]
@@ -402,8 +420,8 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
 
     report_date = datetime.date.today().strftime("%Y-%m-%d")
     ax.set_title(f'Team Strength Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
-    ax.set_xlabel('Attacking Strength (Goals & xG For per Match)', fontsize=12)
-    ax.set_ylabel('Defending Strength (Goals & xG Against per Match)', fontsize=12)
+    ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
+    ax.set_ylabel('Defending Strength (30% NP Goals Against, 70% NPxG Against)', fontsize=12)
     #ax.grid(True, linestyle='--', alpha=0.5); plt.tight_layout(); return fig
 
 
