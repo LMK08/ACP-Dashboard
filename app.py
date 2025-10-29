@@ -41,6 +41,53 @@ def load_data():
     except FileNotFoundError as e:
         st.error(f"❌ Error: A data file was not found. Please run `process_data.py` first. Missing file: {e.filename}")
         return None, None, None, None
+
+
+def _normalize_matches_summary(matches_summary_df):
+    """Ensure `matches_summary_df` has the expected columns used by the app.
+
+    This function will try common alternative column names and coerce types to strings.
+    Returns a cleaned DataFrame or raises ValueError with a helpful message.
+    """
+    if matches_summary_df is None:
+        raise ValueError("matches_summary_df is None")
+
+    df = matches_summary_df.copy()
+
+    # Map of canonical -> candidates in order
+    col_candidates = {
+        'home_team': ['home_team', 'homeTeam', 'home', 'home_name'],
+        'away_team': ['away_team', 'awayTeam', 'away', 'away_name'],
+        'score': ['score', 'final_score', 'result'],
+        'Gameweek': ['Gameweek', 'gameweek', 'gw', 'GameWeek'],
+        'matchId': ['matchId', 'match_id', 'id'],
+    }
+
+    found = {}
+    for canon, candidates in col_candidates.items():
+        for c in candidates:
+            if c in df.columns:
+                found[canon] = c
+                break
+
+    missing = [k for k in ['home_team', 'away_team', 'score'] if k not in found]
+    if missing:
+        raise ValueError(
+            f"matches_summary.parquet is missing required columns: {missing}. "
+            "Expected columns (examples): home_team / homeTeam, away_team / awayTeam, score. "
+            "Run `python process_data.py` to recreate artifacts or inspect your parquet file."
+        )
+
+    # Rename found columns to canonical names
+    rename_map = {found[k]: k for k in found}
+    df = df.rename(columns=rename_map)
+
+    # Ensure strings and fillna
+    for col in ['home_team', 'away_team', 'score', 'Gameweek', 'matchId']:
+        if col in df.columns:
+            df[col] = df[col].astype(str).fillna('')
+
+    return df
 # ==============================================================================
 # 2. Trendline Viz
 # ==============================================================================
@@ -599,12 +646,26 @@ if raw_events_df is not None:
 
     if analysis_type == 'Match Analysis':
         # --- Match Selection ---
-        # Create a more informative display name including Gameweek
-        matches_summary_df['display_name'] = matches_summary_df['home_team'] + " vs " + matches_summary_df['away_team'] + " (" + matches_summary_df['score'] + ")"
-        
+        # Normalize and validate the summary dataframe (maps alternative column names)
+        try:
+            matches_summary_df = _normalize_matches_summary(matches_summary_df)
+        except ValueError as e:
+            st.error(f"❌ matches_summary.parquet validation failed: {e}")
+            st.info("If you don't have the artifacts, run `python process_data.py` in this repo to create them.")
+            st.stop()
+
+        # --- UPDATED Column Names ---
+        matches_summary_df['display_name'] = matches_summary_df['homeTeamName'].fillna('?') + " vs " + \
+                                             matches_summary_df['awayTeamName'].fillna('?') + \
+                                             " (" + matches_summary_df['score'].fillna('?-?') + ")"
+
         # Sort matches for the dropdown, potentially by Gameweek then date/ID
-        matches_summary_df.sort_values(by=['matchId'], inplace=True)
-                                 
+        sort_cols = [c for c in ['Gameweek', 'date', 'matchId'] if c in matches_summary_df.columns]
+        if sort_cols:
+            matches_summary_df.sort_values(by=sort_cols, inplace=True)
+
+        # Ensure sorting uses correct columns if team names were included
+        matches_summary_df.sort_values(by=['matchId'], inplace=True) # Sort just by matchId is simplest now
         selected_match_display = st.sidebar.selectbox("Select a Match", matches_summary_df['display_name'])
 
         # Find the selected match info based on the unique display name
