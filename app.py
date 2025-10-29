@@ -394,7 +394,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
         logo_path = os.path.join(base_icon_path, f"{safe_team_name}.png")
         try:
             if os.path.exists(logo_path):
-                 img = Image.open(logo_path); imagebox = OffsetImage(img, zoom=0.08); ab = AnnotationBbox(imagebox, (row['Attacking Strength'], row['Defending Strength']), frameon=False, zorder=2); ax.add_artist(ab); logos_plotted +=1
+                 img = Image.open(logo_path); imagebox = OffsetImage(img, zoom=0.25); ab = AnnotationBbox(imagebox, (row['Attacking Strength'], row['Defending Strength']), frameon=False, zorder=2); ax.add_artist(ab); logos_plotted +=1
             else: texts.append(ax.text(row['Attacking Strength'], row['Defending Strength'], team_name, zorder=3, fontsize=9))
         except Exception as e: print(f"Error loading logo for {team_name}: {e}. Using text."); texts.append(ax.text(row['Attacking Strength'], row['Defending Strength'], team_name, zorder=3, fontsize=9))
     if texts: adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
