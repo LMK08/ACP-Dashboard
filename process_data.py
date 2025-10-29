@@ -12,33 +12,117 @@ import pickle
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import warnings
+import json # Added for JSON decoding error handling
+from dotenv import load_dotenv # Added for .env support
 
 # Suppress SettingWithCopyWarning, use cautiously
 pd.options.mode.chained_assignment = None
+
 
 # ==============================================================================
 # SECTION 2: DATA FETCHING FUNCTIONS
 # ==============================================================================
 
-def fetch_match_ids(username, password, competition_id, season_id):
-    """Fetches all match IDs for a specific season by querying the competition endpoint."""
+# === REPLACED FUNCTION ===
+def fetch_match_schedule(username, password, competition_id, season_id):
+    """Fetches the full match schedule (IDs, dates, teams, GW, score) for a specific season."""
     url = f"https://apirest.wyscout.com/v3/competitions/{competition_id}/matches"
     auth = HTTPBasicAuth(username, password)
-    print(f"Attempting to fetch matches for competitionId: {competition_id}...")
+    print(f"Attempting to fetch match schedule for competitionId: {competition_id}...")
     try:
-        r = requests.get(url, auth=auth, timeout=15)
-        if r.status_code == 200:
-            all_matches_data = r.json().get("matches", [])
-            season_matches = [m for m in all_matches_data if m.get("seasonId") == season_id]
-            match_ids = [m['matchId'] for m in season_matches]
-            print(f"✅ Found {len(match_ids)} matches for seasonId {season_id}.")
-            return match_ids
-        else:
-            print(f"❌ FAILED to get matches. Status: {r.status_code}, Response: {r.text}")
-            return []
+        r = requests.get(url, auth=auth, timeout=20) # Increased timeout
+        r.raise_for_status() # Check for HTTP errors
+
+        all_matches_data = r.json().get("matches", [])
+        season_matches = [m for m in all_matches_data if m.get("seasonId") == season_id]
+        print(f"✅ Found {len(season_matches)} matches for seasonId {season_id}.")
+
+        if not season_matches:
+            return pd.DataFrame() # Return empty if no matches
+
+        extracted_data = []
+        for match in tqdm(season_matches, desc="Extracting Schedule Data"):
+            # --- Robust Team & Score Extraction ---
+            home_team_name = "Unknown Home"
+            away_team_name = "Unknown Away"
+            home_team_id = None
+            away_team_id = None
+            score_str = "? - ?"
+
+            # Try extracting from label first as a fallback
+            label = match.get('label', '')
+            try:
+                parts = label.split(',')
+                if len(parts) > 0:
+                    teams_part = parts[0]
+                    team_names = teams_part.split(' - ')
+                    if len(team_names) == 2:
+                        home_team_name = team_names[0].strip()
+                        away_team_name = team_names[1].strip()
+                if len(parts) > 1:
+                     score_part = parts[1].strip()
+                     if '-' in score_part and len(score_part) >= 3:
+                          score_str = score_part
+            except Exception:
+                pass # Ignore errors during label parsing
+
+            # Try extracting from teamsData
+            teams_data = match.get('teamsData', {})
+            team1_id_str = str(match.get('team1Id'))
+            team2_id_str = str(match.get('team2Id'))
+
+            if team1_id_str in teams_data:
+                 home_team_info = teams_data[team1_id_str]
+                 home_team_name = home_team_info.get('name', home_team_name)
+                 home_team_id = home_team_info.get('teamId')
+            if team2_id_str in teams_data:
+                 away_team_info = teams_data[team2_id_str]
+                 away_team_name = away_team_info.get('name', away_team_name)
+                 away_team_id = away_team_info.get('teamId')
+
+            # Try extracting score from score1/score2
+            if score_str == "? - ?":
+                 s1 = match.get('score1')
+                 s2 = match.get('score2')
+                 if s1 is not None and s2 is not None:
+                      score_str = f"{int(s1)} - {int(s2)}"
+            # --- End Robust Extraction ---
+
+
+            extracted_data.append({
+                'matchId': match.get('matchId'),
+                'seasonId': match.get('seasonId'),
+                'status': match.get('status'),
+                'roundId': match.get('roundId'),
+                'gameweek': match.get('gameweek'), # Use API gameweek
+                'dateutc': match.get('dateutc'),   # Use API dateutc
+                'homeTeamId': home_team_id,
+                'homeTeamName': home_team_name,
+                'awayTeamId': away_team_id,
+                'awayTeamName': away_team_name,
+                'score': score_str # Use extracted score string
+            })
+
+        schedule_df = pd.DataFrame(extracted_data)
+
+        # Convert dateutc and sort
+        schedule_df['dateutc'] = pd.to_datetime(schedule_df['dateutc'], errors='coerce')
+        schedule_df.sort_values(by='dateutc', inplace=True, na_position='last')
+        schedule_df.reset_index(drop=True, inplace=True)
+
+        print("✅ Successfully created match schedule DataFrame sorted by date.")
+        return schedule_df
+
     except requests.exceptions.RequestException as e:
-        print(f"❌ An error occurred: {e}")
-        return []
+        print(f"❌ An error occurred fetching schedule: {e}")
+        return pd.DataFrame() # Return empty on error
+    except json.JSONDecodeError:
+        print(f"❌ Error decoding JSON response from schedule API.")
+        raw_response = "Request failed or response empty"
+        if 'r' in locals() and hasattr(r, 'text'):
+            raw_response = r.text
+        print(f"   Raw Response: {raw_response}")
+        return pd.DataFrame()
 
 def fetch_events(username, password, match_ids):
     """Fetches all event data for a given list of match IDs with retries."""
@@ -72,65 +156,7 @@ def fetch_events(username, password, match_ids):
 # SECTION 3: DATA PROCESSING FUNCTIONS
 # ==============================================================================
 
-def create_match_summary(events_df):
-    """Creates a summary DataFrame (no date, no gameweek)"""
-    print("Processing: Creating match summary (natural order, no date, no gameweek)...")
-    matches_summary = []
-    # Ensure 'matchId' exists before proceeding
-    if 'matchId' not in events_df.columns:
-        print("❌ Error: 'matchId' column not found in events data. Cannot create match summary.")
-        return pd.DataFrame()
 
-    # Get unique match IDs IN THE ORDER THEY APPEAR in the events_df
-    unique_match_ids = events_df.drop_duplicates(subset=['matchId'], keep='first')['matchId'].tolist()
-
-    for match_id in tqdm(unique_match_ids, desc="Summarizing Matches"): # Iterate in natural order
-        match_df = events_df[events_df['matchId'] == match_id].copy()
-        if match_df.empty: continue
-
-        teams = match_df['team.name'].unique()
-        if len(teams) < 2: continue
-        home_team, away_team = teams[0], teams[1] # Assumes consistent order
-
-        home_score = 0
-        away_score = 0
-
-        # --- Refined Score Calculation ---
-        goal_events = match_df[
-            ((match_df.get('type.primary') == 'shot') & (match_df.get('shot.isGoal') == True)) |
-            ((match_df.get('type.primary') == 'penalty') & (match_df.get('shot.isGoal') == True)) |
-            (match_df.get('type.primary') == 'own_goal')
-        ].copy()
-
-        if not goal_events.empty:
-            for index, goal in goal_events.iterrows():
-                event_type = goal.get('type.primary')
-                event_team = goal.get('team.name')
-                if event_type == 'own_goal':
-                    if event_team == home_team: away_score += 1
-                    elif event_team == away_team: home_score += 1
-                else:
-                    if event_team == home_team: home_score += 1
-                    elif event_team == away_team: away_score += 1
-        # --- End Refined Score Calculation ---
-
-        matches_summary.append({
-            'matchId': match_id,
-            'home_team': home_team,
-            'away_team': away_team,
-            'score': f"{home_score} - {away_score}"
-        })
-
-    if not matches_summary:
-        print("Warning: No matches found to create summary.")
-        return pd.DataFrame()
-
-    matches_summary_df = pd.DataFrame(matches_summary)
-    # The DataFrame index (0 to N) now reflects the natural order
-
-    # --- Gameweek Calculation Logic REMOVED ---
-
-    return matches_summary_df
 
 
 def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
@@ -149,7 +175,7 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
         if 83 <= x < 88 and 36 <= y <= 64: return 'Middle Area'
         return 'Back Area'
 
-    team_matches_df = matches_summary_df[(matches_summary_df['home_team'] == selected_team) | (matches_summary_df['away_team'] == selected_team)]
+    team_matches_df = matches_summary_df[(matches_summary_df['homeTeamName'] == selected_team) | (matches_summary_df['awayTeamName'] == selected_team)]
     total_matches = team_matches_df['matchId'].nunique()
     if total_matches == 0: return None
 
@@ -411,7 +437,7 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
         if 83 <= x < 88 and 36 <= y <= 64: return 'Middle Area'
         return 'Back Area'
 
-    team_matches_df = matches_summary_df[(matches_summary_df['home_team'] == selected_team) | (matches_summary_df['away_team'] == selected_team)]
+    team_matches_df = matches_summary_df[(matches_summary_df['homeTeamName'] == selected_team) | (matches_summary_df['awayTeamName'] == selected_team)]
     total_matches = team_matches_df['matchId'].nunique()
     if total_matches == 0: return None
 
@@ -1065,33 +1091,51 @@ def calculate_match_data(match_df, home_team, away_team):
 
 
 # ==============================================================================
-# SECTION 4: MAIN FUNCTION
+# SECTION 4: MAIN FUNCTION (CORRECTED)
 # ==============================================================================
 def main():
     """Main function to run the entire data processing pipeline."""
-    wyscout_user = "ggm0zzt-jidg1g5bv-ofdye2m-huk6ii8kkd"
-    wyscout_pass = ",Xzas52XAavPLHNK8sSJLJNhHEP!NY"
+    # --- Credentials ---
+    load_dotenv()
+    wyscout_user = os.getenv("WYSCOUT_USER")
+    wyscout_pass = os.getenv("WYSCOUT_PASS")
+    if not wyscout_user or not wyscout_pass:
+        print("❌ Error: Wyscout credentials not found.")
+        return
+
     competition_id = 43324
     season_id = 191782
 
-    # --- 1. Fetch Data ---
-    match_ids = fetch_match_ids(wyscout_user, wyscout_pass, competition_id, season_id)
-    if not match_ids:
-        print("No match IDs found. Exiting.")
+    # --- 1. Fetch Match Schedule (Includes Dates, Teams, GW, Score) ---
+    matches_summary_df = fetch_match_schedule(wyscout_user, wyscout_pass, competition_id, season_id)
+    if matches_summary_df.empty:
+        print("No match schedule found or error occurred. Exiting.")
         return
 
-    raw_events_df = fetch_events(wyscout_user, wyscout_pass, match_ids)
+    # --- Save the fetched schedule as the new summary file ---
+    matches_summary_df.to_parquet('matches_summary.parquet', index=False)
+    print("✅ Match schedule (summary) saved to 'matches_summary.parquet'")
+
+    # --- Get list of Match IDs needed for event fetching ---
+    # Filter out matches with missing IDs before fetching events
+    match_ids_to_fetch = matches_summary_df['matchId'].dropna().unique().tolist()
+    if not match_ids_to_fetch:
+        print("No valid match IDs found in the schedule. Exiting.")
+        return
+
+    # --- 2. Fetch all Event Data for those matches --- # <<< THIS CALL WAS MISSING >>>
+    raw_events_df = fetch_events(wyscout_user, wyscout_pass, match_ids_to_fetch)
     if raw_events_df.empty:
         print("No event data fetched. Exiting.")
         return
 
-    # --- Data Cleaning/Prep (Optional but Recommended) ---
+    # --- Data Cleaning/Prep ---
     print("Performing initial data type conversions...")
     numeric_cols = ['shot.xg', 'location.x', 'location.y', 'minute', 'second', 'pass.length',
-                    'pass.endLocation.x', 'pass.endLocation.y', 'possession.duration_sec'] # Add more as needed
+                    'pass.endLocation.x', 'pass.endLocation.y', 'possession.duration_sec']
     bool_cols = ['shot.isGoal', 'shot.onTarget', 'pass.accurate', 'groundDuel.keptPossession',
                  'groundDuel.recoveredPossession', 'groundDuel.stoppedProgress', 'aerialDuel.firstTouch',
-                 'groundDuel.takeOn', 'groundDuel.progressedWithBall', 'infraction.yellowCard', 'infraction.redCard'] # Add more as needed
+                 'groundDuel.takeOn', 'groundDuel.progressedWithBall', 'infraction.yellowCard', 'infraction.redCard']
 
     for col in numeric_cols:
         if col in raw_events_df.columns:
@@ -1099,65 +1143,54 @@ def main():
 
     for col in bool_cols:
          if col in raw_events_df.columns:
-             # Convert potential strings 'true'/'false' or numbers 1/0 to boolean
              raw_events_df[col] = raw_events_df[col].replace({'true': True, 'false': False, 1: True, 0: False})
-             # Attempt direct boolean conversion, coercing errors to False (or pd.NA if preferred)
-             try:
-                 raw_events_df[col] = raw_events_df[col].astype('boolean') # Use nullable boolean
-             except Exception: # Fallback if conversion fails broadly
-                 raw_events_df[col] = raw_events_df[col].apply(lambda x: True if x == True else (False if x == False else pd.NA))
+             try: raw_events_df[col] = raw_events_df[col].astype('boolean')
+             except Exception: raw_events_df[col] = raw_events_df[col].apply(lambda x: True if x == True else (False if x == False else pd.NA))
 
-
-    # Save the raw events for the app to use
+    # Save the raw events
     raw_events_df.to_parquet('raw_events.parquet', index=False)
     print("✅ Raw event data saved.")
 
-    # --- 2. Create and Save High-Level Summary ---
-    matches_summary_df = create_match_summary(raw_events_df)
-    matches_summary_df.to_parquet('matches_summary.parquet', index=False)
-    print("✅ Match summary saved.")
+    # --- REMOVED INCORRECT CALL to create_match_summary ---
 
     # --- 3. Process and Save All Per-Match Data (Team and Player) ---
     all_match_data = {}
-    required_cols = ['matchId', 'home_team', 'away_team']
+    required_cols = ['matchId', 'homeTeamName', 'awayTeamName'] # Use new column names
     if not all(col in matches_summary_df.columns for col in required_cols):
          print("❌ Error: matches_summary_df is missing required columns. Cannot process matches.")
          return
 
     for index, match_summary in tqdm(matches_summary_df.iterrows(), total=matches_summary_df.shape[0], desc="Processing All Matches"):
         match_id = match_summary['matchId']
-        home_team = match_summary['home_team']
-        away_team = match_summary['away_team']
-
-        # Filter raw_events_df safely
+        home_team = match_summary['homeTeamName']
+        away_team = match_summary['awayTeamName']
+        if pd.isna(home_team) or pd.isna(away_team):
+             print(f"  -> ⚠️ Warning: Missing team names for match {match_id}. Skipping stats calc.")
+             continue
         if 'matchId' in raw_events_df.columns:
             match_events_df = raw_events_df[raw_events_df['matchId'] == match_id].copy()
         else:
-            print(f"  -> ⚠️ Warning: 'matchId' column not found in raw_events_df. Skipping match {match_id}")
+            print(f"  -> ⚠️ Warning: 'matchId' column missing in raw_events_df. Skipping match {match_id}")
             continue
-
         if match_events_df.empty:
-            print(f"  -> ℹ️ Info: No event data found for match {match_id}. Skipping.")
+            print(f"  -> ℹ️ Info: No event data for match {match_id}. Skipping stats.")
+            all_match_data[match_id] = {'team_stats': {}, 'player_stats': {'home': pd.DataFrame(), 'away': pd.DataFrame()}}
             continue
-
-        # Calculate and store stats for the current match
         match_data = calculate_match_data(match_events_df, home_team, away_team)
         all_match_data[match_id] = match_data
 
-    with open('all_match_data.pkl', 'wb') as f:
-        pickle.dump(all_match_data, f)
+    with open('all_match_data.pkl', 'wb') as f: pickle.dump(all_match_data, f)
     print("✅ All detailed match data saved to 'all_match_data.pkl'")
 
     # --- 4. Process and Save Season-Long Team Stats ---
-    all_teams = pd.concat([matches_summary_df['home_team'], matches_summary_df['away_team']]).unique()
+    all_teams = pd.concat([matches_summary_df['homeTeamName'], matches_summary_df['awayTeamName']]).dropna().unique()
     season_team_stats = {}
     for team in tqdm(all_teams, desc="Processing Season-Long Team Stats"):
-        team_corners = calculate_team_corner_stats(raw_events_df.copy(), matches_summary_df, team) # Pass a copy
+        team_corners = calculate_team_corner_stats(raw_events_df.copy(), matches_summary_df, team)
         if team_corners is not None:
             season_team_stats[team] = {'corners': team_corners}
 
-    with open('season_team_stats.pkl', 'wb') as f:
-        pickle.dump(season_team_stats, f)
+    with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
     print("✅ All season-long team stats saved to 'season_team_stats.pkl'")
 
     print("\n🎉 Data processing pipeline complete!")
