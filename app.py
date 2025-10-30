@@ -681,7 +681,8 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     ax_radar = plt.subplot(gs[0], polar=True)
     
     # Call the base radar chart function
-    _create_base_radar_chart(fig, ax=ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking)
+    # CORRECTED CALL: Pass ax_radar positionally
+    _create_base_radar_chart(fig, ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
               horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
