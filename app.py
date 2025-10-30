@@ -476,7 +476,7 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
             if os.path.exists(logo_path):
                  img = Image.open(logo_path)
                  # Use the increased zoom factor
-                 imagebox = OffsetImage(img, zoom=0.15) 
+                 imagebox = OffsetImage(img, zoom=0.25) 
                  # Plot using the dynamic x_metric and y_metric
                  ab = AnnotationBbox(imagebox, (row[x_metric], row[y_metric]), frameon=False, zorder=2)
                  ax.add_artist(ab)
