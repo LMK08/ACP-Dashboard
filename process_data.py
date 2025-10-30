@@ -14,6 +14,7 @@ from urllib3.util.retry import Retry
 import warnings
 import json # Added for JSON decoding error handling
 from dotenv import load_dotenv # Added for .env support
+from collections import defaultdict
 
 # Suppress SettingWithCopyWarning, use cautiously
 pd.options.mode.chained_assignment = None
@@ -156,7 +157,118 @@ def fetch_events(username, password, match_ids):
 # SECTION 3: DATA PROCESSING FUNCTIONS
 # ==============================================================================
 
+# process_data.py (Add this new function in Section 3)
 
+def calculate_player_minutes_and_positions(events_df, match_ids, username, password):
+    """
+    Fetches match details to calculate precise minutes played and determines player positions.
+    Based on notebook cells 6 & 7.
+    """
+    print("Processing: Calculating player minutes and positions...")
+    base_url = "https://apirest.wyscout.com/v3"
+    auth = HTTPBasicAuth(username, password)
+    
+    # --- Step 1: Prepare Context (from Cell 6 & 7) ---
+    player_map_df = events_df.dropna(subset=['player.id', 'player.name'])[['player.id', 'player.name']]
+    player_map_df['player.id'] = player_map_df['player.id'].astype(int)
+    player_map_df = player_map_df.drop_duplicates(subset='player.id')
+    player_name_map = pd.Series(player_map_df['player.name'].values, index=player_map_df['player.id']).to_dict()
+
+    team_map_df = events_df.dropna(subset=['team.id', 'team.name'])[['team.id', 'team.name']]
+    team_map_df['team.id'] = team_map_df['team.id'].astype(int)
+    team_map_df = team_map_df.drop_duplicates(subset='team.id')
+    team_name_map = pd.Series(team_map_df['team.name'].values, index=team_map_df['team.id']).to_dict()
+    
+    match_length_map = events_df.groupby('matchId')['minute'].max().to_dict()
+    player_minutes = defaultdict(int)
+
+    print(f"  -> Context prepared. Found {len(player_name_map)} players in {len(match_ids)} matches.")
+
+    # --- Step 2: Iterate Matches for Minutes (from Cell 6) ---
+    for match_id in tqdm(match_ids, desc="Fetching Match Lineups"):
+        details_url = f"{base_url}/matches/{match_id}"
+        try:
+            r_details = requests.get(details_url, auth=auth, timeout=10)
+            if r_details.status_code != 200: continue
+            match_details = r_details.json()
+            teams_data = match_details.get('teamsData')
+            if not teams_data: continue
+
+            match_length = match_length_map.get(match_id, 90) # Default to 90
+            
+            for team_id_str, team_info in teams_data.items():
+                team_id = int(team_id_str)
+                formation = team_info.get('formation', {})
+                lineup = formation.get('lineup', [])
+                substitutions = formation.get('substitutions', [])
+                
+                players_subbed_out = {sub['playerOut']: sub['minute'] for sub in substitutions if 'playerOut' in sub and 'minute' in sub}
+
+                # Process starters
+                for player in lineup:
+                    player_id = player.get('playerId')
+                    if not player_id: continue
+                    if player_id in players_subbed_out:
+                        player_minutes[(player_id, team_id)] += players_subbed_out[player_id]
+                    else:
+                        player_minutes[(player_id, team_id)] += match_length
+                
+                # Process substitutes
+                for sub in substitutions:
+                    player_in_id = sub.get('playerIn')
+                    minute_in = sub.get('minute')
+                    if not player_in_id or minute_in is None: continue
+                    player_minutes[(player_in_id, team_id)] += (match_length - minute_in)
+                    
+        except requests.exceptions.RequestException as e:
+            print(f"  -> ⚠️ Warning: Failed to fetch details for match {match_id}: {e}")
+
+    # --- Step 3: Create Minutes Report (from Cell 6) ---
+    if not player_minutes:
+        print("❌ Error: No player minutes were calculated.")
+        return pd.DataFrame()
+        
+    report_data = [{'playerId': pid, 'teamId': tid, 'totalMinutes': mins} for (pid, tid), mins in player_minutes.items()]
+    report_df = pd.DataFrame(report_data)
+    report_df['playerName'] = report_df['playerId'].map(player_name_map).fillna('Unknown Player')
+    report_df['teamName'] = report_df['teamId'].map(team_name_map).fillna('Unknown Team')
+    
+    print("✅ Player minutes calculated.")
+
+    # --- Step 4: Calculate Positions (from Cell 7) ---
+    print("  -> Calculating player positions...")
+    positions_df = events_df.dropna(subset=['player.id', 'player.position'])[['player.id', 'player.position']]
+    positions_df['player.id'] = positions_df['player.id'].astype(int)
+
+    def get_player_positions(group):
+        position_counts = group['player.position'].value_counts()
+        positions = position_counts.index.tolist()
+        results = {
+            'primaryPosition': positions[0] if len(positions) > 0 else np.nan,
+            'secondaryPosition': positions[1] if len(positions) > 1 else np.nan,
+            'tertiaryPosition': positions[2] if len(positions) > 2 else np.nan,
+        }
+        return pd.Series(results)
+
+    ranked_positions_df = positions_df.groupby('player.id').apply(get_player_positions).reset_index()
+    
+    # --- Step 5: Merge Positions into Report (from Cell 7) ---
+    enriched_df = pd.merge(report_df, ranked_positions_df, left_on='playerId', right_on='player.id', how='left')
+    
+    # Clean up and reorder
+    if 'player.id' in enriched_df.columns:
+        enriched_df = enriched_df.drop(columns=['player.id']) # Drop redundant column
+        
+    final_columns = ['playerId', 'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition']
+    # Ensure all columns exist, add if missing (e.g., if no positions found)
+    for col in final_columns:
+        if col not in enriched_df.columns:
+            enriched_df[col] = np.nan
+            
+    enriched_df = enriched_df[final_columns]
+    print("✅ Player positions calculated and merged.")
+    
+    return enriched_df
 
 
 def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
@@ -1192,6 +1304,21 @@ def main():
 
     with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
     print("✅ All season-long team stats saved to 'season_team_stats.pkl'")
+
+    # --- NEW STEP 5: Calculate Player Minutes and Positions ---
+    print("\nStarting player minute and position calculation...")
+    player_minutes_df = calculate_player_minutes_and_positions(
+        raw_events_df.copy(), # Pass a copy of the events
+        match_ids_to_fetch,   # Pass the list of match IDs
+        wyscout_user,
+        wyscout_pass
+    )
+    if not player_minutes_df.empty:
+        player_minutes_df.to_pickle('player_minutes_and_positions.pkl')
+        print("✅ Player minutes and positions saved to 'player_minutes_and_positions.pkl'")
+    else:
+        print("❌ Failed to calculate player minutes, file not saved.")
+    # --- END NEW STEP ---
 
     print("\n🎉 Data processing pipeline complete!")
 
