@@ -1435,6 +1435,20 @@ if raw_events_df is not None and matches_summary_df is not None:
                 st.error(f"An error occurred during player stat calculation: {e}")
                 st.stop() # Stop execution for this tab
 
+            # --- START DEBUG EXPANDER ---
+            with st.expander("🕵️‍♂️ **Click to View Player Data Processing Steps**"):
+                st.subheader("1. Base Player Data (from `player_minutes_and_positions.pkl`)")
+                st.dataframe(player_minutes_df.head())
+                
+                st.subheader("2. Raw Per-90 Stats (from `calculate_player_radar_data`)")
+                st.write("Check here if metrics like 'npxG', 'xAOP', 'xT', 'Passes', 'Duels' are all 0 or missing.")
+                st.dataframe(player_stats_df)
+                
+                st.subheader("3. Final Percentiles & Scores (from `calculate_player_percentiles_and_scores`)")
+                st.write("Check here if percentile/score columns (e.g., `npxG_percentile`, `Stopper_Score`) are all 0 or missing.")
+                st.dataframe(player_stats_with_scores_df)
+            # --- END DEBUG EXPANDER ---
+
             if player_stats_with_scores_df.empty:
                 st.warning("No players found matching the criteria (e.g., >= 90 minutes).")
             else:
@@ -1482,6 +1496,7 @@ if raw_events_df is not None and matches_summary_df is not None:
                         metrics_to_plot = [m for m in metrics_to_plot if m in player_data.columns]
                         
                         st.markdown(f"Displaying radar for best-fit archetype: **{highest_scoring_group}**")
+                        st.dataframe(player_data) # This will print the single row of data being plotted
 
                         # 7. Call the main plotting function (from Cell 23)
                         fig = create_radar_with_distributions(
