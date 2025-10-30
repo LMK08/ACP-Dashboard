@@ -1361,7 +1361,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
             
             # --- CORRECTED PLAYER LOOKUP ---
-            # Get the unique player name from the (temporary) player_list_df
+            # Get the unique player name from the (temporary) player_list_df based on the selection
             selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
             
             # Get the player's data from the main DataFrame using their name
