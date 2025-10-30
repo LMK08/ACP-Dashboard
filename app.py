@@ -136,31 +136,21 @@ DISTRIBUTION_METRICS_BY_POSITION = {
 # ==============================================================================
 # 3. HELPER & PLOTTING FUNCTIONS
 # ==============================================================================
-# --- NEW: PLAYER RADAR CALCULATION FUNCTION (Cells 3-22) ---
 @st.cache_data
 def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     """
     Runs the entire player-level data processing pipeline from the notebooks.
-    This single function contains the logic from cells 3-5 and 8-22.
+    This version REMOVES the fragile one-hot encoding and uses a robust list-checking method.
     """
-    print("--- STARTING: Player radar data calculation (this will run once) ---")
+    print("--- STARTING: Player radar data calculation (Robust V2) ---")
     
     # --- Make copies to avoid changing cached data ---
     events_df = _raw_events_df.copy()
     combined_df = _player_minutes_df.copy() # This is 'report_df' / 'enriched_df' from cell 7
-
-    # --- Cell 3 & 4 & 5: One-hot encode type.secondary ---
-    print("Step 1: One-hot encoding secondary event types...")
-    try:
-        events_df['type.secondary_str'] = events_df['type.secondary'].apply(
-            lambda x: ', '.join(x) if isinstance(x, list) else np.nan
-        ).fillna('')
-        secondary_dummies = events_df['type.secondary_str'].str.get_dummies(sep=', ')
-        secondary_dummies.columns = ['type.secondary.' + col for col in secondary_dummies.columns]
-        events_df = pd.concat([events_df, secondary_dummies], axis=1)
-        # We keep the original 'type.secondary' (list form) as it might be needed
-    except Exception as e:
-        print(f"  -> ⚠️ Warning (Cell 3-5): Failed to one-hot encode type.secondary: {e}")
+    
+    # --- Cells 3, 4, 5: One-hot encoding SKIPPED ---
+    print("Step 1: Skipping one-hot encoding (using raw list search).")
+    # We will work directly with the 'type.secondary' column, which is a list (or NaN)
 
     # --- Cell 8 & 9: Calculate npxG, xAOP, xASP ---
     print("Step 2: Calculating npxG, xAOP, xASP...")
@@ -177,7 +167,8 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
         shot_xg_map = shots_df.set_index('id')['shot.xg'].to_dict()
 
-        assists_df = events_df[events_df.get('type.secondary.shot_assist', 0) == 1].copy()
+        # Robust check for 'shot_assist' in the list
+        assists_df = events_df[events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, list) and 'shot_assist' in x)].copy()
         assists_df['player.id'] = assists_df['player.id'].astype(int)
         assists_df['xA'] = assists_df['next_shot_id'].map(shot_xg_map)
         set_piece_types = ['corner', 'free_kick', 'throw_in', 'goal_kick']
@@ -198,14 +189,12 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
 
     except Exception as e:
         print(f"  -> ❌ ERROR (Cell 8-9): Failed calculating xA/npxG: {e}")
-        # Ensure columns exist even on failure
         if 'npxG' not in combined_df.columns: combined_df['npxG'] = 0
         if 'xAOP' not in combined_df.columns: combined_df['xAOP'] = 0
         if 'xASP' not in combined_df.columns: combined_df['xASP'] = 0
         if 'xA' not in combined_df.columns: combined_df['xA'] = 0
 
-
-    # --- Cell 10, 13: Calculate Deep Completions & Progressive Passes (and merge) ---
+    # --- Cell 10, 13: Calculate Deep Completions & Progressive Passes ---
     print("Step 3: Calculating Deep Completions and Progressive Passes...")
     try:
         passes_df = events_df[
@@ -217,10 +206,12 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         passes_df['end_x_m'] = passes_df['pass.endLocation.x'] * 1.05
         passes_df['end_y_m'] = passes_df['pass.endLocation.y'] * 0.68
         passes_df['dist_to_goal_center'] = np.sqrt((passes_df['end_x_m'] - 105)**2 + (passes_df['end_y_m'] - 34)**2)
-        passes_df['is_deep_completion'] = (passes_df['dist_to_goal_center'] <= 20) & (passes_df.get('type.secondary.cross', 0) != 1)
+        # Robust check for 'cross' in the list
+        passes_df['is_cross'] = passes_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, list) and 'cross' in x)
+        passes_df['is_deep_completion'] = (passes_df['dist_to_goal_center'] <= 20) & (passes_df['is_cross'] == False)
         deep_completions = passes_df.groupby('player.id')['is_deep_completion'].sum().reset_index().rename(columns={'is_deep_completion': 'Deep Completions'})
 
-        # Progressive Passes (from Cell 10)
+        # Progressive Passes
         start_x = passes_df['location.x']; end_x = passes_df['pass.endLocation.x']
         cond1 = (start_x < 50) & (end_x < 50) & (end_x - start_x >= 30)
         cond2 = (start_x < 50) & (end_x >= 50) & (end_x - start_x >= 15)
@@ -228,7 +219,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         passes_df['is_progressive_pass'] = cond1 | cond2 | cond3
         progressive_passes = passes_df.groupby('player.id')['is_progressive_pass'].sum().reset_index().rename(columns={'is_progressive_pass': 'Progressive Passes'})
 
-        # Merge new metrics
         new_metrics_df = pd.merge(deep_completions, progressive_passes, on='player.id', how='outer')
         combined_df = pd.merge(combined_df, new_metrics_df, left_on='playerId', right_on='player.id', how='left')
         if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
@@ -238,25 +228,30 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         if 'Deep Completions' not in combined_df.columns: combined_df['Deep Completions'] = 0
         if 'Progressive Passes' not in combined_df.columns: combined_df['Progressive Passes'] = 0
 
-    # --- Cell 11 & 12: Calculate comprehensive counting stats ---
-    print("Step 4: Calculating comprehensive counting stats...")
+    # --- Cell 11 & 12: Calculate comprehensive counting stats (ROBUST VERSION) ---
+    print("Step 4: Calculating comprehensive counting stats (Robust)...")
     try:
         player_stats_df = events_df.dropna(subset=['player.id', 'player.name'])[['player.id', 'player.name']].drop_duplicates()
         player_stats_df['player.id'] = player_stats_df['player.id'].astype(int)
         player_stats_df = player_stats_df.set_index('player.id')
 
+        # Helper for simple primary type filters
         def calculate_and_merge(base_df, events_df, stat_name, filter_condition):
-            # Ensure filter condition has same index as events_df
             safe_condition = filter_condition & events_df['player.id'].notna()
-            # Group by player.id (which is numeric)
             stat_series = events_df[safe_condition].groupby(events_df['player.id'].astype(int)).size()
             stat_series.name = stat_name
             base_df = base_df.merge(stat_series, left_index=True, right_index=True, how='left')
             return base_df
         
-        # (All the calculations from Cell 11...)
+        # Helper for secondary type list filters
+        def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find):
+            # Ensure column is not NaN, then check if the tag is in the list
+            condition = events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, list) and tag_to_find in x)
+            return calculate_and_merge(base_df, events_df, stat_name, condition)
+        
+        # --- Basic Event Counts ---
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Goals', events_df.get('shot.isGoal') == True)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Assists', events_df.get('type.secondary.assist', 0) == 1)
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Assists', 'assist')
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Shots', events_df.get('type.primary') == 'shot')
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Shots on target', (events_df.get('type.primary') == 'shot') & (events_df.get('shot.onTarget') == True))
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Interceptions', events_df.get('type.primary') == 'interception')
@@ -265,48 +260,55 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Offsides', events_df.get('type.primary') == 'offside')
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Yellow cards', events_df.get('infraction.yellowCard') == True)
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Red cards', events_df.get('infraction.redCard') == True)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Touches in penalty area', events_df.get('type.secondary.touch_in_box', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Progressive runs', events_df.get('type.secondary.progressive_run', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Fouls suffered', events_df.get('type.secondary.foul_suffered', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Second assists', events_df.get('type.secondary.second_assist', 0) == 1)
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Touches in penalty area', 'touch_in_box')
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Progressive runs', 'progressive_run')
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Fouls suffered', 'foul_suffered')
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Second assists', 'second_assist')
+
+        # --- Passing Metrics ---
         pass_events = events_df[events_df.get('type.primary') == 'pass'].copy()
-        pass_events['player.id'] = pass_events['player.id'].astype(int) # Ensure ID is int for grouping
+        pass_events['player.id'] = pass_events['player.id'].astype(int)
         player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes', pd.Series(True, index=pass_events.index))
         player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes successful', pass_events.get('pass.accurate') == True)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Long passes', pass_events.get('type.secondary.long_pass', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Long passes successful', (pass_events.get('type.secondary.long_pass', 0) == 1) & (pass_events.get('pass.accurate') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Crosses', pass_events.get('type.secondary.cross', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Crosses successful', (pass_events.get('type.secondary.cross', 0) == 1) & (pass_events.get('pass.accurate') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Through passes', pass_events.get('type.secondary.through_pass', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Through passes successful', (pass_events.get('type.secondary.through_pass', 0) == 1) & (pass_events.get('pass.accurate') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes to final third', pass_events.get('type.secondary.pass_to_final_third', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes to final third successful', (pass_events.get('type.secondary.pass_to_final_third', 0) == 1) & (pass_events.get('pass.accurate') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Forward passes', pass_events.get('type.secondary.forward_pass', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Forward passes successful', (pass_events.get('type.secondary.forward_pass', 0) == 1) & (pass_events.get('pass.accurate') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Back passes', pass_events.get('type.secondary.back_pass', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Back passes successful', (pass_events.get('type.secondary.back_pass', 0) == 1) & (pass_events.get('pass.accurate') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes to penalty area', pass_events.get('type.secondary.pass_to_penalty_area', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes to penalty area successful', (pass_events.get('type.secondary.pass_to_penalty_area', 0) == 1) & (pass_events.get('pass.accurate') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Long passes', 'long_pass')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Long passes successful', 'long_pass', and_condition=(pass_events.get('pass.accurate') == True)) # Need to update helper for this
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Crosses', 'cross')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Crosses successful', 'cross', and_condition=(pass_events.get('pass.accurate') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Through passes', 'through_pass')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Through passes successful', 'through_pass', and_condition=(pass_events.get('pass.accurate') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to final third', 'pass_to_final_third')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to final third successful', 'pass_to_final_third', and_condition=(pass_events.get('pass.accurate') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Forward passes', 'forward_pass')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Forward passes successful', 'forward_pass', and_condition=(pass_events.get('pass.accurate') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Back passes', 'back_pass')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Back passes successful', 'back_pass', and_condition=(pass_events.get('pass.accurate') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area', 'pass_to_penalty_area')
+        player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area successful', 'pass_to_penalty_area', and_condition=(pass_events.get('pass.accurate') == True))
+
+        # --- Dueling & Defensive Metrics ---
         duel_events = events_df[events_df.get('type.primary') == 'duel'].copy()
-        duel_events['player.id'] = duel_events['player.id'].astype(int) # Ensure ID is int
+        duel_events['player.id'] = duel_events['player.id'].astype(int)
         player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Duels', pd.Series(True, index=duel_events.index))
         player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Duels successful', (duel_events.get('groundDuel.keptPossession') == True) | (duel_events.get('groundDuel.recoveredPossession') == True) | (duel_events.get('aerialDuel.firstTouch') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Aerial duels', duel_events.get('type.secondary.aerial_duel', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Aerial duels successful', (duel_events.get('type.secondary.aerial_duel', 0) == 1) & (duel_events.get('aerialDuel.firstTouch') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Defensive duels', duel_events.get('type.secondary.defensive_duel', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Defensive duels successful', (duel_events.get('type.secondary.defensive_duel', 0) == 1) & (duel_events.get('groundDuel.recoveredPossession') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Offensive duels', duel_events.get('type.secondary.offensive_duel', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Offensive duels successful', (duel_events.get('type.secondary.offensive_duel', 0) == 1) & (duel_events.get('groundDuel.progressedWithBall') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Sliding tackles', duel_events.get('type.secondary.sliding_tackle', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Sliding tackles successful', (duel_events.get('type.secondary.sliding_tackle', 0) == 1) & (duel_events.get('groundDuel.recoveredPossession') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Dribbles', duel_events.get('type.secondary.dribble', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Dribbles successful', (duel_events.get('type.secondary.dribble', 0) == 1) & (duel_events.get('groundDuel.takeOn') == True))
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Losses', events_df.get('type.secondary.loss', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Losses Opp Half', (events_df.get('type.secondary.loss', 0) == 1) & (events_df.get('location.x', 0) >= 50))
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Recoveries', events_df.get('type.secondary.recovery', 0) == 1)
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Recoveries Opp Half', (events_df.get('type.secondary.recovery', 0) == 1) & (events_df.get('location.x', 0) >= 50))
-        player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Counterpressing Recoveries', events_df.get('type.secondary.counterpressing_recovery', 0) == 1)
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Aerial duels', 'aerial_duel')
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Aerial duels successful', 'aerial_duel', and_condition=(duel_events.get('aerialDuel.firstTouch') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Defensive duels', 'defensive_duel')
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Defensive duels successful', 'defensive_duel', and_condition=(duel_events.get('groundDuel.recoveredPossession') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Offensive duels', 'offensive_duel')
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Offensive duels successful', 'offensive_duel', and_condition=(duel_events.get('groundDuel.progressedWithBall') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Sliding tackles', 'sliding_tackle')
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Sliding tackles successful', 'sliding_tackle', and_condition=(duel_events.get('groundDuel.recoveredPossession') == True))
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Dribbles', 'dribble')
+        player_stats_df = calculate_and_merge_list(player_stats_df, duel_events, 'Dribbles successful', 'dribble', and_condition=(duel_events.get('groundDuel.takeOn') == True))
         
+        # --- Losses & Recoveries ---
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Losses', 'loss')
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Losses Opp Half', 'loss', and_condition=(events_df.get('location.x', 0) >= 50))
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Recoveries', 'recovery')
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Recoveries Opp Half', 'recovery', and_condition=(events_df.get('location.x', 0) >= 50))
+        player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Counterpressing Recoveries', 'counterpressing_recovery')
+
+        # --- xG ---
         xg_series = events_df.groupby(events_df['player.id'].astype(int))['shot.xg'].sum(); xg_series.name = 'xG'; player_stats_df = player_stats_df.merge(xg_series, left_index=True, right_index=True, how='left')
         player_stats_df = player_stats_df.fillna(0); cols_to_int = [col for col in player_stats_df.columns if col not in ['player.name', 'xG']]; player_stats_df[cols_to_int] = player_stats_df[cols_to_int].astype(int)
         
@@ -356,12 +358,12 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         # Other GK counting stats (using numeric player.id)
         gk_events_df['player.id'] = gk_events_df['player.id'].astype(int)
         exits = gk_events_df[gk_events_df['type.primary'] == 'goalkeeper_exit'].groupby('player.id').size().reset_index(name='exits')
-        recoveries_gk = gk_events_df[gk_events_df.get('type.secondary.recovery', 0) == 1].groupby('player.id').size().reset_index(name='recoveries_gk')
+        recoveries_gk = gk_events_df[gk_events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, list) and 'recovery' in x)].groupby('player.id').size().reset_index(name='recoveries_gk')
         gk_passes = gk_events_df[gk_events_df['type.primary'] == 'pass']
         passes_total_gk = gk_passes.groupby('player.id').size().reset_index(name='passes_gk')
         passes_succ_gk = gk_passes[gk_passes['pass.accurate'] == True].groupby('player.id').size().reset_index(name='passesSuccessful_gk')
-        long_passes_total_gk = gk_passes[gk_passes.get('type.secondary.long_pass', 0) == 1].groupby('player.id').size().reset_index(name='longPasses_gk')
-        long_passes_succ_gk = gk_passes[(gk_passes.get('type.secondary.long_pass', 0) == 1) & (gk_passes['pass.accurate'] == True)].groupby('player.id').size().reset_index(name='longPassesSuccessful_gk')
+        long_passes_total_gk = gk_passes[gk_passes.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, list) and 'long_pass' in x)].groupby('player.id').size().reset_index(name='longPasses_gk')
+        long_passes_succ_gk = gk_passes[gk_passes.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, list) and 'long_pass' in x) & (gk_passes['pass.accurate'] == True)].groupby('player.id').size().reset_index(name='longPassesSuccessful_gk')
 
         # Merge GK stats together
         gk_report_df = pd.DataFrame({'player.id': gk_ids})
@@ -431,15 +433,39 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
                                     'passesSuccessful': 'passesSuccessful_gk', 'longPasses': 'longPasses_gk', 
                                     'longPassesSuccessful': 'longPassesSuccessful_gk'}, inplace=True, errors='ignore')
         
-        metrics_to_normalize = ['npxG', 'xAOP', 'xASP', 'xT', 'Goals', 'Assists', 'Shots', 'Shots on target', 'Interceptions', 'Clearances', 'Fouls', 'Offsides', 'Yellow cards', 'Red cards', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered', 'Second assists', 'Passes', 'Passes successful', 'Long passes', 'Long passes successful', 'Crosses', 'Crosses successful', 'Through passes', 'Through passes successful', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Duels', 'Duels successful', 'Aerial duels', 'Aerial duels successful', 'Defensive duels', 'Defensive duels successful', 'Offensive duels', 'Offensive duels successful', 'Sliding tackles', 'Sliding tackles successful', 'Dribbles', 'Dribbles successful', 'Losses', 'Losses Opp Half', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'xG', 'Deep Completions', 'Progressive Passes', 'shotsOnTargetAgainst', 'goalsConceded', 'psxG_faced', 'goalsPrevented', 'exits', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'longPasses_gk', 'longPassesSuccessful_gk']
+        # Make a list of all columns that are counts (and not percentages or IDs/names)
+        cols_to_normalize = [
+            'npxG', 'xAOP', 'xASP', 'xT', 'Goals', 'Assists', 'Shots', 'Shots on target', 'Interceptions', 
+            'Clearances', 'Fouls', 'Offsides', 'Yellow cards', 'Red cards', 'Touches in penalty area', 
+            'Progressive runs', 'Fouls suffered', 'Second assists', 'Passes', 'Passes successful', 
+            'Long passes', 'Long passes successful', 'Crosses', 'Crosses successful', 'Through passes', 
+            'Through passes successful', 'Passes to final third', 'Passes to final third successful', 
+            'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 
+            'Passes to penalty area', 'Passes to penalty area successful', 'Duels', 'Duels successful', 
+            'Aerial duels', 'Aerial duels successful', 'Defensive duels', 'Defensive duels successful', 
+            'Offensive duels', 'Offensive duels successful', 'Sliding tackles', 'Sliding tackles successful', 
+            'Dribbles', 'Dribbles successful', 'Losses', 'Losses Opp Half', 'Recoveries', 'Recoveries Opp Half', 
+            'Counterpressing Recoveries', 'xG', 'Deep Completions', 'Progressive Passes', 
+            'shotsOnTargetAgainst', 'goalsConceded', 'psxG_faced', 'goalsPrevented', 'exits', 
+            'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'longPasses_gk', 'longPassesSuccessful_gk'
+        ]
 
         # Ensure totalMinutes is numeric and > 0
         combined_df['totalMinutes'] = pd.to_numeric(combined_df['totalMinutes'], errors='coerce').fillna(0)
         
-        for metric in metrics_to_normalize:
+        # Create a 'minutes_gt_0' mask to avoid division by zero
+        minutes_gt_0 = combined_df['totalMinutes'] > 0
+        
+        for metric in cols_to_normalize:
             if metric in combined_df.columns:
-                # Calculate per 90 value, handling cases with 0 minutes to avoid division errors
-                combined_df[metric] = (combined_df[metric].astype(float) / combined_df['totalMinutes'] * 90).replace([np.inf, -np.inf], 0).fillna(0)
+                # Ensure metric is numeric
+                combined_df[metric] = pd.to_numeric(combined_df[metric], errors='coerce').fillna(0)
+                # Calculate per 90, setting to 0 where minutes are 0
+                combined_df[metric] = np.where(
+                    minutes_gt_0,
+                    (combined_df[metric] / combined_df['totalMinutes']) * 90,
+                    0
+                )
 
     except Exception as e:
         print(f"  -> ❌ ERROR (Cell 21): Failed normalizing to per 90: {e}")
@@ -509,44 +535,37 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
             data.loc[position_data_indices, position + '_Score'] = 0.0 # Handle single-player group
 
     print("✅ Player percentiles and scores calculated.")
-    return data.fillna(0) # Final fillna
+    return data.fillna(0)
 
 
 # --- NEW: PLAYER RADAR PLOTTING FUNCTIONS (from Cell 23) ---
-def create_radar_chart(player_data, metrics, position, eligible_groups, ax=None, output_dir=None): # Removed output_dir requirement
+def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_groups):
     """Helper function to create the base radar chart (Cell 23 logic)."""
     
     num_metrics = len(metrics)
     angles = [n / float(num_metrics) * 2 * pi for n in range(num_metrics)]
     angles += angles[:1]
-
-    # If no axis is passed, create a new figure and axis
-    # This check is important for when this function is called by the other
-    standalone_plot = False
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
-        standalone_plot = True # Flag that we created the fig here
     
-    plt.xticks(angles[:-1], [])
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels([]) # Hide the radial labels
 
     # Get percentile values
     values = [player_data[metric + '_percentile'].values[0] for metric in metrics if metric + '_percentile' in player_data]
-    if len(values) != num_metrics:
+    if len(values) != num_metrics: 
         print(f"Warning: Mismatch in metrics ({num_metrics}) vs values ({len(values)}) for {player_data['playerName'].values[0]}")
-        return ax.figure if standalone_plot else None # Return fig if we made it
+        return 
     values += values[:1] # Close the loop
 
     ax.plot(angles, values, linewidth=1, linestyle='solid')
     ax.fill(angles, values, 'b', alpha=0.1)
 
-    # Define metric categories and colors
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
 
     # Add metric value labels (raw p90)
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
         label = f"{player_data[metric].values[0]:.2f}"
-        ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue') # 85 is 0.85 * 100
+        ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
 
     # Add metric name labels (percentiles)
     for i, metric in enumerate(metrics):
@@ -557,19 +576,18 @@ def create_radar_chart(player_data, metrics, position, eligible_groups, ax=None,
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold') # 115 is 1.15 * 100
+        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
     ax.set_rlabel_position(0)
-    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7) # Use 100
-    plt.ylim(0, 100) # Use 100
+    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7) 
+    plt.ylim(0, 100) 
 
     # Player info for title
     player_name = player_data['playerName'].values[0]
     player_position = player_data['primaryPosition'].values[0]
     player_minutes = player_data['totalMinutes'].values[0]
     player_team = player_data['teamName'].values[0]
-    position_template = f"{position} template"
-
+    
     ax.text(-0.1, 1.15, f"{player_name} | {player_team}", size=15, color='black', ha='left', va='top', transform=ax.transAxes, weight='bold')
     ax.text(-0.1, 1.11, f"{player_position} | {player_minutes:.0f} minutes played", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12)
 
@@ -584,14 +602,9 @@ def create_radar_chart(player_data, metrics, position, eligible_groups, ax=None,
     score_text = "\n"
     for group in eligible_groups:
         score_col = group + '_Score'
-        rank_col = group + '_Rank' # Assuming rank is pre-calculated or needs to be
-        
-        # We need the full data to calculate rank, so we pass it in or re-calc
-        # For simplicity in the app, let's just show the score
+        # rank_col = group + '_Rank' # Rank calculation is complex, omitting for now
         if score_col in player_data.columns:
             player_score = player_data[score_col].values[0]
-            # Rank calculation is complex, let's omit it from the plot for now
-            # player_rank = player_data[rank_col].values[0] 
             score_text += f"{group}: {player_score:.2f}\n"
 
     # Define background colors
@@ -599,11 +612,6 @@ def create_radar_chart(player_data, metrics, position, eligible_groups, ax=None,
     ax.set_facecolor(inside_radar_color)
     if ax.figure: ax.figure.patch.set_facecolor(outside_background_color)
     plt.figtext(.55, 1, score_text, horizontalalignment='left', verticalalignment='top', fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5))
-    
-    if standalone_plot:
-        return fig # Return the figure object if we created it
-    # If ax was passed in, we don't return fig (it's modified in place)
-
 
 def get_percentile_suffix(value):
     """Function to add the appropriate suffix for the percentile."""
@@ -612,7 +620,7 @@ def get_percentile_suffix(value):
     else: suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(value % 10, 'th')
     return suffix
 
-def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, output_dir=None): # Added all_position_data
+def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data): # Removed output_dir
     """Creates the combined figure with radar and distribution plots."""
     
     player_name = player_data['playerName'].values[0]
@@ -629,8 +637,6 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             if player_score > highest_score:
                 highest_score = player_score
                 highest_scoring_group = group
-        # else:
-            # print(f"Score column {score_col} not found for group {group}")
 
     if highest_scoring_group is None:
         print(f"No highest scoring group found for {player_name}. Using default.")
@@ -650,8 +656,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     ax_radar = plt.subplot(gs[0], polar=True)
     # Call the base radar chart function
     # --- CORRECTED CALL ---
-    # Pass ax_radar to the 'ax' keyword argument
-    create_radar_chart(player_data, metrics, position, eligible_groups, ax=ax_radar)
+    _create_base_radar_chart(fig, ax_radar, player_data, metrics, position, eligible_groups)
     
     # Display the highest_scoring_group with "template" at the top
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
@@ -681,6 +686,9 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
         valid_relevant_players = relevant_players_data[relevant_players_data[metric].notna()][metric]
         if len(valid_relevant_players) > 1:
             sns.kdeplot(valid_relevant_players, ax=ax_dist, fill=True, color=color, cut=0) # Added cut=0
+        elif len(valid_relevant_players) == 1: # Handle single-player group
+             ax_dist.axvline(valid_relevant_players.iloc[0], color=color, linestyle='-')
+
 
         # Get the player's value and add vertical line
         player_value = player_data[metric].values[0]
@@ -711,7 +719,6 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
         legend = ax_dist.get_legend()
         if legend is not None: legend.remove()
         
-        # Bold metric title
         ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     # Return the completed figure
@@ -1415,103 +1422,93 @@ if raw_events_df is not None and matches_summary_df is not None:
         else:
             st.warning("Could not calculate raw league stats for custom plot.")
 
-            # --- NEW: Player Analysis Section ---
+           # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
         st.header("Player Analysis")
         
-        if player_minutes_df is None:
-            st.error("Player minutes data file (`player_minutes_and_positions.pkl`) not loaded. Cannot proceed.")
+        # --- Sidebar Options for Player Tab ---
+        st.sidebar.subheader("Player Analysis Options")
+        
+        # 1. Run the heavy calculations
+        try:
+            player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df)
+            player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+            )
+        except Exception as e:
+            st.error(f"An error occurred during player stat calculation: {e}")
+            st.stop() 
+
+        if player_stats_with_scores_df.empty:
+            st.warning("No players found matching the criteria (e.g., >= 90 minutes).")
         else:
-            # --- Sidebar Options for Player Tab ---
-            st.sidebar.subheader("Player Analysis Options")
+            # 2. Create UI selectors
+            # Sort players by total minutes
+            player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+            player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
             
-            # 1. Run the heavy calculations
-            try:
-                player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df)
-                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
-                )
-            except Exception as e:
-                st.error(f"An error occurred during player stat calculation: {e}")
-                st.stop() # Stop execution for this tab
+            selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
+            
+            # Get data for the selected player
+            selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
+            player_data = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
 
-            # --- START DEBUG EXPANDER ---
-            with st.expander("🕵️‍♂️ **Click to View Player Data Processing Steps**"):
-                st.subheader("1. Base Player Data (from `player_minutes_and_positions.pkl`)")
-                st.dataframe(player_minutes_df.head())
-                
-                st.subheader("2. Raw Per-90 Stats (from `calculate_player_radar_data`)")
-                st.write("Check here if metrics like 'npxG', 'xAOP', 'xT', 'Passes', 'Duels' are all 0 or missing.")
-                st.dataframe(player_stats_df)
-                
-                st.subheader("3. Final Percentiles & Scores (from `calculate_player_percentiles_and_scores`)")
-                st.write("Check here if percentile/score columns (e.g., `npxG_percentile`, `Stopper_Score`) are all 0 or missing.")
-                st.dataframe(player_stats_with_scores_df)
-            # --- END DEBUG EXPANDER ---
-
-            if player_stats_with_scores_df.empty:
-                st.warning("No players found matching the criteria (e.g., >= 90 minutes).")
+            if player_data.empty:
+                st.warning(f"No data found for {selected_player_name}.")
             else:
-                # 2. Create UI selectors
-                player_list = sorted(player_stats_with_scores_df['playerName'].unique())
-                selected_player_name = st.sidebar.selectbox("Select Player:", player_list)
+                primary_pos = player_data['primaryPosition'].values[0]
                 
-                # 3. Get data for the selected player
-                player_data = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
-
-                if player_data.empty:
-                    st.warning(f"No data found for {selected_player_name}.")
+                # 4. Find all position archetypes this player qualifies for
+                eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
+                
+                if not eligible_groups:
+                    st.warning(f"No radar templates found for player's primary position: {primary_pos}")
                 else:
-                    primary_pos = player_data['primaryPosition'].values[0]
-                    
-                    # 4. Find all position archetypes this player qualifies for
-                    eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
-                    
-                    if not eligible_groups:
-                        st.warning(f"No radar templates found for player's primary position: {primary_pos}")
-                    else:
-                        st.subheader(f"Player Radar: {selected_player_name}")
+                    st.subheader(f"Player Radar: {selected_player_name}")
 
-                        # 5. Find the player's highest-scoring archetype (from Cell 23 logic)
-                        highest_score = -1
-                        highest_scoring_group = None
-                        scores_by_group = {}
-                        
-                        for group in eligible_groups:
-                            score_col = group + '_Score'
-                            if score_col in player_data.columns:
-                                player_score = player_data[score_col].values[0]
-                                scores_by_group[group] = player_score
-                                if player_score > highest_score:
-                                    highest_score = player_score
-                                    highest_scoring_group = group
-                        
-                        if highest_scoring_group is None:
-                            highest_scoring_group = eligible_groups[0] # Fallback
-                        
-                        # 6. Get metrics for the highest scoring group
-                        metrics_to_plot = list(WEIGHTS[highest_scoring_group].keys())
-                        
-                        # Filter out any metrics that might be missing from the final df
-                        metrics_to_plot = [m for m in metrics_to_plot if m in player_data.columns]
-                        
-                        st.markdown(f"Displaying radar for best-fit archetype: **{highest_scoring_group}**")
-                        st.dataframe(player_data) # This will print the single row of data being plotted
-
-                        # 7. Call the main plotting function (from Cell 23)
-                        fig = create_radar_with_distributions(
-                            player_data, 
-                            metrics_to_plot, 
-                            highest_scoring_group, # Pass the highest scoring group
-                            eligible_groups,
-                            all_position_data=player_stats_with_scores_df, # Pass all data for distribution
-                            output_dir=None # Not saving to file
-                        )
-                        st.pyplot(fig, use_container_width=True)
-                        
-                        # Show raw data for the player in an expander
-                        with st.expander("View Raw Player Data (Per 90)"):
-                             st.dataframe(player_data.round(2))
+                    # 5. Find the player's highest-scoring archetype (from Cell 23 logic)
+                    highest_score = -1
+                    highest_scoring_group = None
+                    scores_by_group = {}
+                    
+                    for group in eligible_groups:
+                        score_col = group + '_Score'
+                        if score_col in player_data.columns:
+                            player_score = player_data[score_col].values[0]
+                            scores_by_group[group] = player_score
+                            if player_score > highest_score:
+                                highest_score = player_score
+                                highest_scoring_group = group
+                    
+                    if highest_scoring_group is None:
+                        highest_scoring_group = eligible_groups[0] # Fallback
+                    
+                    # 6. Get metrics for the highest scoring group
+                    metrics_to_plot = list(WEIGHTS[highest_scoring_group].keys())
+                    # Filter out any metrics that might be missing from the final df
+                    metrics_to_plot = [m for m in metrics_to_plot if m in player_data.columns]
+                    
+                    st.markdown(f"Displaying radar for best-fit archetype: **{highest_scoring_group}**")
+                    
+                    # 7. Call the main plotting function (from Cell 23)
+                    # We pass the full (filtered) dataframe for distribution calculations
+                    position_data_for_dist = player_stats_with_scores_df[player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[highest_scoring_group])]
+                    
+                    fig = create_radar_with_distributions(
+                        player_data, 
+                        metrics_to_plot, 
+                        highest_scoring_group, 
+                        eligible_groups,
+                        all_position_data=position_data_for_dist, # Pass data for this position
+                    )
+                    st.pyplot(fig, use_container_width=True)
+                    
+                    with st.expander("View Raw Player Data (Per 90)"):
+                         st.dataframe(player_data[metrics_to_plot + ['totalMinutes', 'primaryPosition']].round(2).T)
+                         
+                    with st.expander("View Percentile Data"):
+                         percentile_cols = [m + '_percentile' for m in metrics_to_plot]
+                         st.dataframe(player_data[percentile_cols].round(2).T)
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure artifacts are pushed to GitHub.")
