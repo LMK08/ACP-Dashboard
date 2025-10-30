@@ -45,7 +45,6 @@ def load_data():
         with open('season_team_stats.pkl', 'rb') as f:
             season_team_stats = pickle.load(f)
             
-        # --- NEW: Load Player Minutes & Position Data ---
         with open('player_minutes_and_positions.pkl', 'rb') as f:
             player_minutes_df = pickle.load(f)
 
@@ -147,8 +146,6 @@ def calculate_and_merge(base_df, events_df, stat_name, filter_condition):
     """
     # Ensure filter condition is a Series with the same index as events_df
     if not isinstance(filter_condition, pd.Series):
-        # This handles cases like pd.Series(True, index=pass_events.index)
-        # We need to reindex it to the full events_df
         filter_condition = filter_condition.reindex(events_df.index, fill_value=False)
 
     safe_condition = filter_condition & events_df['player.id'].notna()
@@ -192,6 +189,7 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     combined_df = _player_minutes_df.copy()
 
     print("Step 1: Skipping one-hot encoding (using raw list search).")
+    # We must ensure 'player.id' is int for merging/grouping
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     events_df = events_df.dropna(subset=['player.id'])
     events_df['player.id'] = events_df['player.id'].astype(int)
@@ -250,7 +248,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df['player.id'] = player_stats_df['player.id'].astype(int)
         player_stats_df = player_stats_df.set_index('player.id')
         
-        # -- Basic Event Counts --
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Goals', bool_condition=(events_df.get('shot.isGoal') == True))
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Assists', 'assist')
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Shots', primary_type='shot')
@@ -266,7 +263,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Fouls suffered', 'foul_suffered')
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Second assists', 'second_assist')
         
-        # -- Passing Metrics --
         pass_events = events_df[events_df.get('type.primary') == 'pass'].copy()
         pass_events['player.id'] = pass_events['player.id'].astype(int); pass_accurate_condition = pass_events.get('pass.accurate') == True
         player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes', primary_type='pass')
@@ -286,7 +282,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area', 'pass_to_penalty_area')
         player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area successful', 'pass_to_penalty_area', and_condition=pass_accurate_condition)
         
-        # -- Dueling & Defensive Metrics --
         duel_events = events_df[events_df.get('type.primary') == 'duel'].copy()
         duel_events['player.id'] = duel_events['player.id'].astype(int)
         player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Duels', primary_type='duel')
@@ -540,16 +535,13 @@ def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_g
             try:
                 if full_df_for_ranking is not None and not full_df_for_ranking.empty:
                     group_players = full_df_for_ranking[full_df_for_ranking['primaryPosition'].isin(POSITION_GROUPS[group])]
-                    # Check if 'Score' column exists before ranking
                     if score_col in group_players.columns:
                         group_players[rank_col] = group_players[score_col].rank(ascending=False, method='dense').astype(int)
                         if player_data.index[0] in group_players.index:
                             player_rank = group_players.loc[player_data.index[0], rank_col]
                             player_rank_str = f" (Rank: {player_rank})"
-                    
             except Exception as e:
                 print(f"Warning: Could not calculate rank for {group}. Error: {e}")
-                
             score_text += f"{group}: {player_score:.2f}{player_rank_str}\n"
 
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
@@ -590,8 +582,8 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
     
-    # --- CORRECTED CALL: Pass ax_radar to 'ax' keyword ---
-    _create_base_radar_chart(fig, ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking)
+    # --- CORRECTED CALL: Pass all args, with `ax` as keyword ---
+    _create_base_radar_chart(player_data, metrics, position, eligible_groups, ax=ax_radar, full_df_for_ranking=full_df_for_ranking)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
               horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
@@ -635,6 +627,11 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
+
+
+# --- Team/League Plotting Functions ---
+# (plot_radar_chart, plot_corner_analysis, create_match_shotmap, etc...)
+# ... (These functions are unchanged and should be here) ...
 
 
 
@@ -1100,6 +1097,11 @@ st.title("Atlético CP Analysis") # You can change this title
 # --- Load Data ---
 raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
 
+# --- Declare player_stats_with_scores_df globally for the app session ---
+# This ensures it's accessible inside the plotting function
+player_stats_with_scores_df = pd.DataFrame()
+
+
 # --- Main App Logic ---
 if raw_events_df is not None and matches_summary_df is not None and player_minutes_df is not None:
     # --- Sidebar for Navigation ---
@@ -1321,11 +1323,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
             selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
             
-            selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
-            player_data = player_stats_with_scores_df.loc[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
+            # Find player data
+            player_data_rows = player_stats_with_scores_df[player_stats_with_scores_df['display_name'] == selected_player_display]
+            if player_data_rows.empty:
+                # Fallback if display_name somehow fails
+                selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
+                player_data = player_stats_with_scores_df.loc[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
+            else:
+                 player_data = player_data_rows.copy()
+
 
             if player_data.empty:
-                st.warning(f"No data found for {selected_player_name}.")
+                st.warning(f"No data found for selected player.")
             else:
                 primary_pos = player_data['primaryPosition'].values[0]
                 eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
@@ -1333,7 +1342,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if not eligible_groups:
                     st.warning(f"No radar templates found for player's primary position: {primary_pos}")
                 else:
-                    st.subheader(f"Player Radar: {selected_player_name}")
+                    st.subheader(f"Player Radar: {player_data['playerName'].values[0]}")
+
                     highest_score = -1; highest_scoring_group = None; scores_by_group = {}
                     for group in eligible_groups:
                         score_col = group + '_Score'
@@ -1377,6 +1387,3 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                          score_cols = [g + '_Score' for g in eligible_groups if g + '_Score' in player_data.columns]
                          st.dataframe(player_data[score_cols].round(2).T)
             # --- END: UI CODE ---
-
-else:
-    st.error("Data files not loaded. Please run `process_data.py` locally (including the new player minutes step) and ensure all artifacts are pushed to GitHub.")
