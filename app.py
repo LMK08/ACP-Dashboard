@@ -400,7 +400,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
         ax.axline((0, -c), slope=1, color='lightgray', linestyle=':', zorder=1, lw=1)
     # --- (END NEW) Diagonal Lines Logic ---
 
-    
+
     stats_df_to_plot = stats_df
     if teams_to_include:
         valid_teams = [t for t in teams_to_include if t in stats_df.index]
@@ -423,6 +423,83 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
     ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
     ax.set_ylabel('Defending Strength (30% NP Goals Against, 70% NPxG Against)', fontsize=12)
     #ax.grid(True, linestyle='--', alpha=0.5); plt.tight_layout(); return fig
+
+# app.py (Add this new function)
+
+# --- NEW FUNCTION: Plot Custom Scatter Plot ---
+def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league="Liga 3 Portugal", season="2025/26"):
+    """Generates a dynamic Matplotlib scatter plot with logos."""
+
+    # Ensure the selected metrics exist in the DataFrame
+    if x_metric not in stats_df.columns or y_metric not in stats_df.columns:
+        fig, ax = plt.subplots(figsize=(10, 8))
+        fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9')
+        ax.text(0.5, 0.5, f"Error: Metric not found.\nCheck data processing script.", ha='center', va='center', fontsize=12, color='red')
+        ax.axis('off'); return fig
+
+    fig, ax = plt.subplots(figsize=(16, 12))
+    fig.set_facecolor('#f5f1e9')
+    ax.set_facecolor('#f5f1e9')
+
+    x_data = stats_df[x_metric]
+    y_data = stats_df[y_metric]
+
+    # --- 1. Set Axis Limits & Padding ---
+    x_min, x_max = x_data.min(), x_data.max()
+    y_min, y_max = y_data.min(), y_data.max()
+    x_padding = (x_max - x_min) * 0.1
+    y_padding = (y_max - y_min) * 0.1
+
+    ax.set_xlim(x_min - x_padding, x_max + x_padding)
+    ax.set_ylim(y_min - y_padding, y_max + y_padding)
+
+    # --- 2. Invert Axis (if user checked the box) ---
+    if invert_x:
+        ax.set_xlim(x_max + x_padding, x_min - x_padding)
+    if invert_y:
+        ax.set_ylim(y_max + y_padding, y_min - y_padding)
+        
+    # --- 3. Add Mean Quadrant Lines for Context ---
+    x_mean = x_data.mean()
+    y_mean = y_data.mean()
+    ax.axhline(y_mean, color='gray', linestyle='--', lw=1, zorder=1)
+    ax.axvline(x_mean, color='gray', linestyle='--', lw=1, zorder=1)
+
+    # --- 4. Plot Logos (re-using logic from plot_team_strength) ---
+    stats_df_to_plot = stats_df.copy()
+    texts = []; logos_plotted = 0; base_icon_path = "icons" 
+
+    for team_name, row in stats_df_to_plot.iterrows():
+        safe_team_name = team_name.replace('/', '_').replace('\\', '_')
+        logo_path = os.path.join(base_icon_path, f"{safe_team_name}.png")
+        try:
+            if os.path.exists(logo_path):
+                 img = Image.open(logo_path)
+                 # Use the increased zoom factor
+                 imagebox = OffsetImage(img, zoom=0.15) 
+                 # Plot using the dynamic x_metric and y_metric
+                 ab = AnnotationBbox(imagebox, (row[x_metric], row[y_metric]), frameon=False, zorder=2)
+                 ax.add_artist(ab)
+                 logos_plotted +=1
+            else:
+                 texts.append(ax.text(row[x_metric], row[y_metric], team_name, zorder=3, fontsize=9))
+        except Exception as e:
+            print(f"Error loading logo for {team_name}: {e}. Using text.")
+            texts.append(ax.text(row[x_metric], row[y_metric], team_name, zorder=3, fontsize=9))
+    
+    if texts:
+        adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+    if logos_plotted == 0 and not texts: 
+         ax.scatter(stats_df_to_plot[x_metric], stats_df_to_plot[y_metric], s=50, zorder=2)
+
+    # --- 5. Styling ---
+    report_date = datetime.date.today().strftime("%Y-%m-%d")
+    ax.set_title(f'League Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
+    ax.set_xlabel(x_metric, fontsize=12) # Dynamic X Label
+    ax.set_ylabel(y_metric, fontsize=12) # Dynamic Y Label
+
+    plt.tight_layout()
+    return fig
 
 
 # ==============================================================================
@@ -597,45 +674,73 @@ if raw_events_df is not None and matches_summary_df is not None:
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
 
-        # --- Team Strength Scatter Plot ---
+        # --- 1. Calculate stats needed for BOTH plots ---
+        # (This function is defined above, in the helper functions section)
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
+        team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df)
+
+        # --- Plot 1: Team Strength Scatter (Existing) ---
         st.subheader("Team Strength Scatterplot")
-
-        # Calculate strength stats for ALL teams
-        # Use .copy() to avoid modifying cached data if filtering/manipulating later
-        team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df).copy()
-
-        # Your list of teams to include
-        TEAMS_TO_INCLUDE = [
-            '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-            'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP',
-            'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes',
-            'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense',
-            'Sporting Braga II', 'AD Marco 09'
-        ]
-        
-        # Ensure teams in the list are also in the calculated data
-        valid_teams_to_plot = [team for team in TEAMS_TO_INCLUDE if team in team_strength_df.index]
-        
-        # You could also offer a multiselect in the sidebar for this tab
-        # st.sidebar.subheader("League Analysis Options")
-        # teams_to_plot = st.sidebar.multiselect("Select Teams to Plot:", 
-        #                                       options=team_strength_df.index.tolist(), 
-        #                                       default=valid_teams_to_plot)
-
-
         if not team_strength_df.empty:
-            # Generate and display the plot
-            # Pass the full df (for axes) and the list of teams to actually plot
+            # (Your list of teams to include)
+            TEAMS_TO_INCLUDE = [
+                '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+                'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP',
+                'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes',
+                'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense',
+                'Sporting Braga II', 'AD Marco 09'
+            ]
+            valid_teams_to_plot = [team for team in TEAMS_TO_INCLUDE if team in team_strength_df.index]
+            
             fig_strength = plot_team_strength(team_strength_df, teams_to_include=valid_teams_to_plot) 
             st.pyplot(fig_strength, use_container_width=True)
             
-            # Optionally display the raw data table
-            with st.expander("View Raw Strength Data (All Teams)"):
+            with st.expander("View Raw Strength Data"):
                  st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
         else:
             st.warning("Could not calculate team strength data.")
         
-        # --- Add more league-wide plots/tables below ---
+        # --- PLOT 2: Custom Scatter Plot (New) ---
+        st.subheader("Custom League Scatterplot")
+        
+        if not stats_df_raw.empty:
+            # Get list of all available metrics from the raw radar stats
+            # We filter out some non-metric columns if they exist
+            metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId'] 
+            available_metrics = sorted([col for col in stats_df_raw.columns if col not in metrics_to_exclude])
+            
+            # Create two columns for the selectors
+            col_x, col_y = st.columns(2)
+            with col_x:
+                # Set default to 'xG' if available, otherwise just pick the first
+                default_x_index = available_metrics.index('xG') if 'xG' in available_metrics else 0
+                x_metric = st.selectbox("Select X-Axis Metric:", available_metrics, index=default_x_index) 
+            with col_y:
+                # Set default to 'xG Against' if available
+                default_y_index = available_metrics.index('xG Against') if 'xG Against' in available_metrics else 1
+                y_metric = st.selectbox("Select Y-Axis Metric:", available_metrics, index=default_y_index)
 
-else:
-    st.error("Data files not loaded. Please run `process_data.py` locally and ensure artifacts are pushed to GitHub.")
+            # Checkboxes for axis inversion
+            col_inv_x, col_inv_y = st.columns(2)
+            with col_inv_x:
+                invert_x = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x')
+            with col_inv_y:
+                # Default to True if a common "Against" metric is chosen
+                default_invert_y = 'Against' in y_metric or 'PPDA' in y_metric
+                invert_y = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y, key='invert_y')
+
+            # Plot the custom scatter
+            if x_metric and y_metric:
+                fig_custom = plot_custom_scatter(
+                    stats_df_raw, 
+                    x_metric, 
+                    y_metric, 
+                    invert_x, 
+                    invert_y
+                )
+                st.pyplot(fig_custom, use_container_width=True)
+            
+            with st.expander("View Raw Radar Stats Data"):
+                 st.dataframe(stats_df_raw.round(2))
+        else:
+            st.warning("Could not calculate raw league stats for custom plot.")
