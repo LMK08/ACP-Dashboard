@@ -1443,8 +1443,7 @@ if raw_events_df is not None and matches_summary_df is not None:
 
         if player_stats_with_scores_df.empty:
             st.warning("No players found matching the criteria (e.g., >= 90 minutes).")
-        else:
-            # ... (Rest of your player selection and plotting UI) ...
+     
 
 
 else:
