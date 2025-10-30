@@ -45,6 +45,7 @@ def load_data():
         with open('season_team_stats.pkl', 'rb') as f:
             season_team_stats = pickle.load(f)
             
+        # --- NEW: Load Player Minutes & Position Data ---
         with open('player_minutes_and_positions.pkl', 'rb') as f:
             player_minutes_df = pickle.load(f)
 
@@ -144,8 +145,13 @@ def calculate_and_merge(base_df, events_df, stat_name, filter_condition):
     Helper function from notebook Cell 11.
     Calculates a stat based on a filter and merges it into the base DataFrame.
     """
-    # Ensure filter condition has same index and handles NaNs
-    safe_condition = filter_condition.reindex(events_df.index, fill_value=False) & events_df['player.id'].notna()
+    # Ensure filter condition is a Series with the same index as events_df
+    if not isinstance(filter_condition, pd.Series):
+        # This handles cases like pd.Series(True, index=pass_events.index)
+        # We need to reindex it to the full events_df
+        filter_condition = filter_condition.reindex(events_df.index, fill_value=False)
+
+    safe_condition = filter_condition & events_df['player.id'].notna()
     
     # Group by player.id (which should be numeric)
     stat_series = events_df[safe_condition].groupby(events_df['player.id'].astype(int)).size()
@@ -167,6 +173,7 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
         condition &= (events_df.get('type.primary') == primary_type)
         
     if and_condition is not None:
+        # Align indices before combining conditions
         condition = condition & and_condition.reindex(condition.index, fill_value=False)
         
     return calculate_and_merge(base_df, events_df, stat_name, condition)
@@ -243,6 +250,7 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df['player.id'] = player_stats_df['player.id'].astype(int)
         player_stats_df = player_stats_df.set_index('player.id')
         
+        # -- Basic Event Counts --
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Goals', bool_condition=(events_df.get('shot.isGoal') == True))
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Assists', 'assist')
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Shots', primary_type='shot')
@@ -258,6 +266,7 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Fouls suffered', 'foul_suffered')
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Second assists', 'second_assist')
         
+        # -- Passing Metrics --
         pass_events = events_df[events_df.get('type.primary') == 'pass'].copy()
         pass_events['player.id'] = pass_events['player.id'].astype(int); pass_accurate_condition = pass_events.get('pass.accurate') == True
         player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes', primary_type='pass')
@@ -277,6 +286,7 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area', 'pass_to_penalty_area')
         player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area successful', 'pass_to_penalty_area', and_condition=pass_accurate_condition)
         
+        # -- Dueling & Defensive Metrics --
         duel_events = events_df[events_df.get('type.primary') == 'duel'].copy()
         duel_events['player.id'] = duel_events['player.id'].astype(int)
         player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Duels', primary_type='duel')
@@ -405,13 +415,13 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     print("--- FINISHED: Player radar data calculation ---")
     return combined_df.fillna(0)
 
+
 @st.cache_data
 def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90):
     """Calculates percentiles and scores for all players based on position."""
     print("Calculating player percentiles and scores...")
     data = _player_data_df.copy()
     
-    # Filter by minutes
     data['totalMinutes'] = pd.to_numeric(data['totalMinutes'], errors='coerce')
     data = data[data['totalMinutes'] >= min_minutes]
     if data.empty:
@@ -424,18 +434,15 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
         position_data_mask = data['primaryPosition'].isin(group)
         position_data_indices = data[position_data_mask].index
         
-        if position_data_indices.empty: continue # Skip if no players in this group
+        if position_data_indices.empty: continue
 
         for metric in metrics:
             if metric in data.columns:
-                # Ensure data is numeric for ranking
                 data[metric] = pd.to_numeric(data[metric], errors='coerce').fillna(0)
-                # Calculate percentiles *within the position group*
                 percentiles = data.loc[position_data_indices, metric].rank(pct=True)
                 if metric in _invert_metrics:
-                    percentiles = 1 - (percentiles.fillna(0.5)) # Handle NaNs during inversion
+                    percentiles = 1 - (percentiles.fillna(0.5))
                 
-                # Assign percentiles back to the main DataFrame
                 data.loc[position_data_indices, metric + '_percentile'] = percentiles
             
     # Calculate Scores
@@ -445,31 +452,27 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
         position_data_indices = data[position_data_mask].index
         if position_data_indices.empty: continue
 
-        # Sum weighted percentiles
         total_score = pd.Series(0.0, index=position_data_indices, dtype='float64')
         for metric in metrics:
             percentile_col = metric + '_percentile'
             if percentile_col in data.columns:
                 weight = _weights[position].get(metric, 0)
-                # Use .loc to ensure alignment and fillna(0) for percentiles
                 total_score = total_score.add(data.loc[position_data_indices, percentile_col].fillna(0) * weight, fill_value=0)
         
         data.loc[position_data_indices, position + '_TotalScore'] = total_score
         
-        # Normalize score 0-100
         min_score = total_score.min()
         max_score = total_score.max()
         if (max_score - min_score) != 0:
             data.loc[position_data_indices, position + '_Score'] = (total_score - min_score) / (max_score - min_score) * 100
         else:
-            data.loc[position_data_indices, position + '_Score'] = 0.0 # Handle single-player group
+            data.loc[position_data_indices, position + '_Score'] = 0.0
 
     print("✅ Player percentiles and scores calculated.")
     return data.fillna(0)
 
 
-# --- NEW: PLAYER RADAR PLOTTING FUNCTIONS (from Cell 23) ---
-# Note: Renamed create_radar_chart to _create_base_radar_chart to avoid name conflict
+# --- PLAYER RADAR PLOTTING FUNCTIONS ---
 def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None):
     """Helper function to create the base radar chart (Cell 23 logic)."""
     
@@ -478,32 +481,26 @@ def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_g
     angles += angles[:1]
     
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([]) # Hide the radial labels
+    ax.set_xticklabels([]) 
 
-    # Get percentile values
     values = [player_data[metric + '_percentile'].values[0] for metric in metrics if metric + '_percentile' in player_data.columns]
     if len(values) != num_metrics:
         print(f"Warning: Mismatch in metrics ({num_metrics}) vs values ({len(values)}) for {player_data['playerName'].values[0]}")
-        # Find missing metrics:
         missing_pct = [m + '_percentile' for m in metrics if m + '_percentile' not in player_data.columns]
         print(f"  -> Missing percentile columns: {missing_pct}")
-        # Pad values with 0 to prevent crash
         values.extend([0] * (num_metrics - len(values)))
-        
-    values += values[:1] # Close the loop
+    values += values[:1] 
 
-    ax.plot(angles, values, linewidth=1, linestyle='solid', color='#0077b6') # Use plot color
-    ax.fill(angles, values, '#0077b6', alpha=0.1) # Use plot color
+    ax.plot(angles, values, linewidth=1, linestyle='solid', color='#0077b6') 
+    ax.fill(angles, values, '#0077b6', alpha=0.1) 
 
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
 
-    # Add metric value labels (raw p90)
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
         label = f"{player_data[metric].values[0]:.2f}"
         ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
 
-    # Add metric name labels (percentiles)
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
         if metric in OUTPUT_METRICS: color = category_colors['output']
@@ -518,7 +515,6 @@ def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_g
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7) 
     plt.ylim(0, 100) 
 
-    # Player info for title
     player_name = player_data['playerName'].values[0]
     player_position = player_data['primaryPosition'].values[0]
     player_minutes = player_data['totalMinutes'].values[0]
@@ -534,35 +530,28 @@ def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_g
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     ax.legend(patches, legend_labels, loc='lower right', bbox_to_anchor=(1.7, 1), frameon=False)
 
-    # Calculate and display player score and rank for each relevant group
-# Calculate and display player score and rank for each relevant group
-# Calculate and display player score and rank for each relevant group
-# Calculate and display player score and rank for each relevant group
-score_text = "\n"
-for group in eligible_groups:
-    score_col = group + '_Score'
-    rank_col = group + '_Rank'
-    if score_col in player_data.columns:
-        player_score = player_data[score_col].values[0]
-        player_rank_str = "" # Default to no rank
-        try:
-            # Use the passed-in full DataFrame to find the rank
-            if full_df_for_ranking is not None and not full_df_for_ranking.empty:
-                # Filter for the correct position group
-                group_players = full_df_for_ranking[full_df_for_ranking['primaryPosition'].isin(POSITION_GROUPS[group])]
-                # Calculate ranks for just this group
-                group_players[rank_col] = group_players[score_col].rank(ascending=False, method='dense').astype(int)
+    score_text = "\n"
+    for group in eligible_groups:
+        score_col = group + '_Score'
+        rank_col = group + '_Rank'
+        if score_col in player_data.columns:
+            player_score = player_data[score_col].values[0]
+            player_rank_str = ""
+            try:
+                if full_df_for_ranking is not None and not full_df_for_ranking.empty:
+                    group_players = full_df_for_ranking[full_df_for_ranking['primaryPosition'].isin(POSITION_GROUPS[group])]
+                    # Check if 'Score' column exists before ranking
+                    if score_col in group_players.columns:
+                        group_players[rank_col] = group_players[score_col].rank(ascending=False, method='dense').astype(int)
+                        if player_data.index[0] in group_players.index:
+                            player_rank = group_players.loc[player_data.index[0], rank_col]
+                            player_rank_str = f" (Rank: {player_rank})"
+                    
+            except Exception as e:
+                print(f"Warning: Could not calculate rank for {group}. Error: {e}")
+                
+            score_text += f"{group}: {player_score:.2f}{player_rank_str}\n"
 
-                # Ensure player's index is in the group_players index before trying to loc
-                if player_data.index[0] in group_players.index:
-                    player_rank = group_players.loc[player_data.index[0], rank_col]
-                    player_rank_str = f" (Rank: {player_rank})"
-
-        except Exception as e:
-            print(f"Warning: Could not calculate rank for {group}. Error: {e}")
-
-        score_text += f"{group}: {player_score:.2f}{player_rank_str}\n"
-    # Define background colors
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     if ax.figure: ax.figure.patch.set_facecolor(outside_background_color)
@@ -571,18 +560,16 @@ for group in eligible_groups:
 
 def get_percentile_suffix(value):
     """Function to add the appropriate suffix for the percentile."""
-    value = int(value) # Ensure it's an integer
+    value = int(value)
     if 10 <= value % 100 <= 20: suffix = 'th'
     else: suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(value % 10, 'th')
     return suffix
 
-def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None): # Removed output_dir
+def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None):
     """Creates the combined figure with radar and distribution plots."""
     
     player_name = player_data['playerName'].values[0]
-    highest_scoring_group = None
-    highest_score = -1
-    scores_by_group = {}
+    highest_scoring_group = None; highest_score = -1; scores_by_group = {}
 
     for group in eligible_groups:
         score_col = group + '_Score'
@@ -590,24 +577,20 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             player_score = player_data[score_col].values[0]
             scores_by_group[group] = player_score
             if player_score > highest_score:
-                highest_score = player_score
-                highest_scoring_group = group
+                highest_score = player_score; highest_scoring_group = group
 
     if highest_scoring_group is None:
         print(f"No highest scoring group found for {player_name}. Using default.")
-        highest_scoring_group = eligible_groups[0] if eligible_groups else "Default" # Fallback
+        highest_scoring_group = eligible_groups[0] if eligible_groups else "Default" 
 
-    # Get relevant metrics from the highest_scoring_group
     relevant_metrics = DISTRIBUTION_METRICS_BY_POSITION.get(highest_scoring_group, metrics)
-    # Ensure all metrics are in the dataframe before proceeding
     relevant_metrics = [m for m in relevant_metrics if m in player_data.columns]
 
     fig = plt.figure(figsize=(20, 10))
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
     
-    # Call the base radar chart function
-    # CORRECTED CALL: Pass ax_radar positionally
+    # --- CORRECTED CALL: Pass ax_radar to 'ax' keyword ---
     _create_base_radar_chart(fig, ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
@@ -615,58 +598,40 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
               fontsize=14, fontweight='bold', color='black')
 
     # --- Distribution Plots ---
-    # Filter relevant players from the same primary position group
-    primary_pos_group = POSITION_GROUPS.get(eligible_groups[0], [player_data['primaryPosition'].values[0]]) # Use first group or player's pos
+    primary_pos_group = POSITION_GROUPS.get(eligible_groups[0], [player_data['primaryPosition'].values[0]])
     relevant_players_data = all_position_data[all_position_data['primaryPosition'].isin(primary_pos_group)]
     
-    if relevant_metrics: # Only create plots if there are metrics
+    if relevant_metrics and not relevant_players_data.empty:
         gs_distributions = GridSpec(len(relevant_metrics), 1, left=0.70, right=0.98, top=0.82, bottom=0.07, hspace=0.7, figure=fig)
-
         for i, metric in enumerate(relevant_metrics):
             ax_dist = plt.subplot(gs_distributions[i])
-
             if metric in OUTPUT_METRICS: color = 'green'
             elif metric in PASSING_METRICS: color = 'orange'
             elif metric in DEFENSIVE_METRICS: color = 'red'
             elif metric in DRIBBLING_METRICS: color = 'purple'
             elif metric in GOALKEEPING_METRICS: color = 'cyan'
             else: color = 'blue'
-
+            
             valid_relevant_players = relevant_players_data[relevant_players_data[metric].notna()][metric]
-            if len(valid_relevant_players) > 1:
-                sns.kdeplot(valid_relevant_players, ax=ax_dist, fill=True, color=color, cut=0)
-            elif len(valid_relevant_players) == 1:
-                 ax_dist.axvline(valid_relevant_players.iloc[0], color=color, linestyle='-')
+            if len(valid_relevant_players) > 1: sns.kdeplot(valid_relevant_players, ax=ax_dist, fill=True, color=color, cut=0)
+            elif len(valid_relevant_players) == 1: ax_dist.axvline(valid_relevant_players.iloc[0], color=color, linestyle='-')
             
             player_value = player_data[metric].values[0]
             
-            # Percentile calculation
             percentile_rank = 0
-            if len(valid_relevant_players) > 0:
-                percentile_rank = scipy.stats.percentileofscore(valid_relevant_players, player_value, kind='strict')
-            percentile_rank_int = int(percentile_rank)
-            suffix = get_percentile_suffix(percentile_rank_int)
-
+            if len(valid_relevant_players) > 0: percentile_rank = scipy.stats.percentileofscore(valid_relevant_players, player_value, kind='strict')
+            percentile_rank_int = int(percentile_rank); suffix = get_percentile_suffix(percentile_rank_int)
             min_value = valid_relevant_players.min(); max_value = valid_relevant_players.max()
-            if pd.isna(min_value) or pd.isna(max_value) or min_value == max_value: 
-                min_value = player_value - 0.1
-                max_value = player_value + 0.1
-            if min_value == max_value: # Handle case where player_value is 0
-                 max_value = 1.0
+            if pd.isna(min_value) or pd.isna(max_value) or min_value == max_value: min_value = player_value - 0.1; max_value = player_value + 0.1
+            if min_value == max_value: max_value = min_value + 1.0 # Handle 0 case
             
-            ax_dist.set_xlim(min_value, max_value)
-            ax_dist.set_xticks([min_value, max_value])
-            ax_dist.set_xticklabels([f"{min_value:.2f}", f"{max_value:.2f}"], fontsize=8)
+            ax_dist.set_xlim(min_value, max_value); ax_dist.set_xticks([min_value, max_value]); ax_dist.set_xticklabels([f"{min_value:.2f}", f"{max_value:.2f}"], fontsize=8)
             ax_dist.axvline(player_value, color='blue', linestyle='--')
-
             raw_value = f"{player_value:.2f}"
-            ax_dist.text(1.05, 0.5, f"%-tile: {percentile_rank_int}{suffix}\np/90 value: {raw_value}",
-                       transform=ax_dist.transAxes, fontsize=8, verticalalignment='center')
-            ax_dist.set_yticks([]); ax_dist.set_ylabel(""); ax_dist.set_title("")
-            ax_dist.set_xlabel("");
-            legend = ax_dist.get_legend()
+            ax_dist.text(1.05, 0.5, f"%-tile: {percentile_rank_int}{suffix}\np/90 value: {raw_value}", transform=ax_dist.transAxes, fontsize=8, verticalalignment='center')
+            ax_dist.set_yticks([]); ax_dist.set_ylabel(""); ax_dist.set_title(""); ax_dist.set_xlabel("");
+            legend = ax_dist.get_legend();
             if legend is not None: legend.remove()
-            
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
@@ -1128,51 +1093,44 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
 
 
 # ==============================================================================
-# 4. STREAMLIT APP UI
+# 5. STREAMLIT APP UI
 # ==============================================================================
-st.title("Atlético CP Analysis")
+st.title("Atlético CP Analysis") # You can change this title
 
-# --- UPDATED: Load new player_minutes_df ---
+# --- Load Data ---
 raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
 
-if raw_events_df is not None and matches_summary_df is not None:
+# --- Main App Logic ---
+if raw_events_df is not None and matches_summary_df is not None and player_minutes_df is not None:
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
-    # --- UPDATED: Added 'Player Analysis' tab ---
     analysis_type = st.sidebar.radio("Choose Analysis Type", ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Analysis'))
 
     if analysis_type == 'Match Analysis':
-        # --- Match Selection ---
-        # --- UPDATED Column Names ---
-        # Convert dateutc to just date for display if needed
+        st.header("Match Analysis")
+        
+        # --- Match Selection (Using correct column names) ---
         if 'dateutc' in matches_summary_df.columns:
             matches_summary_df['display_date'] = pd.to_datetime(matches_summary_df['dateutc']).dt.strftime('%Y-%m-%d')
-        else:
-            matches_summary_df['display_date'] = 'Unknown Date' # Fallback
-            
-        # Create display name using API Gameweek and Date (if available)
-        matches_summary_df['display_name'] = matches_summary_df.get('gameweek', 'GW?').astype(str).apply(lambda x: f"GW{x}" if x.isdigit() else x) + " | " + \
-                                             matches_summary_df.get('homeTeamName', '?').fillna('?') + " vs " + \
+        else: matches_summary_df['display_date'] = 'Unknown Date'
+        
+        gw_series = matches_summary_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
+        # --- FIX: Use corrected homeTeamName/awayTeamName ---
+        matches_summary_df['display_name'] = matches_summary_df.get('homeTeamName', '?').fillna('?') + " vs " + \
                                              matches_summary_df.get('awayTeamName', '?').fillna('?') + \
-                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ")" + " | " + \
-                                             matches_summary_df['display_date']
+                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ")"
 
-        # Sort matches chronologically using dateutc (if available) or matchId
         sort_key = 'dateutc' if 'dateutc' in matches_summary_df.columns else 'matchId'
         matches_summary_df.sort_values(by=[sort_key, 'matchId'], inplace=True, na_position='last')
-
+        
         selected_match_display = st.sidebar.selectbox("Select a Match", matches_summary_df['display_name'])
-
-        # Find selected match info
         selected_match_info = matches_summary_df[matches_summary_df['display_name'] == selected_match_display].iloc[0]
         selected_match_id = selected_match_info['matchId']
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
-        # --- Display Data for Selected Match ---
         match_data = all_match_data.get(selected_match_id)
         if match_data:
-            # Shotmaps
             st.subheader("Shot Maps")
             col1, col2 = st.columns(2)
             with col1:
@@ -1180,46 +1138,38 @@ if raw_events_df is not None and matches_summary_df is not None:
             with col2:
                 st.pyplot(create_match_shotmap(raw_events_df[raw_events_df['matchId'] == selected_match_id], selected_match_info, selected_match_info['awayTeamName']), use_container_width=True)
 
-            # Team Stats
             st.subheader("Team Stats")
             if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict) and match_data['team_stats']:
                 for stat_category, df in match_data['team_stats'].items():
                     st.markdown(f"**{stat_category}**")
-                    if isinstance(df, pd.DataFrame):
-                        st.dataframe(df)
+                    if isinstance(df, pd.DataFrame): st.dataframe(df)
                     else: st.warning(f"Data for '{stat_category}' is not a DataFrame.")
-            else: st.warning("Team stats data not found or is in unexpected format for this match.")
+            else: st.warning("Team stats data not found.")
 
-            # Player Stats
             st.subheader("Player Stats")
             if 'player_stats' in match_data and isinstance(match_data['player_stats'], dict) and 'home' in match_data['player_stats'] and 'away' in match_data['player_stats']:
                 st.markdown(f"**{selected_match_info['homeTeamName']}**")
-                if isinstance(match_data['player_stats']['home'], pd.DataFrame):
-                    st.dataframe(match_data['player_stats']['home'])
-                else: st.warning("Home player stats data is not a DataFrame.")
-                
+                if isinstance(match_data['player_stats']['home'], pd.DataFrame): st.dataframe(match_data['player_stats']['home'])
+                else: st.warning("Home player stats data not a DataFrame.")
                 st.markdown(f"**{selected_match_info['awayTeamName']}**")
-                if isinstance(match_data['player_stats']['away'], pd.DataFrame):
-                    st.dataframe(match_data['player_stats']['away'])
-                else: st.warning("Away player stats data is not a DataFrame.")
-            else: st.warning("Player stats data not found or is in unexpected format for this match.")
+                if isinstance(match_data['player_stats']['away'], pd.DataFrame): st.dataframe(match_data['player_stats']['away'])
+                else: st.warning("Away player stats data not a DataFrame.")
+            else: st.warning("Player stats data not found.")
         else:
-             st.warning(f"No detailed match data found for Match ID {selected_match_id}. Data might still be processing.")
+             st.warning(f"No detailed match data found for Match ID {selected_match_id}.")
 
-    # --- UPDATED: Renamed 'Season-Long Analysis' to 'Team Analysis' ---
-    elif analysis_type == 'Team Analysis': 
-        # --- Team Selection ---
+
+    elif analysis_type == 'Team Analysis':
+        st.header("Team Analysis")
         all_teams_t = sorted(pd.concat([matches_summary_df.get('homeTeamName'), matches_summary_df.get('awayTeamName')]).dropna().unique())
-        selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab") # Use unique key
-
+        selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
         st.header(f"Team Report: {selected_team_t}")
-
-        # --- Calculate Radar Stats (Run Once) ---
+        
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
 
-        # --- Radar Charts ---
         st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
+            # (Your full radar logic here, it seems correct)
             col_r1, col_r2, col_r3 = st.columns(3)
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
             distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Final 1/3 Entries', 'Losses']
@@ -1227,24 +1177,21 @@ if raw_events_df is not None and matches_summary_df is not None:
             team_stats_raw = stats_df_raw.loc[selected_team_t]
             team_stats_pct = stats_df_pct.loc[selected_team_t]
             current_league = "Liga 3 Portugal"; current_season = "2025/26"
-
             with col_r1:
                 st.markdown("**Offensive Radar**")
                 valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
                 if valid_offensive_params:
                      fig_off = plot_radar_chart(valid_offensive_params, team_stats_raw[valid_offensive_params].tolist(), team_stats_pct[valid_offensive_params].tolist(), selected_team_t, "Offensive Radar", '#e60000', league=current_league, season=current_season)
                      st.pyplot(fig_off, use_container_width=True)
-                else: st.warning("Missing data for offensive radar.")
             with col_r2:
                 st.markdown("**Distribution Radar**")
                 valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
                 if valid_distribution_params:
                      raw_dist_values = team_stats_raw[valid_distribution_params].tolist()
                      try: poss_index = valid_distribution_params.index('Ball Possession'); raw_dist_values[poss_index] = f"{raw_dist_values[poss_index]:.0f}%"
-                     except ValueError: pass # Ignore if Ball Possession not in params
+                     except ValueError: pass
                      fig_dist = plot_radar_chart(valid_distribution_params, raw_dist_values, team_stats_pct[valid_distribution_params].tolist(), selected_team_t, "Distribution Radar", '#0077b6', league=current_league, season=current_season)
                      st.pyplot(fig_dist, use_container_width=True)
-                else: st.warning("Missing data for distribution radar.")
             with col_r3:
                 st.markdown("**Defensive Radar**")
                 valid_defensive_params = [p for p in defensive_params if p in team_stats_raw.index]
@@ -1256,11 +1203,9 @@ if raw_events_df is not None and matches_summary_df is not None:
                      except ValueError: pass
                      fig_def = plot_radar_chart(valid_defensive_params, raw_def_values, team_stats_pct[valid_defensive_params].tolist(), selected_team_t, "Defensive Radar", '#52A736', league=current_league, season=current_season)
                      st.pyplot(fig_def, use_container_width=True)
-                else: st.warning("Missing data for defensive radar.")
         else:
             st.warning(f"Could not find calculated radar statistics for {selected_team_t}.")
-
-        # --- Side-by-Side Shot Maps ---
+        
         st.subheader("Season Shot Maps (Non-Penalty)")
         col1_shot, col2_shot = st.columns(2)
         with col1_shot:
@@ -1274,7 +1219,6 @@ if raw_events_df is not None and matches_summary_df is not None:
             if fig_shots_against: st.pyplot(fig_shots_against, use_container_width=True)
             else: st.warning("No shots found AGAINST this team.")
 
-        # --- Corner Analysis ---
         st.subheader("Corner Kick Analysis")
         col_c1, col_c2 = st.columns(2)
         with col_c1:
@@ -1286,7 +1230,6 @@ if raw_events_df is not None and matches_summary_df is not None:
             fig_corner_right = plot_corner_analysis(raw_events_df, selected_team_t, 'right')
             st.pyplot(fig_corner_right, use_container_width=True)
 
-        # --- Season-long tables ---
         st.subheader("Season-Long Stats")
         if selected_team_t in season_team_stats and 'corners' in season_team_stats[selected_team_t]:
             st.markdown("**Corner Kick Summary**")
@@ -1295,82 +1238,49 @@ if raw_events_df is not None and matches_summary_df is not None:
             st.write("No season-long stats available for this team.")
             
 
-    # --- NEW: League Analysis Section ---
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
-
-        # --- 1. Calculate stats needed for BOTH plots ---
-        # (This function is defined above, in the helper functions section)
+        
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
-        team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df)
+        team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df).copy()
 
-        # --- Plot 1: Team Strength Scatter (Existing) ---
         st.subheader("Team Strength Scatterplot")
         if not team_strength_df.empty:
-            # (Your list of teams to include)
-            TEAMS_TO_INCLUDE = [
-                '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-                'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP',
-                'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes',
-                'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense',
-                'Sporting Braga II', 'AD Marco 09'
-            ]
+            TEAMS_TO_INCLUDE = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
             valid_teams_to_plot = [team for team in TEAMS_TO_INCLUDE if team in team_strength_df.index]
-            
             fig_strength = plot_team_strength(team_strength_df, teams_to_include=valid_teams_to_plot) 
             st.pyplot(fig_strength, use_container_width=True)
-            
             with st.expander("View Raw Strength Data"):
                  st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
         else:
             st.warning("Could not calculate team strength data.")
         
-        # --- PLOT 2: Custom Scatter Plot (New) ---
         st.subheader("Custom League Scatterplot")
-        
         if not stats_df_raw.empty:
-            # Get list of all available metrics from the raw radar stats
-            # We filter out some non-metric columns if they exist
             metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId'] 
             available_metrics = sorted([col for col in stats_df_raw.columns if col not in metrics_to_exclude])
-            
-            # Create two columns for the selectors
             col_x, col_y = st.columns(2)
             with col_x:
-                # Set default to 'xG' if available, otherwise just pick the first
                 default_x_index = available_metrics.index('xG') if 'xG' in available_metrics else 0
                 x_metric = st.selectbox("Select X-Axis Metric:", available_metrics, index=default_x_index) 
             with col_y:
-                # Set default to 'xG Against' if available
                 default_y_index = available_metrics.index('xG Against') if 'xG Against' in available_metrics else 1
                 y_metric = st.selectbox("Select Y-Axis Metric:", available_metrics, index=default_y_index)
-
-            # Checkboxes for axis inversion
             col_inv_x, col_inv_y = st.columns(2)
             with col_inv_x:
                 invert_x = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x')
             with col_inv_y:
-                # Default to True if a common "Against" metric is chosen
                 default_invert_y = 'Against' in y_metric or 'PPDA' in y_metric
                 invert_y = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y, key='invert_y')
-
-            # Plot the custom scatter
             if x_metric and y_metric:
-                fig_custom = plot_custom_scatter(
-                    stats_df_raw, 
-                    x_metric, 
-                    y_metric, 
-                    invert_x, 
-                    invert_y
-                )
+                fig_custom = plot_custom_scatter( stats_df_raw, x_metric, y_metric, invert_x, invert_y )
                 st.pyplot(fig_custom, use_container_width=True)
-            
             with st.expander("View Raw Radar Stats Data"):
                  st.dataframe(stats_df_raw.round(2))
         else:
             st.warning("Could not calculate raw league stats for custom plot.")
 
-         # --- NEW: Player Analysis Section ---
+    # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
         st.header("Player Analysis")
         
@@ -1382,9 +1292,7 @@ if raw_events_df is not None and matches_summary_df is not None:
         
         # 1. Run the heavy calculations
         try:
-            # Call the NEW (V5) function
             player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df) 
-            
             player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                 player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
             )
@@ -1408,34 +1316,24 @@ if raw_events_df is not None and matches_summary_df is not None:
         if player_stats_with_scores_df.empty:
             st.warning("No players found matching the criteria (e.g., >= 90 minutes).")
         else:
-            # --- START: MISSING UI CODE ---
-
-            # 2. Create UI selectors
-            # Sort players by total minutes
+            # --- START: UI CODE TO DISPLAY PLOT ---
             player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
             player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
-            
             selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
             
-            # Get data for the selected player
             selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
-            # Use .loc to get the row, which is crucial for rank lookup later
             player_data = player_stats_with_scores_df.loc[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
 
             if player_data.empty:
                 st.warning(f"No data found for {selected_player_name}.")
             else:
                 primary_pos = player_data['primaryPosition'].values[0]
-                
-                # 4. Find all position archetypes this player qualifies for
                 eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
                 
                 if not eligible_groups:
                     st.warning(f"No radar templates found for player's primary position: {primary_pos}")
                 else:
                     st.subheader(f"Player Radar: {selected_player_name}")
-
-                    # 5. Find the player's highest-scoring archetype
                     highest_score = -1; highest_scoring_group = None; scores_by_group = {}
                     for group in eligible_groups:
                         score_col = group + '_Score'
@@ -1446,30 +1344,27 @@ if raw_events_df is not None and matches_summary_df is not None:
                                 highest_score = player_score; highest_scoring_group = group
                     if highest_scoring_group is None: highest_scoring_group = eligible_groups[0]
                     
-                    # 6. Get metrics for the highest scoring group
                     metrics_to_plot = list(WEIGHTS[highest_scoring_group].keys())
                     metrics_to_plot = [m for m in metrics_to_plot if m in player_data.columns]
                     
                     st.markdown(f"Displaying radar for best-fit archetype: **{highest_scoring_group}**")
                     
-                    # 7. Call the main plotting function
                     position_data_for_dist = player_stats_with_scores_df[player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[highest_scoring_group])]
                     
                     if position_data_for_dist.empty:
                          st.warning(f"No other players found for position group '{POSITION_GROUPS[highest_scoring_group]}' for percentile comparison.")
                     else:
-                        # --- FIX: Pass the full df for ranking, no global ---
+                        # --- CORRECTED CALL (Fixing global var and argument order) ---
                         fig = create_radar_with_distributions(
                             player_data, 
                             metrics_to_plot, 
                             highest_scoring_group, 
                             eligible_groups,
                             all_position_data=position_data_for_dist,
-                            full_df_for_ranking=player_stats_with_scores_df 
+                            full_df_for_ranking=player_stats_with_scores_df # Pass the full DF
                         )
                         st.pyplot(fig, use_container_width=True)
                     
-                    # --- Expander tables to show the data ---
                     with st.expander("View Raw Player Data (Per 90)"):
                          display_cols = [m for m in metrics_to_plot if m in player_data.columns] + ['totalMinutes', 'primaryPosition']
                          st.dataframe(player_data[display_cols].round(2).T)
@@ -1481,7 +1376,7 @@ if raw_events_df is not None and matches_summary_df is not None:
                     with st.expander("View Archetype Scores"):
                          score_cols = [g + '_Score' for g in eligible_groups if g + '_Score' in player_data.columns]
                          st.dataframe(player_data[score_cols].round(2).T)
-            # --- END: MISSING UI CODE ---
+            # --- END: UI CODE ---
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally (including the new player minutes step) and ensure all artifacts are pushed to GitHub.")
