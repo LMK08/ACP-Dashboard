@@ -537,6 +537,7 @@ def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_g
     # Calculate and display player score and rank for each relevant group
 # Calculate and display player score and rank for each relevant group
 # Calculate and display player score and rank for each relevant group
+# Calculate and display player score and rank for each relevant group
 score_text = "\n"
 for group in eligible_groups:
     score_col = group + '_Score'
@@ -561,7 +562,6 @@ for group in eligible_groups:
             print(f"Warning: Could not calculate rank for {group}. Error: {e}")
 
         score_text += f"{group}: {player_score:.2f}{player_rank_str}\n"
-
     # Define background colors
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
@@ -1453,20 +1453,19 @@ if raw_events_df is not None and matches_summary_df is not None:
                     st.markdown(f"Displaying radar for best-fit archetype: **{highest_scoring_group}**")
                     
                     # 7. Call the main plotting function
-                    # We pass the full (filtered) dataframe for distribution calculations
                     position_data_for_dist = player_stats_with_scores_df[player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[highest_scoring_group])]
                     
                     if position_data_for_dist.empty:
                          st.warning(f"No other players found for position group '{POSITION_GROUPS[highest_scoring_group]}' for percentile comparison.")
                     else:
-                        # --- FIX: Remove global variable and pass full df for ranking ---
+                        # --- FIX: Pass the full df for ranking, no global ---
                         fig = create_radar_with_distributions(
                             player_data, 
                             metrics_to_plot, 
                             highest_scoring_group, 
                             eligible_groups,
                             all_position_data=position_data_for_dist,
-                            full_df_for_ranking=player_stats_with_scores_df # Pass full df
+                            full_df_for_ranking=player_stats_with_scores_df 
                         )
                         st.pyplot(fig, use_container_width=True)
                     
