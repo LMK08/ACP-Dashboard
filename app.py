@@ -156,7 +156,8 @@ def calculate_and_merge(base_df, events_df, stat_name, filter_condition):
     base_df = base_df.merge(stat_series, left_index=True, right_index=True, how='left')
     return base_df
 
-# --- NEW Helper for Robust List Checking ---
+# app.py (Add this new helper function)
+
 def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary_type=None, and_condition=None):
     """
     Robust helper to count stats by checking for a tag in the 'type.secondary' list.
@@ -169,6 +170,7 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
     if primary_type:
         condition &= (events_df.get('type.primary') == primary_type)
         
+    # Add the extra condition if it's provided (e.g., for 'pass.accurate == True')
     if and_condition is not None:
         # Align indices before combining conditions
         condition = condition & and_condition.reindex(condition.index, fill_value=False)
@@ -176,7 +178,8 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
     return calculate_and_merge(base_df, events_df, stat_name, condition)
 
 
-# --- Player Radar Data Calculation (V-ROBUST) ---
+# app.py (REPLACE the old calculate_player_radar_data function with this)
+
 @st.cache_data
 def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     """
@@ -185,35 +188,52 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     """
     print("--- STARTING: Player radar data calculation (V-Robust) ---")
     
+    # --- Make copies to avoid changing cached data ---
     events_df = _raw_events_df.copy()
-    combined_df = _player_minutes_df.copy()
+    combined_df = _player_minutes_df.copy() # This is 'report_df' / 'enriched_df' from cell 7
 
+    # --- Cell 3, 4, 5: One-hot encoding SKIPPED ---
     print("Step 1: Skipping one-hot encoding (using raw list search).")
     # We must ensure 'player.id' is int for merging/grouping
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     events_df = events_df.dropna(subset=['player.id'])
     events_df['player.id'] = events_df['player.id'].astype(int)
 
+
+    # --- Cell 8 & 9: Calculate npxG, xAOP, xASP ---
     print("Step 2: Calculating npxG, xAOP, xASP...")
     try:
-        shots_df = events_df[(events_df['shot.xg'].notna()) & (events_df['player.id'].notna()) & (events_df['type.primary'] != 'penalty')].copy()
+        shots_df = events_df[
+            (events_df['shot.xg'].notna()) &
+            (events_df['player.id'].notna()) &
+            (events_df['type.primary'] != 'penalty')
+        ].copy()
+        # player.id is already int
         npxg_totals = shots_df.groupby('player.id')['shot.xg'].sum().reset_index().rename(columns={'shot.xg': 'npxG'})
+
         events_df['shot_event_id'] = np.where(events_df['shot.xg'].notna(), events_df['id'], np.nan)
         events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
         shot_xg_map = shots_df.set_index('id')['shot.xg'].to_dict()
+
+        # Robust check for 'shot_assist' in the list
         assists_df = events_df[events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x)].copy()
         assists_df['player.id'] = assists_df['player.id'].astype(int)
         assists_df['xA'] = assists_df['next_shot_id'].map(shot_xg_map)
         set_piece_types = ['corner', 'free_kick', 'throw_in', 'goal_kick']
         assists_df['assist_type'] = np.where(assists_df['type.primary'].isin(set_piece_types), 'xASP', 'xAOP')
+        
         xa_split_totals = assists_df.groupby(['player.id', 'assist_type'])['xA'].sum()
         xa_final_df = xa_split_totals.unstack(fill_value=0).reset_index()
+
         final_stats_df = pd.merge(npxg_totals, xa_final_df, on='player.id', how='outer')
         final_stats_df['playerId'] = final_stats_df['player.id']
+        
         combined_df = pd.merge(combined_df, final_stats_df, on='playerId', how='left')
+        
         if 'player.id_x' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id_x'])
         if 'player.id_y' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id_y'])
         if 'player.id' in combined_df.columns: combined_df = combined_df.rename(columns={'player.id': 'player.id_temp'})
+
     except Exception as e:
         print(f"  -> ❌ ERROR (Step 2): Failed calculating xA/npxG: {e}")
         if 'npxG' not in combined_df.columns: combined_df['npxG'] = 0
@@ -221,33 +241,49 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         if 'xASP' not in combined_df.columns: combined_df['xASP'] = 0
         if 'xA' not in combined_df.columns: combined_df['xA'] = 0
 
+    # --- Cell 10, 13: Calculate Deep Completions & Progressive Passes ---
     print("Step 3: Calculating Deep Completions and Progressive Passes...")
     try:
-        passes_df = events_df[(events_df['type.primary'] == 'pass') & (events_df.get('pass.accurate') == True)].dropna(subset=['location.x', 'pass.endLocation.x', 'player.id']).copy()
+        passes_df = events_df[
+            (events_df['type.primary'] == 'pass') & (events_df.get('pass.accurate') == True)
+        ].dropna(subset=['location.x', 'pass.endLocation.x', 'player.id']).copy()
+        # player.id is already int
+        
+        # Deep Completions
         passes_df['end_x_m'] = passes_df['pass.endLocation.x'] * 1.05
         passes_df['end_y_m'] = passes_df['pass.endLocation.y'] * 0.68
         passes_df['dist_to_goal_center'] = np.sqrt((passes_df['end_x_m'] - 105)**2 + (passes_df['end_y_m'] - 34)**2)
+        # Robust check for 'cross' in the list
         passes_df['is_cross'] = passes_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'cross' in x)
         passes_df['is_deep_completion'] = (passes_df['dist_to_goal_center'] <= 20) & (passes_df['is_cross'] == False)
         deep_completions = passes_df.groupby('player.id')['is_deep_completion'].sum().reset_index().rename(columns={'is_deep_completion': 'Deep Completions'})
+
+        # Progressive Passes
         start_x = passes_df['location.x']; end_x = passes_df['pass.endLocation.x']
-        cond1 = (start_x < 50) & (end_x < 50) & (end_x - start_x >= 30); cond2 = (start_x < 50) & (end_x >= 50) & (end_x - start_x >= 15); cond3 = (start_x >= 50) & (end_x >= 50) & (end_x - start_x >= 10)
+        cond1 = (start_x < 50) & (end_x < 50) & (end_x - start_x >= 30)
+        cond2 = (start_x < 50) & (end_x >= 50) & (end_x - start_x >= 15)
+        cond3 = (start_x >= 50) & (end_x >= 50) & (end_x - start_x >= 10)
         passes_df['is_progressive_pass'] = cond1 | cond2 | cond3
         progressive_passes = passes_df.groupby('player.id')['is_progressive_pass'].sum().reset_index().rename(columns={'is_progressive_pass': 'Progressive Passes'})
+
         new_metrics_df = pd.merge(deep_completions, progressive_passes, on='player.id', how='outer')
         combined_df = pd.merge(combined_df, new_metrics_df, left_on='playerId', right_on='player.id', how='left')
         if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
+        
     except Exception as e:
         print(f"  -> ❌ ERROR (Step 3): Failed calculating passing stats: {e}")
         if 'Deep Completions' not in combined_df.columns: combined_df['Deep Completions'] = 0
         if 'Progressive Passes' not in combined_df.columns: combined_df['Progressive Passes'] = 0
 
+    # --- Cell 11 & 12: Calculate comprehensive counting stats (ROBUST VERSION) ---
     print("Step 4: Calculating comprehensive counting stats (Robust)...")
     try:
         player_stats_df = events_df.dropna(subset=['player.id', 'player.name'])[['player.id', 'player.name']].drop_duplicates()
         player_stats_df['player.id'] = player_stats_df['player.id'].astype(int)
         player_stats_df = player_stats_df.set_index('player.id')
         
+        # --- Using new robust syntax ---
+        # -- Basic Event Counts --
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Goals', bool_condition=(events_df.get('shot.isGoal') == True))
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Assists', 'assist')
         player_stats_df = calculate_and_merge(player_stats_df, events_df, 'Shots', primary_type='shot')
@@ -263,6 +299,7 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Fouls suffered', 'foul_suffered')
         player_stats_df = calculate_and_merge_list(player_stats_df, events_df, 'Second assists', 'second_assist')
         
+        # -- Passing Metrics --
         pass_events = events_df[events_df.get('type.primary') == 'pass'].copy()
         pass_events['player.id'] = pass_events['player.id'].astype(int); pass_accurate_condition = pass_events.get('pass.accurate') == True
         player_stats_df = calculate_and_merge(player_stats_df, pass_events, 'Passes', primary_type='pass')
@@ -282,6 +319,7 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area', 'pass_to_penalty_area')
         player_stats_df = calculate_and_merge_list(player_stats_df, pass_events, 'Passes to penalty area successful', 'pass_to_penalty_area', and_condition=pass_accurate_condition)
         
+        # -- Dueling & Defensive Metrics --
         duel_events = events_df[events_df.get('type.primary') == 'duel'].copy()
         duel_events['player.id'] = duel_events['player.id'].astype(int)
         player_stats_df = calculate_and_merge(player_stats_df, duel_events, 'Duels', primary_type='duel')
@@ -409,6 +447,9 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
 
     print("--- FINISHED: Player radar data calculation ---")
     return combined_df.fillna(0)
+
+
+# --- (This is the end of the V-Robust function) ---
 
 
 @st.cache_data
@@ -627,11 +668,6 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
-
-
-# --- Team/League Plotting Functions ---
-# (plot_radar_chart, plot_corner_analysis, create_match_shotmap, etc...)
-# ... (These functions are unchanged and should be here) ...
 
 
 
@@ -1321,17 +1357,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # --- START: UI CODE TO DISPLAY PLOT ---
             player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
             player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
+            
             selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
             
-            # Find player data
-            player_data_rows = player_stats_with_scores_df[player_stats_with_scores_df['display_name'] == selected_player_display]
-            if player_data_rows.empty:
-                # Fallback if display_name somehow fails
-                selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
-                player_data = player_stats_with_scores_df.loc[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
-            else:
-                 player_data = player_data_rows.copy()
-
+            # --- CORRECTED PLAYER LOOKUP ---
+            # Get the unique player name from the (temporary) player_list_df
+            selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
+            
+            # Get the player's data from the main DataFrame using their name
+            player_data = player_stats_with_scores_df.loc[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
+            # --- END CORRECTION ---
 
             if player_data.empty:
                 st.warning(f"No data found for selected player.")
@@ -1387,3 +1422,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                          score_cols = [g + '_Score' for g in eligible_groups if g + '_Score' in player_data.columns]
                          st.dataframe(player_data[score_cols].round(2).T)
             # --- END: UI CODE ---
+
+else:
+    st.error("Data files not loaded. Please run `process_data.py` locally (including the new player minutes step) and ensure all artifacts are pushed to GitHub.")
