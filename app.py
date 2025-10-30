@@ -148,16 +148,20 @@ def calculate_and_merge(base_df, events_df, stat_name, filter_condition):
     if not isinstance(filter_condition, pd.Series):
         filter_condition = filter_condition.reindex(events_df.index, fill_value=False)
 
+    # Ensure player.id is numeric for groupby
+    events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     safe_condition = filter_condition & events_df['player.id'].notna()
     
-    # Group by player.id (which should be numeric)
-    stat_series = events_df[safe_condition].groupby(events_df['player.id'].astype(int)).size()
-    stat_series.name = stat_name
+    if safe_condition.empty:
+        stat_series = pd.Series(dtype='int').rename(stat_name)
+    else:
+        stat_series = events_df[safe_condition].groupby(events_df['player.id'].astype(int)).size()
+        stat_series.name = stat_name
+        
     base_df = base_df.merge(stat_series, left_index=True, right_index=True, how='left')
     return base_df
 
-# app.py (Add this new helper function)
-
+# --- NEW Helper for Robust List Checking ---
 def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary_type=None, and_condition=None):
     """
     Robust helper to count stats by checking for a tag in the 'type.secondary' list.
@@ -170,16 +174,15 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
     if primary_type:
         condition &= (events_df.get('type.primary') == primary_type)
         
-    # Add the extra condition if it's provided (e.g., for 'pass.accurate == True')
     if and_condition is not None:
         # Align indices before combining conditions
-        condition = condition & and_condition.reindex(condition.index, fill_value=False)
+        and_condition_aligned = and_condition.reindex(condition.index, fill_value=False)
+        condition = condition & and_condition_aligned
         
     return calculate_and_merge(base_df, events_df, stat_name, condition)
 
 
-# app.py (REPLACE the old calculate_player_radar_data function with this)
-
+# --- Player Radar Data Calculation (V-ROBUST) ---
 @st.cache_data
 def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     """
@@ -188,19 +191,15 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
     """
     print("--- STARTING: Player radar data calculation (V-Robust) ---")
     
-    # --- Make copies to avoid changing cached data ---
     events_df = _raw_events_df.copy()
-    combined_df = _player_minutes_df.copy() # This is 'report_df' / 'enriched_df' from cell 7
+    combined_df = _player_minutes_df.copy()
 
-    # --- Cell 3, 4, 5: One-hot encoding SKIPPED ---
     print("Step 1: Skipping one-hot encoding (using raw list search).")
     # We must ensure 'player.id' is int for merging/grouping
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     events_df = events_df.dropna(subset=['player.id'])
     events_df['player.id'] = events_df['player.id'].astype(int)
 
-
-    # --- Cell 8 & 9: Calculate npxG, xAOP, xASP ---
     print("Step 2: Calculating npxG, xAOP, xASP...")
     try:
         shots_df = events_df[
@@ -241,7 +240,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         if 'xASP' not in combined_df.columns: combined_df['xASP'] = 0
         if 'xA' not in combined_df.columns: combined_df['xA'] = 0
 
-    # --- Cell 10, 13: Calculate Deep Completions & Progressive Passes ---
     print("Step 3: Calculating Deep Completions and Progressive Passes...")
     try:
         passes_df = events_df[
@@ -275,7 +273,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
         if 'Deep Completions' not in combined_df.columns: combined_df['Deep Completions'] = 0
         if 'Progressive Passes' not in combined_df.columns: combined_df['Progressive Passes'] = 0
 
-    # --- Cell 11 & 12: Calculate comprehensive counting stats (ROBUST VERSION) ---
     print("Step 4: Calculating comprehensive counting stats (Robust)...")
     try:
         player_stats_df = events_df.dropna(subset=['player.id', 'player.name'])[['player.id', 'player.name']].drop_duplicates()
@@ -447,9 +444,6 @@ def calculate_player_radar_data(_raw_events_df, _player_minutes_df):
 
     print("--- FINISHED: Player radar data calculation ---")
     return combined_df.fillna(0)
-
-
-# --- (This is the end of the V-Robust function) ---
 
 
 @st.cache_data
@@ -668,7 +662,6 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
-
 
 
 # --- Radar Stats Calculation ---
@@ -1125,6 +1118,7 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
     return fig
 
 
+
 # ==============================================================================
 # 5. STREAMLIT APP UI
 # ==============================================================================
@@ -1207,7 +1201,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
-            # (Your full radar logic here, it seems correct)
             col_r1, col_r2, col_r3 = st.columns(3)
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
             distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Final 1/3 Entries', 'Losses']
@@ -1215,6 +1208,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             team_stats_raw = stats_df_raw.loc[selected_team_t]
             team_stats_pct = stats_df_pct.loc[selected_team_t]
             current_league = "Liga 3 Portugal"; current_season = "2025/26"
+            
             with col_r1:
                 st.markdown("**Offensive Radar**")
                 valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
@@ -1361,7 +1355,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
             
             # --- CORRECTED PLAYER LOOKUP ---
-            # Get the unique player name from the (temporary) player_list_df based on the selection
+            # Get the unique player name from the (temporary) player_list_df
             selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
             
             # Get the player's data from the main DataFrame using their name
