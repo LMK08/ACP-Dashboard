@@ -19,6 +19,7 @@ from adjustText import adjust_text # For scatter plot logos
 from math import pi # For player radar charts
 from matplotlib.gridspec import GridSpec # For player radar charts
 from collections import defaultdict # For player radar calculations
+import seaborn as sns # Add this line
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
