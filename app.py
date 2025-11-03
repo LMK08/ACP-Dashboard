@@ -982,7 +982,7 @@ def calculate_team_strength(season_events_df, matches_summary_df):
 
 
 # --- NEW FUNCTION: Plot Team Strength Scatter ---
-def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal", season="2025/26"):
+def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal", season="2025/26", icon_zoom=0.25): # <-- ADDED icon_zoom
     """Generates the Matplotlib figure for the team strength scatter plot."""
 
     if stats_df.empty or 'Attacking Strength' not in stats_df.columns or 'Defending Strength' not in stats_df.columns:
