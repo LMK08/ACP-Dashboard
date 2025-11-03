@@ -1028,7 +1028,11 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
         logo_path = os.path.join(base_icon_path, f"{safe_team_name}.png")
         try:
             if os.path.exists(logo_path):
-                 img = Image.open(logo_path); imagebox = OffsetImage(img, zoom=0.25); ab = AnnotationBbox(imagebox, (row['Attacking Strength'], row['Defending Strength']), frameon=False, zorder=2); ax.add_artist(ab); logos_plotted +=1
+                 img = Image.open(logo_path); # --- USE THE NEW PARAMETER HERE ---
+                 imagebox = OffsetImage(img, zoom=icon_zoom) # <-- USE icon_zoom
+                 ab = AnnotationBbox(imagebox, (row['Attacking Strength'], row['Defending Strength']), frameon=False, zorder=2)
+                 ax.add_artist(ab)
+                 logos_plotted +=1
             else: texts.append(ax.text(row['Attacking Strength'], row['Defending Strength'], team_name, zorder=3, fontsize=9))
         except Exception as e: print(f"Error loading logo for {team_name}: {e}. Using text."); texts.append(ax.text(row['Attacking Strength'], row['Defending Strength'], team_name, zorder=3, fontsize=9))
     if texts: adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
@@ -1293,8 +1297,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             ]
             valid_south_teams = [team for team in SOUTH_SERIE_TEAMS if team in team_strength_df.index]
             
+         
             # Plot ONLY the South teams
-            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_teams)
+            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_teams, icon_zoom=0.8)
             st.pyplot(fig_south_strength, use_container_width=True)
             
             with st.expander("View Group B Raw Strength Data"):
