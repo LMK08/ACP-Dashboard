@@ -1248,6 +1248,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
+        # --- PDF Download Button ---
+        if st.button("🖨️ Download as PDF"):
+            # This is a small hack to run JavaScript on the page
+            st.html(
+                """
+                <script>
+                // This JS code will run when the button is clicked
+                // and this component is rendered
+                window.print();
+                </script>
+                """
+            )
+        # --- End PDF Download Button ---
+        
         match_data = all_match_data.get(selected_match_id)
         if match_data:
             st.subheader("Shot Maps")
