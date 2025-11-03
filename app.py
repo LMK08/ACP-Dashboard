@@ -1149,12 +1149,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create a display-ready gameweek column
         matches_summary_df['gw_display'] = "GW " + matches_summary_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
         
-        # Build the full display name using the new columns
-        matches_summary_df['display_name'] = matches_summary_df['gw_display'] + " (" + \
-                                             matches_summary_df['display_date'] + "): " + \
+        # Build the full display name using the new columns (GW: Teams (Score) - Date)
+        matches_summary_df['display_name'] = matches_summary_df['gw_display'] + ": " + \
                                              matches_summary_df.get('homeTeamName', '?').fillna('?') + " vs " + \
                                              matches_summary_df.get('awayTeamName', '?').fillna('?') + \
-                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ")"
+                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ") - " + \
+                                             matches_summary_df['display_date']
 
         sort_key = 'dateutc' if 'dateutc' in matches_summary_df.columns else 'matchId'
         # Sort descending to show newest matches first
