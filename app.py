@@ -1248,20 +1248,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
-        # --- PDF Download Button (HTML/JS) ---
+        # --- PDF Download Button (with Print-Friendly CSS) ---
         st.html(
             """
             <style>
+            
+            /* STYLES FOR THE BUTTON ITSELF (unchanged) */
             .print-button {
-                /* This CSS tries to mimic Streamlit's native button style */
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
                 padding: 0.25rem 0.75rem;
                 border-radius: 0.5rem;
                 border: 1px solid transparent;
-                background-color: #f0f2f6; /* Streamlit's light gray */
-                color: #31333F; /* Streamlit's text color */
+                background-color: #f0f2f6;
+                color: #31333F;
                 font-weight: 400;
                 font-size: 0.875rem;
                 cursor: pointer;
@@ -1274,6 +1275,37 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             .print-button:active {
                 background-color: #dde0e5;
             }
+            
+            /* --- NEW: CSS RULES FOR PRINTING --- */
+            @media print {
+                /* Hide the app header and sidebar */
+                .stApp > header { display: none !important; }
+                .stSidebar { display: none !important; }
+                
+                /* Hide the print button itself */
+                .print-button { display: none !important; }
+                
+                /* Make the main content fill the page */
+                section.main {
+                    top: 0 !important;
+                    left: 0 !important;
+                    width: 100% !important;
+                    padding: 0 !important;
+                    overflow: visible !important;
+                }
+                
+                /* Ensure all sections inside main are visible */
+                .block-container {
+                    width: 100% !important;
+                    padding: 2rem 1rem !important; /* Add some padding */
+                }
+                
+                /* Remove box shadows (they look bad in PDFs) */
+                * {
+                    box-shadow: none !important;
+                }
+            }
+            
             </style>
             
             <button class="print-button" onclick="window.print()">
