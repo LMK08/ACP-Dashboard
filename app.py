@@ -1278,20 +1278,49 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
         
+        # Calculate data ONCE at the top
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
         team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df).copy()
 
-        st.subheader("Team Strength Scatterplot")
         if not team_strength_df.empty:
-            TEAMS_TO_INCLUDE = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
-            valid_teams_to_plot = [team for team in TEAMS_TO_INCLUDE if team in team_strength_df.index]
-            fig_strength = plot_team_strength(team_strength_df, teams_to_include=valid_teams_to_plot) 
-            st.pyplot(fig_strength, use_container_width=True)
-            with st.expander("View Raw Strength Data"):
+            # --- 1. NEW: South Serie Chart (comes first) ---
+            st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
+            
+            # Define the South Serie list
+            SOUTH_SERIE_TEAMS = [
+                '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+                'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'
+            ]
+            valid_south_teams = [team for team in SOUTH_SERIE_TEAMS if team in team_strength_df.index]
+            
+            # Plot ONLY the South teams
+            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_teams)
+            st.pyplot(fig_south_strength, use_container_width=True)
+            
+            with st.expander("View Group B Raw Strength Data"):
+                if valid_south_teams:
+                    # Filter the dataframe to only show the teams we plotted
+                    st.dataframe(team_strength_df.loc[valid_south_teams, ['Attacking Strength', 'Defending Strength']].round(2))
+                else:
+                    st.write("No valid Group B teams found in data.")
+            
+            # --- 2. EXISTING: All Teams Chart (comes second) ---
+            st.subheader("Team Strength Scatterplot (All Highlighted Teams)")
+            
+            # This was your original list, now used for the second chart
+            ALL_TEAMS_TO_HIGHLIGHT = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
+            valid_all_teams = [team for team in ALL_TEAMS_TO_HIGHLIGHT if team in team_strength_df.index]
+            
+            # Plot all highlighted teams
+            fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_teams) 
+            st.pyplot(fig_all_strength, use_container_width=True)
+            
+            with st.expander("View All Teams Raw Strength Data"):
                  st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
         else:
             st.warning("Could not calculate team strength data.")
         
+        # --- 3. Custom Scatterplot (unchanged) ---
         st.subheader("Custom League Scatterplot")
         if not stats_df_raw.empty:
             metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId'] 
