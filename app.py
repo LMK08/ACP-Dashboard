@@ -1248,13 +1248,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
-        # --- PDF Download Button (Using an <a> tag for reliability) ---
+       # --- PDF Download Button (Robust JavaScript) ---
         st.html(
             """
             <style>
-            
-            /* STYLES FOR THE "BUTTON" (which is actually a link) */
-            .print-button-link {
+            /* STYLES FOR THE BUTTON */
+            .print-button-js {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
@@ -1262,28 +1261,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 border-radius: 0.5rem;
                 border: 1px solid transparent;
                 background-color: #f0f2f6;
-                color: #31333F; /* Streamlit's text color */
+                color: #31333F;
                 font-weight: 400;
                 font-size: 0.875rem;
                 cursor: pointer;
                 transition: background-color 0.3s, border-color 0.3s;
-                text-decoration: none; /* No underline */
+                text-decoration: none; 
             }
-            .print-button-link:hover {
+            .print-button-js:hover {
                 background-color: #e6e9ef;
                 border: 1px solid #888;
-                text-decoration: none; /* No underline on hover */
+                text-decoration: none;
                 color: #31333F; 
             }
-            .print-button-link:active {
-                background-color: #dde0e5;
-            }
             
-            /* CSS RULES FOR PRINTING (unchanged) */
+            /* CSS RULES FOR PRINTING */
             @media print {
                 .stApp > header { display: none !important; }
                 .stSidebar { display: none !important; }
-                .print-button-link { display: none !important; }
+                .print-button-js { display: none !important; }
                 section.main {
                     top: 0 !important;
                     left: 0 !important;
@@ -1299,12 +1295,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     box-shadow: none !important;
                 }
             }
-            
             </style>
             
-            <a href="javascript:window.print()" target="_self" class="print-button-link">
+            <button id="print-app-button" class="print-button-js">
                 🖨️ Download as PDF
-            </a>
+            </button>
+            
+            <script>
+                // Find the button by its ID
+                const printButton = document.getElementById('print-app-button');
+                if (printButton) {
+                    // Add a click event listener
+                    printButton.addEventListener('click', () => {
+                        // Call window.print() when clicked
+                        window.print();
+                    });
+                }
+            </script>
             """
         )
         # --- End PDF Download Button ---
