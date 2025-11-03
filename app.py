@@ -1248,13 +1248,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
-        # --- PDF Download Button (with Print-Friendly CSS) ---
+        # --- PDF Download Button (Using an <a> tag for reliability) ---
         st.html(
             """
             <style>
             
-            /* STYLES FOR THE BUTTON ITSELF (unchanged) */
-            .print-button {
+            /* STYLES FOR THE "BUTTON" (which is actually a link) */
+            .print-button-link {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
@@ -1262,30 +1262,28 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 border-radius: 0.5rem;
                 border: 1px solid transparent;
                 background-color: #f0f2f6;
-                color: #31333F;
+                color: #31333F; /* Streamlit's text color */
                 font-weight: 400;
                 font-size: 0.875rem;
                 cursor: pointer;
                 transition: background-color 0.3s, border-color 0.3s;
+                text-decoration: none; /* No underline */
             }
-            .print-button:hover {
+            .print-button-link:hover {
                 background-color: #e6e9ef;
                 border: 1px solid #888;
+                text-decoration: none; /* No underline on hover */
+                color: #31333F; 
             }
-            .print-button:active {
+            .print-button-link:active {
                 background-color: #dde0e5;
             }
             
-            /* --- NEW: CSS RULES FOR PRINTING --- */
+            /* CSS RULES FOR PRINTING (unchanged) */
             @media print {
-                /* Hide the app header and sidebar */
                 .stApp > header { display: none !important; }
                 .stSidebar { display: none !important; }
-                
-                /* Hide the print button itself */
-                .print-button { display: none !important; }
-                
-                /* Make the main content fill the page */
+                .print-button-link { display: none !important; }
                 section.main {
                     top: 0 !important;
                     left: 0 !important;
@@ -1293,14 +1291,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     padding: 0 !important;
                     overflow: visible !important;
                 }
-                
-                /* Ensure all sections inside main are visible */
                 .block-container {
                     width: 100% !important;
-                    padding: 2rem 1rem !important; /* Add some padding */
+                    padding: 2rem 1rem !important;
                 }
-                
-                /* Remove box shadows (they look bad in PDFs) */
                 * {
                     box-shadow: none !important;
                 }
@@ -1308,9 +1302,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
             </style>
             
-            <button class="print-button" onclick="window.print()">
+            <a href="javascript:window.print()" target="_self" class="print-button-link">
                 🖨️ Download as PDF
-            </button>
+            </a>
             """
         )
         # --- End PDF Download Button ---
