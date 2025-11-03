@@ -1248,20 +1248,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
-        # --- PDF Download Button ---
-        if st.button("🖨️ Download as PDF"):
-            # This is a small hack to run JavaScript on the page
-            st.html(
-                """
-                <script>
-                // This JS code will run when the button is clicked
-                // and this component is rendered
-                window.print();
-                </script>
-                """
-            )
+        # --- PDF Download Button (HTML/JS) ---
+        st.html(
+            """
+            <style>
+            .print-button {
+                /* This CSS tries to mimic Streamlit's native button style */
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0.25rem 0.75rem;
+                border-radius: 0.5rem;
+                border: 1px solid transparent;
+                background-color: #f0f2f6; /* Streamlit's light gray */
+                color: #31333F; /* Streamlit's text color */
+                font-weight: 400;
+                font-size: 0.875rem;
+                cursor: pointer;
+                transition: background-color 0.3s, border-color 0.3s;
+            }
+            .print-button:hover {
+                background-color: #e6e9ef;
+                border: 1px solid #888;
+            }
+            .print-button:active {
+                background-color: #dde0e5;
+            }
+            </style>
+            
+            <button class="print-button" onclick="window.print()">
+                🖨️ Download as PDF
+            </button>
+            """
+        )
         # --- End PDF Download Button ---
-        
+
         match_data = all_match_data.get(selected_match_id)
         if match_data:
             st.subheader("Shot Maps")
