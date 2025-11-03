@@ -20,6 +20,7 @@ from math import pi # For player radar charts
 from matplotlib.gridspec import GridSpec # For player radar charts
 from collections import defaultdict # For player radar calculations
 import seaborn as sns # For player radar distributions
+from collections import defaultdict # Make sure this is at the top with other imports
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
@@ -1121,7 +1122,84 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
     plt.tight_layout()
     return fig
 
+@st.cache_data
+def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
+    """
+    Aggregates all per-match team stats from all_match_data into a
+    season-long per-game average.
+    """
+    print("Calculating expanded team stats...") # Debug print
+    
+    # Use defaultdict for easy aggregation
+    all_stats_agg = defaultdict(lambda: defaultdict(float))
+    games_played = defaultdict(int)
 
+    # Get team names from matches_summary
+    team_name_map = {} # map matchId to (homeName, awayName)
+    if 'homeTeamName' in _matches_summary_df.columns and 'awayTeamName' in _matches_summary_df.columns:
+        for _, row in _matches_summary_df.iterrows():
+            team_name_map[row['matchId']] = (row['homeTeamName'], row['awayTeamName'])
+            
+    if not team_name_map:
+        st.error("Could not build team name map from matches_summary_df")
+        return pd.DataFrame()
+
+    # Loop through every match in the dataset
+    for match_id, match_data in _all_match_data.items():
+        if match_id not in team_name_map:
+            continue # Skip if match not in summary
+            
+        home_team, away_team = team_name_map[match_id]
+        
+        # Increment games played
+        games_played[home_team] += 1
+        games_played[away_team] += 1
+        
+        # Check if 'team_stats' (the dict of DataFrames) exists
+        if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict):
+            # Loop through each stat DataFrame (e.g., 'Passing', 'Defense')
+            for category, df in match_data['team_stats'].items():
+                
+                # We expect df format: ['Metric', homeTeamName, awayTeamName]
+                if isinstance(df, pd.DataFrame) and not df.empty and 'Metric' in df.columns:
+                    if home_team in df.columns and away_team in df.columns:
+                        try:
+                            # Convert all stats to numeric, coercing errors
+                            df[home_team] = pd.to_numeric(df[home_team], errors='coerce').fillna(0)
+                            df[away_team] = pd.to_numeric(df[away_team], errors='coerce').fillna(0)
+                            
+                            # Loop through each metric row (e.g., 'Passes', 'Duels')
+                            for _, row in df.iterrows():
+                                metric_name = row['Metric']
+                                # Add to the aggregate totals
+                                all_stats_agg[home_team][metric_name] += row[home_team]
+                                all_stats_agg[away_team][metric_name] += row[away_team]
+                        except Exception as e:
+                            print(f"Warning: Could not process df in match {match_id}. Error: {e}")
+                    else:
+                        print(f"Warning: Team columns '{home_team}' or '{away_team}' not in df for match {match_id}")
+
+    # --- Convert aggregated totals to a DataFrame ---
+    if not all_stats_agg:
+        print("No stats aggregated.")
+        return pd.DataFrame()
+        
+    stats_df = pd.DataFrame.from_dict(all_stats_agg, orient='index').fillna(0)
+    
+    # --- Normalize to Per-Game ---
+    games_series = pd.Series(games_played, name='games')
+    
+    # Ensure we only divide teams that have games logged
+    stats_df = stats_df.loc[games_series.index] 
+    
+    # Divide all stats by the number of games played
+    stats_per_game_df = stats_df.div(games_series, axis=0)
+    
+    # Clean up any potential inf/-inf values
+    stats_per_game_df.replace([np.inf, -np.inf], 0, inplace=True)
+    
+    print("✅ Expanded team stats calculated.")
+    return stats_per_game_df.fillna(0)
 
 # ==============================================================================
 # 5. STREAMLIT APP UI
@@ -1282,72 +1360,118 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
         
-        # Calculate data ONCE at the top
+        # --- 1. ALL DATA CALCS ---
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
         team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df).copy()
 
+        # --- NEW: Calculate and merge expanded stats ---
+        try:
+            # This function uses all_match_data and matches_summary_df
+            expanded_stats_df = calculate_expanded_team_stats(all_match_data, matches_summary_df)
+            # Combine the radar stats with the new per-match stats
+            combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
+        except Exception as e:
+            st.warning(f"Could not calculate expanded match stats: {e}")
+            combined_stats_df = stats_df_raw.copy() # Fallback to just radar stats
+
+        # --- 2. Define Team Lists ---
+        SOUTH_SERIE_TEAMS = [
+            '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+            'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'
+        ]
+        # Get a list of teams that are *actually in the data*
+        valid_south_teams = [t for t in SOUTH_SERIE_TEAMS if t in combined_stats_df.index]
+        
+        ALL_TEAMS_TO_HIGHLIGHT = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
+        valid_all_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in combined_stats_df.index]
+
+        # --- 3. NEW: South Serie Custom Scatterplot ---
+        st.subheader("South Serie Custom Scatterplot")
+        if not combined_stats_df.empty and valid_south_teams:
+            # Filter the main DataFrame to ONLY include South teams
+            south_stats_df = combined_stats_df.loc[valid_south_teams]
+            
+            metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
+            available_metrics = sorted([col for col in south_stats_df.columns if col not in metrics_to_exclude])
+            
+            col_x_s, col_y_s = st.columns(2)
+            with col_x_s:
+                default_x_s_index = available_metrics.index('xG') if 'xG' in available_metrics else 0
+                x_metric_south = st.selectbox("Select X-Axis Metric:", available_metrics, index=default_x_s_index, key='x_metric_south')
+            with col_y_s:
+                default_y_s_index = available_metrics.index('xG Against') if 'xG Against' in available_metrics else 1
+                y_metric_south = st.selectbox("Select Y-Axis Metric:", available_metrics, index=default_y_s_index, key='y_metric_south')
+            
+            col_inv_x_s, col_inv_y_s = st.columns(2)
+            with col_inv_x_s:
+                invert_x_south = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_south')
+            with col_inv_y_s:
+                default_invert_y_s = 'Against' in y_metric_south or 'PPDA' in y_metric_south or 'Losses' in y_metric_south
+                invert_y_south = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_s, key='invert_y_south')
+            
+            if x_metric_south and y_metric_south:
+                # Call the plot function with the FILTERED south_stats_df
+                fig_custom_south = plot_custom_scatter(south_stats_df, x_metric_south, y_metric_south, invert_x_south, invert_y_south)
+                st.pyplot(fig_custom_south, use_container_width=True)
+        else:
+            st.info("No data available for South Serie custom plot.")
+
+        
+        # --- 4. South Serie Strength Chart (from last step) ---
+        st.subheader("Team Strength Scatterplot (Liga 3 - South Serie)")
         if not team_strength_df.empty:
-            # --- 1. NEW: South Serie Chart (comes first) ---
-            st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
-            
-            # Define the South Serie list
-            SOUTH_SERIE_TEAMS = [
-                '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-                'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'
-            ]
-            valid_south_teams = [team for team in SOUTH_SERIE_TEAMS if team in team_strength_df.index]
-            
-         
-            # Plot ONLY the South teams
-            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_teams, icon_zoom=0.4)
+            valid_south_strength_teams = [t for t in SOUTH_SERIE_TEAMS if t in team_strength_df.index]
+            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_strength_teams, icon_zoom=0.4)
             st.pyplot(fig_south_strength, use_container_width=True)
-            
-            with st.expander("View Group B Raw Strength Data"):
-                if valid_south_teams:
-                    # Filter the dataframe to only show the teams we plotted
-                    st.dataframe(team_strength_df.loc[valid_south_teams, ['Attacking Strength', 'Defending Strength']].round(2))
-                else:
-                    st.write("No valid Group B teams found in data.")
-            
-            # --- 2. EXISTING: All Teams Chart (comes second) ---
-            st.subheader("Team Strength Scatterplot (All Highlighted Teams)")
-            
-            # This was your original list, now used for the second chart
-            ALL_TEAMS_TO_HIGHLIGHT = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
-            valid_all_teams = [team for team in ALL_TEAMS_TO_HIGHLIGHT if team in team_strength_df.index]
-            
-            # Plot all highlighted teams
-            fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_teams) 
+            with st.expander("View South Serie Raw Strength Data"):
+                if valid_south_strength_teams:
+                    st.dataframe(team_strength_df.loc[valid_south_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
+        else:
+            st.warning("Could not calculate team strength data for South Serie.")
+
+        
+        # --- 5. All Teams Strength Chart (from last step) ---
+        st.subheader("Team Strength Scatterplot (All Highlighted Teams)")
+        if not team_strength_df.empty:
+            valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
+            fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
             st.pyplot(fig_all_strength, use_container_width=True)
-            
             with st.expander("View All Teams Raw Strength Data"):
                  st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
         else:
             st.warning("Could not calculate team strength data.")
+
         
-        # --- 3. Custom Scatterplot (unchanged) ---
-        st.subheader("Custom League Scatterplot")
-        if not stats_df_raw.empty:
-            metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId'] 
-            available_metrics = sorted([col for col in stats_df_raw.columns if col not in metrics_to_exclude])
-            col_x, col_y = st.columns(2)
-            with col_x:
-                default_x_index = available_metrics.index('xG') if 'xG' in available_metrics else 0
-                x_metric = st.selectbox("Select X-Axis Metric:", available_metrics, index=default_x_index) 
-            with col_y:
-                default_y_index = available_metrics.index('xG Against') if 'xG Against' in available_metrics else 1
-                y_metric = st.selectbox("Select Y-Axis Metric:", available_metrics, index=default_y_index)
-            col_inv_x, col_inv_y = st.columns(2)
-            with col_inv_x:
-                invert_x = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x')
-            with col_inv_y:
-                default_invert_y = 'Against' in y_metric or 'PPDA' in y_metric
-                invert_y = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y, key='invert_y')
-            if x_metric and y_metric:
-                fig_custom = plot_custom_scatter( stats_df_raw, x_metric, y_metric, invert_x, invert_y )
-                st.pyplot(fig_custom, use_container_width=True)
-            with st.expander("View Raw Radar Stats Data"):
-                 st.dataframe(stats_df_raw.round(2))
+        # --- 6. UPDATED: All Teams Custom Scatterplot ---
+        st.subheader("All Teams Custom Scatterplot")
+        if not combined_stats_df.empty:
+            # Get metrics from the NEW combined DataFrame
+            metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
+            available_metrics_all = sorted([col for col in combined_stats_df.columns if col not in metrics_to_exclude])
+            
+            col_x_all, col_y_all = st.columns(2)
+            with col_x_all:
+                default_x_all_index = available_metrics_all.index('xG') if 'xG' in available_metrics_all else 0
+                x_metric_all = st.selectbox("Select X-Axis Metric:", available_metrics_all, index=default_x_all_index, key='x_metric_all')
+            with col_y_all:
+                default_y_all_index = available_metrics_all.index('xG Against') if 'xG Against' in available_metrics_all else 1
+                y_metric_all = st.selectbox("Select Y-Axis Metric:", available_metrics_all, index=default_y_all_index, key='y_metric_all')
+            
+            col_inv_x_all, col_inv_y_all = st.columns(2)
+            with col_inv_x_all:
+                invert_x_all = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_all')
+            with col_inv_y_all:
+                default_invert_y_all = 'Against' in y_metric_all or 'PPDA' in y_metric_all or 'Losses' in y_metric_all
+                invert_y_all = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_all, key='invert_y_all')
+            
+            if x_metric_all and y_metric_all:
+                # Plot using the FULL combined_stats_df
+                fig_custom_all = plot_custom_scatter(combined_stats_df, x_metric_all, y_metric_all, invert_x_all, invert_y_all)
+                st.pyplot(fig_custom_all, use_container_width=True)
+            
+            with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
+                # Show the new combined data
+                st.dataframe(combined_stats_df.round(2))
         else:
             st.warning("Could not calculate raw league stats for custom plot.")
 
