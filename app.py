@@ -1364,73 +1364,68 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
         team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df).copy()
 
-        # --- NEW: Calculate and merge expanded stats ---
         try:
-            # This function uses all_match_data and matches_summary_df
             expanded_stats_df = calculate_expanded_team_stats(all_match_data, matches_summary_df)
-            # Combine the radar stats with the new per-match stats
             combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
         except Exception as e:
             st.warning(f"Could not calculate expanded match stats: {e}")
-            combined_stats_df = stats_df_raw.copy() # Fallback to just radar stats
+            combined_stats_df = stats_df_raw.copy() 
 
         # --- 2. Define Team Lists ---
-        SOUTH_SERIE_TEAMS = [
+        GROUP_B_TEAMS = [
             '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
             'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'
         ]
-        # Get a list of teams that are *actually in the data*
-        valid_south_teams = [t for t in SOUTH_SERIE_TEAMS if t in combined_stats_df.index]
+        valid_group_b_teams = [t for t in GROUP_B_TEAMS if t in combined_stats_df.index]
         
         ALL_TEAMS_TO_HIGHLIGHT = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
         valid_all_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in combined_stats_df.index]
 
-        # --- 3. NEW: South Serie Custom Scatterplot ---
-        st.subheader("South Serie Custom Scatterplot")
-        if not combined_stats_df.empty and valid_south_teams:
-            # Filter the main DataFrame to ONLY include South teams
-            south_stats_df = combined_stats_df.loc[valid_south_teams]
+
+        # --- 3. Group B Strength Chart (NOW FIRST) ---
+        st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
+        if not team_strength_df.empty:
+            valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
+            fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
+            st.pyplot(fig_group_b_strength, use_container_width=True)
+            with st.expander("View Group B Raw Strength Data"):
+                if valid_group_b_strength_teams:
+                    st.dataframe(team_strength_df.loc[valid_group_b_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
+        else:
+            st.warning("Could not calculate team strength data for Group B.")
+
+        
+        # --- 4. Group B Custom Scatterplot (NOW SECOND) ---
+        st.subheader("Group B Custom Scatterplot")
+        if not combined_stats_df.empty and valid_group_b_teams:
+            group_b_stats_df = combined_stats_df.loc[valid_group_b_teams]
             
             metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
-            available_metrics = sorted([col for col in south_stats_df.columns if col not in metrics_to_exclude])
+            available_metrics_gb = sorted([col for col in group_b_stats_df.columns if col not in metrics_to_exclude])
             
-            col_x_s, col_y_s = st.columns(2)
-            with col_x_s:
-                default_x_s_index = available_metrics.index('xG') if 'xG' in available_metrics else 0
-                x_metric_south = st.selectbox("Select X-Axis Metric:", available_metrics, index=default_x_s_index, key='x_metric_south')
-            with col_y_s:
-                default_y_s_index = available_metrics.index('xG Against') if 'xG Against' in available_metrics else 1
-                y_metric_south = st.selectbox("Select Y-Axis Metric:", available_metrics, index=default_y_s_index, key='y_metric_south')
+            col_x_gb, col_y_gb = st.columns(2)
+            with col_x_gb:
+                default_x_gb_index = available_metrics_gb.index('xG') if 'xG' in available_metrics_gb else 0
+                x_metric_gb = st.selectbox("Select X-Axis Metric:", available_metrics_gb, index=default_x_gb_index, key='x_metric_group_b')
+            with col_y_gb:
+                default_y_gb_index = available_metrics_gb.index('xG Against') if 'xG Against' in available_metrics_gb else 1
+                y_metric_gb = st.selectbox("Select Y-Axis Metric:", available_metrics_gb, index=default_y_gb_index, key='y_metric_group_b')
             
-            col_inv_x_s, col_inv_y_s = st.columns(2)
-            with col_inv_x_s:
-                invert_x_south = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_south')
-            with col_inv_y_s:
-                default_invert_y_s = 'Against' in y_metric_south or 'PPDA' in y_metric_south or 'Losses' in y_metric_south
-                invert_y_south = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_s, key='invert_y_south')
+            col_inv_x_gb, col_inv_y_gb = st.columns(2)
+            with col_inv_x_gb:
+                invert_x_gb = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_group_b')
+            with col_inv_y_gb:
+                default_invert_y_gb = 'Against' in y_metric_gb or 'PPDA' in y_metric_gb or 'Losses' in y_metric_gb
+                invert_y_gb = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_gb, key='invert_y_group_b')
             
-            if x_metric_south and y_metric_south:
-                # Call the plot function with the FILTERED south_stats_df
-                fig_custom_south = plot_custom_scatter(south_stats_df, x_metric_south, y_metric_south, invert_x_south, invert_y_south)
-                st.pyplot(fig_custom_south, use_container_width=True)
+            if x_metric_gb and y_metric_gb:
+                fig_custom_gb = plot_custom_scatter(group_b_stats_df, x_metric_gb, y_metric_gb, invert_x_gb, invert_y_gb)
+                st.pyplot(fig_custom_gb, use_container_width=True)
         else:
-            st.info("No data available for South Serie custom plot.")
+            st.info("No data available for Group B custom plot.")
 
-        
-        # --- 4. South Serie Strength Chart (from last step) ---
-        st.subheader("Team Strength Scatterplot (Liga 3 - South Serie)")
-        if not team_strength_df.empty:
-            valid_south_strength_teams = [t for t in SOUTH_SERIE_TEAMS if t in team_strength_df.index]
-            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_strength_teams, icon_zoom=0.4)
-            st.pyplot(fig_south_strength, use_container_width=True)
-            with st.expander("View South Serie Raw Strength Data"):
-                if valid_south_strength_teams:
-                    st.dataframe(team_strength_df.loc[valid_south_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
-        else:
-            st.warning("Could not calculate team strength data for South Serie.")
 
-        
-        # --- 5. All Teams Strength Chart (from last step) ---
+        # --- 5. All Teams Strength Chart (Unchanged) ---
         st.subheader("Team Strength Scatterplot (All Highlighted Teams)")
         if not team_strength_df.empty:
             valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
@@ -1442,10 +1437,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning("Could not calculate team strength data.")
 
         
-        # --- 6. UPDATED: All Teams Custom Scatterplot ---
+        # --- 6. All Teams Custom Scatterplot (Unchanged) ---
         st.subheader("All Teams Custom Scatterplot")
         if not combined_stats_df.empty:
-            # Get metrics from the NEW combined DataFrame
             metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
             available_metrics_all = sorted([col for col in combined_stats_df.columns if col not in metrics_to_exclude])
             
@@ -1465,12 +1459,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 invert_y_all = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_all, key='invert_y_all')
             
             if x_metric_all and y_metric_all:
-                # Plot using the FULL combined_stats_df
                 fig_custom_all = plot_custom_scatter(combined_stats_df, x_metric_all, y_metric_all, invert_x_all, invert_y_all)
                 st.pyplot(fig_custom_all, use_container_width=True)
             
             with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
-                # Show the new combined data
                 st.dataframe(combined_stats_df.round(2))
         else:
             st.warning("Could not calculate raw league stats for custom plot.")
