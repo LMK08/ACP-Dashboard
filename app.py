@@ -1299,7 +1299,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
          
             # Plot ONLY the South teams
-            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_teams, icon_zoom=0.8)
+            fig_south_strength = plot_team_strength(team_strength_df, teams_to_include=valid_south_teams, icon_zoom=0.5)
             st.pyplot(fig_south_strength, use_container_width=True)
             
             with st.expander("View Group B Raw Strength Data"):
