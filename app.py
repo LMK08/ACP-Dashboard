@@ -1147,18 +1147,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         else: matches_summary_df['display_date'] = 'Unknown Date'
         
         # Create a display-ready gameweek column
-        matches_summary_df['gw_display'] = "GW " + matches_summary_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
-        
-        # Build the full display name using the new columns
-        matches_summary_df['display_name'] = matches_summary_df['gw_display'] + " (" + \
-                                             matches_summary_df['display_date'] + "): " + \
-                                             matches_summary_df.get('homeTeamName', '?').fillna('?') + " vs " + \
-                                             matches_summary_df.get('awayTeamName', '?').fillna('?') + \
-                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ")"
+        matches_summary_df['gw_display'] = "GW " + matches_summary_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
+        
+        # Build the full display name using the new columns
+        matches_summary_df['display_name'] = matches_summary_df['gw_display'] + " (" + \
+                                             matches_summary_df['display_date'] + "): " + \
+                                             matches_summary_df.get('homeTeamName', '?').fillna('?') + " vs " + \
+                                             matches_summary_df.get('awayTeamName', '?').fillna('?') + \
+                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ")"
 
-        sort_key = 'dateutc' if 'dateutc' in matches_summary_df.columns else 'matchId'
-        # Sort descending to show newest matches first
-        matches_summary_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
+        sort_key = 'dateutc' if 'dateutc' in matches_summary_df.columns else 'matchId'
+        # Sort descending to show newest matches first
+        matches_summary_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
         
         selected_match_display = st.sidebar.selectbox("Select a Match", matches_summary_df['display_name'])
         selected_match_info = matches_summary_df[matches_summary_df['display_name'] == selected_match_display].iloc[0]
