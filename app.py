@@ -1127,7 +1127,7 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
 def plot_xg_flowchart(match_events_df, match_info):
     """
     Generates a Matplotlib figure for the match xG flowchart.
-    Includes markers for goals and red cards.
+    Includes markers for goals (regular, penalty, own) and red cards.
     """
     
     # 1. Get team names and set colors
@@ -1136,25 +1136,37 @@ def plot_xg_flowchart(match_events_df, match_info):
     home_color = '#0077b6' # Blue
     away_color = '#e63946' # Red
     
-    # 2. Filter for relevant events (shots and red cards)
-    shots_df = match_events_df[match_events_df['type.primary'] == 'shot'].copy()
-    shots_df = shots_df[['minute', 'team.name', 'shot.xg', 'shot.isGoal']]
+    # 2. Filter for relevant events (shots, penalties, own goals, and red cards)
+    # --- UPDATED: Include 'own_goal' type ---
+    events_df = match_events_df[match_events_df['type.primary'].isin(['shot', 'penalty', 'own_goal'])].copy()
+    events_df = events_df[['minute', 'team.name', 'shot.xg', 'shot.isGoal', 'type.primary']]
     
     reds_df = match_events_df[match_events_df.get('infraction.redCard') == True].copy()
     if not reds_df.empty:
         reds_df = reds_df[['minute', 'team.name']]
         reds_df['isRedCard'] = True
     else:
-        # Create empty df with correct columns if no red cards
         reds_df = pd.DataFrame(columns=['minute', 'team.name', 'isRedCard'])
     
     # 3. Combine and sort
-    df = pd.concat([shots_df, reds_df]).sort_values(by='minute')
+    # --- UPDATED: Use events_df ---
+    df = pd.concat([events_df, reds_df]).sort_values(by='minute')
     
-    # 4. Clean NaNs
+    # 4. Clean NaNs and identify event types
     df['shot.xg'] = pd.to_numeric(df['shot.xg'], errors='coerce').fillna(0)
-    df['shot.isGoal'] = df['shot.isGoal'].fillna(False)
     df['isRedCard'] = df['isRedCard'].fillna(False)
+    
+    # --- UPDATED: Identify Goal Types (using type.primary) ---
+    df['shot.isGoal'] = df['shot.isGoal'].fillna(False) # For regular shots/penalties
+    df['isPenalty'] = df['type.primary'] == 'penalty'
+    df['isOwnGoal'] = df['type.primary'] == 'own_goal' # <-- THE FIX
+    
+    # A 'Regular Goal' is a scored shot, but not a penalty
+    # (An own goal will have shot.isGoal=False, so it's excluded)
+    df['isRegularGoal'] = df['shot.isGoal'] & (df['type.primary'] == 'shot')
+    
+    # A "Goal" for plotting is a scored shot/penalty OR an own goal
+    df['isGoal'] = df['shot.isGoal'] | df['isOwnGoal']
     
     # 5. Create xG columns per team
     df['home_xG'] = np.where(df['team.name'] == home_team, df['shot.xg'], 0)
@@ -1163,7 +1175,8 @@ def plot_xg_flowchart(match_events_df, match_info):
     # 6. Add start row
     start_row = pd.DataFrame([{
         'minute': 0, 'home_xG': 0, 'away_xG': 0, 
-        'shot.isGoal': False, 'isRedCard': False, 'team.name': 'Start'
+        'shot.isGoal': False, 'isRedCard': False, 'team.name': 'Start',
+        'isPenalty': False, 'isOwnGoal': False, 'isRegularGoal': False, 'isGoal': False
     }])
     df = pd.concat([start_row, df]).sort_values(by='minute')
     
@@ -1180,32 +1193,39 @@ def plot_xg_flowchart(match_events_df, match_info):
     fig.set_facecolor('#f5f1e9')
     ax.set_facecolor('#f5f1e9')
     
-    # Plot the step lines
     ax.step(df['minute'], df['home_xG_cum'], label=home_team, color=home_color, where='post', linewidth=2.5)
     ax.step(df['minute'], df['away_xG_cum'], label=away_team, color=away_color, where='post', linewidth=2.5)
     
-    # 10. Add Goal and Red Card Markers
-    goals_df = df[df['shot.isGoal'] == True]
+    # 10. Add Goal and Red Card Markers (This logic remains the same, but now uses the corrected types)
+    goals_df = df[df['isGoal'] == True]
     for _, row in goals_df.iterrows():
-        label = f"Goal ({row['minute']}')"
+        if row['isRegularGoal']:
+            label = f"Goal ({row['minute']}')"
+            marker_size = 250
+            marker_shape = 'o'
+        elif row['isPenalty'] and row['shot.isGoal']: # Check if penalty was scored
+            label = f"Penalty Goal ({row['minute']}')"
+            marker_size = 350
+            marker_shape = 'X'
+        elif row['isOwnGoal']:
+            label = f"Own Goal ({row['minute']}')"
+            marker_size = 250
+            marker_shape = 's'
+        else:
+            continue # Don't plot missed penalties as "goals"
+            
         if row['team.name'] == home_team:
-            ax.scatter(row['minute'], row['home_xG_cum'], c=home_color, s=250, marker='o', 
+            ax.scatter(row['minute'], row['home_xG_cum'], c=home_color, s=marker_size, marker=marker_shape, 
                        edgecolor='black', zorder=5, label=label)
         else:
-            ax.scatter(row['minute'], row['away_xG_cum'], c=away_color, s=250, marker='o', 
+            ax.scatter(row['minute'], row['away_xG_cum'], c=away_color, s=marker_size, marker=marker_shape, 
                        edgecolor='black', zorder=5, label=label)
 
     reds_df_plot = df[df['isRedCard'] == True]
     for _, row in reds_df_plot.iterrows():
         label = f"Red Card ({row['minute']}')"
-        # Place marker on the team's line
-        if row['team.name'] == home_team:
-            y_val = row['home_xG_cum']
-        else:
-            y_val = row['away_xG_cum']
-        
-        # Plot a red square
-        ax.scatter(row['minute'], y_val, c='red', s=200, marker='s', 
+        y_val = row['home_xG_cum'] if row['team.name'] == home_team else row['away_xG_cum']
+        ax.scatter(row['minute'], y_val, c='red', s=150, marker='D', 
                    edgecolor='black', linewidth=1.5, zorder=5, label=label)
 
     # 11. Styling
@@ -1213,15 +1233,14 @@ def plot_xg_flowchart(match_events_df, match_info):
     ax.set_ylabel('Cumulative xG', fontsize=12)
     ax.set_title(f"xG Flowchart: {home_team} vs {away_team}\nScore: {match_info.get('score', '?-?')}", fontsize=16, weight='bold')
     
-    # Manually handle legend to avoid duplicate labels
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    if by_label: # Only show legend if there's something to show
+    if by_label:
         ax.legend(by_label.values(), by_label.keys(), loc='upper left', frameon=False)
     
     ax.grid(True, linestyle='--', alpha=0.5)
-    ax.set_xlim(0, max_minute + 2) # Add a little padding
-    ax.set_ylim(0) # Start y-axis at 0
+    ax.set_xlim(0, max_minute + 2)
+    ax.set_ylim(0)
 
     plt.tight_layout()
     return fig
