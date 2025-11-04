@@ -59,6 +59,23 @@ def load_data():
         st.error(f"An error occurred loading data: {e}")
         return None, None, None, None, None
 
+# ... after your @st.cache_data def load_data(): ...
+
+@st.cache_data
+def load_historical_data():
+    """Load all historical data files for rolling charts."""
+    try:
+        hist_events_df = pd.read_parquet('historical_events.parquet')
+        hist_matches_df = pd.read_parquet('historical_matches.parquet')
+        return hist_events_df, hist_matches_df
+    
+    except FileNotFoundError as e:
+        st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py`. Missing file: {e.filename}")
+        return None, None
+    except Exception as e:
+        st.error(f"An error occurred loading historical data: {e}")
+        return None, None
+    
 # ==============================================================================
 # 3. GLOBAL CONSTANTS FOR PLAYER RADARS
 # ==============================================================================
@@ -1475,12 +1492,6 @@ st.title("Atlético CP Analysis") # You can change this title
 # --- Load Data ---
 raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
 
-# --- Calculate Rolling xG Data ---
-if raw_events_df is not None and matches_summary_df is not None:
-    rolling_xg_df = calculate_rolling_xg_data(raw_events_df, matches_summary_df) # <-- ADD THIS
-else:
-    rolling_xg_df = pd.DataFrame() # <-- ADD THIS
-
 
 # --- Declare player_stats_with_scores_df globally for the app session ---
 # This ensures it's accessible inside the plotting function
@@ -1627,14 +1638,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- ADD NEW SECTION HERE ---
         st.subheader("Rolling xG (Last 365 Days)")
-        if not rolling_xg_df.empty:
-            try:
-                fig_rolling_xg = plot_rolling_xg(rolling_xg_df, selected_team_t)
-                st.pyplot(fig_rolling_xg, use_container_width=True)
-            except Exception as e:
-                st.warning(f"Could not generate rolling xG chart: {e}")
+        
+        # Load the NEW historical data
+        hist_events_df, hist_matches_df = load_historical_data()
+        
+        if hist_events_df is not None and hist_matches_df is not None:
+            # Calculate the rolling data using the new historical files
+            rolling_xg_data_for_plot = calculate_rolling_xg_data(hist_events_df, hist_matches_df)
+            
+            if not rolling_xg_data_for_plot.empty:
+                try:
+                    fig_rolling_xg = plot_rolling_xg(rolling_xg_data_for_plot, selected_team_t)
+                    st.pyplot(fig_rolling_xg, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not generate rolling xG chart: {e}")
+            else:
+                st.warning("No data available to calculate rolling xG.")
         else:
-            st.warning("No data available for rolling xG chart.")
+            st.warning("Historical data files not loaded, cannot display rolling xG chart.")
         # --- END NEW SECTION ---
 
         st.subheader("Corner Kick Analysis")

@@ -1203,7 +1203,7 @@ def calculate_match_data(match_df, home_team, away_team):
 
 
 # ==============================================================================
-# SECTION 4: MAIN FUNCTION (CORRECTED)
+# SECTION 4: MAIN FUNCTION (REVISED FOR MULTI-SEASON)
 # ==============================================================================
 def main():
     """Main function to run the entire data processing pipeline."""
@@ -1216,33 +1216,84 @@ def main():
         return
 
     competition_id = 43324
-    season_id = 191782
+    
+    [191782]#, 188221, 188222, 190090, 190090]
 
-    # --- 1. Fetch Match Schedule (Includes Dates, Teams, GW, Score) ---
-    matches_summary_df = fetch_match_schedule(wyscout_user, wyscout_pass, competition_id, season_id)
-    if matches_summary_df.empty:
-        print("No match schedule found or error occurred. Exiting.")
+    # --- 1. DEFINE SEASONS ---
+    # Define all seasons you want to fetch for historical context
+    ALL_SEASON_IDS_TO_FETCH = [
+        191782, # 2025/26 Season
+        190090, # 2024/25 Season
+        189147, # 2023/24 Season
+        188222, # 2022/23 Season
+        188221, # 2021/22 Season
+    ]
+    # Define which season is the "current" one for the main dashboard
+    CURRENT_SEASON_ID = 191782
+
+    print(f"Starting data pipeline for {len(ALL_SEASON_IDS_TO_FETCH)} total seasons.")
+    print(f"Current season set to: {CURRENT_SEASON_ID}")
+
+    # --- 2. FETCH ALL MATCH SCHEDULES ---
+    all_schedules_list = []
+    for season_id in ALL_SEASON_IDS_TO_FETCH:
+        print(f"\n--- Fetching Schedule for Season ID: {season_id} ---")
+        season_schedule_df = fetch_match_schedule(wyscout_user, wyscout_pass, competition_id, season_id)
+        if not season_schedule_df.empty:
+            all_schedules_list.append(season_schedule_df)
+        else:
+            print(f"Warning: No match schedule found for season {season_id}.")
+
+    if not all_schedules_list:
+        print("❌ No match schedules found for any season. Exiting.")
         return
 
-    # --- Save the fetched schedule as the new summary file ---
-    matches_summary_df.to_parquet('matches_summary.parquet', index=False)
-    print("✅ Match schedule (summary) saved to 'matches_summary.parquet'")
+    # Combine all schedules into one big DataFrame
+    all_matches_summary_df = pd.concat(all_schedules_list, ignore_index=True)
+    all_matches_summary_df['dateutc'] = pd.to_datetime(all_matches_summary_df['dateutc'], errors='coerce')
+    all_matches_summary_df.sort_values(by='dateutc', inplace=True, na_position='last')
+    all_matches_summary_df.reset_index(drop=True, inplace=True)
+    
+    print(f"\n✅ Combined schedule for {len(all_schedules_list)} seasons, {len(all_matches_summary_df)} total matches.")
 
-    # --- Get list of Match IDs needed for event fetching ---
-    # Filter out matches with missing IDs before fetching events
-    match_ids_to_fetch = matches_summary_df['matchId'].dropna().unique().tolist()
-    if not match_ids_to_fetch:
-        print("No valid match IDs found in the schedule. Exiting.")
+    # --- 3. SAVE HISTORICAL & CURRENT SCHEDULES ---
+    
+    # Save the FULL, combined schedule for historical analysis
+    all_matches_summary_df.to_parquet('historical_matches.parquet', index=False)
+    print("✅ Full historical match schedule saved to 'historical_matches.parquet'")
+
+    # Filter for the CURRENT season for the main app
+    current_matches_summary_df = all_matches_summary_df[all_matches_summary_df['seasonId'] == CURRENT_SEASON_ID].copy()
+    current_matches_summary_df.to_parquet('matches_summary.parquet', index=False)
+    print(f"✅ Current season ({CURRENT_SEASON_ID}) schedule saved to 'matches_summary.parquet'")
+
+    # --- 4. FETCH ALL EVENT DATA ---
+    all_match_ids_to_fetch = all_matches_summary_df['matchId'].dropna().unique().tolist()
+    if not all_match_ids_to_fetch:
+        print("No valid match IDs found. Exiting.")
         return
 
-    # --- 2. Fetch all Event Data for those matches --- # <<< THIS CALL WAS MISSING >>>
-    raw_events_df = fetch_events(wyscout_user, wyscout_pass, match_ids_to_fetch)
-    if raw_events_df.empty:
+    all_raw_events_df = fetch_events(wyscout_user, wyscout_pass, all_match_ids_to_fetch)
+    if all_raw_events_df.empty:
         print("No event data fetched. Exiting.")
         return
 
-    # --- Data Cleaning/Prep ---
-    print("Performing initial data type conversions...")
+    # --- 5. ADD SEASONID TO EVENTS & SAVE ---
+    # Create a map of matchId -> seasonId from our full schedule
+    match_id_to_season_map = all_matches_summary_df.set_index('matchId')['seasonId']
+    all_raw_events_df['seasonId'] = all_raw_events_df['matchId'].map(match_id_to_season_map)
+    print("✅ Added 'seasonId' to all events.")
+
+    # Save the FULL, combined events for historical analysis
+    all_raw_events_df.to_parquet('historical_events.parquet', index=False)
+    print("✅ Full historical event data saved to 'historical_events.parquet'")
+
+    # Filter for the CURRENT season for the main app
+    current_raw_events_df = all_raw_events_df[all_raw_events_df['seasonId'] == CURRENT_SEASON_ID].copy()
+    
+    # --- 6. CLEAN & SAVE CURRENT EVENTS ---
+    # (This is your original data cleaning logic, now applied only to current_raw_events_df)
+    print("Performing data type conversions for current season...")
     numeric_cols = ['shot.xg', 'location.x', 'location.y', 'minute', 'second', 'pass.length',
                     'pass.endLocation.x', 'pass.endLocation.y', 'possession.duration_sec']
     bool_cols = ['shot.isGoal', 'shot.onTarget', 'pass.accurate', 'groundDuel.keptPossession',
@@ -1250,76 +1301,72 @@ def main():
                  'groundDuel.takeOn', 'groundDuel.progressedWithBall', 'infraction.yellowCard', 'infraction.redCard']
 
     for col in numeric_cols:
-        if col in raw_events_df.columns:
-            raw_events_df[col] = pd.to_numeric(raw_events_df[col], errors='coerce')
-
+        if col in current_raw_events_df.columns:
+            current_raw_events_df[col] = pd.to_numeric(current_raw_events_df[col], errors='coerce')
     for col in bool_cols:
-         if col in raw_events_df.columns:
-             raw_events_df[col] = raw_events_df[col].replace({'true': True, 'false': False, 1: True, 0: False})
-             try: raw_events_df[col] = raw_events_df[col].astype('boolean')
-             except Exception: raw_events_df[col] = raw_events_df[col].apply(lambda x: True if x == True else (False if x == False else pd.NA))
+        if col in current_raw_events_df.columns:
+            current_raw_events_df[col] = current_raw_events_df[col].replace({'true': True, 'false': False, 1: True, 0: False})
+            try: current_raw_events_df[col] = current_raw_events_df[col].astype('boolean')
+            except Exception: current_raw_events_df[col] = current_raw_events_df[col].apply(lambda x: True if x == True else (False if x == False else pd.NA))
 
-    # Save the raw events
-    raw_events_df.to_parquet('raw_events.parquet', index=False)
-    print("✅ Raw event data saved.")
+    current_raw_events_df.to_parquet('raw_events.parquet', index=False)
+    print(f"✅ Current season ({CURRENT_SEASON_ID}) event data saved to 'raw_events.parquet'")
 
-    # --- REMOVED INCORRECT CALL to create_match_summary ---
-
-    # --- 3. Process and Save All Per-Match Data (Team and Player) ---
+    
+    # --- 7. PROCESS ALL PER-MATCH DATA (ONLY FOR CURRENT SEASON) ---
     all_match_data = {}
-    required_cols = ['matchId', 'homeTeamName', 'awayTeamName'] # Use new column names
-    if not all(col in matches_summary_df.columns for col in required_cols):
-         print("❌ Error: matches_summary_df is missing required columns. Cannot process matches.")
-         return
-
-    for index, match_summary in tqdm(matches_summary_df.iterrows(), total=matches_summary_df.shape[0], desc="Processing All Matches"):
+    required_cols = ['matchId', 'homeTeamName', 'awayTeamName']
+    
+    # Use current_matches_summary_df for this loop
+    for index, match_summary in tqdm(current_matches_summary_df.iterrows(), total=current_matches_summary_df.shape[0], desc="Processing Current Season Matches"):
         match_id = match_summary['matchId']
         home_team = match_summary['homeTeamName']
         away_team = match_summary['awayTeamName']
         if pd.isna(home_team) or pd.isna(away_team):
-             print(f"  -> ⚠️ Warning: Missing team names for match {match_id}. Skipping stats calc.")
-             continue
-        if 'matchId' in raw_events_df.columns:
-            match_events_df = raw_events_df[raw_events_df['matchId'] == match_id].copy()
-        else:
-            print(f"  -> ⚠️ Warning: 'matchId' column missing in raw_events_df. Skipping match {match_id}")
+            print(f"  -> ⚠️ Warning: Missing team names for match {match_id}. Skipping stats calc.")
             continue
+        
+        # Use current_raw_events_df for this
+        match_events_df = current_raw_events_df[current_raw_events_df['matchId'] == match_id].copy()
+        
         if match_events_df.empty:
             print(f"  -> ℹ️ Info: No event data for match {match_id}. Skipping stats.")
             all_match_data[match_id] = {'team_stats': {}, 'player_stats': {'home': pd.DataFrame(), 'away': pd.DataFrame()}}
             continue
+        
         match_data = calculate_match_data(match_events_df, home_team, away_team)
         all_match_data[match_id] = match_data
 
     with open('all_match_data.pkl', 'wb') as f: pickle.dump(all_match_data, f)
-    print("✅ All detailed match data saved to 'all_match_data.pkl'")
+    print("✅ All detailed match data (current season) saved to 'all_match_data.pkl'")
 
-    # --- 4. Process and Save Season-Long Team Stats ---
-    all_teams = pd.concat([matches_summary_df['homeTeamName'], matches_summary_df['awayTeamName']]).dropna().unique()
+    # --- 8. PROCESS SEASON-LONG STATS (ONLY FOR CURRENT SEASON) ---
+    all_teams = pd.concat([current_matches_summary_df['homeTeamName'], current_matches_summary_df['awayTeamName']]).dropna().unique()
     season_team_stats = {}
-    for team in tqdm(all_teams, desc="Processing Season-Long Team Stats"):
-        team_corners = calculate_team_corner_stats(raw_events_df.copy(), matches_summary_df, team)
+    for team in tqdm(all_teams, desc="Processing Current Season-Long Team Stats"):
+        # Use current_raw_events_df
+        team_corners = calculate_team_corner_stats(current_raw_events_df.copy(), current_matches_summary_df, team)
         if team_corners is not None:
             season_team_stats[team] = {'corners': team_corners}
 
     with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
-    print("✅ All season-long team stats saved to 'season_team_stats.pkl'")
+    print("✅ All season-long team stats (current season) saved to 'season_team_stats.pkl'")
 
-    # --- NEW STEP 5: Calculate Player Minutes and Positions ---
-    print("\nStarting player minute and position calculation...")
+    # --- 9. CALCULATE PLAYER MINUTES (ONLY FOR CURRENT SEASON) ---
+    print("\nStarting player minute and position calculation (current season)...")
+    current_match_ids = current_matches_summary_df['matchId'].dropna().unique().tolist()
     player_minutes_df = calculate_player_minutes_and_positions(
-        raw_events_df.copy(), # Pass a copy of the events
-        match_ids_to_fetch,   # Pass the list of match IDs
+        current_raw_events_df.copy(), # Use current events
+        current_match_ids,           # Use current match IDs
         wyscout_user,
         wyscout_pass
     )
     if not player_minutes_df.empty:
         player_minutes_df.to_pickle('player_minutes_and_positions.pkl')
-        print("✅ Player minutes and positions saved to 'player_minutes_and_positions.pkl'")
+        print("✅ Player minutes and positions (current season) saved to 'player_minutes_and_positions.pkl'")
     else:
         print("❌ Failed to calculate player minutes, file not saved.")
-    # --- END NEW STEP ---
-
+    
     print("\n🎉 Data processing pipeline complete!")
 
 
