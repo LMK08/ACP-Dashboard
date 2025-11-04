@@ -17,6 +17,7 @@ from PIL import Image # For scatter plot logos
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox # For scatter plot logos
 from adjustText import adjust_text # For scatter plot logos
 from math import pi # For player radar charts
+import matplotlib.dates as mdates # <-- ADD THIS LINE
 from matplotlib.gridspec import GridSpec # For player radar charts
 from collections import defaultdict # For player radar calculations
 import seaborn as sns # For player radar distributions
@@ -1245,7 +1246,147 @@ def plot_xg_flowchart(match_events_df, match_info):
     plt.tight_layout()
     return fig
 
-# ... before calculate_expanded_team_stats ...
+# ... after plot_xg_flowchart ...
+
+@st.cache_data
+def calculate_rolling_xg_data(_raw_events_df, _matches_summary_df):
+    """
+    Aggregates xG For and Against for every team for every match
+    to be used in rolling average charts.
+    """
+    print("Calculating rolling xG data...") # Debug print
+    all_team_matches = []
+    
+    # Get all shots/penalties
+    shots_df = _raw_events_df[_raw_events_df['type.primary'].isin(['shot', 'penalty'])].copy()
+    shots_df['shot.xg'] = pd.to_numeric(shots_df['shot.xg'], errors='coerce').fillna(0)
+    
+    # Sum xG by match and team
+    xg_by_match_team = shots_df.groupby(['matchId', 'team.name'])['shot.xg'].sum()
+
+    # Loop through the official match list
+    for _, match in _matches_summary_df.iterrows():
+        matchId = match.get('matchId')
+        date = match.get('dateutc')
+        # Use gameweek for season changes, fallback to a generic id
+        season = match.get('gameweek', '1') 
+        home_team = match.get('homeTeamName')
+        away_team = match.get('awayTeamName')
+        
+        if not all([matchId, date, home_team, away_team]):
+            continue # Skip matches with missing data
+            
+        # Get the pre-calculated xG
+        home_xg_for = xg_by_match_team.get((matchId, home_team), 0)
+        away_xg_for = xg_by_match_team.get((matchId, away_team), 0)
+        
+        # Add one row for the home team
+        all_team_matches.append({
+            'date': date, 
+            'season_marker': f"GW {season}", # Use gameweek as the marker
+            'teamName': home_team, 
+            'xG_For': home_xg_for, 
+            'xG_Against': away_xg_for
+        })
+        # Add one row for the away team
+        all_team_matches.append({
+            'date': date, 
+            'season_marker': f"GW {season}", 
+            'teamName': away_team, 
+            'xG_For': away_xg_for, 
+            'xG_Against': home_xg_for
+        })
+    
+    if not all_team_matches:
+        print("Warning: No matches for rolling xG data.")
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(all_team_matches)
+    result_df['date'] = pd.to_datetime(result_df['date'])
+    result_df = result_df.sort_values(by='date')
+    
+    print("✅ Rolling xG data calculated.")
+    return result_df
+
+# ... after calculate_rolling_xg_data ...
+
+def plot_rolling_xg(all_matches_df, selected_team):
+    """
+    Plots the rolling xG For and Against for a team over the last year.
+    """
+    # 1. Filter for selected team
+    team_df = all_matches_df[all_matches_df['teamName'] == selected_team].copy()
+    if team_df.empty:
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data found for this team.', ha='center'); return fig
+        
+    # 2. Filter for last 365 days
+    today = pd.to_datetime(datetime.date.today())
+    one_year_ago = today - pd.DateOffset(years=1)
+    team_df = team_df[(team_df['date'] >= one_year_ago) & (team_df['date'] <= today)]
+    
+    if team_df.empty:
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data in the last 365 days.', ha='center'); return fig
+
+    # 3. Calculate 5-game rolling average
+    rolling_window = 5
+    team_df = team_df.sort_values(by='date')
+    team_df['xG_For_Roll'] = team_df['xG_For'].rolling(window=rolling_window, min_periods=1).mean()
+    team_df['xG_Against_Roll'] = team_df['xG_Against'].rolling(window=rolling_window, min_periods=1).mean()
+    
+    # 4. Calculate trendlines
+    team_df = team_df.dropna(subset=['xG_For_Roll', 'xG_Against_Roll']) # Drop initial NaNs
+    if team_df.empty:
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'Not enough data for rolling average.', ha='center'); return fig
+        
+    team_df['date_numeric'] = mdates.date2num(team_df['date'])
+    
+    z_for = np.polyfit(team_df['date_numeric'], team_df['xG_For_Roll'], 1)
+    p_for = np.poly1d(z_for)
+    team_df['xG_For_Trend'] = p_for(team_df['date_numeric'])
+    
+    z_against = np.polyfit(team_df['date_numeric'], team_df['xG_Against_Roll'], 1)
+    p_against = np.poly1d(z_against)
+    team_df['xG_Against_Trend'] = p_against(team_df['date_numeric'])
+    
+    # 5. Get season markers (for Gameweek 1)
+    season_starts = team_df[team_df['season_marker'] == 'GW 1'].drop_duplicates(subset=['date'])
+
+    # 6. Plotting
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.set_facecolor('#f5f1e9')
+    ax.set_facecolor('#f5f1e9')
+    
+    # Plot rolling averages
+    ax.plot(team_df['date'], team_df['xG_For_Roll'], label=f'{rolling_window}-Game Rolling xG For', color='#0077b6', lw=2.5)
+    ax.plot(team_df['date'], team_df['xG_Against_Roll'], label=f'{rolling_window}-Game Rolling xG Against', color='#e63946', lw=2.5)
+    
+    # Plot trendlines
+    ax.plot(team_df['date'], team_df['xG_For_Trend'], label='xG For Trend', color='#0077b6', linestyle='--', lw=1.5)
+    ax.plot(team_df['date'], team_df['xG_Against_Trend'], label='xG Against Trend', color='#e63946', linestyle='--', lw=1.5)
+    
+    # Plot season markers
+    ylim_top = ax.get_ylim()[1]
+    for _, row in season_starts.iterrows():
+        ax.axvline(row['date'], color='gray', linestyle=':', lw=1.5, zorder=0)
+        ax.text(row['date'] + pd.Timedelta(days=2), ylim_top, ' New Season Start (GW1)', 
+                ha='left', va='top', color='gray', rotation=90, fontsize=10)
+
+    # 7. Styling
+    ax.set_title(f"{selected_team} - Rolling xG (Last 365 Days)", fontsize=16, weight='bold')
+    ax.set_ylabel(f'{rolling_window}-Game Rolling Avg')
+    ax.legend(loc='upper left', frameon=False)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_xlim(one_year_ago, today)
+    ax.set_ylim(bottom=0)
+    
+    # Format date axis
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2)) # Ticks every 2 months
+    
+    plt.tight_layout()
+    return fig
+
+# ... before plot_custom_scatter ...
 
 @st.cache_data
 def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
@@ -1333,6 +1474,13 @@ st.title("Atlético CP Analysis") # You can change this title
 
 # --- Load Data ---
 raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
+
+# --- Calculate Rolling xG Data ---
+if raw_events_df is not None and matches_summary_df is not None:
+    rolling_xg_df = calculate_rolling_xg_data(raw_events_df, matches_summary_df) # <-- ADD THIS
+else:
+    rolling_xg_df = pd.DataFrame() # <-- ADD THIS
+
 
 # --- Declare player_stats_with_scores_df globally for the app session ---
 # This ensures it's accessible inside the plotting function
@@ -1476,6 +1624,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             fig_shots_against = create_season_shots_against_shotmap(raw_events_df, matches_summary_df, selected_team_t)
             if fig_shots_against: st.pyplot(fig_shots_against, use_container_width=True)
             else: st.warning("No shots found AGAINST this team.")
+
+        # --- ADD NEW SECTION HERE ---
+        st.subheader("Rolling xG (Last 365 Days)")
+        if not rolling_xg_df.empty:
+            try:
+                fig_rolling_xg = plot_rolling_xg(rolling_xg_df, selected_team_t)
+                st.pyplot(fig_rolling_xg, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not generate rolling xG chart: {e}")
+        else:
+            st.warning("No data available for rolling xG chart.")
+        # --- END NEW SECTION ---
 
         st.subheader("Corner Kick Analysis")
         col_c1, col_c2 = st.columns(2)
