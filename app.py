@@ -63,14 +63,24 @@ def load_data():
 
 @st.cache_data
 def load_historical_data():
-    """Load all historical data files for rolling charts."""
+    """
+    Load all historical data files for rolling charts.
+    --- OPTIMIZED to only load necessary columns to save memory. ---
+    """
     try:
-        hist_events_df = pd.read_parquet('historical_events.parquet')
-        hist_matches_df = pd.read_parquet('historical_matches.parquet')
+        # 1. Define only the columns we absolutely need for the rolling chart
+        events_cols = ['type.primary', 'shot.xg', 'matchId', 'team.name']
+        matches_cols = ['matchId', 'dateutc', 'gameweek', 'homeTeamName', 'awayTeamName']
+        
+        # 2. Load *only* those columns
+        hist_events_df = pd.read_parquet('historical_events.parquet', columns=events_cols)
+        hist_matches_df = pd.read_parquet('historical_matches.parquet', columns=matches_cols)
+        
         return hist_events_df, hist_matches_df
     
     except FileNotFoundError as e:
-        st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py`. Missing file: {e.filename}")
+        # This error message will still show if the files aren't pushed
+        st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py` (and force-push the files). Missing file: {e.filename}")
         return None, None
     except Exception as e:
         st.error(f"An error occurred loading historical data: {e}")
