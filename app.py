@@ -68,9 +68,10 @@ def load_historical_data():
     --- OPTIMIZED to only load necessary columns to save memory. ---
     """
     try:
-        # 1. Define only the columns we absolutely need for the rolling chart
+        # 1. Define only the columns we absolutely need
         events_cols = ['type.primary', 'shot.xg', 'matchId', 'team.name']
-        matches_cols = ['matchId', 'dateutc', 'gameweek', 'homeTeamName', 'awayTeamName']
+        # --- ADDED 'seasonId' to this list ---
+        matches_cols = ['matchId', 'dateutc', 'gameweek', 'homeTeamName', 'awayTeamName', 'seasonId']
         
         # 2. Load *only* those columns
         hist_events_df = pd.read_parquet('historical_events.parquet', columns=events_cols)
@@ -79,7 +80,6 @@ def load_historical_data():
         return hist_events_df, hist_matches_df
     
     except FileNotFoundError as e:
-        # This error message will still show if the files aren't pushed
         st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py` (and force-push the files). Missing file: {e.filename}")
         return None, None
     except Exception as e:
@@ -1273,8 +1273,6 @@ def plot_xg_flowchart(match_events_df, match_info):
     plt.tight_layout()
     return fig
 
-# ... after plot_xg_flowchart ...
-
 @st.cache_data
 def calculate_rolling_xg_data(_raw_events_df, _matches_summary_df):
     """
@@ -1284,41 +1282,36 @@ def calculate_rolling_xg_data(_raw_events_df, _matches_summary_df):
     print("Calculating rolling xG data...") # Debug print
     all_team_matches = []
     
-    # Get all shots/penalties
     shots_df = _raw_events_df[_raw_events_df['type.primary'].isin(['shot', 'penalty'])].copy()
     shots_df['shot.xg'] = pd.to_numeric(shots_df['shot.xg'], errors='coerce').fillna(0)
-    
-    # Sum xG by match and team
     xg_by_match_team = shots_df.groupby(['matchId', 'team.name'])['shot.xg'].sum()
 
-    # Loop through the official match list
     for _, match in _matches_summary_df.iterrows():
         matchId = match.get('matchId')
         date = match.get('dateutc')
-        # Use gameweek for season changes, fallback to a generic id
-        season = match.get('gameweek', '1') 
+        season_marker = f"GW {match.get('gameweek', '1')}" # Keep this for labels
+        season_id = match.get('seasonId') # <-- GET THE SEASON ID
         home_team = match.get('homeTeamName')
         away_team = match.get('awayTeamName')
         
-        if not all([matchId, date, home_team, away_team]):
-            continue # Skip matches with missing data
+        if not all([matchId, date, home_team, away_team, season_id]): # <-- ADD season_id CHECK
+            continue 
             
-        # Get the pre-calculated xG
         home_xg_for = xg_by_match_team.get((matchId, home_team), 0)
         away_xg_for = xg_by_match_team.get((matchId, away_team), 0)
         
-        # Add one row for the home team
         all_team_matches.append({
             'date': date, 
-            'season_marker': f"GW {season}", # Use gameweek as the marker
+            'season_marker': season_marker, 
+            'seasonId': season_id, # <-- ADD IT HERE
             'teamName': home_team, 
             'xG_For': home_xg_for, 
             'xG_Against': away_xg_for
         })
-        # Add one row for the away team
         all_team_matches.append({
             'date': date, 
-            'season_marker': f"GW {season}", 
+            'season_marker': season_marker, 
+            'seasonId': season_id, # <-- AND ADD IT HERE
             'teamName': away_team, 
             'xG_For': away_xg_for, 
             'xG_Against': home_xg_for
@@ -1335,11 +1328,10 @@ def calculate_rolling_xg_data(_raw_events_df, _matches_summary_df):
     print("✅ Rolling xG data calculated.")
     return result_df
 
-# ... after calculate_rolling_xg_data ...
-
 def plot_rolling_xg(all_matches_df, selected_team):
     """
     Plots the rolling xG For and Against for a team over the last year.
+    Trendline is only for the most recent season.
     """
     # 1. Filter for selected team
     team_df = all_matches_df[all_matches_df['teamName'] == selected_team].copy()
@@ -1355,27 +1347,36 @@ def plot_rolling_xg(all_matches_df, selected_team):
         fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data in the last 365 days.', ha='center'); return fig
 
     # 3. Calculate 10-game rolling average
-    # --- UPDATED: Changed window to 10 ---
     rolling_window = 10 
     team_df = team_df.sort_values(by='date')
     team_df['xG_For_Roll'] = team_df['xG_For'].rolling(window=rolling_window, min_periods=1).mean()
     team_df['xG_Against_Roll'] = team_df['xG_Against'].rolling(window=rolling_window, min_periods=1).mean()
     
     # 4. Calculate trendlines
-    team_df = team_df.dropna(subset=['xG_For_Roll', 'xG_Against_Roll'])
+    team_df = team_df.dropna(subset=['xG_For_Roll', 'xG_Against_Roll', 'seasonId'])
     if team_df.empty:
         fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'Not enough data for rolling average.', ha='center'); return fig
         
     team_df['date_numeric'] = mdates.date2num(team_df['date'])
     
-    z_for = np.polyfit(team_df['date_numeric'], team_df['xG_For_Roll'], 1)
-    p_for = np.poly1d(z_for)
-    team_df['xG_For_Trend'] = p_for(team_df['date_numeric'])
-    
-    z_against = np.polyfit(team_df['date_numeric'], team_df['xG_Against_Roll'], 1)
-    p_against = np.poly1d(z_against)
-    team_df['xG_Against_Trend'] = p_against(team_df['date_numeric'])
-    
+    # --- NEW: Filter for current season data FOR TRENDLINE ONLY ---
+    current_season_id = team_df.iloc[-1]['seasonId'] # Get seasonId of the most recent game
+    current_season_df = team_df[team_df['seasonId'] == current_season_id].copy()
+
+    # 4b. Calculate trendlines ONLY for the current season
+    if len(current_season_df) > 1: # Need at least 2 points for a line
+        z_for = np.polyfit(current_season_df['date_numeric'], current_season_df['xG_For_Roll'], 1)
+        p_for = np.poly1d(z_for)
+        current_season_df['xG_For_Trend'] = p_for(current_season_df['date_numeric'])
+        
+        z_against = np.polyfit(current_season_df['date_numeric'], current_season_df['xG_Against_Roll'], 1)
+        p_against = np.poly1d(z_against)
+        current_season_df['xG_Against_Trend'] = p_against(current_season_df['date_numeric'])
+    else:
+        current_season_df['xG_For_Trend'] = np.nan
+        current_season_df['xG_Against_Trend'] = np.nan
+    # --- END NEW TRENDLINE LOGIC ---
+
     # 5. Get season markers (for Gameweek 1)
     season_starts = team_df[team_df['season_marker'] == 'GW 1'].drop_duplicates(subset=['date'])
 
@@ -1384,30 +1385,29 @@ def plot_rolling_xg(all_matches_df, selected_team):
     fig.set_facecolor('#f5f1e9')
     ax.set_facecolor('#f5f1e9')
     
+    # Plot rolling averages (uses the full 365-day team_df)
     ax.plot(team_df['date'], team_df['xG_For_Roll'], label=f'{rolling_window}-Game Rolling xG For', color='#0077b6', lw=2.5)
     ax.plot(team_df['date'], team_df['xG_Against_Roll'], label=f'{rolling_window}-Game Rolling xG Against', color='#e63946', lw=2.5)
-    ax.plot(team_df['date'], team_df['xG_For_Trend'], label='xG For Trend', color='#0077b6', linestyle='--', lw=1.5)
-    ax.plot(team_df['date'], team_df['xG_Against_Trend'], label='xG Against Trend', color='#e63946', linestyle='--', lw=1.5)
+    
+    # --- UPDATED: Plot trendlines (uses the smaller current_season_df) ---
+    ax.plot(current_season_df['date'], current_season_df['xG_For_Trend'], label='xG For Trend (Current Season)', color='#0077b6', linestyle='--', lw=1.5)
+    ax.plot(current_season_df['date'], current_season_df['xG_Against_Trend'], label='xG Against Trend (Current Season)', color='#e63946', linestyle='--', lw=1.5)
     
     # 7. Plot season markers
-    # --- UPDATED: Logic for labels ---
     ylim_top = ax.get_ylim()[1]
     for _, row in season_starts.iterrows():
         ax.axvline(row['date'], color='gray', linestyle=':', lw=1.5, zorder=0)
-        
-        # Check the month to determine the label
         month = row['date'].month
-        if month in [7, 8, 9]: # July, August, September
+        if month in [7, 8, 9]: 
             label = ' Regular Season Start'
-        else: # Jan, Feb, Mar, etc.
+        else: 
             label = ' Post Season Start'
-            
         ax.text(row['date'] + pd.Timedelta(days=2), ylim_top, label, 
                 ha='left', va='top', color='gray', rotation=90, fontsize=10)
 
     # 8. Styling
     ax.set_title(f"{selected_team} - Rolling xG (Last 365 Days)", fontsize=16, weight='bold')
-    ax.set_ylabel(f'{rolling_window}-Game Rolling Avg') # This label updates automatically
+    ax.set_ylabel(f'{rolling_window}-Game Rolling Avg')
     ax.legend(loc='upper left', frameon=False)
     ax.grid(True, linestyle='--', alpha=0.5)
     ax.set_xlim(one_year_ago, today)
@@ -1418,8 +1418,6 @@ def plot_rolling_xg(all_matches_df, selected_team):
     
     plt.tight_layout()
     return fig
-
-# ... before plot_custom_scatter ...
 
 @st.cache_data
 def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
