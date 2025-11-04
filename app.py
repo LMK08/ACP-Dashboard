@@ -1122,6 +1122,112 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
     plt.tight_layout()
     return fig
 
+# ... after plot_custom_scatter ...
+
+def plot_xg_flowchart(match_events_df, match_info):
+    """
+    Generates a Matplotlib figure for the match xG flowchart.
+    Includes markers for goals and red cards.
+    """
+    
+    # 1. Get team names and set colors
+    home_team = match_info.get('homeTeamName', 'Home')
+    away_team = match_info.get('awayTeamName', 'Away')
+    home_color = '#0077b6' # Blue
+    away_color = '#e63946' # Red
+    
+    # 2. Filter for relevant events (shots and red cards)
+    shots_df = match_events_df[match_events_df['type.primary'] == 'shot'].copy()
+    shots_df = shots_df[['minute', 'team.name', 'shot.xg', 'shot.isGoal']]
+    
+    reds_df = match_events_df[match_events_df.get('infraction.redCard') == True].copy()
+    if not reds_df.empty:
+        reds_df = reds_df[['minute', 'team.name']]
+        reds_df['isRedCard'] = True
+    else:
+        # Create empty df with correct columns if no red cards
+        reds_df = pd.DataFrame(columns=['minute', 'team.name', 'isRedCard'])
+    
+    # 3. Combine and sort
+    df = pd.concat([shots_df, reds_df]).sort_values(by='minute')
+    
+    # 4. Clean NaNs
+    df['shot.xg'] = pd.to_numeric(df['shot.xg'], errors='coerce').fillna(0)
+    df['shot.isGoal'] = df['shot.isGoal'].fillna(False)
+    df['isRedCard'] = df['isRedCard'].fillna(False)
+    
+    # 5. Create xG columns per team
+    df['home_xG'] = np.where(df['team.name'] == home_team, df['shot.xg'], 0)
+    df['away_xG'] = np.where(df['team.name'] == away_team, df['shot.xg'], 0)
+    
+    # 6. Add start row
+    start_row = pd.DataFrame([{
+        'minute': 0, 'home_xG': 0, 'away_xG': 0, 
+        'shot.isGoal': False, 'isRedCard': False, 'team.name': 'Start'
+    }])
+    df = pd.concat([start_row, df]).sort_values(by='minute')
+    
+    # 7. Calculate cumulative xG
+    df['home_xG_cum'] = df['home_xG'].cumsum()
+    df['away_xG_cum'] = df['away_xG'].cumsum()
+
+    # 8. Get max minute for plot limit
+    max_minute = df['minute'].max()
+    if max_minute < 90: max_minute = 90
+    
+    # 9. Plotting
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.set_facecolor('#f5f1e9')
+    ax.set_facecolor('#f5f1e9')
+    
+    # Plot the step lines
+    ax.step(df['minute'], df['home_xG_cum'], label=home_team, color=home_color, where='post', linewidth=2.5)
+    ax.step(df['minute'], df['away_xG_cum'], label=away_team, color=away_color, where='post', linewidth=2.5)
+    
+    # 10. Add Goal and Red Card Markers
+    goals_df = df[df['shot.isGoal'] == True]
+    for _, row in goals_df.iterrows():
+        label = f"Goal ({row['minute']}')"
+        if row['team.name'] == home_team:
+            ax.scatter(row['minute'], row['home_xG_cum'], c=home_color, s=250, marker='o', 
+                       edgecolor='black', zorder=5, label=label)
+        else:
+            ax.scatter(row['minute'], row['away_xG_cum'], c=away_color, s=250, marker='o', 
+                       edgecolor='black', zorder=5, label=label)
+
+    reds_df_plot = df[df['isRedCard'] == True]
+    for _, row in reds_df_plot.iterrows():
+        label = f"Red Card ({row['minute']}')"
+        # Place marker on the team's line
+        if row['team.name'] == home_team:
+            y_val = row['home_xG_cum']
+        else:
+            y_val = row['away_xG_cum']
+        
+        # Plot a red square
+        ax.scatter(row['minute'], y_val, c='red', s=200, marker='s', 
+                   edgecolor='black', linewidth=1.5, zorder=5, label=label)
+
+    # 11. Styling
+    ax.set_xlabel('Minute', fontsize=12)
+    ax.set_ylabel('Cumulative xG', fontsize=12)
+    ax.set_title(f"xG Flowchart: {home_team} vs {away_team}\nScore: {match_info.get('score', '?-?')}", fontsize=16, weight='bold')
+    
+    # Manually handle legend to avoid duplicate labels
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    if by_label: # Only show legend if there's something to show
+        ax.legend(by_label.values(), by_label.keys(), loc='upper left', frameon=False)
+    
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_xlim(0, max_minute + 2) # Add a little padding
+    ax.set_ylim(0) # Start y-axis at 0
+
+    plt.tight_layout()
+    return fig
+
+# ... before calculate_expanded_team_stats ...
+
 @st.cache_data
 def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
     """
@@ -1258,6 +1364,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.pyplot(create_match_shotmap(raw_events_df[raw_events_df['matchId'] == selected_match_id], selected_match_info, selected_match_info['homeTeamName']), use_container_width=True)
             with col2:
                 st.pyplot(create_match_shotmap(raw_events_df[raw_events_df['matchId'] == selected_match_id], selected_match_info, selected_match_info['awayTeamName']), use_container_width=True)
+            
+            # --- xG Flowchart ---
+            st.subheader("xG Flowchart")
+            match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
+            if not match_events_df.empty:
+                try:
+                    fig_flowchart = plot_xg_flowchart(match_events_df, selected_match_info)
+                    st.pyplot(fig_flowchart, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not generate xG flowchart: {e}")
+            else:
+                st.info("No event data found for flowchart.")
 
             st.subheader("Team Stats")
             if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict) and match_data['team_stats']:
