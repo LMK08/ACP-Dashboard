@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
-from mplsoccer import Pitch
+from mplsoccer import VerticalPitch
 from matplotlib.lines import Line2D
 import matplotlib.colors as mcolors
 from matplotlib.table import Table
@@ -885,7 +885,7 @@ def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3
     if 'player.name' in side_corners_df.columns: corner_takers = side_corners_df.groupby('player.name').agg(Total=('id', 'count'), Short=('zone', lambda x: (x == 'Short').sum()), Near=('zone', lambda x: (x == 'Near Post').sum()), Middle=('zone', lambda x: (x == 'Middle').sum()), Far=('zone', lambda x: (x == 'Far Post').sum())).sort_values(by='Total', ascending=False).fillna(0).astype(int)
     else: corner_takers = pd.DataFrame(columns=['Total', 'Short', 'Near', 'Middle', 'Far'])
     fig = plt.figure(figsize=(16, 8)); fig.set_facecolor('#f5f1e9'); gs = gridspec.GridSpec(1, 2, width_ratios=[0.6, 0.4]); ax_pitch = fig.add_subplot(gs[0, 0]); ax_table = fig.add_subplot(gs[0, 1]); ax_table.axis('off')
-    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2); pitch.draw(ax=ax_pitch); zone_colors = {'Short': 'blue', 'Near Post': 'orange', 'Middle': 'red', 'Far Post': 'yellow', 'Other': 'grey'}
+    pitch = VerticalPitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2); pitch.draw(ax=ax_pitch); zone_colors = {'Short': 'blue', 'Near Post': 'orange', 'Middle': 'red', 'Far Post': 'yellow', 'Other': 'grey'}
     for idx, corner in side_corners_df.iterrows():
          if pd.notna(corner.get('pass.endLocation.x')) and pd.notna(corner.get('pass.endLocation.y')): pitch.scatter(x=corner['pass.endLocation.x'], y=corner['pass.endLocation.y'], s=200, color=zone_colors.get(corner['zone'], 'gray'), edgecolor='black', ax=ax_pitch, zorder=3, alpha=0.7)
     ax_pitch.set_title(f"Corners from the {side.capitalize()} Side | {league} {season}", fontsize=14); legend_elements = [Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='Short'), Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Near Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Middle'), Line2D([0], [0], marker='o', color='w', markerfacecolor='yellow', markersize=10, label='Far Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='grey', markersize=10, label='Other/Outside PA')]; ax_pitch.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.01), frameon=False, fontsize=10)
@@ -925,7 +925,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     
     # --- 1. Get Wyscout Pitch Dimensions ---
     # We use Pitch just to get the coordinate dimensions
-    pitch = Pitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
+    pitch = VerticalPitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
     
     # --- ADD THESE 2 LINES ---
     fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
@@ -944,8 +944,8 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
         go.layout.Shape(type="line", x0=100, y0=45.2, x1=100, y1=54.8, line=dict(color="black", width=3)),
         # Penalty Spot
         go.layout.Shape(type="circle", x0=88, y0=49, x1=89, y1=51, line=dict(color="black", width=1), fillcolor="black"),
-        # Penalty Arc
-        go.layout.Shape(type="path", path=pitch.arcs[0].path, line=dict(color="black", width=1))
+        # --- CHANGE TO pitch.goal_arc ---
+        go.layout.Shape(type="path", path=pitch.goal_arc[0].path, line=dict(color="black", width=1))
     ]
 
     # --- 2. Re-create the custom colormap ---
@@ -1049,20 +1049,27 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         fig.update_layout(title=f"{team_to_analyze} Season Shot Map (No Shots)", paper_bgcolor='#f5f1e9', plot_bgcolor='#f5f1e9', xaxis_visible=False, yaxis_visible=False)
 
     # --- 1. Get Wyscout Pitch Dimensions ---
-    pitch = Pitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
+    pitch = VerticalPitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
 
     # --- ADD THESE 2 LINES ---
     fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
     plt.close(fig_mpl)         # We close the figure, we don't need to show it
     # --- END ADD ---
 
+   # These are the standard Wyscout coordinates for the boxes
     pitch_lines = [
+        # Halfway line
         go.layout.Shape(type="line", x0=50, y0=0, x1=50, y1=100, line=dict(color="black", width=1)),
+        # Penalty Box
         go.layout.Shape(type="rect", x0=100, y0=21.1, x1=83, y1=78.9, line=dict(color="black", width=1)),
+        # 6-Yard Box
         go.layout.Shape(type="rect", x0=100, y0=36.8, x1=94.2, y1=63.2, line=dict(color="black", width=1)),
+        # Goal (as a thick line)
         go.layout.Shape(type="line", x0=100, y0=45.2, x1=100, y1=54.8, line=dict(color="black", width=3)),
+        # Penalty Spot
         go.layout.Shape(type="circle", x0=88, y0=49, x1=89, y1=51, line=dict(color="black", width=1), fillcolor="black"),
-        go.layout.Shape(type="path", path=pitch.arcs[0].path, line=dict(color="black", width=1))
+        # --- CHANGE TO pitch.goal_arc ---
+        go.layout.Shape(type="path", path=pitch.goal_arc[0].path, line=dict(color="black", width=1))
     ]
     
     # --- 2. Prepare data for Plotly ---
@@ -1155,20 +1162,27 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
         fig.update_layout(title=f"{team_to_analyze} Shots Conceded Map (No Shots)", paper_bgcolor='#f5f1e9', plot_bgcolor='#f5f1e9', xaxis_visible=False, yaxis_visible=False)
 
     # --- 1. Get Wyscout Pitch Dimensions ---
-    pitch = Pitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
+    pitch = VerticalPitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
 
     # --- ADD THESE 2 LINES ---
     fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
     plt.close(fig_mpl)         # We close the figure, we don't need to show it
     # --- END ADD ---
 
+    # These are the standard Wyscout coordinates for the boxes
     pitch_lines = [
+        # Halfway line
         go.layout.Shape(type="line", x0=50, y0=0, x1=50, y1=100, line=dict(color="black", width=1)),
+        # Penalty Box
         go.layout.Shape(type="rect", x0=100, y0=21.1, x1=83, y1=78.9, line=dict(color="black", width=1)),
+        # 6-Yard Box
         go.layout.Shape(type="rect", x0=100, y0=36.8, x1=94.2, y1=63.2, line=dict(color="black", width=1)),
+        # Goal (as a thick line)
         go.layout.Shape(type="line", x0=100, y0=45.2, x1=100, y1=54.8, line=dict(color="black", width=3)),
+        # Penalty Spot
         go.layout.Shape(type="circle", x0=88, y0=49, x1=89, y1=51, line=dict(color="black", width=1), fillcolor="black"),
-        go.layout.Shape(type="path", path=pitch.arcs[0].path, line=dict(color="black", width=1))
+        # --- CHANGE TO pitch.goal_arc ---
+        go.layout.Shape(type="path", path=pitch.goal_arc[0].path, line=dict(color="black", width=1))
     ]
 
     # --- 2. Prepare data for Plotly ---
