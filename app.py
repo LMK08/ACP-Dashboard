@@ -945,7 +945,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
         # Penalty Spot
         go.layout.Shape(type="circle", x0=88, y0=49, x1=89, y1=51, line=dict(color="black", width=1), fillcolor="black"),
         # Penalty Arc
-        go.layout.Shape(type="path", path=pitch.goal_arc[0].path, line=dict(color="black", width=1))
+        go.layout.Shape(type="path", path=pitch.arcs[0].path, line=dict(color="black", width=1))
     ]
 
     # --- 2. Re-create the custom colormap ---
@@ -1062,7 +1062,7 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         go.layout.Shape(type="rect", x0=100, y0=36.8, x1=94.2, y1=63.2, line=dict(color="black", width=1)),
         go.layout.Shape(type="line", x0=100, y0=45.2, x1=100, y1=54.8, line=dict(color="black", width=3)),
         go.layout.Shape(type="circle", x0=88, y0=49, x1=89, y1=51, line=dict(color="black", width=1), fillcolor="black"),
-        go.layout.Shape(type="path", path=pitch.goal_arc[0].path, line=dict(color="black", width=1))
+        go.layout.Shape(type="path", path=pitch.arcs[0].path, line=dict(color="black", width=1))
     ]
     
     # --- 2. Prepare data for Plotly ---
@@ -1161,14 +1161,14 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
     fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
     plt.close(fig_mpl)         # We close the figure, we don't need to show it
     # --- END ADD ---
-    
+
     pitch_lines = [
         go.layout.Shape(type="line", x0=50, y0=0, x1=50, y1=100, line=dict(color="black", width=1)),
         go.layout.Shape(type="rect", x0=100, y0=21.1, x1=83, y1=78.9, line=dict(color="black", width=1)),
         go.layout.Shape(type="rect", x0=100, y0=36.8, x1=94.2, y1=63.2, line=dict(color="black", width=1)),
         go.layout.Shape(type="line", x0=100, y0=45.2, x1=100, y1=54.8, line=dict(color="black", width=3)),
         go.layout.Shape(type="circle", x0=88, y0=49, x1=89, y1=51, line=dict(color="black", width=1), fillcolor="black"),
-        go.layout.Shape(type="path", path=pitch.goal_arc[0].path, line=dict(color="black", width=1))
+        go.layout.Shape(type="path", path=pitch.arcs[0].path, line=dict(color="black", width=1))
     ]
 
     # --- 2. Prepare data for Plotly ---
