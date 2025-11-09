@@ -1,0 +1,68 @@
+name: Scheduled Data Update
+
+on:
+  schedule:
+    # Runs at 05:00 UTC on Sunday and Monday,
+    # which is 12:00 AM EST (midnight) on Sat/Sun night.
+    # Note: GitHub Actions can be slightly delayed, so 12:00-12:15 AM is a typical start time.
+    - cron: '0 5 * * 0,1'
+  
+  # This line allows you to run the update manually from the GitHub "Actions" tab
+  workflow_dispatch:
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    
+    # Set the working directory to your Dashboard folder
+    defaults:
+      run:
+        working-directory: ./Dashboard
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Make sure this matches your app's Python version
+          cache: 'pip' # Cache dependencies to speed up future runs
+          cache-dependency-path: ./Dashboard/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install all libraries for the app AND the scripts
+          pip install -r requirements.txt
+          pip install requests python-dotenv
+
+      - name: Run process_data.py
+        env:
+          WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
+          WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
+        run: python process_data.py
+
+      - name: Run get_player_details.py
+        env:
+          WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
+          WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
+        run: python get_player_details.py
+
+      - name: Commit and push new data
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'github-actions-bot@users.noreply.github.com'
+          
+          # Force-add all the data files that might be in .gitignore
+          git add -f *.parquet
+          git add -f *.pkl
+          
+          # Check if there's anything to commit
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "New data found. Committing and pushing..."
+            git commit -m "chore: Automated data refresh"
+            git push
+          else
+            echo "No data changes to commit."
+          fi
