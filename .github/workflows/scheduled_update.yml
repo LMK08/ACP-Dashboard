@@ -1,5 +1,8 @@
 name: Scheduled Data Update
 
+permissions:
+  contents: write
+
 on:
   schedule:
     # Runs at 05:00 UTC on Sunday and Monday,
@@ -13,9 +16,6 @@ jobs:
   update-data:
     runs-on: ubuntu-latest
     
-    # We removed the 'defaults:' and 'working-directory:' lines
-    # All commands will now run from the root of your repository
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -25,13 +25,11 @@ jobs:
         with:
           python-version: '3.11' 
           cache: 'pip'
-          # Updated cache path to point to the root requirements.txt
           cache-dependency-path: requirements.txt 
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Install all libraries for the app AND the scripts
           pip install -r requirements.txt
           pip install requests python-dotenv
 
