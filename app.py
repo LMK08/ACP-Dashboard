@@ -932,6 +932,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     buf = io.BytesIO()
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
     buf.seek(0)
+    img_pil = Image.open(buf) # <-- ADD THIS LINE
     
     # --- 2. Prepare data for Plotly ---
     team_shots_df['size'] = np.sqrt(team_shots_df['shot.xg'] * 100) + 5
@@ -981,7 +982,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
         height=500,
         showlegend=False,
         images=[dict(
-            source=buf.getvalue(),
+            source=img_pil, # Use the PIL image directly
             xref="x", yref="y",
             x=50, y=0,  # Match MPL half-pitch coordinates
             sizex=50, sizey=100, # Match MPL half-pitch coordinates
@@ -1019,7 +1020,8 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
     buf = io.BytesIO()
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
     buf.seek(0)
-    
+    img_pil = Image.open(buf)
+
     # --- 2. Prepare data for Plotly ---
     team_shots_df['size'] = np.sqrt(team_shots_df['shot.xg'] * 100) + 4
     team_shots_df['symbol'] = np.where(team_shots_df['shot.isGoal'] == True, 'star', 'circle')
@@ -1072,7 +1074,7 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         height=500,
         showlegend=False,
         images=[dict(
-            source=buf.getvalue(),
+            source=img_pil,
             xref="x", yref="y", x=50, y=0,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
@@ -1110,6 +1112,7 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
     buf = io.BytesIO()
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
     buf.seek(0)
+    img_pil = Image.open(buf)
 
     # --- 2. Prepare data for Plotly ---
     opponent_shots_df['shot.xg_norm'] = pd.to_numeric(opponent_shots_df['shot.xg'], errors='coerce').fillna(0)
@@ -1160,7 +1163,7 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
         height=500,
         showlegend=False,
         images=[dict(
-            source=buf.getvalue(),
+            source=img_pil,
             xref="x", yref="y", x=50, y=0,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
