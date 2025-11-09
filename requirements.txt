@@ -25,3 +25,4 @@ tzdata==2025.2
 urllib3==2.5.0
 scipy
 seaborn
+plotly
