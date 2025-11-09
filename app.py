@@ -926,6 +926,12 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     # --- 1. Get Wyscout Pitch Dimensions ---
     # We use Pitch just to get the coordinate dimensions
     pitch = Pitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
+    
+    # --- ADD THESE 2 LINES ---
+    fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
+    plt.close(fig_mpl)         # We close the figure, we don't need to show it
+    # --- END ADD ---
+
     # These are the standard Wyscout coordinates for the boxes
     pitch_lines = [
         # Halfway line
@@ -1044,6 +1050,12 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
 
     # --- 1. Get Wyscout Pitch Dimensions ---
     pitch = Pitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
+
+    # --- ADD THESE 2 LINES ---
+    fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
+    plt.close(fig_mpl)         # We close the figure, we don't need to show it
+    # --- END ADD ---
+
     pitch_lines = [
         go.layout.Shape(type="line", x0=50, y0=0, x1=50, y1=100, line=dict(color="black", width=1)),
         go.layout.Shape(type="rect", x0=100, y0=21.1, x1=83, y1=78.9, line=dict(color="black", width=1)),
@@ -1144,6 +1156,12 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
 
     # --- 1. Get Wyscout Pitch Dimensions ---
     pitch = Pitch(pitch_type='wyscout', half=True, line_color='black', pitch_color='#f5f1e9')
+
+    # --- ADD THESE 2 LINES ---
+    fig_mpl, ax = pitch.draw() # This populates the pitch.goal_arc attribute
+    plt.close(fig_mpl)         # We close the figure, we don't need to show it
+    # --- END ADD ---
+    
     pitch_lines = [
         go.layout.Shape(type="line", x0=50, y0=0, x1=50, y1=100, line=dict(color="black", width=1)),
         go.layout.Shape(type="rect", x0=100, y0=21.1, x1=83, y1=78.9, line=dict(color="black", width=1)),
