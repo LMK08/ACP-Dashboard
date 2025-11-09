@@ -923,9 +923,9 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
 
     # --- 1. Draw pitch background ---
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
-    fig_mpl, ax = pitch.draw(figsize=(10, 8))
+    fig_mpl, ax = pitch.draw(figsize=(5, 10))
     buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png")
+    fig_mpl.savefig(buf, format="png", pad_inches=0)
     # Don't seek, just get the value
     img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     plt.close(fig_mpl) # Close the mpl figure to save memory
@@ -1010,8 +1010,8 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     
     fig.update_layout(
         title=f"{team_to_analyze} Shot Map<br><sup>{subtitle}</sup>",
-        xaxis=dict(range=[50, 100.5], showgrid=False, visible=False),
-        yaxis=dict(range=[-0.5, 100.5], showgrid=False, visible=False),
+        xaxis=dict(range=[50, 100], showgrid=False, visible=False),
+        yaxis=dict(range=[0, 100], showgrid=False, visible=False),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='#f5f1e9',
         width=700,
@@ -1051,9 +1051,9 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
 
     # --- 1. Draw pitch background ---
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
-    fig_mpl, ax = pitch.draw(figsize=(10, 8))
+    fig_mpl, ax = pitch.draw(figsize=(5, 10))
     buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png")
+    fig_mpl.savefig(buf, format="png", pad_inches=0)
     # Don't seek, just get the value
     img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     plt.close(fig_mpl) # Close the mpl figure to save memory
@@ -1125,8 +1125,8 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
     
     fig.update_layout(
         title=f"{team_to_analyze} Season Shot Map (Non-Penalty)<br><sup>{subtitle}</sup>",
-        xaxis=dict(range=[50, 100.5], showgrid=False, visible=False),
-        yaxis=dict(range=[-0.5, 100.5], showgrid=False, visible=False),
+        xaxis=dict(range=[50, 100], showgrid=False, visible=False),
+        yaxis=dict(range=[0, 100], showgrid=False, visible=False),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='#f5f1e9',
         width=700,
@@ -1164,9 +1164,9 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
 
     # --- 1. Draw pitch background ---
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
-    fig_mpl, ax = pitch.draw(figsize=(10, 8))
+    fig_mpl, ax = pitch.draw(figsize=(5, 10))
     buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png")
+    fig_mpl.savefig(buf, format="png", pad_inches=0)
     img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     plt.close(fig_mpl)
 
@@ -1236,8 +1236,8 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
     
     fig.update_layout(
         title=f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)<br><sup>{subtitle}</sup>",
-        xaxis=dict(range=[50, 100.5], showgrid=False, visible=False),
-        yaxis=dict(range=[-0.5, 100.5], showgrid=False, visible=False),
+        xaxis=dict(range=[50, 100], showgrid=False, visible=False),
+        yaxis=dict(range=[0, 100], showgrid=False, visible=False),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='#f5f1e9',
         width=700,
