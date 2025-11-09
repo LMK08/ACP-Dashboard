@@ -899,10 +899,11 @@ def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3
     else: ax_table.text(0.5, 0.5, "No corner takers found.", ha='center', va='center')
     plt.tight_layout(rect=[0, 0.03, 1, 0.95]); return fig
 
-# --- (REPLACED FUNCTION 1) ---
+# --- (REPLACED FUNCTION 1 - V3: Exact Replication) ---
 def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     """
-    Creates an interactive Plotly shotmap for a single match.
+    Creates an interactive Plotly shotmap for a single match,
+    styled to EXACTLY replicate the original Matplotlib version.
     """
     team_shots_df = match_events_df[
         (match_events_df.get('team.name') == team_to_analyze) & 
@@ -914,104 +915,8 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     opponent = away_team if team_to_analyze == home_team else home_team
     
     if team_shots_df.empty:
-        # Return an empty plotly fig
         fig = go.Figure()
-        fig.update_layout(
-            title=f"{team_to_analyze} Shot Map (No Shots)",
-            template='plotly_dark',
-            xaxis_visible=False, yaxis_visible=False
-        )
-        return fig
-
-    # --- 1. Draw the pitch with Matplotlib ---
-    # We draw it, save it as an in-memory image, then use it as a background
-    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
-    fig_mpl, ax = pitch.draw(figsize=(10, 8))
-    
-    # Save MPL fig to a bytes buffer
-    buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
-    buf.seek(0)
-    img_pil = Image.open(buf) # <-- ADD THIS LINE
-    
-    # --- 2. Prepare data for Plotly ---
-    team_shots_df['size'] = np.sqrt(team_shots_df['shot.xg'] * 100) + 5
-    team_shots_df['symbol'] = np.where(team_shots_df['shot.isGoal'] == True, 'star', 'circle')
-    team_shots_df['color'] = np.where(team_shots_df['shot.isGoal'] == True, 'gold',
-                                    np.where(team_shots_df['shot.onTarget'] == True, 'green', 'red'))
-    team_shots_df['shot_outcome'] = np.where(team_shots_df['shot.isGoal'] == True, 'Goal',
-                                           np.where(team_shots_df['shot.onTarget'] == True, 'On Target', 'Off Target'))
-    
-    # Create hover text
-    team_shots_df['hover_text'] = team_shots_df.apply(
-        lambda row: f"<b>{row['player.name']} ({row['minute']}')</b><br>" +
-                    f"Outcome: {row['shot_outcome']}<br>" +
-                    f"xG: {row['shot.xg']:.2f}",
-        axis=1
-    )
-    
-    # --- 3. Create Plotly figure ---
-    fig = go.Figure()
-
-    # Add shots as a scatter plot
-    fig.add_trace(go.Scatter(
-        x=team_shots_df['location.x'], 
-        y=team_shots_df['location.y'],
-        mode='markers',
-        marker=dict(
-            color=team_shots_df['color'],
-            size=team_shots_df['size'],
-            symbol=team_shots_df['symbol'],
-            line=dict(width=1, color='Black')
-        ),
-        text=team_shots_df['hover_text'],
-        hoverinfo='text',
-        name='Shots'
-    ))
-
-    # --- 4. Add background image and style the plot ---
-    subtitle = f"vs. {opponent} | Score: {match_info.get('score', '?-?')} | xG: {team_shots_df['shot.xg'].sum():.2f}"
-    
-    fig.update_layout(
-        title=f"{team_to_analyze} Shot Map<br><sup>{subtitle}</sup>",
-        xaxis=dict(range=[50, 100], showgrid=False, visible=False),
-        yaxis=dict(range=[0, 100], showgrid=False, visible=False),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='#f5f1e9',
-        width=700,
-        height=500,
-        showlegend=False,
-        images=[dict(
-            source=img_pil, # Use the PIL image directly
-            xref="x", yref="y",
-            x=50, y=0,  # Match MPL half-pitch coordinates
-            sizex=50, sizey=100, # Match MPL half-pitch coordinates
-            sizing="stretch",
-            opacity=1,
-            layer="below"
-        )]
-    )
-    return fig
-
-
-# --- (REPLACED FUNCTION 2) ---
-def create_season_shotmap_plotly(season_events_df, team_to_analyze):
-    """
-    Creates an interactive Plotly shotmap for a full season.
-    """
-    team_shots_df = season_events_df[
-        (season_events_df.get('team.name') == team_to_analyze) & 
-        (season_events_df.get('type.primary').isin(['shot', 'penalty'])) &
-        (~season_events_df.get('type.secondary','').astype(str).str.contains('penalty', na=False)) # Exclude penalties from season map
-    ].copy().reset_index(drop=True)
-
-    if team_shots_df.empty:
-        fig = go.Figure()
-        fig.update_layout(
-            title=f"{team_to_analyze} Season Shot Map (No Shots)",
-            template='plotly_dark',
-            xaxis_visible=False, yaxis_visible=False
-        )
+        fig.update_layout(title=f"{team_to_analyze} Shot Map (No Shots)", paper_bgcolor='#f5f1e9', plot_bgcolor='#f5f1e9', xaxis_visible=False, yaxis_visible=False)
         return fig
 
     # --- 1. Draw pitch background ---
@@ -1021,17 +926,161 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
     buf.seek(0)
     img_pil = Image.open(buf)
+    
+    # --- 2. Re-create the custom colormap ---
+    XG_MAX = 0.8
+    colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]
+    nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]
+    custom_colorscale = []
+    for node, color in zip(nodes, colors):
+        if node > 1.0: node = 1.0
+        custom_colorscale.append([node, color])
+    if custom_colorscale[-1][0] < 1.0:
+        custom_colorscale.append([1.0, colors[-1]])
 
-    # --- 2. Prepare data for Plotly ---
-    team_shots_df['size'] = np.sqrt(team_shots_df['shot.xg'] * 100) + 4
+    team_shots_df['shot.xg_norm'] = pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').fillna(0)
+    team_shots_df['color_value'] = team_shots_df['shot.xg_norm'] / XG_MAX
+    
+    # --- 3. Re-create size and edge color logic ---
+    # Use a constant size, equivalent to s=400 in Matplotlib
+    team_shots_df['size'] = 20 
+    
+    team_shots_df['edge_color'] = np.where(team_shots_df['shot.isGoal'] == True, 'green',
+                                        np.where(team_shots_df['shot.onTarget'] == True, 'black', 'gray'))
+    team_shots_df['edge_width'] = np.where(team_shots_df['shot.isGoal'] == True, 3,
+                                         np.where(team_shots_df['shot.onTarget'] == True, 2.5, 1.5))
     team_shots_df['symbol'] = np.where(team_shots_df['shot.isGoal'] == True, 'star', 'circle')
     
-    # Use xG for color
+    # Create hover text
+    team_shots_df['shot_outcome'] = np.where(team_shots_df['shot.isGoal'] == True, 'Goal',
+                                           np.where(team_shots_df['shot.onTarget'] == True, 'On Target', 'Off Target'))
+    team_shots_df['hover_text'] = team_shots_df.apply(
+        lambda row: f"<b>{row.get('player.name', 'N/A')} ({row.get('minute', 0)}')</b><br>" +
+                    f"Shot #: {row.name + 1}<br>" +
+                    f"Outcome: {row['shot_outcome']}<br>" +
+                    f"xG: {row['shot.xg_norm']:.2f}",
+        axis=1
+    )
+    
+    # Create text for inside the marker (shot index + 1)
+    team_shots_df['text_label'] = (team_shots_df.index + 1).astype(str)
+    
+    # --- 4. Create Plotly figure ---
+    fig = go.Figure()
+
+    # TRACE 1: The markers (with hover)
+    fig.add_trace(go.Scatter(
+        x=team_shots_df['location.x'], 
+        y=team_shots_df['location.y'],
+        mode='markers',
+        marker=dict(
+            color=team_shots_df['color_value'], 
+            colorscale=custom_colorscale,
+            cmin=0.0,
+            cmax=1.0,
+            size=team_shots_df['size'],
+            symbol=team_shots_df['symbol'],
+            line=dict(
+                width=team_shots_df['edge_width'],
+                color=team_shots_df['edge_color']
+            ),
+            opacity=0.9
+        ),
+        text=team_shots_df['hover_text'],
+        hoverinfo='text',
+        name='Shots'
+    ))
+    
+    # TRACE 2: The text (no hover)
+    fig.add_trace(go.Scatter(
+        x=team_shots_df['location.x'], 
+        y=team_shots_df['location.y'],
+        mode='text',
+        text=team_shots_df['text_label'],
+        textfont=dict(color='white', size=9),
+        hoverinfo='none',
+        name='Shot Numbers'
+    ))
+
+    # --- 5. Add background image and style the plot ---
+    subtitle = f"vs. {opponent} | Score: {match_info.get('score', '?-?')} | xG: {team_shots_df['shot.xg_norm'].sum():.2f}"
+    
+    fig.update_layout(
+        title=f"{team_to_analyze} Shot Map<br><sup>{subtitle}</sup>",
+        xaxis=dict(range=[50, 100.5], showgrid=False, visible=False),
+        yaxis=dict(range=[-0.5, 100.5], showgrid=False, visible=False),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='#f5f1e9',
+        width=700,
+        height=500,
+        showlegend=False,
+        images=[dict(
+            source=img_pil,
+            xref="x", yref="y",
+            x=50, y=100, 
+            sizex=50, sizey=100,
+            sizing="stretch",
+            opacity=1,
+            layer="below"
+        )]
+    )
+    fig.update_yaxes(autorange="reversed") # Fix y-axis
+
+    return fig
+
+
+# --- (REPLACED FUNCTION 2 - V3: Exact Replication) ---
+def create_season_shotmap_plotly(season_events_df, team_to_analyze):
+    """
+    Creates an interactive Plotly shotmap for a full season.
+    Replicates original MPL style.
+    """
+    team_shots_df = season_events_df[
+        (season_events_df.get('team.name') == team_to_analyze) & 
+        (season_events_df.get('type.primary').isin(['shot', 'penalty'])) &
+        (~season_events_df.get('type.secondary','').astype(str).str.contains('penalty', na=False))
+    ].copy().reset_index(drop=True)
+
+    if team_shots_df.empty:
+        fig = go.Figure()
+        fig.update_layout(title=f"{team_to_analyze} Season Shot Map (No Shots)", paper_bgcolor='#f5f1e9', plot_bgcolor='#f5f1e9', xaxis_visible=False, yaxis_visible=False)
+        return fig
+
+    # --- 1. Draw pitch background ---
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
+    fig_mpl, ax = pitch.draw(figsize=(10, 8))
+    buf = io.BytesIO()
+    fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
+    buf.seek(0)
+    img_pil = Image.open(buf)
+    
+    # --- 2. Prepare data for Plotly ---
     team_shots_df['shot.xg_norm'] = pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').fillna(0)
     
+    # --- Use constant size (equiv. to s=150) ---
+    team_shots_df['size'] = 12
+    
+    # --- Add custom colormap ---
+    XG_MAX = 0.8
+    colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]
+    nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]
+    custom_colorscale = []
+    for node, color in zip(nodes, colors):
+        if node > 1.0: node = 1.0
+        custom_colorscale.append([node, color])
+    if custom_colorscale[-1][0] < 1.0:
+        custom_colorscale.append([1.0, colors[-1]])
+        
+    team_shots_df['color_value'] = team_shots_df['shot.xg_norm'] / XG_MAX
+    
+    # --- Add edge color logic ---
+    team_shots_df['edge_color'] = np.where(team_shots_df['shot.isGoal'] == True, 'green', 'black')
+    team_shots_df['edge_width'] = np.where(team_shots_df['shot.isGoal'] == True, 2, 1.5) # Thicker edge for all
+    team_shots_df['symbol'] = np.where(team_shots_df['shot.isGoal'] == True, 'star', 'circle')
+
     team_shots_df['hover_text'] = team_shots_df.apply(
-        lambda row: f"<b>{row['player.name']} ({row['minute']}')</b><br>" +
-                    f"Match: {row['matchId']}<br>" + # Assuming matchId is present
+        lambda row: f"<b>{row.get('player.name', 'N/A')} ({row.get('minute', 0)}')</b><br>" +
+                    f"Match: {row['matchId']}<br>" +
                     f"Outcome: {'Goal' if row['shot.isGoal'] else 'No Goal'}<br>" +
                     f"xG: {row['shot.xg_norm']:.2f}",
         axis=1
@@ -1045,13 +1094,19 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         y=team_shots_df['location.y'],
         mode='markers',
         marker=dict(
-            color=team_shots_df['shot.xg_norm'],
-            colorscale='Viridis',
+            color=team_shots_df['color_value'], 
+            colorscale=custom_colorscale,
+            cmin=0.0,
+            cmax=1.0,
             showscale=True,
-            colorbar=dict(title='xG'),
+            colorbar=dict(title='xG', tickvals=[0, 0.25, 0.5, 0.75, 1.0], 
+                          ticktext=['0.0', '0.2', '0.4', '0.6', f'{XG_MAX}+']),
             size=team_shots_df['size'],
             symbol=team_shots_df['symbol'],
-            line=dict(width=1, color='Black'),
+            line=dict(
+                width=team_shots_df['edge_width'],
+                color=team_shots_df['edge_color']
+            ),
             opacity=0.7
         ),
         text=team_shots_df['hover_text'],
@@ -1066,8 +1121,8 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
     
     fig.update_layout(
         title=f"{team_to_analyze} Season Shot Map (Non-Penalty)<br><sup>{subtitle}</sup>",
-        xaxis=dict(range=[50, 100], showgrid=False, visible=False),
-        yaxis=dict(range=[0, 100], showgrid=False, visible=False),
+        xaxis=dict(range=[50, 100.5], showgrid=False, visible=False),
+        yaxis=dict(range=[-0.5, 100.5], showgrid=False, visible=False),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='#f5f1e9',
         width=700,
@@ -1075,18 +1130,19 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         showlegend=False,
         images=[dict(
             source=img_pil,
-            xref="x", yref="y", x=50, y=0,
+            xref="x", yref="y", x=50, y=100,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
         )]
     )
+    fig.update_yaxes(autorange="reversed") # Fix y-axis
     return fig
 
-
-# --- (REPLACED FUNCTION 3) ---
+# --- (REPLACED FUNCTION 3 - V3: Exact Replication) ---
 def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary_df, team_to_analyze):
     """
     Creates an interactive Plotly shotmap for shots conceded.
+    Replicates original MPL style.
     """
     team_match_ids = matches_summary_df[(matches_summary_df.get('homeTeamName') == team_to_analyze) | (matches_summary_df.get('awayTeamName') == team_to_analyze)]['matchId'].unique()
     relevant_events = season_events_df[season_events_df['matchId'].isin(team_match_ids)]
@@ -1099,11 +1155,7 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
 
     if opponent_shots_df.empty:
         fig = go.Figure()
-        fig.update_layout(
-            title=f"{team_to_analyze} Shots Conceded Map (No Shots)",
-            template='plotly_dark',
-            xaxis_visible=False, yaxis_visible=False
-        )
+        fig.update_layout(title=f"{team_to_analyze} Shots Conceded Map (No Shots)", paper_bgcolor='#f5f1e9', plot_bgcolor='#f5f1e9', xaxis_visible=False, yaxis_visible=False)
         return fig
 
     # --- 1. Draw pitch background ---
@@ -1116,11 +1168,30 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
 
     # --- 2. Prepare data for Plotly ---
     opponent_shots_df['shot.xg_norm'] = pd.to_numeric(opponent_shots_df['shot.xg'], errors='coerce').fillna(0)
-    opponent_shots_df['size'] = np.sqrt(opponent_shots_df['shot.xg_norm'] * 100) + 4
-    opponent_shots_df['symbol'] = np.where(opponent_shots_df['shot.isGoal'] == True, 'star', 'circle')
     
+    # --- Use constant size (equiv. to s=150) ---
+    opponent_shots_df['size'] = 12
+    
+    # --- Add custom colormap ---
+    XG_MAX = 0.8
+    colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]
+    nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]
+    custom_colorscale = []
+    for node, color in zip(nodes, colors):
+        if node > 1.0: node = 1.0
+        custom_colorscale.append([node, color])
+    if custom_colorscale[-1][0] < 1.0:
+        custom_colorscale.append([1.0, colors[-1]])
+        
+    opponent_shots_df['color_value'] = opponent_shots_df['shot.xg_norm'] / XG_MAX
+    
+    # --- Add edge color logic ---
+    opponent_shots_df['edge_color'] = np.where(opponent_shots_df['shot.isGoal'] == True, 'green', 'black')
+    opponent_shots_df['edge_width'] = np.where(opponent_shots_df['shot.isGoal'] == True, 2, 1.5)
+    opponent_shots_df['symbol'] = np.where(opponent_shots_df['shot.isGoal'] == True, 'star', 'circle')
+
     opponent_shots_df['hover_text'] = opponent_shots_df.apply(
-        lambda row: f"<b>{row['player.name']} ({row['team.name']}, {row['minute']}')</b><br>" +
+        lambda row: f"<b>{row.get('player.name', 'N/A')} ({row.get('team.name', 'N/A')}, {row.get('minute', 0)}')</b><br>" +
                     f"Outcome: {'Goal' if row['shot.isGoal'] else 'No Goal'}<br>" +
                     f"xG: {row['shot.xg_norm']:.2f}",
         axis=1
@@ -1134,13 +1205,19 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
         y=opponent_shots_df['location.y'],
         mode='markers',
         marker=dict(
-            color=opponent_shots_df['shot.xg_norm'],
-            colorscale='Viridis',
+            color=opponent_shots_df['color_value'],
+            colorscale=custom_colorscale,
+            cmin=0.0,
+            cmax=1.0,
             showscale=True,
-            colorbar=dict(title='xG'),
+            colorbar=dict(title='xG', tickvals=[0, 0.25, 0.5, 0.75, 1.0], 
+                          ticktext=['0.0', '0.2', '0.4', '0.6', f'{XG_MAX}+']),
             size=opponent_shots_df['size'],
             symbol=opponent_shots_df['symbol'],
-            line=dict(width=1, color='Black'),
+            line=dict(
+                width=opponent_shots_df['edge_width'],
+                color=opponent_shots_df['edge_color']
+            ),
             opacity=0.7
         ),
         text=opponent_shots_df['hover_text'],
@@ -1155,8 +1232,8 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
     
     fig.update_layout(
         title=f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)<br><sup>{subtitle}</sup>",
-        xaxis=dict(range=[50, 100], showgrid=False, visible=False),
-        yaxis=dict(range=[0, 100], showgrid=False, visible=False),
+        xaxis=dict(range=[50, 100.5], showgrid=False, visible=False),
+        yaxis=dict(range=[-0.5, 100.5], showgrid=False, visible=False),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='#f5f1e9',
         width=700,
@@ -1164,11 +1241,12 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
         showlegend=False,
         images=[dict(
             source=img_pil,
-            xref="x", yref="y", x=50, y=0,
+            xref="x", yref="y", x=50, y=100,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
         )]
     )
+    fig.update_yaxes(autorange="reversed") # Fix y-axis
     return fig
 
 # --- NEW FUNCTION: Calculate Team Strength ---
