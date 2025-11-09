@@ -925,7 +925,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
     fig_mpl, ax = pitch.draw(figsize=(10, 8))
     buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
+    fig_mpl.savefig(buf, format="png")
     # Don't seek, just get the value
     img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     plt.close(fig_mpl) # Close the mpl figure to save memory
@@ -1020,7 +1020,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
         images=[dict(
             source='data:image/png;base64,{}'.format(img_base64),
             xref="x", yref="y",
-            x=50, y=100, 
+            x=50, y=0, 
             sizex=50, sizey=100,
             sizing="stretch",
             opacity=1,
@@ -1053,7 +1053,7 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
     fig_mpl, ax = pitch.draw(figsize=(10, 8))
     buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
+    fig_mpl.savefig(buf, format="png")
     # Don't seek, just get the value
     img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     plt.close(fig_mpl) # Close the mpl figure to save memory
@@ -1134,7 +1134,7 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         showlegend=False,
         images=[dict(
             source='data:image/png;base64,{}'.format(img_base64),
-            xref="x", yref="y", x=50, y=100,
+            xref="x", yref="y", x=50, y=0,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
         )]
@@ -1166,7 +1166,7 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', half=True)
     fig_mpl, ax = pitch.draw(figsize=(10, 8))
     buf = io.BytesIO()
-    fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
+    fig_mpl.savefig(buf, format="png")
     img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     plt.close(fig_mpl)
 
@@ -1245,7 +1245,7 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
         showlegend=False,
         images=[dict(
             source='data:image/png;base64,{}'.format(img_base64),
-            xref="x", yref="y", x=50, y=100,
+            xref="x", yref="y", x=50, y=0,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
         )]
