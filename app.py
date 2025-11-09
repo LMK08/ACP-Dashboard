@@ -24,6 +24,8 @@ import seaborn as sns # For player radar distributions
 from collections import defaultdict # Make sure this is at the top with other imports
 import plotly.graph_objects as go
 import io # For saving the in-memory image
+# ... after your other imports ...
+import base64
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
@@ -924,8 +926,9 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
     fig_mpl, ax = pitch.draw(figsize=(10, 8))
     buf = io.BytesIO()
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
-    buf.seek(0)
-    img_pil = Image.open(buf)
+    # Don't seek, just get the value
+    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    plt.close(fig_mpl) # Close the mpl figure to save memory
     
     # --- 2. Re-create the custom colormap ---
     XG_MAX = 0.8
@@ -1015,7 +1018,7 @@ def create_match_shotmap_plotly(match_events_df, match_info, team_to_analyze):
         height=500,
         showlegend=False,
         images=[dict(
-            source=img_pil,
+            source='data:image/png;base64,{}'.format(img_base64),
             xref="x", yref="y",
             x=50, y=100, 
             sizex=50, sizey=100,
@@ -1051,8 +1054,9 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
     fig_mpl, ax = pitch.draw(figsize=(10, 8))
     buf = io.BytesIO()
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
-    buf.seek(0)
-    img_pil = Image.open(buf)
+    # Don't seek, just get the value
+    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    plt.close(fig_mpl) # Close the mpl figure to save memory
     
     # --- 2. Prepare data for Plotly ---
     team_shots_df['shot.xg_norm'] = pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').fillna(0)
@@ -1129,7 +1133,7 @@ def create_season_shotmap_plotly(season_events_df, team_to_analyze):
         height=500,
         showlegend=False,
         images=[dict(
-            source=img_pil,
+            source='data:image/png;base64,{}'.format(img_base64),
             xref="x", yref="y", x=50, y=100,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
@@ -1163,8 +1167,8 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
     fig_mpl, ax = pitch.draw(figsize=(10, 8))
     buf = io.BytesIO()
     fig_mpl.savefig(buf, format="png", bbox_inches='tight', pad_inches=0)
-    buf.seek(0)
-    img_pil = Image.open(buf)
+    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    plt.close(fig_mpl)
 
     # --- 2. Prepare data for Plotly ---
     opponent_shots_df['shot.xg_norm'] = pd.to_numeric(opponent_shots_df['shot.xg'], errors='coerce').fillna(0)
@@ -1240,7 +1244,7 @@ def create_season_shots_against_shotmap_plotly(season_events_df, matches_summary
         height=500,
         showlegend=False,
         images=[dict(
-            source=img_pil,
+            source='data:image/png;base64,{}'.format(img_base64),
             xref="x", yref="y", x=50, y=100,
             sizex=50, sizey=100,
             sizing="stretch", opacity=1, layer="below"
