@@ -807,7 +807,8 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         if col in player_data.columns:
             # Explicitly convert to float and handle NaNs
             val = float(player_data[col].values[0])
-            values.append(np.nan_to_num(val, nan=0.0))
+            # --- THIS IS THE FIX: Scale 0-1 value to 0-100 ---
+            values.append(np.nan_to_num(val, nan=0.0) * 100)
         else:
             values.append(0.0) # Default to 0 if metric is missing
             print(f"Warning: Missing percentile column {col} for radar.")
