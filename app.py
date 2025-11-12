@@ -65,6 +65,94 @@ def load_data():
         return None, None, None, None, None
 
 # ... after your @st.cache_data def load_data(): ...
+@st.cache_data
+def load_player_details():
+    """Loads the player details (foot, height, etc.) from the pkl file."""
+    try:
+        with open('player_details.pkl', 'rb') as f:
+            player_details_list = pickle.load(f)
+        
+        players_df = pd.DataFrame(player_details_list)
+        players_df = players_df.dropna(subset=['playerId'])
+        players_df['playerId'] = players_df['playerId'].astype(int)
+        players_df = players_df.set_index('playerId')
+        return players_df
+    except FileNotFoundError:
+        st.error("❌ Error: `player_details.pkl` not found. Please run `get_player_details.py` locally and push the file.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"An error occurred loading player details: {e}")
+        return pd.DataFrame()
+
+def _calculate_age(birth_date):
+    """Helper function to calculate age from birth_date string."""
+    if not birth_date or pd.isna(birth_date):
+        return "N/A"
+    try:
+        today = datetime.date.today()
+        birth = datetime.datetime.strptime(birth_date, '%Y-%m-%d').date()
+        age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
+        return age
+    except Exception:
+        return "N/A"
+
+@st.cache_data
+def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
+    """
+    Goes through all match data and extracts the individual match stats
+    for a single selected player.
+    """
+    player_matches = []
+    
+    # Create a quick lookup map for match info
+    match_info_map = _matches_summary_df.set_index('matchId').to_dict('index')
+    
+    for match_id, match_data in _all_match_data.items():
+        if not match_data or 'player_stats' not in match_data:
+            continue
+            
+        home_df = match_data['player_stats'].get('home')
+        away_df = match_data['player_stats'].get('away')
+        
+        player_stats_series = None
+        opponent = "N/A"
+        
+        match_info = match_info_map.get(match_id, {})
+        home_team = match_info.get('homeTeamName', 'Home')
+        away_team = match_info.get('awayTeamName', 'Away')
+        
+        if home_df is not None and player_name in home_df.index:
+            player_stats_series = home_df.loc[player_name]
+            opponent = f"vs. {away_team} (H)"
+        elif away_df is not None and player_name in away_df.index:
+            player_stats_series = away_df.loc[player_name]
+            opponent = f"vs. {home_team} (A)"
+            
+        if player_stats_series is not None:
+            # Convert series to a dictionary and add match info
+            stats_dict = player_stats_series.to_dict()
+            stats_dict['Match'] = opponent
+            stats_dict['Date'] = match_info.get('dateutc', 'N/A')
+            stats_dict['Score'] = match_info.get('score', 'N/A')
+            player_matches.append(stats_dict)
+
+    if not player_matches:
+        return pd.DataFrame()
+        
+    # Create and format the DataFrame
+    match_log_df = pd.DataFrame(player_matches)
+    
+    # Format the date
+    if 'Date' in match_log_df.columns:
+        match_log_df['Date'] = pd.to_datetime(match_log_df['Date']).dt.strftime('%Y-%m-%d')
+    
+    # Reorder columns to put match info first
+    cols_to_front = ['Date', 'Match', 'Score', 'Minutes']
+    all_cols = cols_to_front + [col for col in match_log_df.columns if col not in cols_to_front]
+    match_log_df = match_log_df[all_cols].fillna(0)
+    match_log_df = match_log_df.sort_values(by='Date', ascending=False)
+    
+    return match_log_df
 
 @st.cache_data
 def load_historical_data():
