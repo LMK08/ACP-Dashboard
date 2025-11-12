@@ -265,6 +265,7 @@ DISTRIBUTION_METRICS_BY_POSITION = {
 # --- Helper for Player Radars (from Cell 11) ---
 def calculate_and_merge(base_df, events_df, stat_name, primary_type=None, bool_condition=None):
     """
+    Helper function from notebook Cell 11.
     Calculates a stat based on a filter and merges it into the base DataFrame.
     (FIXED to accept primary_type and bool_condition)
     """
@@ -279,13 +280,14 @@ def calculate_and_merge(base_df, events_df, stat_name, primary_type=None, bool_c
         bool_condition_aligned = bool_condition.reindex(filter_condition.index, fill_value=False)
         filter_condition &= bool_condition_aligned
         
-    # --- Rest of the function is the same as before ---
+    # Ensure player.id is numeric for groupby
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     safe_condition = filter_condition & events_df['player.id'].notna()
     
-    if safe_condition.empty:
+    if safe_condition.empty or not safe_condition.any():
         stat_series = pd.Series(dtype='int').rename(stat_name)
     else:
+        # Group by the integer version of player.id
         stat_series = events_df[safe_condition].groupby(events_df['player.id'].astype(int)).size()
         stat_series.name = stat_name
         
