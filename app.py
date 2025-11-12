@@ -963,11 +963,10 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
-
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V6: Stacking all text on the left)
+    (Layout V7: Color and box size adjustments)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -996,7 +995,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
     # --- Plot Polygons ---
     color_a = '#0077b6' # Blue
-    color_b = '#e63946' # Red
+    # --- CHANGED: Red to Pink ---
+    color_b = '#DDA0DD' # Pink/Plum
     
     player_a_name = player_a_data['playerName'].values[0]
     player_b_name = player_b_data['playerName'].values[0]
@@ -1050,11 +1050,11 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
+    # --- CHANGED: Removed "Score:" text ---
     score_text = (
         f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
         f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
         f"Template: *{position_template}*\n"
-        f"**{position_template} Score:**\n"
         f"  {player_a_name}: {score_a:.2f}\n"
         f"  {player_b_name}: {score_b:.2f}\n"
     )
@@ -1063,10 +1063,10 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
     
-    # Place score box in top-left corner (x=0.01 is 1% from left edge)
+    # --- CHANGED: Increased fontsize to 12 ---
     fig.text(0.01, 0.98, score_text, 
              horizontalalignment='left', verticalalignment='top', 
-             fontsize=11, bbox=dict(facecolor=score_box_color, alpha=0.5),
+             fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5),
              transform=fig.transFigure)
     
     # --- Metric Legend (Top-Left, below box) ---
@@ -1074,14 +1074,12 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     
-    # --- FIX: Moved to loc='upper left' at (0.01, 0.70) ---
     fig.legend(patches, legend_labels, loc='upper left', bbox_to_anchor=(0.01, 0.70), 
                frameon=False)
     
     # --- General Info (Top-Left, below legend) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    # --- FIX: Moved to x=0.01, y=0.55 ---
     fig.text(0.01, 0.55, info_text, 
              horizontalalignment='left', verticalalignment='top', 
              fontsize=10, color='black', transform=fig.transFigure)
