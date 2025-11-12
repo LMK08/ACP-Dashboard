@@ -964,7 +964,90 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
     return fig
 
+def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
+    """Helper function to create a 2-player comparison radar chart."""
+    
+    num_metrics = len(metrics)
+    angles = [n / float(num_metrics) * 2 * pi for n in range(num_metrics)]
+    angles += angles[:1]
+    
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels([])  
 
+    # --- Player A Values ---
+    values_a = []
+    for metric in metrics:
+        col = metric + '_percentile'
+        val = float(player_a_data[col].values[0]) if col in player_a_data.columns else 0.0
+        values_a.append(np.nan_to_num(val, nan=0.0) * 100)
+    values_a += values_a[:1]
+
+    # --- Player B Values ---
+    values_b = []
+    for metric in metrics:
+        col = metric + '_percentile'
+        val = float(player_b_data[col].values[0]) if col in player_b_data.columns else 0.0
+        values_b.append(np.nan_to_num(val, nan=0.0) * 100)
+    values_b += values_b[:1]
+
+    # --- Plot Polygons ---
+    color_a = '#0077b6' # Blue
+    color_b = '#e63946' # Red
+    
+    player_a_name = player_a_data['playerName'].values[0]
+    player_b_name = player_b_data['playerName'].values[0]
+
+    ax.plot(angles, values_a, linewidth=2, linestyle='solid', color=color_a, zorder=3, label=player_a_name)  
+    ax.fill(angles, values_a, color_a, alpha=0.2, zorder=2)
+    
+    ax.plot(angles, values_b, linewidth=2, linestyle='solid', color=color_b, zorder=3, label=player_b_name)  
+    ax.fill(angles, values_b, color_b, alpha=0.2, zorder=2)
+
+    # --- Plot Metric Names (No raw values for comparison) ---
+    category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
+    for i, metric in enumerate(metrics):
+        angle_rad = angles[i]
+        if metric in OUTPUT_METRICS: color = category_colors['output']
+        elif metric in PASSING_METRICS: color = category_colors['passing']
+        elif metric in DEFENSIVE_METRICS: color = category_colors['defensive']
+        elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
+        elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
+        else: color = 'grey'
+        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+
+    ax.set_rlabel_position(0)
+    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
+    plt.ylim(0, 100)  
+
+    # --- Titles and Info ---
+    player_a_team = player_a_data['teamName'].values[0]
+    player_a_mins = player_a_data['totalMinutes'].values[0]
+    
+    player_b_team = player_b_data['teamName'].values[0]
+    player_b_mins = player_b_data['totalMinutes'].values[0]
+    
+    ax.text(-0.1, 1.20, f"{player_a_name} | {player_a_team}", size=15, color=color_a, ha='left', va='top', transform=ax.transAxes, weight='bold')
+    ax.text(-0.1, 1.16, f"{player_a_mins:.0f} minutes played", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12)
+    
+    ax.text(-0.1, 1.11, f"{player_b_name} | {player_b_team}", size=15, color=color_b, ha='left', va='top', transform=ax.transAxes, weight='bold')
+    ax.text(-0.1, 1.07, f"{player_b_mins:.0f} minutes played", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12)
+
+    ax.text(-0.1, 1.02, f"Comparison Template: {position_template}", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12, style='italic')
+
+    # --- Legend ---
+    # Get archetype scores for the legend
+    score_a = player_a_data.get(position_template + '_Score', 0)
+    score_b = player_b_data.get(position_template + '_Score', 0)
+    
+    legend_elements = [
+        plt.Line2D([0], [0], color=color_a, lw=4, label=f"{player_a_name} (Score: {score_a:.0f})"),
+        plt.Line2D([0], [0], color=color_b, lw=4, label=f"{player_b_name} (Score: {score_b:.0f})")
+    ]
+    ax.legend(handles=legend_elements, loc='lower right', bbox_to_anchor=(1.5, 1), frameon=False)
+    
+    outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95)
+    ax.set_facecolor(inside_radar_color)
+    if ax.figure: ax.figure.patch.set_facecolor(outside_background_color)
 
 # --- Radar Stats Calculation ---
 @st.cache_data
@@ -1810,8 +1893,7 @@ player_stats_with_scores_df = pd.DataFrame()
 if raw_events_df is not None and matches_summary_df is not None and player_minutes_df is not None:
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
-    analysis_type = st.sidebar.radio("Choose Analysis Type", ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Analysis'))
-
+    analysis_type = st.sidebar.radio("Choose Analysis Type", ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison'))
     if analysis_type == 'Match Analysis':
         st.header("Match Analysis")
         
@@ -2145,9 +2227,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         else:
             st.warning("Could not calculate raw league stats for custom plot.")
 
-    # --- NEW: Player Analysis Section ---
-    elif analysis_type == 'Player Analysis':
-        st.header("Player Analysis")
+    
+    # --- UPDATED: Renamed to Player Profile ---
+    elif analysis_type == 'Player Profile':
+        st.header("Player Profile")
         
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
@@ -2346,5 +2429,90 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.expander("View Full Match Log (All Stats)"):
                 st.dataframe(player_match_log_df.set_index('Date'))
 
+# --- NEW: Player Comparison Section ---
+    elif analysis_type == 'Player Comparison':
+        st.header("Player Comparison")
+
+        # --- 1. Load Data ---
+        try:
+            player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+            player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+            )
+        except Exception as e:
+            st.error(f"An error occurred calculating player stats: {e}")
+            st.stop()
+            
+        if player_stats_with_scores_df.empty:
+            st.warning("No players found with sufficient minutes for comparison.")
+            st.stop()
+
+        # --- 2. Player Selectors ---
+        st.sidebar.subheader("Comparison Options")
+        
+        player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
+        
+        # Player A
+        selected_player_a_display = st.sidebar.selectbox(
+            "Select Player A:", 
+            player_list_df['display_name'], 
+            index=0 # Default to first player
+        )
+        selected_player_a_name = player_list_df[player_list_df['display_name'] == selected_player_a_display]['playerName'].values[0]
+        player_a_data = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_a_name]
+
+        # Player B
+        selected_player_b_display = st.sidebar.selectbox(
+            "Select Player B:", 
+            player_list_df['display_name'],
+            index=1 # Default to second player
+        )
+        selected_player_b_name = player_list_df[player_list_df['display_name'] == selected_player_b_display]['playerName'].values[0]
+        player_b_data = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_b_name]
+
+        # --- 3. Template Selector ---
+        # Get all possible templates (archetypes)
+        all_templates = sorted(list(POSITION_GROUPS.keys()))
+        # Find a good default: Player A's best-fit template
+        primary_pos_a = player_a_data['primaryPosition'].values[0]
+        eligible_groups_a = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos_a in pos_roles]
+        
+        highest_score = -1; default_template = all_templates[0]
+        for group in eligible_groups_a:
+            score_col = group + '_Score'
+            if score_col in player_a_data.columns:
+                player_score = player_a_data[score_col].values[0]
+                if player_score > highest_score:
+                    highest_score = player_score; default_template = group
+        
+        default_index = all_templates.index(default_template) if default_template in all_templates else 0
+        
+        selected_template = st.sidebar.selectbox(
+            "Select Comparison Template:",
+            all_templates,
+            index=default_index
+        )
+
+        # --- 4. Plot Radar ---
+        st.subheader(f"Comparing: {selected_player_a_name} vs. {selected_player_b_name}")
+        
+        metrics_to_plot = list(WEIGHTS[selected_template].keys())
+        # Ensure metrics exist in the base data
+        metrics_to_plot = [m for m in metrics_to_plot if m in player_stats_with_scores_df.columns]
+        
+        fig = plt.figure(figsize=(14, 7))
+        ax_radar = plt.subplot(111, polar=True)
+        
+        plot_comparison_radar(
+            ax_radar,
+            player_a_data,
+            player_b_data,
+            metrics_to_plot,
+            selected_template
+        )
+        
+        st.pyplot(fig, use_container_width=True)
+        
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
