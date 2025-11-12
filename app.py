@@ -608,7 +608,8 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     xa_split_totals = assists_df.groupby(['player.id', 'assist_type'])['xA'].sum()
     xa_final_df = xa_split_totals.unstack(fill_value=0).reset_index()
     final_stats_df = pd.merge(npxg_totals, xa_final_df, on='player.id', how='outer')
-    base_df = base_df.merge(final_stats_df, left_on=base_df.index, right_on='player.id', how='left')
+    base_df = base_df.merge(final_stats_df.set_index('player.id'), left_index=True, right_index=True, how='left')
+
 
     # -- Deep Completions and Progressive Passes --
     passes_df = events_df[(events_df['type.primary'] == 'pass') & (events_df.get('pass.accurate') == True)].dropna(subset=['location.x', 'pass.endLocation.x', 'player.id']).copy()
@@ -625,7 +626,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     passes_df['is_progressive_pass'] = cond1 | cond2 | cond3
     progressive_passes = passes_df.groupby('player.id')['is_progressive_pass'].sum().reset_index().rename(columns={'is_progressive_pass': 'Progressive Passes'})
     new_metrics_df = pd.merge(deep_completions, progressive_passes, on='player.id', how='outer')
-    base_df = base_df.merge(new_metrics_df, left_on=base_df.index, right_on='player.id', how='left')
+    base_df = base_df.merge(new_metrics_df.set_index('player.id'), left_index=True, right_index=True, how='left')
     
     # -- xT --
     xt_data_from_image = [[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]]
@@ -649,7 +650,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     move_df['xT'] = move_df['xt_end'] - move_df['xt_start']
     successful_threat = move_df[move_df['xT'] > 0]
     player_xt = successful_threat.groupby('player.id')['xT'].sum().reset_index()
-    base_df = base_df.merge(player_xt, left_on=base_df.index, right_on='player.id', how='left')
+    base_df = base_df.merge(player_xt.set_index('player.id'), left_index=True, right_index=True, how='left')
 
     # --- Step 3: Calculate Goalkeeper Stats ---
     print("Step 3: Calculating Goalkeeper stats...")
@@ -672,7 +673,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     long_passes_total_gk = gk_passes[check_secondary_list('long_pass')].groupby('player.id').size().reset_index(name='longPasses_gk')
     long_passes_succ_gk = gk_passes[check_secondary_list('long_pass') & (gk_passes['pass.accurate'] == True)].groupby('player.id').size().reset_index(name='longPassesSuccessful_gk')
     gk_report_df = pd.DataFrame({'player.id': gk_ids}); gk_report_df = pd.merge(gk_report_df, gk_shot_stopping_stats, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, exits, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, recoveries_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, passes_total_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, passes_succ_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, long_passes_total_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, long_passes_succ_gk, on='player.id', how='left')
-    base_df = base_df.merge(gk_report_df, left_on=base_df.index, right_on='player.id', how='left')
+    base_df = base_df.merge(gk_report_df.set_index('player.id'), left_index=True, right_index=True, how='left')
 
     # --- Step 4: Finalize, Calculate Percentages, and Normalize ---
     print("Step 4: Finalizing and normalizing...")
