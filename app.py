@@ -310,8 +310,7 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
         and_condition_aligned = and_condition.reindex(condition.index, fill_value=False)
         condition = condition & and_condition_aligned
         
-    return calculate_and_merge(base_df, events_df, stat_name, condition)
-
+    return calculate_and_merge(base_df, events_df, stat_name, bool_condition=condition)
 
 # --- Player Radar Data Calculation (V-ROBUST) ---
 @st.cache_data
