@@ -53,16 +53,25 @@ def fetch_player_details(player_ids, username, password, session):
             
             data = r.json()
             
-            # --- UPDATED EXTRACTION LOGIC ---
+            # --- NEW: Extract all biographical data ---
+            birth_area = data.get('birthArea', {}).get('name', 'N/A')
+            passport_area = data.get('passportArea', {}).get('name', 'N/A')
+            role = data.get('role', {}).get('name', 'N/A')
+            image_url = data.get('imageDataURL', None)
+            
             player_data_list.append({
                 'playerId': player_id,
-                'firstName': data.get('firstName'), # <-- Get first name
-                'lastName': data.get('lastName'),   # <-- Get last name
-                'shortName': data.get('shortName'), # This is the common name
+                'firstName': data.get('firstName'),
+                'lastName': data.get('lastName'),
+                'shortName': data.get('shortName'),
                 'foot': data.get('foot'),
                 'height': data.get('height'),
                 'weight': data.get('weight'),
-                'birthDate': data.get('birthDate')
+                'birthDate': data.get('birthDate'),
+                'birthArea': birth_area,         # <-- NEW
+                'passportArea': passport_area,   # <-- NEW
+                'role': role,                  # <-- NEW
+                'imageDataURL': image_url      # <-- NEW
             })
             
         except requests.exceptions.RequestException as e:
@@ -136,12 +145,11 @@ def main():
         final_df = pd.DataFrame(combined_data)
         final_df = final_df.dropna(subset=['playerId'])
         
-        # --- NEW: Combine first and last name ---
         final_df['fullName'] = final_df['firstName'].fillna('') + ' ' + final_df['lastName'].fillna('')
         final_df['fullName'] = final_df['fullName'].str.strip()
         
-        # Reorder columns for better display
-        display_cols = ['playerId', 'fullName', 'shortName', 'foot', 'height', 'weight', 'birthDate']
+        # --- UPDATED: Display new fields in summary ---
+        display_cols = ['playerId', 'fullName', 'shortName', 'foot', 'role', 'passportArea', 'birthArea']
         print(final_df[display_cols].head())
         
         print("\nFootedness distribution:")

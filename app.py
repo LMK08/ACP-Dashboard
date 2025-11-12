@@ -1881,106 +1881,111 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'Player Analysis':
         st.header("Player Analysis")
         
+        # --- 1. Load All Necessary Data ---
+        
+        # Load Bio Details (new function)
+        player_details_df = load_player_details()
+        
+        # Load Per-90 Stats (from existing radar calculation)
+        try:
+            player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df)
+        except Exception as e:
+            st.error(f"An error occurred calculating overall player stats: {e}")
+            player_stats_df = pd.DataFrame()
+            
+        if player_stats_df.empty or player_details_df.empty:
+            st.warning("Player data not available. Please ensure all processing scripts have run and data is loaded.")
+            st.stop()
+
+        # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
         
-        if player_minutes_df is None:
-             st.error("Player minutes data file (`player_minutes_and_positions.pkl`) not loaded.")
-             st.stop()
+        player_list_df = player_stats_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
         
-        # 1. Run the heavy calculations
+        selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
+        
+        selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
+        
         try:
-            player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df) 
-            player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
-            )
+            player_overall_stats = player_stats_df[player_stats_df['playerName'] == selected_player_name].iloc[0]
+            player_id = player_overall_stats.get('playerId')
+            player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
         except Exception as e:
-            st.error(f"An error occurred during player stat calculation: {e}")
-            st.exception(e) 
-            st.stop() 
-
-        # --- DEBUG EXPANDER ---
-        with st.expander("🕵️‍♂️ **Click to View Player Data Processing Steps**"):
-            st.subheader("1. Base Player Data (from `player_minutes_and_positions.pkl`)")
-            st.dataframe(player_minutes_df.head())
-            st.subheader("2. Raw Per-90 Stats (from `calculate_player_radar_data`)")
-            st.write("Check here if metrics like 'npxG', 'xAOP', 'xT', 'Passes', 'Duels' are all 0 or missing.")
-            st.dataframe(player_stats_df) # This is the crucial table
-            st.subheader("3. Final Percentiles & Scores (from `calculate_player_percentiles_and_scores`)")
-            st.write("Check here if percentile/score columns (e.g., `npxG_percentile`, `Stopper_Score`) are all 0 or missing.")
-            st.dataframe(player_stats_with_scores_df)
-        # --- END DEBUG EXPANDER ---
-
-        if player_stats_with_scores_df.empty:
-            st.warning("No players found matching the criteria (e.g., >= 90 minutes).")
-        else:
-            # --- START: UI CODE TO DISPLAY PLOT ---
-            player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-            player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
+            st.error(f"Could not load data for {selected_player_name}. Error: {e}")
+            st.stop()
             
-            selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
-            
-            # --- CORRECTED PLAYER LOOKUP ---
-            # Get the unique player name from the (temporary) player_list_df
-            selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
-            
-            # Get the player's data from the main DataFrame using their name
-            player_data = player_stats_with_scores_df.loc[player_stats_with_scores_df['playerName'] == selected_player_name].copy()
-            # --- END CORRECTION ---
-
-            if player_data.empty:
-                st.warning(f"No data found for selected player.")
+        # --- 3. Get Player's Match Log ---
+        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
+        
+        # --- 4. Display Player Bio (NEW LAYOUT) ---
+        st.header(f"{player_overall_stats.get('playerName', 'N/A')}")
+        
+        col1_bio, col2_bio = st.columns([1, 3]) # Column for photo, column for stats
+        
+        with col1_bio:
+            image_url = player_bio.get('imageDataURL', None)
+            if image_url:
+                st.image(image_url, width=150)
             else:
-                primary_pos = player_data['primaryPosition'].values[0]
-                eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
-                
-                if not eligible_groups:
-                    st.warning(f"No radar templates found for player's primary position: {primary_pos}")
-                else:
-                    st.subheader(f"Player Radar: {player_data['playerName'].values[0]}")
+                # Show a generic placeholder if no image
+                st.image("https://t3.ftcdn.net/jpg/05/16/27/58/360_F_516275801_f3Fsp17x6HQK0xQgDQEELoGau0sJzEf4.jpg", width=150)
 
-                    highest_score = -1; highest_scoring_group = None; scores_by_group = {}
-                    for group in eligible_groups:
-                        score_col = group + '_Score'
-                        if score_col in player_data.columns:
-                            player_score = player_data[score_col].values[0]
-                            scores_by_group[group] = player_score
-                            if player_score > highest_score:
-                                highest_score = player_score; highest_scoring_group = group
-                    if highest_scoring_group is None: highest_scoring_group = eligible_groups[0]
-                    
-                    metrics_to_plot = list(WEIGHTS[highest_scoring_group].keys())
-                    metrics_to_plot = [m for m in metrics_to_plot if m in player_data.columns]
-                    
-                    st.markdown(f"Displaying radar for best-fit archetype: **{highest_scoring_group}**")
-                    
-                    position_data_for_dist = player_stats_with_scores_df[player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[highest_scoring_group])]
-                    
-                    if position_data_for_dist.empty:
-                         st.warning(f"No other players found for position group '{POSITION_GROUPS[highest_scoring_group]}' for percentile comparison.")
-                    else:
-                        # --- CORRECTED CALL (Fixing global var and argument order) ---
-                        fig = create_radar_with_distributions(
-                            player_data, 
-                            metrics_to_plot, 
-                            highest_scoring_group, 
-                            eligible_groups,
-                            all_position_data=position_data_for_dist,
-                            full_df_for_ranking=player_stats_with_scores_df # Pass the full DF
-                        )
-                        st.pyplot(fig, use_container_width=True)
-                    
-                    with st.expander("View Raw Player Data (Per 90)"):
-                         display_cols = [m for m in metrics_to_plot if m in player_data.columns] + ['totalMinutes', 'primaryPosition']
-                         st.dataframe(player_data[display_cols].round(2).T)
-                         
-                    with st.expander("View Percentile Data"):
-                         percentile_cols = [m + '_percentile' for m in metrics_to_plot if m + '_percentile' in player_data.columns]
-                         st.dataframe(player_data[percentile_cols].round(2).T)
-                         
-                    with st.expander("View Archetype Scores"):
-                         score_cols = [g + '_Score' for g in eligible_groups if g + '_Score' in player_data.columns]
-                         st.dataframe(player_data[score_cols].round(2).T)
-            # --- END: UI CODE ---
+        with col2_bio:
+            st.subheader("Player Information")
+            
+            # First row of metrics
+            bio_row1 = st.columns(4)
+            bio_row1[0].metric("Team", player_overall_stats.get('teamName', 'N/A'))
+            bio_row1[1].metric("Position", player_bio.get('role', 'N/A'))
+            bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
+            age = _calculate_age(player_bio.get('birthDate'))
+            bio_row1[3].metric("Age", age)
+            
+            # Second row of metrics
+            bio_row2 = st.columns(4)
+            bio_row2[0].metric("Foot", player_bio.get('foot', 'N/A').capitalize())
+            bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
+            bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
+            bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
+        
+        st.divider()
+
+        # --- 5. Display Overall Season Stats (Per 90) ---
+        st.subheader("Overall Season Stats (Per 90)")
+        st.text(f"Based on {player_overall_stats.get('totalMinutes', 0):.0f} total minutes played.")
+
+        stat_groups = {
+            "Output": OUTPUT_METRICS,
+            "Passing": PASSING_METRICS,
+            "Defensive": DEFENSIVE_METRICS,
+            "Dribbling": DRIBBLING_METRICS,
+            "Goalkeeping": GOALKEEPING_METRICS
+        }
+
+        for group_name, group_metrics in stat_groups.items():
+            metrics_to_show = [m for m in group_metrics if m in player_overall_stats.index and player_overall_stats[m] != 0]
+            if metrics_to_show:
+                with st.expander(f"**{group_name} Stats**"):
+                    stats_subset = player_overall_stats[metrics_to_show].to_frame(name='Value')
+                    stats_subset['Value'] = stats_subset['Value'].apply(lambda x: f"{x:.2f}" if isinstance(x, (float, int)) else x)
+                    st.dataframe(stats_subset, use_container_width=True)
+
+        st.divider()
+        
+        # --- 6. Display Individual Match Stats ---
+        st.subheader("Individual Match Log")
+        
+        if player_match_log_df.empty:
+            st.info("No individual match stats found for this player.")
+        else:
+            key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'Actions / successful', 'Passes / accurate', 'Duels / won']
+            cols_to_show = [c for c in key_match_stats if c in player_match_log_df.columns]
+            
+            st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
+            
+            with st.expander("View Full Match Log (All Stats)"):
+                st.dataframe(player_match_log_df.set_index('Date'))
 
 else:
-    st.error("Data files not loaded. Please run `process_data.py` locally (including the new player minutes step) and ensure all artifacts are pushed to GitHub.")
+    st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
