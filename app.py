@@ -791,35 +791,40 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     return data.fillna(0)
 
 
-# --- PLAYER RADAR PLOTTING FUNCTIONS ---
-def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None):
-    """Helper function to create the base radar chart (Cell 23 logic)."""
+def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None):
+    """Helper function to create the base radar chart."""
     
     num_metrics = len(metrics)
     angles = [n / float(num_metrics) * 2 * pi for n in range(num_metrics)]
     angles += angles[:1]
     
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([]) 
+    ax.set_xticklabels([])  
 
-    values = [player_data[metric + '_percentile'].values[0] for metric in metrics if metric + '_percentile' in player_data.columns]
-    if len(values) != num_metrics:
-        print(f"Warning: Mismatch in metrics ({num_metrics}) vs values ({len(values)}) for {player_data['playerName'].values[0]}")
-        missing_pct = [m + '_percentile' for m in metrics if m + '_percentile' not in player_data.columns]
-        print(f"  -> Missing percentile columns: {missing_pct}")
-        values.extend([0] * (num_metrics - len(values)))
-    values += values[:1] 
+    # Ensure all percentile columns exist, default to 0
+    values = []
+    for metric in metrics:
+        col = metric + '_percentile'
+        if col in player_data.columns:
+            values.append(player_data[col].values[0])
+        else:
+            values.append(0) # Default to 0 if metric is missing
+            print(f"Warning: Missing percentile column {col} for radar.")
+            
+    values += values[:1] # Close the loop
 
-    ax.plot(angles, values, linewidth=1, linestyle='solid', color='#0077b6') 
-    ax.fill(angles, values, '#0077b6', alpha=0.1) 
+    ax.plot(angles, values, linewidth=1, linestyle='solid', color='#0077b6')  
+    ax.fill(angles, values, '#0077b6', alpha=0.1)  
 
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
 
+    # Plot raw values
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
-        label = f"{player_data[metric].values[0]:.2f}"
+        label = f"{player_data.get(metric, 0):.2f}"
         ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
 
+    # Plot metric names
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
         if metric in OUTPUT_METRICS: color = category_colors['output']
@@ -831,8 +836,8 @@ def _create_base_radar_chart(fig, ax, player_data, metrics, position, eligible_g
         ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
     ax.set_rlabel_position(0)
-    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7) 
-    plt.ylim(0, 100) 
+    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7)  
+    plt.ylim(0, 100)  
 
     player_name = player_data['playerName'].values[0]
     player_position = player_data['primaryPosition'].values[0]
@@ -897,7 +902,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
     if highest_scoring_group is None:
         print(f"No highest scoring group found for {player_name}. Using default.")
-        highest_scoring_group = eligible_groups[0] if eligible_groups else "Default" 
+        highest_scoring_group = eligible_groups[0] if eligible_groups else "Default"  
 
     relevant_metrics = DISTRIBUTION_METRICS_BY_POSITION.get(highest_scoring_group, metrics)
     relevant_metrics = [m for m in relevant_metrics if m in player_data.columns]
@@ -906,12 +911,11 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
     
-    # --- CORRECTED CALL: Pass all args, with `ax` as keyword ---
-    _create_base_radar_chart(player_data, metrics, position, eligible_groups, ax=ax_radar, full_df_for_ranking=full_df_for_ranking)
+    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
-              horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
-              fontsize=14, fontweight='bold', color='black')
+                  horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
+                  fontsize=14, fontweight='bold', color='black')
 
     # --- Distribution Plots ---
     primary_pos_group = POSITION_GROUPS.get(eligible_groups[0], [player_data['primaryPosition'].values[0]])
@@ -951,6 +955,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
+
 
 
 # --- Radar Stats Calculation ---
@@ -2141,25 +2146,34 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         try:
             player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+            # --- NEW: Calculate percentiles ---
+            player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+            )
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
-            st.exception(e) # Show full error
+            st.exception(e)
             player_stats_df = pd.DataFrame()
+            player_stats_with_scores_df = pd.DataFrame()
             
-        if player_stats_df.empty or player_details_df.empty:
+        if player_stats_df.empty or player_details_df.empty or player_stats_with_scores_df.empty:
             st.warning("Player data not available. Please ensure all processing scripts have run and data is loaded.")
             st.stop()
 
         # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
-        player_list_df = player_stats_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        
+        # --- Use the percentile DF for the list, as it's pre-filtered by min_minutes ---
+        player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
         player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
         
         selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
         selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
         
         try:
-            player_per_90_stats = player_stats_df[player_stats_df['playerName'] == selected_player_name].iloc[0]
+            # Get data from the 'with_scores' df
+            player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_name]
+            player_per_90_stats = player_data_row.iloc[0] # This is the series for the stats tables
             player_id = player_per_90_stats.get('playerId')
             player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
             total_minutes = player_per_90_stats.get('totalMinutes', 0)
@@ -2204,7 +2218,43 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.divider()
 
-        # --- 5. STATS TOGGLE ---
+        # --- 5. NEW: DISPLAY PLAYER RADAR ---
+        st.subheader("Player Radar")
+        primary_pos = player_per_90_stats.get('primaryPosition', 'N/A')
+        eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
+
+        if not eligible_groups:
+            st.warning(f"No radar templates found for player's primary position: {primary_pos}")
+        else:
+            # Find best-fit archetype
+            highest_score = -1; highest_scoring_group = None;
+            for group in eligible_groups:
+                score_col = group + '_Score'
+                if score_col in player_data_row.columns:
+                    player_score = player_data_row[score_col].values[0]
+                    if player_score > highest_score:
+                        highest_score = player_score; highest_scoring_group = group
+            
+            if highest_scoring_group is None: highest_scoring_group = eligible_groups[0]
+            
+            metrics_to_plot = list(WEIGHTS[highest_scoring_group].keys())
+            metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
+            
+            position_data_for_dist = player_stats_with_scores_df[player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[highest_scoring_group])]
+            
+            fig_radar = create_radar_with_distributions(
+                player_data_row, # The 1-row DataFrame for the selected player
+                metrics_to_plot, 
+                highest_scoring_group, 
+                eligible_groups,
+                all_position_data=position_data_for_dist, # df for distribution plots
+                full_df_for_ranking=player_stats_with_scores_df # full df for ranking
+            )
+            st.pyplot(fig_radar, use_container_width=True)
+
+        st.divider()
+        
+        # --- 6. STATS TOGGLE ---
         st.subheader("Overall Season Stats")
         show_totals = st.toggle("Show Season Totals", value=False)
         stats_to_display = pd.Series(dtype='object')
@@ -2234,7 +2284,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
             stats_to_display = per_90_stats
 
-        # --- 6. Display Stats (RE-ADDing ALL GROUPS) ---
+        # --- 7. Display Stats (Using all global groups) ---
         stat_groups = {
             "Output": OUTPUT_METRICS,
             "Passing": PASSING_METRICS,
@@ -2249,7 +2299,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
             if player_is_gk and group_name != 'Goalkeeping':
                 continue 
-            # --- TYPO FIX HERE ---
             if not player_is_gk and group_name == 'Goalkeeping':
                 continue
                 
@@ -2262,10 +2311,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 default_expanded = (group_name == 'Output') 
                 with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
                     
-                    # --- THIS IS THE CHANGE ---
-                    # We no longer filter out 0s.
                     stats_subset_series = stats_to_display[metrics_to_show]
-                    # stats_subset_series = stats_subset_series[stats_subset_series != 0] # <-- LINE REMOVED
+                    stats_subset_series = stats_subset_series[stats_subset_series != 0]
                     
                     if stats_subset_series.empty:
                         st.text("No data for this category.")
@@ -2279,7 +2326,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.divider()
         
-        # --- 7. Display Individual Match Stats (Unchanged) ---
+        # --- 8. Display Individual Match Stats (Unchanged) ---
         st.subheader("Individual Match Log")
         
         if player_match_log_df.empty:
