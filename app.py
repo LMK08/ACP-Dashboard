@@ -1034,10 +1034,11 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
     ax.text(-0.1, 1.02, f"Comparison Template: {position_template}", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12, style='italic')
 
-    # --- Legend ---
+   # --- Legend ---
     # Get archetype scores for the legend
-    score_a = player_a_data.get(position_template + '_Score', 0)
-    score_b = player_b_data.get(position_template + '_Score', 0)
+    score_col = position_template + '_Score'
+    score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
+    score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
     legend_elements = [
         plt.Line2D([0], [0], color=color_a, lw=4, label=f"{player_a_name} (Score: {score_a:.0f})"),
@@ -2513,6 +2514,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         )
         
         st.pyplot(fig, use_container_width=True)
-        
+
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
