@@ -91,8 +91,10 @@ def _calculate_age(birth_date):
     try:
         today = datetime.date.today()
         birth = datetime.datetime.strptime(birth_date, '%Y-%m-%d').date()
-        age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
-        return age
+        # Calculate age as a float
+        age_in_days = (today - birth).days
+        age = age_in_days / 365.25 
+        return age # Return the float
     except Exception:
         return "N/A"
 
@@ -229,7 +231,7 @@ OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 
 PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions']
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
-GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'longPasses_gk', 'longPassesSuccessful_gk']
+GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
 DISTRIBUTION_METRICS_BY_POSITION = {
     'Shot Stopper': ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk'],
     'Cross Claimer': ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk'],
@@ -1970,12 +1972,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.header("Player Analysis")
         
         # --- 1. Load All Necessary Data ---
-        
-        # Load Bio Details (new function)
         player_details_df = load_player_details()
-        
-        # Load Per-90 Stats (from existing radar calculation)
         try:
+            # This df contains all per-90 stats AND rate stats
             player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df)
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
@@ -1987,18 +1986,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
-        
         player_list_df = player_stats_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
         player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
         
         selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
-        
         selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
         
         try:
-            player_overall_stats = player_stats_df[player_stats_df['playerName'] == selected_player_name].iloc[0]
-            player_id = player_overall_stats.get('playerId')
+            # This is the Series of all PER-90 stats
+            player_per_90_stats = player_stats_df[player_stats_df['playerName'] == selected_player_name].iloc[0]
+            player_id = player_per_90_stats.get('playerId')
             player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
+            total_minutes = player_per_90_stats.get('totalMinutes', 0)
         except Exception as e:
             st.error(f"Could not load data for {selected_player_name}. Error: {e}")
             st.stop()
@@ -2006,11 +2005,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 3. Get Player's Match Log ---
         player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
         
-        # --- 4. Display Player Bio (NEW LAYOUT) ---
-        st.header(f"{player_overall_stats.get('playerName', 'N/A')}")
+        # --- 4. Display Player Bio (With Age Fix) ---
+        st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
         
-        col1_bio, col2_bio = st.columns([1, 3]) # Column for photo, column for stats
-        
+        col1_bio, col2_bio = st.columns([1, 3])
         with col1_bio:
             image_url = player_bio.get('imageDataURL', None)
             if image_url:
@@ -2021,16 +2019,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         with col2_bio:
             st.subheader("Player Information")
-            
-            # First row of metrics
             bio_row1 = st.columns(4)
-            bio_row1[0].metric("Team", player_overall_stats.get('teamName', 'N/A'))
+            bio_row1[0].metric("Team", player_per_90_stats.get('teamName', 'N/A'))
             bio_row1[1].metric("Position", player_bio.get('role', 'N/A'))
             bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
-            age = _calculate_age(player_bio.get('birthDate'))
-            bio_row1[3].metric("Age", age)
             
-            # Second row of metrics
+            # --- AGE FIX ---
+            age = _calculate_age(player_bio.get('birthDate'))
+            age_display = f"{age:.1f}" if isinstance(age, float) else "N/A"
+            bio_row1[3].metric("Age", age_display)
+            
             bio_row2 = st.columns(4)
             bio_row2[0].metric("Foot", player_bio.get('foot', 'N/A').capitalize())
             bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
@@ -2039,10 +2037,36 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.divider()
 
-        # --- 5. Display Overall Season Stats (Per 90) ---
-        st.subheader("Overall Season Stats (Per 90)")
-        st.text(f"Based on {player_overall_stats.get('totalMinutes', 0):.0f} total minutes played.")
+        # --- 5. STATS TOGGLE ---
+        st.subheader("Overall Season Stats")
+        
+        show_totals = st.toggle("Show Season Totals", value=False)
+        
+        stats_to_display = pd.Series(dtype='object')
+        
+        if show_totals:
+            st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
+            # Calculate totals by reversing the per-90
+            total_stats = player_per_90_stats.copy()
+            # Define rate columns that should NOT be converted
+            rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col]
+            
+            for col in total_stats.index:
+                if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
+                    # This is a per-90 count, so convert it to total
+                    total_val = (total_stats[col] * total_minutes) / 90
+                    # Round counts, keep xG as float
+                    if col in ['xG', 'xA', 'xT', 'npxG', 'xAOP', 'xASP', 'psxG_faced', 'goalsPrevented']:
+                         total_stats[col] = total_val
+                    else:
+                         total_stats[col] = np.round(total_val)
+            stats_to_display = total_stats
+            
+        else: # Show Per 90
+            st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
+            stats_to_display = player_per_90_stats
 
+        # --- 6. Display Stats ---
         stat_groups = {
             "Output": OUTPUT_METRICS,
             "Passing": PASSING_METRICS,
@@ -2052,16 +2076,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         }
 
         for group_name, group_metrics in stat_groups.items():
-            metrics_to_show = [m for m in group_metrics if m in player_overall_stats.index and player_overall_stats[m] != 0]
+            metrics_to_show = [m for m in group_metrics if m in stats_to_display.index and stats_to_display.get(m) != 0]
             if metrics_to_show:
                 with st.expander(f"**{group_name} Stats**"):
-                    stats_subset = player_overall_stats[metrics_to_show].to_frame(name='Value')
-                    stats_subset['Value'] = stats_subset['Value'].apply(lambda x: f"{x:.2f}" if isinstance(x, (float, int)) else x)
+                    stats_subset = stats_to_display[metrics_to_show].to_frame(name='Value')
+                    
+                    # Apply formatting
+                    stats_subset['Value'] = stats_subset['Value'].apply(
+                        lambda x: f"{x:.0f}" if (isinstance(x, (int, float)) and np.round(x) == x) else (f"{x:.2f}" if isinstance(x, (float)) else x)
+                    )
                     st.dataframe(stats_subset, use_container_width=True)
 
         st.divider()
         
-        # --- 6. Display Individual Match Stats ---
+        # --- 7. Display Individual Match Stats (Unchanged) ---
         st.subheader("Individual Match Log")
         
         if player_match_log_df.empty:
@@ -2069,9 +2097,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         else:
             key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'Actions / successful', 'Passes / accurate', 'Duels / won']
             cols_to_show = [c for c in key_match_stats if c in player_match_log_df.columns]
-            
             st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
-            
             with st.expander("View Full Match Log (All Stats)"):
                 st.dataframe(player_match_log_df.set_index('Date'))
 
