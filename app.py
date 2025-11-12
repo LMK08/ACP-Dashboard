@@ -967,7 +967,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V5: Using add_axes for clean margins)
+    (Layout V6: Stacking all text on the left)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1069,20 +1069,20 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
              fontsize=11, bbox=dict(facecolor=score_box_color, alpha=0.5),
              transform=fig.transFigure)
     
-    # --- Metric Legend (Top-Right) ---
+    # --- Metric Legend (Top-Left, below box) ---
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     
-    # Place legend in top-right (x=0.99 is 1% from right edge)
-    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.99, 0.98), 
+    # --- FIX: Moved to loc='upper left' at (0.01, 0.70) ---
+    fig.legend(patches, legend_labels, loc='upper left', bbox_to_anchor=(0.01, 0.70), 
                frameon=False)
     
-    # --- General Info (Top-Right, below legend) ---
+    # --- General Info (Top-Left, below legend) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    # x=0.9 places it in the right-hand margin
-    fig.text(0.9, 0.85, info_text, 
+    # --- FIX: Moved to x=0.01, y=0.55 ---
+    fig.text(0.01, 0.55, info_text, 
              horizontalalignment='left', verticalalignment='top', 
              fontsize=10, color='black', transform=fig.transFigure)
 
