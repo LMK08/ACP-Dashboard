@@ -967,7 +967,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V3: Replicating user image 4a88a0...jpg)
+    (Layout V4: Final layout adjustments)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1020,19 +1020,19 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        ax.text(angle_rad, 125, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        ax.text(angle_rad, 135, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
         val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
         label_a = f"{val_a_raw:.2f} ({int(val_a_pct*100)}th)"
-        ax.text(angle_rad, 112, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
+        ax.text(angle_rad, 122, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
         
         # Player B stats (raw and percentile)
         val_b_raw = player_b_data.get(metric, 0).values[0]
         val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
         label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
-        ax.text(angle_rad, 99, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
+        ax.text(angle_rad, 110, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
@@ -1045,48 +1045,41 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     player_b_team = player_b_data['teamName'].values[0]
     player_b_mins = player_b_data['totalMinutes'].values[0]
     
-    # --- Player Info (Mid-Left) ---
-    player_info_text = f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
-    player_info_text += f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
-    player_info_text += f"Template: *{position_template}*"
-    
-    # --- FIX: Use fig.transFigure ---
-    fig.text(0.01, 0.65, player_info_text, 
-             horizontalalignment='left', verticalalignment='center', 
-             fontsize=12, transform=fig.transFigure)
-
-    # --- Metric Legend (Top-Right) ---
-    legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
-    legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
-    patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
-    
-    # --- FIX: Use fig.legend() and remove invalid 'transform' kwarg ---
-    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.9, 0.98), 
-               frameon=False)
-
     # --- Score Box (Top-Left) ---
     score_col = position_template + '_Score'
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
-    score_text = f"**{position_template} Score:**\n"
+    # Combine all info into one box
+    score_text = f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
+    score_text += f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
+    score_text += f"Template: *{position_template}*\n"
+    score_text += f"**{position_template} Score:**\n"
     score_text += f"  {player_a_name}: {score_a:.2f}\n"
     score_text += f"  {player_b_name}: {score_b:.2f}\n"
 
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
-    # --- FIX: Use fig.transFigure ---
+    
+    # Place score box in top-left corner of the figure
     fig.text(0.01, 0.98, score_text, 
              horizontalalignment='left', verticalalignment='top', 
-             fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5),
+             fontsize=11, bbox=dict(facecolor=score_box_color, alpha=0.5),
              transform=fig.transFigure)
     
-    # --- General Info (Far-Right) ---
+    # --- Metric Legend (Top-Right) ---
+    legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
+    legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
+    patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
+    
+    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98), 
+               frameon=False, transform=fig.transFigure)
+    
+    # --- General Info (Top-Right, below legend) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    # --- FIX: Use fig.transFigure ---
-    fig.text(0.9, 0.85, info_text, 
+    fig.text(0.9, 0.88, info_text, 
              horizontalalignment='left', verticalalignment='top', 
              fontsize=10, color='black', transform=fig.transFigure)
     
