@@ -2030,7 +2030,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row1[3].metric("Age", age_display)
             
             bio_row2 = st.columns(4)
-            bio_row2[0].metric("Foot", player_bio.get('foot', 'N/A').capitalize())
+            
+            # --- FIX: Safely handle None values for 'foot' ---
+            foot_value = player_bio.get('foot')
+            foot_display = "N/A" # Default
+            if foot_value and not pd.isna(foot_value):
+                foot_display = foot_value.capitalize()
+            bio_row2[0].metric("Foot", foot_display)
+            # --- END FIX ---
+            
             bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
