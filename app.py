@@ -801,21 +801,22 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels([])  
 
-    values = []
+   values = []
     for metric in metrics:
         col = metric + '_percentile'
         if col in player_data.columns:
-            # Check for NaN and replace with 0
-            val = player_data[col].values[0]
-            values.append(val if pd.notna(val) else 0)
+            # Explicitly convert to float and handle NaNs
+            val = float(player_data[col].values[0])
+            values.append(np.nan_to_num(val, nan=0.0))
         else:
-            values.append(0) # Default to 0 if metric is missing
+            values.append(0.0) # Default to 0 if metric is missing
             print(f"Warning: Missing percentile column {col} for radar.")
             
     values += values[:1] # Close the loop
 
-    ax.plot(angles, values, linewidth=1, linestyle='solid', color='#0077b6')  
-    ax.fill(angles, values, '#0077b6', alpha=0.1)  
+    # --- UPDATED: Made plot more visible with zorder and alpha ---
+    ax.plot(angles, values, linewidth=2, linestyle='solid', color='#0077b6', zorder=2)  
+    ax.fill(angles, values, '#0077b6', alpha=0.25, zorder=2)
 
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
 
