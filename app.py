@@ -1050,19 +1050,18 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     player_info_text += f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
     player_info_text += f"Template: *{position_template}*"
     
-    # We use fig.text and fig.transAxes coordinates (0,0 is bottom-left, 1,1 is top-right)
-    # Using 0.01 for x and 0.65 for y (mid-left)
+    # --- FIX: Use fig.transFigure ---
     fig.text(0.01, 0.65, player_info_text, 
              horizontalalignment='left', verticalalignment='center', 
-             fontsize=12, transform=fig.transAxes)
+             fontsize=12, transform=fig.transFigure)
 
     # --- Metric Legend (Top-Right) ---
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
-    # Place legend relative to the figure, in the top-right corner
+    # --- FIX: Use fig.transFigure ---
     ax.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(1.0, 1.0), 
-              transform=fig.transAxes, frameon=False) 
+              transform=fig.transFigure, frameon=False) 
 
     # --- Score Box (Top-Left) ---
     score_col = position_template + '_Score'
@@ -1076,21 +1075,21 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
-    # Place score box in top-left corner of the figure
+    # --- FIX: Use fig.transFigure ---
     fig.text(0.01, 0.98, score_text, 
              horizontalalignment='left', verticalalignment='top', 
              fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5),
-             transform=fig.transAxes)
+             transform=fig.transFigure)
     
     # --- General Info (Far-Right) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    # Place info text in top-right corner, just below legend
+    # --- FIX: Use fig.transFigure ---
     fig.text(0.9, 0.85, info_text, 
              horizontalalignment='left', verticalalignment='top', 
-             fontsize=10, color='black', transform=fig.transAxes)
+             fontsize=10, color='black', transform=fig.transFigure)
     
-    
+
 
 # --- Radar Stats Calculation ---
 @st.cache_data
