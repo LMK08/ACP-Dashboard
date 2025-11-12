@@ -814,9 +814,14 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
             
     values += values[:1] # Close the loop
 
-    # --- UPDATED: Made plot more visible with zorder and alpha ---
-    ax.plot(angles, values, linewidth=2, linestyle='solid', color='#0077b6', zorder=2)  
+    # --- UPDATED: Set zorder to force plot on top of grid ---
+    ax.plot(angles, values, linewidth=2, linestyle='solid', color='#0077b6', zorder=3)  
     ax.fill(angles, values, '#0077b6', alpha=0.25, zorder=2)
+
+    ax.set_rlabel_position(0)
+    # --- UPDATED: Set grid zorder to 1 (behind the plot) ---
+    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
+    plt.ylim(0, 100)
 
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
 
