@@ -821,7 +821,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     # Plot raw values
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
-        label = f"{player_data.get(metric, 0):.2f}"
+        label = f"{player_data[metric].values[0]:.2f}"
         ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
 
     # Plot metric names
