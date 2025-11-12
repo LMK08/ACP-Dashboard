@@ -1045,18 +1045,20 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     player_b_team = player_b_data['teamName'].values[0]
     player_b_mins = player_b_data['totalMinutes'].values[0]
     
-    # --- Score Box (Top-Left) ---
+    # --- Score Box & Player Info (Top-Left) ---
     score_col = position_template + '_Score'
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
     # Combine all info into one box
-    score_text = f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
-    score_text += f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
-    score_text += f"Template: *{position_template}*\n"
-    score_text += f"**{position_template} Score:**\n"
-    score_text += f"  {player_a_name}: {score_a:.2f}\n"
-    score_text += f"  {player_b_name}: {score_b:.2f}\n"
+    score_text = (
+        f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
+        f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
+        f"Template: *{position_template}*\n"
+        f"**{position_template} Score:**\n"
+        f"  {player_a_name}: {score_a:.2f}\n"
+        f"  {player_b_name}: {score_b:.2f}\n"
+    )
 
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
@@ -1073,14 +1075,14 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     
-    # --- FIX: Removed invalid 'transform' kwarg ---
     fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98), 
                frameon=False)
     
     # --- General Info (Top-Right, below legend) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    fig.text(0.9, 0.88, info_text, 
+    # --- FIX: Moved 'y' from 0.88 to 0.80 ---
+    fig.text(0.9, 0.80, info_text, 
              horizontalalignment='left', verticalalignment='top', 
              fontsize=10, color='black', transform=fig.transFigure)
     
