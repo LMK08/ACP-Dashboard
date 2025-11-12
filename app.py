@@ -801,7 +801,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels([])  
 
-   values = []
+    values = []
     for metric in metrics:
         col = metric + '_percentile'
         if col in player_data.columns:
