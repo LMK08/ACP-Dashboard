@@ -2140,7 +2140,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         player_details_df = load_player_details()
         
         try:
-            # --- UPDATED: Call the NEW master function ---
             player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
@@ -2210,26 +2209,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         show_totals = st.toggle("Show Season Totals", value=False)
         stats_to_display = pd.Series(dtype='object')
         
-        # Get the Per 90 stats
         per_90_stats = player_per_90_stats.copy()
         
         if show_totals:
             st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
-            # Calculate totals by reversing the per-90
             total_stats = per_90_stats.copy()
             rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col]
             
             for col in total_stats.index:
                 if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
-                    # This is a per-90 count, so convert it to total
                     total_val = (total_stats[col] * total_minutes) / 90
-                    # Round counts, keep xG as float
                     if col in ['xG', 'xA', 'xT', 'npxG', 'xAOP', 'xASP', 'psxG_faced', 'goalsPrevented']:
                          total_stats[col] = total_val
                     else:
                          total_stats[col] = np.round(total_val)
             
-            # For rate stats, we can just copy them from the per_90 df, as they are season-long rates
             for col in rate_cols:
                 if col in per_90_stats.index:
                     total_stats[col] = per_90_stats[col]
@@ -2240,7 +2234,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
             stats_to_display = per_90_stats
 
-        # --- 6. Display Stats (Using all global groups) ---
+        # --- 6. Display Stats (RE-ADDing ALL GROUPS) ---
         stat_groups = {
             "Output": OUTPUT_METRICS,
             "Passing": PASSING_METRICS,
@@ -2255,23 +2249,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
             if player_is_gk and group_name != 'Goalkeeping':
                 continue 
+            # --- TYPO FIX HERE ---
             if not player_is_gk and group_name == 'Goalkeeping':
                 continue
                 
-            # Use the GK-specific % metrics if it's a GK
             if player_is_gk and group_name == 'Goalkeeping':
                 group_metrics = GOALKEEPING_METRICS + ['GK Passes successful %', 'GK Long passes successful %']
                 
             metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
             
             if metrics_to_show:
-                default_expanded = (group_name == 'Output') # Open 'Output' by default
+                default_expanded = (group_name == 'Output') 
                 with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
                     
+                    # --- THIS IS THE CHANGE ---
+                    # We no longer filter out 0s.
                     stats_subset_series = stats_to_display[metrics_to_show]
-                    
-                    # Filter out stats that are 0 for a cleaner view
-                    stats_subset_series = stats_subset_series[stats_subset_series != 0]
+                    # stats_subset_series = stats_subset_series[stats_subset_series != 0] # <-- LINE REMOVED
                     
                     if stats_subset_series.empty:
                         st.text("No data for this category.")
