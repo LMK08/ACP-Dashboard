@@ -1073,8 +1073,9 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     
+    # --- FIX: Removed invalid 'transform' kwarg ---
     fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98), 
-               frameon=False, transform=fig.transFigure)
+               frameon=False)
     
     # --- General Info (Top-Right, below legend) ---
     today = datetime.date.today()
