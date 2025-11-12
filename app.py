@@ -1059,9 +1059,10 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
-    # --- FIX: Use fig.transFigure ---
-    ax.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(1.0, 1.0), 
-              transform=fig.transFigure, frameon=False) 
+    
+    # --- FIX: Use fig.legend() instead of ax.legend() for figure-level transform ---
+    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.9, 0.98), 
+               transform=fig.transFigure, frameon=False)
 
     # --- Score Box (Top-Left) ---
     score_col = position_template + '_Score'
