@@ -263,16 +263,23 @@ DISTRIBUTION_METRICS_BY_POSITION = {
 # ==============================================================================
 
 # --- Helper for Player Radars (from Cell 11) ---
-def calculate_and_merge(base_df, events_df, stat_name, filter_condition):
+def calculate_and_merge(base_df, events_df, stat_name, primary_type=None, bool_condition=None):
     """
-    Helper function from notebook Cell 11.
     Calculates a stat based on a filter and merges it into the base DataFrame.
+    (FIXED to accept primary_type and bool_condition)
     """
-    # Ensure filter condition is a Series with the same index as events_df
-    if not isinstance(filter_condition, pd.Series):
-        filter_condition = filter_condition.reindex(events_df.index, fill_value=False)
-
-    # Ensure player.id is numeric for groupby
+    # Start with a base condition (all True)
+    filter_condition = pd.Series(True, index=events_df.index)
+    
+    if primary_type:
+        filter_condition &= (events_df.get('type.primary') == primary_type)
+    
+    if bool_condition is not None:
+        # Align indices before combining
+        bool_condition_aligned = bool_condition.reindex(filter_condition.index, fill_value=False)
+        filter_condition &= bool_condition_aligned
+        
+    # --- Rest of the function is the same as before ---
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     safe_condition = filter_condition & events_df['player.id'].notna()
     
@@ -2021,7 +2028,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.subheader("Player Information")
             bio_row1 = st.columns(4)
             bio_row1[0].metric("Team", player_per_90_stats.get('teamName', 'N/A'))
-            bio_row1[1].metric("Position", player_bio.get('role', 'N/A'))
+            bio_row1[1].metric("Position", player_overall_stats.get('primaryPosition', 'N/A'))
             bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
             
             # --- AGE FIX ---
