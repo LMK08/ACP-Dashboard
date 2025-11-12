@@ -2028,7 +2028,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.subheader("Player Information")
             bio_row1 = st.columns(4)
             bio_row1[0].metric("Team", player_per_90_stats.get('teamName', 'N/A'))
-            bio_row1[1].metric("Position", player_overall_stats.get('primaryPosition', 'N/A'))
+            bio_row1[1].metric("Position", player_per_90_stats.get('primaryPosition', 'N/A'))
             bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
             
             # --- AGE FIX ---
