@@ -157,6 +157,168 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
     return match_log_df
 
 @st.cache_data
+def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
+    """
+    A new, streamlined function to calculate ONLY the key stats for player profiles.
+    Calculates: npxG, xA, xT, Progressive Passes, Deep Completions, and GK Stats.
+    """
+    print("--- STARTING: Streamlined player profile stats ---")
+    
+    events_df = _raw_events_df.copy()
+    # Start with our base player list
+    combined_df = _player_minutes_df.copy()
+
+    # Ensure player.id is int for all merging
+    events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
+    events_df = events_df.dropna(subset=['player.id'])
+    events_df['player.id'] = events_df['player.id'].astype(int)
+
+    # --- 1. Calculate npxG, xAOP, xASP ---
+    print("Step 1: Calculating npxG, xAOP, xASP...")
+    try:
+        shots_df = events_df[
+            (events_df['shot.xg'].notna()) &
+            (events_df['type.primary'] != 'penalty')
+        ].copy()
+        npxg_totals = shots_df.groupby('player.id')['shot.xg'].sum().reset_index().rename(columns={'shot.xg': 'npxG'})
+
+        events_df['shot_event_id'] = np.where(events_df['shot.xg'].notna(), events_df['id'], np.nan)
+        events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
+        shot_xg_map = events_df[events_df['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
+
+        assists_df = events_df[events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x)].copy()
+        assists_df['xA'] = assists_df['next_shot_id'].map(shot_xg_map)
+        set_piece_types = ['corner', 'free_kick', 'throw_in', 'goal_kick']
+        assists_df['assist_type'] = np.where(assists_df['type.primary'].isin(set_piece_types), 'xASP', 'xAOP')
+        
+        xa_split_totals = assists_df.groupby(['player.id', 'assist_type'])['xA'].sum()
+        xa_final_df = xa_split_totals.unstack(fill_value=0).reset_index()
+
+        final_stats_df = pd.merge(npxg_totals, xa_final_df, on='player.id', how='outer')
+        combined_df = pd.merge(combined_df, final_stats_df, left_on='playerId', right_on='player.id', how='left')
+        if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
+    except Exception as e:
+        print(f"  -> ❌ ERROR (Step 1): {e}")
+
+    # --- 2. Calculate Deep Completions and Progressive Passes ---
+    print("Step 2: Calculating Deep Completions and Progressive Passes...")
+    try:
+        passes_df = events_df[
+            (events_df['type.primary'] == 'pass') & (events_df.get('pass.accurate') == True)
+        ].dropna(subset=['location.x', 'pass.endLocation.x', 'player.id']).copy()
+        
+        passes_df['end_x_m'] = passes_df['pass.endLocation.x'] * 1.05
+        passes_df['end_y_m'] = passes_df['pass.endLocation.y'] * 0.68
+        passes_df['dist_to_goal_center'] = np.sqrt((passes_df['end_x_m'] - 105)**2 + (passes_df['end_y_m'] - 34)**2)
+        passes_df['is_cross'] = passes_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'cross' in x)
+        passes_df['is_deep_completion'] = (passes_df['dist_to_goal_center'] <= 20) & (passes_df['is_cross'] == False)
+        deep_completions = passes_df.groupby('player.id')['is_deep_completion'].sum().reset_index().rename(columns={'is_deep_completion': 'Deep Completions'})
+
+        start_x = passes_df['location.x']; end_x = passes_df['pass.endLocation.x']
+        cond1 = (start_x < 50) & (end_x < 50) & (end_x - start_x >= 30)
+        cond2 = (start_x < 50) & (end_x >= 50) & (end_x - start_x >= 15)
+        cond3 = (start_x >= 50) & (end_x >= 50) & (end_x - start_x >= 10)
+        passes_df['is_progressive_pass'] = cond1 | cond2 | cond3
+        progressive_passes = passes_df.groupby('player.id')['is_progressive_pass'].sum().reset_index().rename(columns={'is_progressive_pass': 'Progressive Passes'})
+
+        new_metrics_df = pd.merge(deep_completions, progressive_passes, on='player.id', how='outer')
+        combined_df = pd.merge(combined_df, new_metrics_df, left_on='playerId', right_on='player.id', how='left')
+        if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
+    except Exception as e:
+        print(f"  -> ❌ ERROR (Step 2): {e}")
+
+    # --- 3. Calculate Goalkeeper Stats ---
+    print("Step 3: Calculating Goalkeeper stats...")
+    try:
+        gk_ids = events_df[events_df.get('player.position') == 'GK']['player.id'].dropna().unique().astype(int)
+        gk_events_df = events_df[events_df['player.id'].isin(gk_ids)].copy()
+        
+        shots_faced_df = events_df[(events_df.get('type.primary') == 'shot') & (events_df.get('shot.onTarget') == True) & (events_df.get('shot.goalkeeper.id').notna())].copy()
+        shots_faced_df['shot.goalkeeper.id'] = shots_faced_df['shot.goalkeeper.id'].astype(int)
+        gk_shot_stopping_stats = shots_faced_df.groupby('shot.goalkeeper.id').agg(shotsOnTargetAgainst=('shot.isGoal', 'count'), goalsConceded=('shot.isGoal', 'sum'), psxG_faced=('shot.postShotXg', 'sum')).reset_index().rename(columns={'shot.goalkeeper.id': 'player.id'})
+        if not gk_shot_stopping_stats.empty:
+            gk_shot_stopping_stats['goalsPrevented'] = gk_shot_stopping_stats['psxG_faced'] - gk_shot_stopping_stats['goalsConceded']
+            gk_shot_stopping_stats['goalsPreventedPerSOT'] = (gk_shot_stopping_stats['goalsPrevented'] / gk_shot_stopping_stats['shotsOnTargetAgainst']).fillna(0)
+            gk_shot_stopping_stats['savePercentage'] = ((gk_shot_stopping_stats['shotsOnTargetAgainst'] - gk_shot_stopping_stats['goalsConceded']) / gk_shot_stopping_stats['shotsOnTargetAgainst'] * 100).fillna(0)
+        else:
+            gk_shot_stopping_stats = gk_shot_stopping_stats.reindex(columns=['player.id', 'shotsOnTargetAgainst', 'goalsConceded', 'psxG_faced', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage']).fillna(0)
+
+        exits = gk_events_df[gk_events_df['type.primary'] == 'goalkeeper_exit'].groupby('player.id').size().reset_index(name='exits')
+        recoveries_gk = gk_events_df[gk_events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'recovery' in x)].groupby('player.id').size().reset_index(name='recoveries_gk')
+        gk_passes = gk_events_df[gk_events_df['type.primary'] == 'pass']
+        passes_total_gk = gk_passes.groupby('player.id').size().reset_index(name='passes_gk')
+        passes_succ_gk = gk_passes[gk_passes['pass.accurate'] == True].groupby('player.id').size().reset_index(name='passesSuccessful_gk')
+        long_passes_total_gk = gk_passes[gk_passes.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'long_pass' in x)].groupby('player.id').size().reset_index(name='longPasses_gk')
+        long_passes_succ_gk = gk_passes[gk_passes.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'long_pass' in x) & (gk_passes['pass.accurate'] == True)].groupby('player.id').size().reset_index(name='longPassesSuccessful_gk')
+
+        gk_report_df = pd.DataFrame({'player.id': gk_ids}); gk_report_df = pd.merge(gk_report_df, gk_shot_stopping_stats, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, exits, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, recoveries_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, passes_total_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, passes_succ_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, long_passes_total_gk, on='player.id', how='left'); gk_report_df = pd.merge(gk_report_df, long_passes_succ_gk, on='player.id', how='left')
+        
+        # Add % stats
+        gk_report_df['Passes successful %'] = (gk_report_df['passesSuccessful_gk'] / gk_report_df['passes_gk'] * 100).fillna(0)
+        gk_report_df['Long passes successful %'] = (gk_report_df['longPassesSuccessful_gk'] / gk_report_df['longPasses_gk'] * 100).fillna(0)
+
+        combined_df = pd.merge(combined_df, gk_report_df, left_on='playerId', right_on='player.id', how='left')
+        if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
+    except Exception as e:
+        print(f"  -> ❌ ERROR (Step 3): {e}")
+
+    # --- 4. Calculate xT (Expected Threat) ---
+    print("Step 4: Calculating Expected Threat (xT)...")
+    try:
+        xt_data_from_image = [[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]]
+        xt_grid = np.array(xt_data_from_image); rows, cols = xt_grid.shape
+        move_df = events_df[events_df['type.primary'].isin(['pass', 'touch', 'acceleration'])].copy()
+        successful_pass = (move_df['type.primary'] == 'pass') & (move_df.get('pass.accurate') == True)
+        other_successful_moves = move_df['type.primary'].isin(['touch', 'acceleration'])
+        move_df = move_df[successful_pass | other_successful_moves]
+        move_df['start_x'] = move_df['location.x']; move_df['start_y'] = move_df['location.y']
+        move_df['end_x'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
+        move_df['end_y'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
+        move_df = move_df.dropna(subset=['end_x', 'end_y', 'player.id'])
+        def get_xt_zone(x, y, xt_rows, xt_cols):
+            if pd.isna(x) or pd.isna(y): return None, None
+            col = min(int(x / 100 * xt_cols), xt_cols - 1); row = min(int(y / 100 * xt_rows), xt_rows - 1)
+            return row, col
+        move_df[['start_row', 'start_col']] = move_df.apply(lambda row: get_xt_zone(row['start_x'], row['start_y'], rows, cols), axis=1, result_type='expand')
+        move_df[['end_row', 'end_col']] = move_df.apply(lambda row: get_xt_zone(row['end_x'], row['end_y'], rows, cols), axis=1, result_type='expand')
+        move_df['xt_start'] = move_df.apply(lambda row: xt_grid[int(row['start_row']), int(row['start_col'])] if pd.notna(row['start_row']) else 0, axis=1)
+        move_df['xt_end'] = move_df.apply(lambda row: xt_grid[int(row['end_row']), int(row['end_col'])] if pd.notna(row['end_row']) else 0, axis=1)
+        move_df['xT'] = move_df['xt_end'] - move_df['xt_start']
+        successful_threat = move_df[move_df['xT'] > 0]
+        player_xt = successful_threat.groupby('player.id')['xT'].sum().reset_index()
+        combined_df = pd.merge(combined_df, player_xt, left_on='playerId', right_on='player.id', how='left')
+        if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
+    except Exception as e:
+        print(f"  -> ❌ ERROR (Step 4): {e}")
+
+    # --- 5. Normalize to Per 90 ---
+    print("Step 5: Normalizing stats to per 90...")
+    combined_df = combined_df.fillna(0)
+    
+    # Define only the metrics we just calculated
+    metrics_to_normalize = [
+        'npxG', 'xAOP', 'xASP', 'xT', 'Deep Completions', 'Progressive Passes',
+        'shotsOnTargetAgainst', 'goalsConceded', 'psxG_faced', 'goalsPrevented', 'exits',
+        'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'longPasses_gk', 'longPassesSuccessful_gk'
+    ]
+    # Get only the metrics that actually exist in the df
+    existing_metrics_to_normalize = [m for m in metrics_to_normalize if m in combined_df.columns]
+    
+    combined_df['totalMinutes'] = pd.to_numeric(combined_df['totalMinutes'], errors='coerce').fillna(0)
+    minutes_gt_0 = combined_df['totalMinutes'] > 0
+    
+    for metric in existing_metrics_to_normalize:
+        combined_df[metric] = pd.to_numeric(combined_df[metric], errors='coerce').fillna(0)
+        combined_df[metric] = np.where(
+            minutes_gt_0,
+            (combined_df[metric].astype(float) / combined_df['totalMinutes']) * 90,
+            0
+        )
+
+    print("--- FINISHED: Streamlined player stats ---")
+    return combined_df.fillna(0)
+
+@st.cache_data
 def load_historical_data():
     """
     Load all historical data files for rolling charts.
@@ -1981,9 +2143,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
+        
         try:
-            # This df contains all per-90 stats AND rate stats
-            player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df)
+            # --- UPDATED: Call the new, streamlined function ---
+            player_stats_df = calculate_player_profile_stats(raw_events_df, player_minutes_df)
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
             player_stats_df = pd.DataFrame()
@@ -2001,7 +2164,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
         
         try:
-            # This is the Series of all PER-90 stats
             player_per_90_stats = player_stats_df[player_stats_df['playerName'] == selected_player_name].iloc[0]
             player_id = player_per_90_stats.get('playerId')
             player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
@@ -2013,7 +2175,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 3. Get Player's Match Log ---
         player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
         
-        # --- 4. Display Player Bio (With Age Fix) ---
+        # --- 4. Display Player Bio (With Position Fix) ---
         st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
         
         col1_bio, col2_bio = st.columns([1, 3])
@@ -2022,31 +2184,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if image_url:
                 st.image(image_url, width=150)
             else:
-                # Show a generic placeholder if no image
                 st.image("https://t3.ftcdn.net/jpg/05/16/27/58/360_F_516275801_f3Fsp17x6HQK0xQgDQEELoGau0sJzEf4.jpg", width=150)
 
         with col2_bio:
             st.subheader("Player Information")
             bio_row1 = st.columns(4)
             bio_row1[0].metric("Team", player_per_90_stats.get('teamName', 'N/A'))
+            # --- FIXED: Use specific primaryPosition ---
             bio_row1[1].metric("Position", player_per_90_stats.get('primaryPosition', 'N/A'))
             bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
             
-            # --- AGE FIX ---
             age = _calculate_age(player_bio.get('birthDate'))
             age_display = f"{age:.1f}" if isinstance(age, float) else "N/A"
             bio_row1[3].metric("Age", age_display)
             
             bio_row2 = st.columns(4)
-            
-            # --- FIX: Safely handle None values for 'foot' ---
             foot_value = player_bio.get('foot')
-            foot_display = "N/A" # Default
+            foot_display = "N/A"
             if foot_value and not pd.isna(foot_value):
                 foot_display = foot_value.capitalize()
             bio_row2[0].metric("Foot", foot_display)
-            # --- END FIX ---
-            
             bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
@@ -2055,23 +2212,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 5. STATS TOGGLE ---
         st.subheader("Overall Season Stats")
-        
         show_totals = st.toggle("Show Season Totals", value=False)
-        
         stats_to_display = pd.Series(dtype='object')
         
         if show_totals:
             st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
-            # Calculate totals by reversing the per-90
             total_stats = player_per_90_stats.copy()
-            # Define rate columns that should NOT be converted
             rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col]
             
             for col in total_stats.index:
                 if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
-                    # This is a per-90 count, so convert it to total
                     total_val = (total_stats[col] * total_minutes) / 90
-                    # Round counts, keep xG as float
                     if col in ['xG', 'xA', 'xT', 'npxG', 'xAOP', 'xASP', 'psxG_faced', 'goalsPrevented']:
                          total_stats[col] = total_val
                     else:
@@ -2082,27 +2233,40 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
             stats_to_display = player_per_90_stats
 
-        # --- 6. Display Stats ---
+        # --- 6. Display Stats (UPDATED) ---
+        
+        # --- UPDATED: Define new, smaller metric groups ---
+        OUTPUT_METRICS_PROFILE = ['npxG', 'xAOP', 'xASP', 'xT']
+        PASSING_METRICS_PROFILE = ['Progressive Passes', 'Deep Completions']
+        # GOALKEEPING_METRICS is still good from the global list
+        
         stat_groups = {
-            "Output": OUTPUT_METRICS,
-            "Passing": PASSING_METRICS,
-            "Defensive": DEFENSIVE_METRICS,
-            "Dribbling": DRIBBLING_METRICS,
+            "Output": OUTPUT_METRICS_PROFILE,
+            "Passing": PASSING_METRICS_PROFILE,
+            # Removed Defensive and Dribbling
             "Goalkeeping": GOALKEEPING_METRICS
         }
 
+        player_is_gk = (player_per_90_stats.get('primaryPosition', 'N/A') == 'GK')
+
         for group_name, group_metrics in stat_groups.items():
-            metrics_to_show = [m for m in group_metrics if m in stats_to_display.index and stats_to_display.get(m) != 0]
+            
+            if player_is_gk and group_name != 'Goalkeeping':
+                continue 
+            if not player_is_gk and group_name == 'Goalkeeping':
+                continue
+                
+            metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
+            
             if metrics_to_show:
-                with st.expander(f"**{group_name} Stats**"):
+                default_expanded = (group_name == 'Output') 
+                with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
                     stats_subset = stats_to_display[metrics_to_show].to_frame(name='Value')
-                    
-                    # Apply formatting
                     stats_subset['Value'] = stats_subset['Value'].apply(
-                        lambda x: f"{x:.0f}" if (isinstance(x, (int, float)) and np.round(x) == x) else (f"{x:.2f}" if isinstance(x, (float)) else x)
+                        lambda x: f"{x:.0f}" if (isinstance(x, (int, float)) and np.round(x) == x and '%' not in str(x)) else (f"{x:.2f}" if isinstance(x, (float)) else str(x))
                     )
                     st.dataframe(stats_subset, use_container_width=True)
-
+        
         st.divider()
         
         # --- 7. Display Individual Match Stats (Unchanged) ---
