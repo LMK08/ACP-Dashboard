@@ -466,6 +466,9 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
         lambda x: isinstance(x, (list, np.ndarray)) and tag_to_find in x
     )
     
+    if primary_type:
+        condition &= (events_df.get('type.primary') == primary_type)
+        
     if and_condition is not None:
         # Align indices before combining conditions
         and_condition_aligned = and_condition.reindex(condition.index, fill_value=False)
