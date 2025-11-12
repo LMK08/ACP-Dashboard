@@ -466,15 +466,21 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
         lambda x: isinstance(x, (list, np.ndarray)) and tag_to_find in x
     )
     
-    if primary_type:
-        condition &= (events_df.get('type.primary') == primary_type)
-        
     if and_condition is not None:
         # Align indices before combining conditions
         and_condition_aligned = and_condition.reindex(condition.index, fill_value=False)
         condition = condition & and_condition_aligned
         
-    return calculate_and_merge(base_df, events_df, stat_name, bool_condition=condition)
+    # --- THIS IS THE FIX ---
+    # We must pass 'primary_type' and the 'condition' as a 'bool_condition'
+    # to the main helper function.
+    return calculate_and_merge(
+        base_df, 
+        events_df, 
+        stat_name, 
+        primary_type=primary_type, # <-- Pass the primary_type
+        bool_condition=condition   # <-- Pass the condition as a bool_condition
+    )
 
 # --- Player Radar Data Calculation (V-ROBUST) ---
 @st.cache_data
@@ -2145,8 +2151,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         player_details_df = load_player_details()
         
         try:
-            # --- UPDATED: Call the new, streamlined function ---
-            player_stats_df = calculate_player_profile_stats(raw_events_df, player_minutes_df)
+            # --- This will now calculate ALL stats correctly ---
+            player_stats_df = calculate_player_radar_data(raw_events_df, player_minutes_df)
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
             player_stats_df = pd.DataFrame()
@@ -2175,7 +2181,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 3. Get Player's Match Log ---
         player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
         
-        # --- 4. Display Player Bio (With Position Fix) ---
+        # --- 4. Display Player Bio ---
         st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
         
         col1_bio, col2_bio = st.columns([1, 3])
@@ -2190,7 +2196,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.subheader("Player Information")
             bio_row1 = st.columns(4)
             bio_row1[0].metric("Team", player_per_90_stats.get('teamName', 'N/A'))
-            # --- FIXED: Use specific primaryPosition ---
             bio_row1[1].metric("Position", player_per_90_stats.get('primaryPosition', 'N/A'))
             bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
             
@@ -2233,17 +2238,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
             stats_to_display = player_per_90_stats
 
-        # --- 6. Display Stats (UPDATED) ---
+        # --- 6. Display Stats (RE-ADDing ALL GROUPS) ---
         
-        # --- UPDATED: Define new, smaller metric groups ---
-        OUTPUT_METRICS_PROFILE = ['npxG', 'xAOP', 'xASP', 'xT']
-        PASSING_METRICS_PROFILE = ['Progressive Passes', 'Deep Completions']
-        # GOALKEEPING_METRICS is still good from the global list
-        
+        # We now use the FULL global metric lists again
         stat_groups = {
-            "Output": OUTPUT_METRICS_PROFILE,
-            "Passing": PASSING_METRICS_PROFILE,
-            # Removed Defensive and Dribbling
+            "Output": OUTPUT_METRICS,
+            "Passing": PASSING_METRICS,
+            "Defensive": DEFENSIVE_METRICS,
+            "Dribbling": DRIBBLING_METRICS,
             "Goalkeeping": GOALKEEPING_METRICS
         }
 
@@ -2253,15 +2255,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
             if player_is_gk and group_name != 'Goalkeeping':
                 continue 
-            if not player_is_gk and group_name == 'Goalkeeping':
+            if not player_is_gk and group_name == 'Goalkekeeping':
                 continue
                 
+            # Filter metrics that actually exist
             metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
             
             if metrics_to_show:
-                default_expanded = (group_name == 'Output') 
+                default_expanded = (group_name == 'Output') # Open 'Output' by default
                 with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
-                    stats_subset = stats_to_display[metrics_to_show].to_frame(name='Value')
+                    # Filter out stats that are 0 for a cleaner view
+                    stats_subset_series = stats_to_display[metrics_to_show]
+                    stats_subset_series = stats_subset_series[stats_subset_series != 0]
+                    
+                    if stats_subset_series.empty:
+                        st.text("No data for this category.")
+                        continue
+                        
+                    stats_subset = stats_subset_series.to_frame(name='Value')
                     stats_subset['Value'] = stats_subset['Value'].apply(
                         lambda x: f"{x:.0f}" if (isinstance(x, (int, float)) and np.round(x) == x and '%' not in str(x)) else (f"{x:.2f}" if isinstance(x, (float)) else str(x))
                     )
