@@ -801,12 +801,13 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels([])  
 
-    # Ensure all percentile columns exist, default to 0
     values = []
     for metric in metrics:
         col = metric + '_percentile'
         if col in player_data.columns:
-            values.append(player_data[col].values[0])
+            # Check for NaN and replace with 0
+            val = player_data[col].values[0]
+            values.append(val if pd.notna(val) else 0)
         else:
             values.append(0) # Default to 0 if metric is missing
             print(f"Warning: Missing percentile column {col} for radar.")
