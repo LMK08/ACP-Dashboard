@@ -966,10 +966,10 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
-    Creates a 2-player comparison radar styled exactly like the individual chart,
-    including raw values and percentile ranks for both players.
-    (Layout V2: Relocated elements)
+    Creates a 2-player comparison radar styled to replicate the user-provided image.
+    (Layout V3: Replicating user image 4a88a0...jpg)
     """
+    fig = ax.figure # Get the figure object for fig.text
     
     num_metrics = len(metrics)
     angles = [n / float(num_metrics) * 2 * pi for n in range(num_metrics)]
@@ -1007,81 +1007,89 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     ax.plot(angles, values_b, linewidth=2, linestyle='solid', color=color_b, zorder=3, label=player_b_name)  
     ax.fill(angles, values_b, color_b, alpha=0.2, zorder=2)
 
-    # --- Plot Metric Names, Player A Stats, and Player B Stats ---
+    # --- Plot Metric Names and Values (Radius-based) ---
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
     
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
         
-        # Player A stats (raw and percentile)
-        val_a_raw = player_a_data.get(metric, 0).values[0]
-        val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
-        label_a = f"{val_a_raw:.2f} ({int(val_a_pct*100)}th)"
-        # --- MOVED to 112 ---
-        ax.text(angle_rad, 112, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
-        
-        # Player B stats (raw and percentile)
-        val_b_raw = player_b_data.get(metric, 0).values[0]
-        val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
-        label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
-        # --- MOVED to 99 ---
-        ax.text(angle_rad, 99, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
-        
-        # Metric Names
+        # Metric Names (Farthest out)
         if metric in OUTPUT_METRICS: color = category_colors['output']
         elif metric in PASSING_METRICS: color = category_colors['passing']
         elif metric in DEFENSIVE_METRICS: color = category_colors['defensive']
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        # --- MOVED to 125 ---
         ax.text(angle_rad, 125, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+
+        # Player A stats (raw and percentile)
+        val_a_raw = player_a_data.get(metric, 0).values[0]
+        val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
+        label_a = f"{val_a_raw:.2f} ({int(val_a_pct*100)}th)"
+        ax.text(angle_rad, 112, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
+        
+        # Player B stats (raw and percentile)
+        val_b_raw = player_b_data.get(metric, 0).values[0]
+        val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
+        label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
+        ax.text(angle_rad, 99, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
     plt.ylim(0, 100)  
 
-    # --- Titles and Info ---
+    # --- Titles and Info (Using fig.transAxes for layout) ---
     player_a_team = player_a_data['teamName'].values[0]
     player_a_mins = player_a_data['totalMinutes'].values[0]
     
     player_b_team = player_b_data['teamName'].values[0]
     player_b_mins = player_b_data['totalMinutes'].values[0]
     
-    # --- MOVED to Bottom Left ---
-    # Player A Info
-    ax.text(0.01, 0.1, f"{player_a_name} | {player_a_team}", size=15, color=color_a, ha='left', va='top', transform=ax.transAxes, weight='bold')
-    ax.text(0.01, 0.06, f"{player_a_mins:.0f} minutes played", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12)
-    # Player B Info
-    ax.text(0.01, 0.01, f"{player_b_name} | {player_b_team}", size=15, color=color_b, ha='left', va='top', transform=ax.transAxes, weight='bold')
-    ax.text(0.01, -0.03, f"{player_b_mins:.0f} minutes played", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12)
+    # --- Player Info (Mid-Left) ---
+    player_info_text = f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
+    player_info_text += f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
+    player_info_text += f"Template: *{position_template}*"
+    
+    # We use fig.text and fig.transAxes coordinates (0,0 is bottom-left, 1,1 is top-right)
+    # Using 0.01 for x and 0.65 for y (mid-left)
+    fig.text(0.01, 0.65, player_info_text, 
+             horizontalalignment='left', verticalalignment='center', 
+             fontsize=12, transform=fig.transAxes)
 
-    # --- Metric Legend (Moved to Mid-Left) ---
+    # --- Metric Legend (Top-Right) ---
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
-    # --- MOVED to center left ---
-    ax.legend(patches, legend_labels, loc='center left', bbox_to_anchor=(-0.25, 0.5), frameon=False) 
+    # Place legend relative to the figure, in the top-right corner
+    ax.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(1.0, 1.0), 
+              transform=fig.transAxes, frameon=False) 
 
-    # --- Score Box (Moved to Top Left) ---
+    # --- Score Box (Top-Left) ---
     score_col = position_template + '_Score'
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
-    score_text = f"Template: {position_template}\n"
-    score_text += f"{position_template} Score:\n"
+    score_text = f"**{position_template} Score:**\n"
     score_text += f"  {player_a_name}: {score_a:.2f}\n"
     score_text += f"  {player_b_name}: {score_b:.2f}\n"
 
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
-    if ax.figure: ax.figure.patch.set_facecolor(outside_background_color)
-    # --- MOVED to top left (x=0.01, y=1.0) ---
-    plt.figtext(0.01, 1.0, score_text, horizontalalignment='left', verticalalignment='top', fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5))
+    fig.patch.set_facecolor(outside_background_color)
+    # Place score box in top-left corner of the figure
+    fig.text(0.01, 0.98, score_text, 
+             horizontalalignment='left', verticalalignment='top', 
+             fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5),
+             transform=fig.transAxes)
     
-    # Remove the old info text
+    # --- General Info (Far-Right) ---
     today = datetime.date.today()
-    plt.figtext(0.90, 0.95, f'Stats are per 90 mins \n25-26 \nLiga 3 \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black', alpha=0) # Set alpha to 0 to hide
+    info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
+    # Place info text in top-right corner, just below legend
+    fig.text(0.9, 0.85, info_text, 
+             horizontalalignment='left', verticalalignment='top', 
+             fontsize=10, color='black', transform=fig.transAxes)
+    
     
 
 # --- Radar Stats Calculation ---
