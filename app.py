@@ -968,7 +968,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V8: Removing color text)
+    (Layout V8: Final layout based on user feedback)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1053,67 +1053,75 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
+    # --- FIX: Removed extra newlines ---
+    score_text = (
+        f"{player_a_name} | {player_a_team}\n"
+        f"{player_a_pos} | {player_a_mins:.0f} minutes played\n\n"
+        f"{player_b_name} | {player_b_team}\n"
+        f"{player_b_pos} | {player_b_mins:.0f} minutes played\n\n"
+        f"Template: *{position_template}*\n"
+        f"{player_a_name}: {score_a:.2f}\n"
+        f"{player_b_name}: {score_b:.2f}\n"
+    )
+
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
     
-    # --- NEW: Build the info box line-by-line ---
+    # --- FIX: Tighten text layout by reducing line_height and font size ---
     box_x = 0.01
     box_y_start = 0.98
-    line_height = 0.035 # Vertical spacing
-    font_size_large = 13 # Increased font size
-    font_size_small = 11
+    line_height = 0.030 # Reduced from 0.035
+    font_size_large = 12 # Reduced from 13
+    font_size_small = 10 # Reduced from 11
     
     # Player A (Blue)
-    # --- FIX: Removed (Blue) ---
     fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_a, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*0.7), f"{player_a_pos} | {player_a_mins:.0f} minutes played", 
+    fig.text(box_x, box_y_start - (line_height*0.8), f"{player_a_pos} | {player_a_mins:.0f} minutes played", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              color='black', transform=fig.transFigure)
 
     # Player B (Pink)
-    # --- FIX: Removed (Pink) ---
     fig.text(box_x, box_y_start - (line_height*2.0), f"{player_b_name} | {player_b_team}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_b, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*2.7), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
+    fig.text(box_x, box_y_start - (line_height*2.8), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              color='black', transform=fig.transFigure)
 
     # Template & Scores
-    fig.text(box_x, box_y_start - (line_height*4.0), f"Template: *{position_template}*", 
+    fig.text(box_x, box_y_start - (line_height*4.2), f"Template: *{position_template}*", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              style='italic', color='black', transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*4.9), f"{player_a_name}: {score_a:.2f}", 
+    fig.text(box_x, box_y_start - (line_height*5.2), f"{player_a_name}: {score_a:.2f}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              fontweight='bold', color=color_a, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*5.6), f"{player_b_name}: {score_b:.2f}", 
+    fig.text(box_x, box_y_start - (line_height*6.0), f"{player_b_name}: {score_b:.2f}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              fontweight='bold', color=color_b, transform=fig.transFigure)
     
     # Add the background box manually
-    box_height = 0.23
+    box_height = 0.21 # Reduced box height
     fig.patches.extend([plt.Rectangle((0.005, 0.985 - box_height), 0.18, box_height, # x, y, width, height
                                       facecolor=score_box_color, alpha=0.5,
                                       transform=fig.transFigure, zorder=-1)])
     
-    # --- Metric Legend (Top-Left, below box) ---
+    # --- Metric Legend (MOVED to Top-Right) ---
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     
-    fig.legend(patches, legend_labels, loc='upper left', bbox_to_anchor=(0.01, 0.73), 
+    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98), 
                frameon=False)
     
-    # --- General Info (Top-Left, below legend) ---
+    # --- General Info (MOVED to Bottom-Left) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    fig.text(0.01, 0.58, info_text, 
-             horizontalalignment='left', verticalalignment='top', 
+    fig.text(0.01, 0.01, info_text, 
+             horizontalalignment='left', verticalalignment='bottom', 
              fontsize=10, color='black', transform=fig.transFigure)
-
 
 # --- Radar Stats Calculation ---
 @st.cache_data
