@@ -967,7 +967,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V14: Adjusting font sizes and spacing)
+    (Layout V15: Moving metric labels closer)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1020,8 +1020,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        # --- FONT SIZE CHANGED ---
-        ax.text(angle_rad, 135, metric, size=10, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        # --- FIX: Moved radius to 115, kept size 11 ---
+        ax.text(angle_rad, 115, metric, size=11, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
@@ -1036,9 +1036,9 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
         angle_deg = np.degrees(angle_rad) % 360
         
-        # --- RADIUS INCREASED ---
-        outer_radius = 92
-        inner_radius = 74
+        # --- FIX: Tighter stack at 90 and 78 ---
+        outer_radius = 90
+        inner_radius = 78
 
         if (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
             radius_a = inner_radius 
@@ -1050,7 +1050,6 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
             radius_a = outer_radius
             radius_b = inner_radius
 
-        # --- FONT SIZE INCREASED ---
         ax.text(angle_rad, radius_a, label_a, size=9, ha='center', va='center', color=color_a, fontweight='bold')
         ax.text(angle_rad, radius_b, label_b, size=9, ha='center', va='center', color=color_b, fontweight='bold')
 
