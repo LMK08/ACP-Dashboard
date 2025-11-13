@@ -1021,7 +1021,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
         # --- FIX: Moved radius to 116, kept size 11 ---
-        ax.text(angle_rad, 116, metric, size=11, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        ax.text(angle_rad, 117, metric, size=11, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
@@ -1037,8 +1037,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         angle_deg = np.degrees(angle_rad) % 360
         
         # --- FIX: Tighter stack at 90 and 78 ---
-        outer_radius = 88
-        inner_radius = 72
+        outer_radius = 89
+        inner_radius = 70
 
         if (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
             radius_a = inner_radius 
