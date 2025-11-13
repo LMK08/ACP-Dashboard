@@ -968,7 +968,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V8: Final layout based on user feedback)
+    (Layout V9: Tighter text spacing in info box)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1021,7 +1021,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        ax.text(angle_rad, 135, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        # --- FONT SIZE INCREASED ---
+        ax.text(angle_rad, 135, metric, size=9, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
@@ -1053,27 +1054,16 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
-    # --- FIX: Removed extra newlines ---
-    score_text = (
-        f"{player_a_name} | {player_a_team}\n"
-        f"{player_a_pos} | {player_a_mins:.0f} minutes played\n\n"
-        f"{player_b_name} | {player_b_team}\n"
-        f"{player_b_pos} | {player_b_mins:.0f} minutes played\n\n"
-        f"Template: *{position_template}*\n"
-        f"{player_a_name}: {score_a:.2f}\n"
-        f"{player_b_name}: {score_b:.2f}\n"
-    )
-
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
     
-    # --- FIX: Tighten text layout by reducing line_height and font size ---
+    # --- NEW: Build the info box line-by-line with tighter spacing ---
     box_x = 0.01
     box_y_start = 0.98
-    line_height = 0.030 # Reduced from 0.035
-    font_size_large = 12 # Reduced from 13
-    font_size_small = 10 # Reduced from 11
+    line_height = 0.025 # <-- REDUCED line_height
+    font_size_large = 13 # <-- INCREASED font_size
+    font_size_small = 11 # <-- INCREASED font_size
     
     # Player A (Blue)
     fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}", 
@@ -1084,31 +1074,31 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
              color='black', transform=fig.transFigure)
 
     # Player B (Pink)
-    fig.text(box_x, box_y_start - (line_height*2.0), f"{player_b_name} | {player_b_team}", 
+    fig.text(box_x, box_y_start - (line_height*1.8), f"{player_b_name} | {player_b_team}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_b, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*2.8), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
+    fig.text(box_x, box_y_start - (line_height*2.6), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              color='black', transform=fig.transFigure)
 
     # Template & Scores
-    fig.text(box_x, box_y_start - (line_height*4.2), f"Template: *{position_template}*", 
+    fig.text(box_x, box_y_start - (line_height*3.8), f"Template: *{position_template}*", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              style='italic', color='black', transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*5.2), f"{player_a_name}: {score_a:.2f}", 
+    fig.text(box_x, box_y_start - (line_height*4.8), f"{player_a_name}: {score_a:.2f}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              fontweight='bold', color=color_a, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*6.0), f"{player_b_name}: {score_b:.2f}", 
+    fig.text(box_x, box_y_start - (line_height*5.6), f"{player_b_name}: {score_b:.2f}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              fontweight='bold', color=color_b, transform=fig.transFigure)
     
     # Add the background box manually
-    box_height = 0.21 # Reduced box height
+    box_height = 0.16 # <-- Reduced box height
     fig.patches.extend([plt.Rectangle((0.005, 0.985 - box_height), 0.18, box_height, # x, y, width, height
                                       facecolor=score_box_color, alpha=0.5,
                                       transform=fig.transFigure, zorder=-1)])
     
-    # --- Metric Legend (MOVED to Top-Right) ---
+    # --- Metric Legend (Top-Right) ---
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
@@ -1116,7 +1106,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98), 
                frameon=False)
     
-    # --- General Info (MOVED to Bottom-Left) ---
+    # --- General Info (Bottom-Left) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
     fig.text(0.01, 0.01, info_text, 
