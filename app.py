@@ -968,7 +968,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V9: Tighter text spacing in info box)
+    (Layout V10: Moving values inside the radar)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1021,20 +1021,21 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        # --- FONT SIZE INCREASED ---
         ax.text(angle_rad, 135, metric, size=9, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
         val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
         label_a = f"{val_a_raw:.2f} ({int(val_a_pct*100)}th)"
-        ax.text(angle_rad, 122, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
+        # --- FIX: Stacked at 88 ---
+        ax.text(angle_rad, 88, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
         
         # Player B stats (raw and percentile)
         val_b_raw = player_b_data.get(metric, 0).values[0]
         val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
         label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
-        ax.text(angle_rad, 110, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
+        # --- FIX: Stacked at 80 ---
+        ax.text(angle_rad, 80, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
@@ -1058,12 +1059,12 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
     
-    # --- NEW: Build the info box line-by-line with tighter spacing ---
+    # --- Build the info box line-by-line ---
     box_x = 0.01
     box_y_start = 0.98
-    line_height = 0.025 # <-- REDUCED line_height
-    font_size_large = 13 # <-- INCREASED font_size
-    font_size_small = 11 # <-- INCREASED font_size
+    line_height = 0.025
+    font_size_large = 13
+    font_size_small = 11
     
     # Player A (Blue)
     fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}", 
@@ -1093,7 +1094,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
              fontweight='bold', color=color_b, transform=fig.transFigure)
     
     # Add the background box manually
-    box_height = 0.16 # <-- Reduced box height
+    box_height = 0.16
     fig.patches.extend([plt.Rectangle((0.005, 0.985 - box_height), 0.18, box_height, # x, y, width, height
                                       facecolor=score_box_color, alpha=0.5,
                                       transform=fig.transFigure, zorder=-1)])
