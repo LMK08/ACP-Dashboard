@@ -963,10 +963,12 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
+
+
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V7: Color and box size adjustments)
+    (Layout V7: Rebuilding info box for correct styling)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -995,7 +997,6 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
     # --- Plot Polygons ---
     color_a = '#0077b6' # Blue
-    # --- CHANGED: Red to Pink ---
     color_b = '#DDA0DD' # Pink/Plum
     
     player_a_name = player_a_data['playerName'].values[0]
@@ -1031,7 +1032,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # Player B stats (raw and percentile)
         val_b_raw = player_b_data.get(metric, 0).values[0]
         val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
-        label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
+        label_b = f"{val_b_raw:.2f} ({int(val_a_pct*100)}th)"
         ax.text(angle_rad, 110, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
@@ -1041,46 +1042,73 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     # --- Titles and Info (Using fig.transAxes for layout) ---
     player_a_team = player_a_data['teamName'].values[0]
     player_a_mins = player_a_data['totalMinutes'].values[0]
+    player_a_pos = player_a_data['primaryPosition'].values[0]
     
     player_b_team = player_b_data['teamName'].values[0]
     player_b_mins = player_b_data['totalMinutes'].values[0]
+    player_b_pos = player_b_data['primaryPosition'].values[0]
     
     # --- Score Box & Player Info (Top-Left) ---
     score_col = position_template + '_Score'
     score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
     score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
     
-    # --- CHANGED: Removed "Score:" text ---
-    score_text = (
-        f"**{player_a_name} | {player_a_team}**\n{player_a_mins:.0f} minutes played\n\n"
-        f"**{player_b_name} | {player_b_team}**\n{player_b_mins:.0f} minutes played\n\n"
-        f"Template: *{position_template}*\n"
-        f"  {player_a_name}: {score_a:.2f}\n"
-        f"  {player_b_name}: {score_b:.2f}\n"
-    )
-
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
     
-    # --- CHANGED: Increased fontsize to 12 ---
-    fig.text(0.01, 0.98, score_text, 
-             horizontalalignment='left', verticalalignment='top', 
-             fontsize=12, bbox=dict(facecolor=score_box_color, alpha=0.5),
-             transform=fig.transFigure)
+    # --- NEW: Build the info box line-by-line ---
+    box_x = 0.01
+    box_y_start = 0.98
+    line_height = 0.035 # Vertical spacing
+    font_size_large = 13 # Increased font size
+    font_size_small = 11
+    
+    # Player A (Blue)
+    fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team} (Blue)", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
+             fontweight='bold', color=color_a, transform=fig.transFigure)
+    fig.text(box_x, box_y_start - (line_height*0.7), f"{player_a_pos} | {player_a_mins:.0f} minutes played", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+             color='black', transform=fig.transFigure)
+
+    # Player B (Pink)
+    fig.text(box_x, box_y_start - (line_height*2.0), f"{player_b_name} | {player_b_team} (Pink)", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
+             fontweight='bold', color=color_b, transform=fig.transFigure)
+    fig.text(box_x, box_y_start - (line_height*2.7), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+             color='black', transform=fig.transFigure)
+
+    # Template & Scores
+    fig.text(box_x, box_y_start - (line_height*4.0), f"Template: {position_template}", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+             style='italic', color='black', transform=fig.transFigure)
+    fig.text(box_x, box_y_start - (line_height*4.9), f"{player_a_name}: {score_a:.2f}", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+             fontweight='bold', color=color_a, transform=fig.transFigure)
+    fig.text(box_x, box_y_start - (line_height*5.6), f"{player_b_name}: {score_b:.2f}", 
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+             fontweight='bold', color=color_b, transform=fig.transFigure)
+    
+    # Add the background box manually
+    box_height = 0.23
+    fig.patches.extend([plt.Rectangle((0.005, 0.985 - box_height), 0.18, box_height, # x, y, width, height
+                                      facecolor=score_box_color, alpha=0.5,
+                                      transform=fig.transFigure, zorder=-1)])
     
     # --- Metric Legend (Top-Left, below box) ---
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     
-    fig.legend(patches, legend_labels, loc='upper left', bbox_to_anchor=(0.01, 0.70), 
+    fig.legend(patches, legend_labels, loc='upper left', bbox_to_anchor=(0.01, 0.73), 
                frameon=False)
     
     # --- General Info (Top-Left, below legend) ---
     today = datetime.date.today()
     info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    fig.text(0.01, 0.55, info_text, 
+    fig.text(0.01, 0.58, info_text, 
              horizontalalignment='left', verticalalignment='top', 
              fontsize=10, color='black', transform=fig.transFigure)
 
