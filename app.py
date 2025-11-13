@@ -968,7 +968,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V7: Rebuilding info box for correct styling)
+    (Layout V8: Removing color text)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1032,7 +1032,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # Player B stats (raw and percentile)
         val_b_raw = player_b_data.get(metric, 0).values[0]
         val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
-        label_b = f"{val_b_raw:.2f} ({int(val_a_pct*100)}th)"
+        label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
         ax.text(angle_rad, 110, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
@@ -1065,7 +1065,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     font_size_small = 11
     
     # Player A (Blue)
-    fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team} (Blue)", 
+    # --- FIX: Removed (Blue) ---
+    fig.text(box_x, box_y_start, f"**{player_a_name} | {player_a_team}**", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_a, transform=fig.transFigure)
     fig.text(box_x, box_y_start - (line_height*0.7), f"{player_a_pos} | {player_a_mins:.0f} minutes played", 
@@ -1073,7 +1074,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
              color='black', transform=fig.transFigure)
 
     # Player B (Pink)
-    fig.text(box_x, box_y_start - (line_height*2.0), f"{player_b_name} | {player_b_team} (Pink)", 
+    # --- FIX: Removed (Pink) ---
+    fig.text(box_x, box_y_start - (line_height*2.0), f"**{player_b_name} | {player_b_team}**", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_b, transform=fig.transFigure)
     fig.text(box_x, box_y_start - (line_height*2.7), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
@@ -1081,7 +1083,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
              color='black', transform=fig.transFigure)
 
     # Template & Scores
-    fig.text(box_x, box_y_start - (line_height*4.0), f"Template: {position_template}", 
+    fig.text(box_x, box_y_start - (line_height*4.0), f"Template: *{position_template}*", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
              style='italic', color='black', transform=fig.transFigure)
     fig.text(box_x, box_y_start - (line_height*4.9), f"{player_a_name}: {score_a:.2f}", 
