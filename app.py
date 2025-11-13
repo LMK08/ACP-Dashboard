@@ -964,11 +964,10 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
     return fig
 
-
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V10: Moving values inside the radar)
+    (Layout V11: Dynamic text placement to prevent overlap)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1021,21 +1020,36 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        ax.text(angle_rad, 135, metric, size=9, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        # --- FONT SIZE & RADIUS INCREASED ---
+        ax.text(angle_rad, 140, metric, size=10, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
         val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
         label_a = f"{val_a_raw:.2f} ({int(val_a_pct*100)}th)"
-        # --- FIX: Stacked at 88 ---
-        ax.text(angle_rad, 88, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
         
         # Player B stats (raw and percentile)
         val_b_raw = player_b_data.get(metric, 0).values[0]
         val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
         label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
-        # --- FIX: Stacked at 80 ---
-        ax.text(angle_rad, 80, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
+        
+        # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
+        angle_deg = np.degrees(angle_rad) % 360
+        
+        if 80 < angle_deg < 280: # Left side of chart
+            radius_a = 110
+            radius_b = 122
+        else: # Right side of chart
+            radius_a = 122
+            radius_b = 110
+            
+        # Top and Bottom are fine stacked
+        if (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360) or (160 <= angle_deg <= 200):
+            radius_a = 122
+            radius_b = 110
+
+        ax.text(angle_rad, radius_a, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
+        ax.text(angle_rad, radius_b, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
@@ -1062,9 +1076,9 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     # --- Build the info box line-by-line ---
     box_x = 0.01
     box_y_start = 0.98
-    line_height = 0.025
-    font_size_large = 13
-    font_size_small = 11
+    line_height = 0.025 
+    font_size_large = 13 
+    font_size_small = 11 
     
     # Player A (Blue)
     fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}", 
