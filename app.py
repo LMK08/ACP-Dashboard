@@ -967,7 +967,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V13: Moving labels in, values in, overlap fixed)
+    (Layout V13: Increasing font sizes)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1020,8 +1020,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        # --- FIX: Moved labels back to 115, smaller font ---
-        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        # --- FONT SIZE INCREASED ---
+        ax.text(angle_rad, 135, metric, size=11, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
@@ -1036,24 +1036,23 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
         angle_deg = np.degrees(angle_rad) % 360
         
-        # Define the radii with more space
         outer_radius = 90
         inner_radius = 76
 
-        # These are the horizontal metrics that overlap
         if (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
-            radius_a = inner_radius # Player A (blue) on inside
-            radius_b = outer_radius # Player B (pink) on outside
+            radius_a = inner_radius 
+            radius_b = outer_radius 
         elif (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360): # Right side
-            radius_a = outer_radius # Player A (blue) on outside
-            radius_b = inner_radius # Player B (pink) on inside
+            radius_a = outer_radius 
+            radius_b = inner_radius 
         else: # Top and Bottom (stack normally)
             radius_a = outer_radius
             radius_b = inner_radius
 
-        ax.text(angle_rad, radius_a, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
-        ax.text(angle_rad, radius_b, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
-        
+        # --- FONT SIZE INCREASED ---
+        ax.text(angle_rad, radius_a, label_a, size=8, ha='center', va='center', color=color_a, fontweight='bold')
+        ax.text(angle_rad, radius_b, label_b, size=8, ha='center', va='center', color=color_b, fontweight='bold')
+
     ax.set_rlabel_position(0)
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
     plt.ylim(0, 100)  
