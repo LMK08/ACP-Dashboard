@@ -1066,7 +1066,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     
     # Player A (Blue)
     # --- FIX: Removed (Blue) ---
-    fig.text(box_x, box_y_start, f"**{player_a_name} | {player_a_team}**", 
+    fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_a, transform=fig.transFigure)
     fig.text(box_x, box_y_start - (line_height*0.7), f"{player_a_pos} | {player_a_mins:.0f} minutes played", 
@@ -1075,7 +1075,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
     # Player B (Pink)
     # --- FIX: Removed (Pink) ---
-    fig.text(box_x, box_y_start - (line_height*2.0), f"**{player_b_name} | {player_b_team}**", 
+    fig.text(box_x, box_y_start - (line_height*2.0), f"{player_b_name} | {player_b_team}", 
              horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
              fontweight='bold', color=color_b, transform=fig.transFigure)
     fig.text(box_x, box_y_start - (line_height*2.7), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
@@ -2582,10 +2582,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         metrics_to_plot = list(WEIGHTS[selected_template].keys())
         metrics_to_plot = [m for m in metrics_to_plot if m in player_stats_with_scores_df.columns]
         
-        # Use a wider figure and manually add the axes to control its size
-        fig = plt.figure(figsize=(20, 10))
+        # --- FIX: Use a square figure to prevent distortion ---
+        fig = plt.figure(figsize=(15, 15))
         # [left, bottom, width, height] - This centers the radar
-        ax_radar = fig.add_axes([0.2, 0.1, 0.6, 0.8], polar=True)
+        ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
         
         plot_comparison_radar(
             ax_radar,
