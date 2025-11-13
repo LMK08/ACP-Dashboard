@@ -967,7 +967,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V11: Dynamic text placement to prevent overlap)
+    (Layout V13: Moving labels in, values in, overlap fixed)
     """
     fig = ax.figure # Get the figure object for fig.text
     
@@ -1020,8 +1020,8 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        # --- FONT SIZE & RADIUS INCREASED ---
-        ax.text(angle_rad, 140, metric, size=10, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        # --- FIX: Moved labels back to 115, smaller font ---
+        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
@@ -1036,17 +1036,16 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
         angle_deg = np.degrees(angle_rad) % 360
         
-        if 80 < angle_deg < 280: # Left side of chart
-            radius_a = 110
-            radius_b = 122
-        else: # Right side of chart
-            radius_a = 122
-            radius_b = 110
-            
-        # Top and Bottom are fine stacked
-        if (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360) or (160 <= angle_deg <= 200):
-            radius_a = 122
-            radius_b = 110
+        # These are the horizontal metrics that overlap
+        if (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
+            radius_a = 78 # Player A (blue) on inside
+            radius_b = 88 # Player B (pink) on outside
+        elif (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360): # Right side
+            radius_a = 88 # Player A (blue) on outside
+            radius_b = 78 # Player B (pink) on inside
+        else: # Top and Bottom (stack normally)
+            radius_a = 88
+            radius_b = 78
 
         ax.text(angle_rad, radius_a, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
         ax.text(angle_rad, radius_b, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
