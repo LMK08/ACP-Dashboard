@@ -996,7 +996,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
     # --- Plot Polygons ---
     color_a = '#0077b6' # Blue
-    color_b = '#DDA0DD' # Pink/Plum
+    color_b = '#A67B5B' # Light Coffee
     
     player_a_name = player_a_data['playerName'].values[0]
     player_b_name = player_b_data['playerName'].values[0]
