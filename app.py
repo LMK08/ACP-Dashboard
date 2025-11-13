@@ -1036,20 +1036,24 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
         angle_deg = np.degrees(angle_rad) % 360
         
+        # Define the radii with more space
+        outer_radius = 90
+        inner_radius = 76
+
         # These are the horizontal metrics that overlap
         if (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
-            radius_a = 78 # Player A (blue) on inside
-            radius_b = 88 # Player B (pink) on outside
+            radius_a = inner_radius # Player A (blue) on inside
+            radius_b = outer_radius # Player B (pink) on outside
         elif (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360): # Right side
-            radius_a = 88 # Player A (blue) on outside
-            radius_b = 78 # Player B (pink) on inside
+            radius_a = outer_radius # Player A (blue) on outside
+            radius_b = inner_radius # Player B (pink) on inside
         else: # Top and Bottom (stack normally)
-            radius_a = 88
-            radius_b = 78
+            radius_a = outer_radius
+            radius_b = inner_radius
 
         ax.text(angle_rad, radius_a, label_a, size=7, ha='center', va='center', color=color_a, fontweight='bold')
         ax.text(angle_rad, radius_b, label_b, size=7, ha='center', va='center', color=color_b, fontweight='bold')
-
+        
     ax.set_rlabel_position(0)
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
     plt.ylim(0, 100)  
