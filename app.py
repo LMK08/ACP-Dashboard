@@ -1408,6 +1408,62 @@ def create_season_shots_against_shotmap(season_events_df, matches_summary_df, te
     ax_pitch.set_title(f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
     return fig
 
+def create_player_shotmap(events_df, player_name):
+    """
+    Creates a static Matplotlib shotmap for a specific player (Non-Penalty).
+    """
+    # Filter for the player's shots (excluding penalties)
+    player_shots_df = events_df[
+        (events_df['player.name'] == player_name) & 
+        (events_df['type.primary'] == 'shot')
+    ].copy().reset_index(drop=True)
+    
+    if player_shots_df.empty:
+        fig, ax = plt.subplots(figsize=(10, 8))
+        fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9')
+        ax.text(0.5, 0.5, 'No shots recorded for this player.', ha='center', va='center', fontsize=12)
+        ax.axis('off')
+        return fig
+    
+    # Setup Pitch
+    fig = plt.figure(figsize=(12, 12))
+    fig.set_facecolor('#f5f1e9')
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True)
+    ax_pitch = fig.add_subplot()
+    pitch.draw(ax=ax_pitch)
+    
+    # Colormap for xG
+    XG_MAX = 0.8
+    colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]
+    nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
+    
+    # Plot Shots
+    for index, shot in player_shots_df.iterrows():
+        x = shot.get('location.x')
+        y = shot.get('location.y')
+        xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
+        
+        if pd.isna(x) or pd.isna(y) or pd.isna(xg): continue
+        
+        is_goal = shot.get('shot.isGoal') == True
+        color = cmap(min(xg / XG_MAX, 1.0))
+        edge_color = 'green' if is_goal else 'black'
+        z_order = 4 if is_goal else 3
+        
+        pitch.scatter(x, y, s=200, facecolor=color, edgecolor=edge_color, linewidth=2 if is_goal else 1, ax=ax_pitch, zorder=z_order, alpha=0.9)
+    
+    # Title and Subtitle
+    total_xg = pd.to_numeric(player_shots_df['shot.xg'], errors='coerce').sum()
+    goals = player_shots_df['shot.isGoal'].sum()
+    team_name = player_shots_df.iloc[0]['team.name'] if 'team.name' in player_shots_df.columns else "Unknown Team"
+    
+    ax_pitch.set_title(f"{player_name} | {team_name}\nSeason Shot Map (Non-Penalty)", fontsize=18, weight='bold', pad=15)
+    ax_pitch.text(50, 95, f"Total Shots: {len(player_shots_df)} | Goals: {goals} | Total xG: {total_xg:.2f}", 
+                  ha='center', va='center', fontsize=12, color='black')
+    
+    return fig
+
 # --- NEW FUNCTION: Calculate Team Strength ---
 @st.cache_data
 def calculate_team_strength(season_events_df, matches_summary_df):
@@ -2497,6 +2553,50 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.dataframe(stats_subset, use_container_width=True)
         
         st.divider()
+        
+        # --- 7. SHOT ANALYSIS (NEW SECTION) ---
+        st.subheader("Shot Analysis")
+        
+        # Filter for player events once
+        player_events_all = raw_events_df[raw_events_df['player.name'] == selected_player_name].copy()
+        
+        col_shot_map, col_shot_table = st.columns([1, 1.5])
+        
+        with col_shot_map:
+            st.markdown("**Season Shot Map**")
+            fig_player_shots = create_player_shotmap(player_events_all, selected_player_name)
+            st.pyplot(fig_player_shots, use_container_width=True)
+            
+        with col_shot_table:
+            st.markdown("**Shot Log**")
+            # Filter for shots only
+            shot_log = player_events_all[player_events_all['type.primary'] == 'shot'].copy()
+            
+            if not shot_log.empty:
+                # Prepare table data
+                shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
+                # Try to find opponent name if available in raw data, otherwise use Match ID
+                shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
+                
+                shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
+                shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
+                                     np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
+                
+                # Select columns
+                display_cols = ['Date', 'Opponent', 'minute', 'Result', 'xG', 'shot.bodyPart.name']
+                
+                # Clean up column names for display
+                table_display = shot_log[display_cols].rename(columns={
+                    'minute': 'Min',
+                    'shot.bodyPart.name': 'Body Part'
+                }).sort_values(by='Date', ascending=False)
+                
+                st.dataframe(table_display, use_container_width=True, height=500)
+            else:
+                st.info("No shots recorded for this player.")
+
+        st.divider()
+        # --- End Shot Analysis ---
         
         # --- 8. Display Individual Match Stats (Unchanged) ---
         st.subheader("Individual Match Log")
