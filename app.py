@@ -2582,13 +2582,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
                                      np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
                 
+                # --- FIX: robustly handle Body Part ---
+                if 'shot.bodyPart.name' in shot_log.columns:
+                    # If it's already flattened
+                    shot_log['Body Part'] = shot_log['shot.bodyPart.name']
+                elif 'shot.bodyPart' in shot_log.columns:
+                    # If it's a dictionary/object column
+                    shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
+                        lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
+                    )
+                    # Clean up text (e.g. 'right_foot' -> 'Right Foot')
+                    shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
+                else:
+                    shot_log['Body Part'] = 'Unknown'
+
                 # Select columns
-                display_cols = ['Date', 'Opponent', 'minute', 'Result', 'xG', 'shot.bodyPart.name']
+                display_cols = ['Date', 'Opponent', 'minute', 'Result', 'xG', 'Body Part']
                 
                 # Clean up column names for display
                 table_display = shot_log[display_cols].rename(columns={
-                    'minute': 'Min',
-                    'shot.bodyPart.name': 'Body Part'
+                    'minute': 'Min'
                 }).sort_values(by='Date', ascending=False)
                 
                 st.dataframe(table_display, use_container_width=True, height=500)
@@ -2597,7 +2610,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
         # --- End Shot Analysis ---
-        
+
         # --- 8. Display Individual Match Stats (Unchanged) ---
         st.subheader("Individual Match Log")
         
