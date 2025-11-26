@@ -2573,38 +2573,103 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             shot_log = player_events_all[player_events_all['type.primary'] == 'shot'].copy()
             
             if not shot_log.empty:
-                # Prepare table data
+                # 1. Basic Setup
                 shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
-                # Try to find opponent name if available in raw data, otherwise use Match ID
                 shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
-                
                 shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
                 shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
                                      np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
                 
-                # --- FIX: robustly handle Body Part ---
+                # 2. Handle Body Part
                 if 'shot.bodyPart.name' in shot_log.columns:
-                    # If it's already flattened
                     shot_log['Body Part'] = shot_log['shot.bodyPart.name']
                 elif 'shot.bodyPart' in shot_log.columns:
-                    # If it's a dictionary/object column
                     shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
                         lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
                     )
-                    # Clean up text (e.g. 'right_foot' -> 'Right Foot')
                     shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
                 else:
                     shot_log['Body Part'] = 'Unknown'
 
-                # Select columns
-                display_cols = ['Date', 'Opponent', 'minute', 'Result', 'xG', 'Body Part']
+                # --- NEW: Determine Phase of Play ---
+                def get_phase(possession_types):
+                    # types is often a numpy array or list inside the cell
+                    if not isinstance(possession_types, (list, np.ndarray)): return "Open Play"
+                    if 'counter_attack' in possession_types: return "Counter Attack"
+                    if 'corner' in possession_types or 'free_kick' in possession_types or 'penalty' in possession_types: return "Set Piece"
+                    if 'positional_attack' in possession_types: return "Positional Attack"
+                    return "Open Play"
+
+                # Ensure possession.types exists
+                if 'possession.types' in shot_log.columns:
+                    shot_log['Phase'] = shot_log['possession.types'].apply(get_phase)
+                else:
+                    shot_log['Phase'] = "Unknown"
+
+                # --- NEW: Determine Shot Creating Action (SCA) ---
+                # We need to find the event immediately preceding the shot in the same possession
+                # 1. Identify relevant matches and possessions
+                relevant_match_ids = shot_log['matchId'].unique()
                 
-                # Clean up column names for display
+                # 2. Get full event stream for these matches (from raw_events_df)
+                context_events = raw_events_df[
+                    (raw_events_df['matchId'].isin(relevant_match_ids)) &
+                    (raw_events_df['team.name'] == shot_log.iloc[0]['team.name']) # Same team only
+                ].copy()
+                
+                # 3. Create a lookup key: (matchId, possession.id, eventIndex)
+                # We want the event where eventIndex == shot.eventIndex - 1
+                shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
+                
+                # We merge the shot log with the context events to find the previous action
+                sca_merge = pd.merge(
+                    shot_log[['id', 'matchId', 'possession.id', 'prev_event_idx']],
+                    context_events[['matchId', 'possession.id', 'possession.eventIndex', 'type.primary', 'type.secondary']],
+                    left_on=['matchId', 'possession.id', 'prev_event_idx'],
+                    right_on=['matchId', 'possession.id', 'possession.eventIndex'],
+                    how='left',
+                    suffixes=('', '_prev')
+                )
+                
+                # 4. Logic to label the action
+                def label_sca(row):
+                    if pd.isna(row['type.primary']): return "Recovery/None"
+                    
+                    sec_types = row['type.secondary'] if isinstance(row['type.secondary'], (list, np.ndarray)) else []
+                    
+                    if 'cross' in sec_types: return "Cross"
+                    if 'through_pass' in sec_types: return "Through Pass"
+                    if 'deep_completion' in sec_types: return "Deep Completion"
+                    
+                    prim = row['type.primary']
+                    if prim == 'pass': return "Pass"
+                    if prim == 'duel': return "Dribble/Duel"
+                    if prim == 'acceleration' or prim == 'touch': return "Carry"
+                    if prim == 'clearance': return "Clearance"
+                    if prim == 'interception': return "Interception"
+                    
+                    return prim.replace('_', ' ').title()
+
+                # Map the logic back to the shot log (using the ID to align)
+                sca_merge['SCA'] = sca_merge.apply(label_sca, axis=1)
+                shot_log = shot_log.merge(sca_merge[['id', 'SCA']], on='id', how='left')
+
+                # --- Final Table Setup ---
+                # Select columns (Removed Date, Removed Index)
+                display_cols = ['Opponent', 'minute', 'Result', 'xG', 'Body Part', 'SCA', 'Phase']
+                
                 table_display = shot_log[display_cols].rename(columns={
-                    'minute': 'Min'
-                }).sort_values(by='Date', ascending=False)
+                    'minute': 'Min',
+                    'SCA': 'Creating Action'
+                }).sort_values(by='Min', ascending=False) # Sort by minute descending
                 
-                st.dataframe(table_display, use_container_width=True, height=500)
+                # Use hide_index=True to remove the index column
+                st.dataframe(
+                    table_display, 
+                    use_container_width=True, 
+                    height=500,
+                    hide_index=True
+                )
             else:
                 st.info("No shots recorded for this player.")
 
