@@ -2109,7 +2109,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
             col_r1, col_r2, col_r3 = st.columns(3)
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
-            distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Final 1/3 Entries', 'Losses']
+            distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Losses']
             defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA']
             team_stats_raw = stats_df_raw.loc[selected_team_t]
             team_stats_pct = stats_df_pct.loc[selected_team_t]
