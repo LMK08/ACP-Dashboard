@@ -1408,16 +1408,11 @@ def create_season_shots_against_shotmap(season_events_df, matches_summary_df, te
     ax_pitch.set_title(f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
     return fig
 
-def create_player_shotmap(events_df, player_name):
+def create_player_shotmap(player_shots_df, player_name):
     """
     Creates a static Matplotlib shotmap for a specific player (Non-Penalty).
+    Includes shot numbering and an xG color scale.
     """
-    # Filter for the player's shots (excluding penalties)
-    player_shots_df = events_df[
-        (events_df['player.name'] == player_name) & 
-        (events_df['type.primary'] == 'shot')
-    ].copy().reset_index(drop=True)
-    
     if player_shots_df.empty:
         fig, ax = plt.subplots(figsize=(10, 8))
         fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9')
@@ -1443,6 +1438,7 @@ def create_player_shotmap(events_df, player_name):
         x = shot.get('location.x')
         y = shot.get('location.y')
         xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
+        shot_num = shot.get('Shot Number', index + 1)
         
         if pd.isna(x) or pd.isna(y) or pd.isna(xg): continue
         
@@ -1451,7 +1447,19 @@ def create_player_shotmap(events_df, player_name):
         edge_color = 'green' if is_goal else 'black'
         z_order = 4 if is_goal else 3
         
-        pitch.scatter(x, y, s=200, facecolor=color, edgecolor=edge_color, linewidth=2 if is_goal else 1, ax=ax_pitch, zorder=z_order, alpha=0.9)
+        # Draw marker
+        pitch.scatter(x, y, s=450, facecolor=color, edgecolor=edge_color, linewidth=2 if is_goal else 1, ax=ax_pitch, zorder=z_order, alpha=0.9)
+        
+        # Draw Number
+        pitch.text(x, y, str(shot_num), ax=ax_pitch, ha='center', va='center', color='white', fontsize=10, fontweight='bold', zorder=z_order+1)
+
+    # Add Colorbar Legend
+    norm = plt.Normalize(vmin=0, vmax=XG_MAX)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax_pitch, orientation='vertical', fraction=0.04, pad=0.04, shrink=0.6)
+    cbar.set_label('Expected Goals (xG)', fontsize=12)
+    cbar.outline.set_visible(False)
     
     # Title and Subtitle
     total_xg = pd.to_numeric(player_shots_df['shot.xg'], errors='coerce').sum()
@@ -2554,127 +2562,150 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.divider()
         
-        # --- 7. SHOT ANALYSIS (NEW SECTION) ---
+        # --- 7. SHOT ANALYSIS (UPDATED) ---
         st.subheader("Shot Analysis")
         
-        # Filter for player events once
+        # 1. Get all player events
         player_events_all = raw_events_df[raw_events_df['player.name'] == selected_player_name].copy()
         
-        col_shot_map, col_shot_table = st.columns([1, 1.5])
+        # 2. Filter for shots (non-penalty) for the map/analysis
+        shot_log = player_events_all[
+            (player_events_all['type.primary'] == 'shot') &
+            (player_events_all['type.primary'] != 'penalty')
+        ].copy()
         
-        with col_shot_map:
-            st.markdown("**Season Shot Map**")
-            fig_player_shots = create_player_shotmap(player_events_all, selected_player_name)
-            st.pyplot(fig_player_shots, use_container_width=True)
+        if not shot_log.empty:
+            # --- DATA PROCESSING START ---
             
-        with col_shot_table:
-            st.markdown("**Shot Log**")
-            # Filter for shots only
-            shot_log = player_events_all[player_events_all['type.primary'] == 'shot'].copy()
-            
-            if not shot_log.empty:
-                # 1. Basic Setup
-                shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
-                shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
-                shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
-                shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
-                                     np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
-                
-                # 2. Handle Body Part
-                if 'shot.bodyPart.name' in shot_log.columns:
-                    shot_log['Body Part'] = shot_log['shot.bodyPart.name']
-                elif 'shot.bodyPart' in shot_log.columns:
-                    shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
-                        lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
-                    )
-                    shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
-                else:
-                    shot_log['Body Part'] = 'Unknown'
-
-                # --- NEW: Determine Phase of Play ---
-                def get_phase(possession_types):
-                    # types is often a numpy array or list inside the cell
-                    if not isinstance(possession_types, (list, np.ndarray)): return "Open Play"
-                    if 'counter_attack' in possession_types: return "Counter Attack"
-                    if 'corner' in possession_types or 'free_kick' in possession_types or 'penalty' in possession_types: return "Set Piece"
-                    if 'positional_attack' in possession_types: return "Positional Attack"
-                    return "Open Play"
-
-                # Ensure possession.types exists
-                if 'possession.types' in shot_log.columns:
-                    shot_log['Phase'] = shot_log['possession.types'].apply(get_phase)
-                else:
-                    shot_log['Phase'] = "Unknown"
-
-                # --- NEW: Determine Shot Creating Action (SCA) ---
-                # We need to find the event immediately preceding the shot in the same possession
-                # 1. Identify relevant matches and possessions
-                relevant_match_ids = shot_log['matchId'].unique()
-                
-                # 2. Get full event stream for these matches (from raw_events_df)
-                context_events = raw_events_df[
-                    (raw_events_df['matchId'].isin(relevant_match_ids)) &
-                    (raw_events_df['team.name'] == shot_log.iloc[0]['team.name']) # Same team only
-                ].copy()
-                
-                # 3. Create a lookup key: (matchId, possession.id, eventIndex)
-                # We want the event where eventIndex == shot.eventIndex - 1
-                shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
-                
-                # We merge the shot log with the context events to find the previous action
-                sca_merge = pd.merge(
-                    shot_log[['id', 'matchId', 'possession.id', 'prev_event_idx']],
-                    context_events[['matchId', 'possession.id', 'possession.eventIndex', 'type.primary', 'type.secondary']],
-                    left_on=['matchId', 'possession.id', 'prev_event_idx'],
-                    right_on=['matchId', 'possession.id', 'possession.eventIndex'],
-                    how='left',
-                    suffixes=('', '_prev')
-                )
-                
-                # 4. Logic to label the action
-                def label_sca(row):
-                    if pd.isna(row['type.primary']): return "Recovery/None"
-                    
-                    sec_types = row['type.secondary'] if isinstance(row['type.secondary'], (list, np.ndarray)) else []
-                    
-                    if 'cross' in sec_types: return "Cross"
-                    if 'through_pass' in sec_types: return "Through Pass"
-                    if 'deep_completion' in sec_types: return "Deep Completion"
-                    
-                    prim = row['type.primary']
-                    if prim == 'pass': return "Pass"
-                    if prim == 'duel': return "Dribble/Duel"
-                    if prim == 'acceleration' or prim == 'touch': return "Carry"
-                    if prim == 'clearance': return "Clearance"
-                    if prim == 'interception': return "Interception"
-                    
-                    return prim.replace('_', ' ').title()
-
-                # Map the logic back to the shot log (using the ID to align)
-                sca_merge['SCA'] = sca_merge.apply(label_sca, axis=1)
-                shot_log = shot_log.merge(sca_merge[['id', 'SCA']], on='id', how='left')
-
-                # --- Final Table Setup ---
-                # Select columns (Removed Date, Removed Index)
-                display_cols = ['Opponent', 'minute', 'Result', 'xG', 'Body Part', 'SCA', 'Phase']
-                
-                table_display = shot_log[display_cols].rename(columns={
-                    'minute': 'Min',
-                    'SCA': 'Creating Action'
-                }).sort_values(by='Min', ascending=False) # Sort by minute descending
-                
-                # Use hide_index=True to remove the index column
-                st.dataframe(
-                    table_display, 
-                    use_container_width=True, 
-                    height=500,
-                    hide_index=True
-                )
+            # Sort chronologically for numbering (oldest first)
+            if 'dateutc' in shot_log.columns:
+                shot_log = shot_log.sort_values(by=['dateutc', 'minute', 'second'], ascending=True)
             else:
-                st.info("No shots recorded for this player.")
+                shot_log = shot_log.sort_values(by=['matchId', 'minute', 'second'], ascending=True)
+                
+            # Assign Shot Numbers (1 to N)
+            shot_log.reset_index(drop=True, inplace=True)
+            shot_log['Shot Number'] = shot_log.index + 1
+            
+            # Basic formatting
+            shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
+            shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
+            shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
+            shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
+                                 np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
 
+            # Body Part Extraction
+            if 'shot.bodyPart.name' in shot_log.columns:
+                shot_log['Body Part'] = shot_log['shot.bodyPart.name']
+            elif 'shot.bodyPart' in shot_log.columns:
+                shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
+                    lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
+                )
+                shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
+            else:
+                shot_log['Body Part'] = 'Unknown'
+
+            # Phase of Play
+            def get_phase(possession_types):
+                if not isinstance(possession_types, (list, np.ndarray)): return "Open Play"
+                if 'counter_attack' in possession_types: return "Counter Attack"
+                if 'corner' in possession_types or 'free_kick' in possession_types or 'penalty' in possession_types: return "Set Piece"
+                if 'positional_attack' in possession_types: return "Positional Attack"
+                return "Open Play"
+            
+            if 'possession.types' in shot_log.columns:
+                shot_log['Phase'] = shot_log['possession.types'].apply(get_phase)
+            else:
+                shot_log['Phase'] = "Unknown"
+
+            # Shot Creating Action (SCA)
+            relevant_match_ids = shot_log['matchId'].unique()
+            context_events = raw_events_df[
+                (raw_events_df['matchId'].isin(relevant_match_ids)) &
+                (raw_events_df['team.name'] == shot_log.iloc[0]['team.name']) 
+            ].copy()
+            
+            shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
+            
+            sca_merge = pd.merge(
+                shot_log[['id', 'matchId', 'possession.id', 'prev_event_idx']],
+                context_events[['matchId', 'possession.id', 'possession.eventIndex', 'type.primary', 'type.secondary']],
+                left_on=['matchId', 'possession.id', 'prev_event_idx'],
+                right_on=['matchId', 'possession.id', 'possession.eventIndex'],
+                how='left',
+                suffixes=('', '_prev')
+            )
+            
+            def label_sca(row):
+                if pd.isna(row['type.primary']): return "Recovery/None"
+                sec_types = row['type.secondary'] if isinstance(row['type.secondary'], (list, np.ndarray)) else []
+                if 'cross' in sec_types: return "Cross"
+                if 'through_pass' in sec_types: return "Through Pass"
+                if 'deep_completion' in sec_types: return "Deep Completion"
+                prim = row['type.primary']
+                if prim == 'pass': return "Pass"
+                if prim == 'duel': return "Dribble/Duel"
+                if prim == 'acceleration' or prim == 'touch': return "Carry"
+                if prim == 'clearance': return "Clearance"
+                if prim == 'interception': return "Interception"
+                return prim.replace('_', ' ').title()
+
+            sca_merge['SCA'] = sca_merge.apply(label_sca, axis=1)
+            shot_log = shot_log.merge(sca_merge[['id', 'SCA']], on='id', how='left')
+            
+            # --- DATA PROCESSING END ---
+
+            # --- VISUALIZATION ---
+            col_shot_map, col_shot_table = st.columns([1, 1.4])
+            
+            with col_shot_map:
+                st.markdown("**Season Shot Map**")
+                # Pass the fully processed shot_log which has 'Shot Number'
+                fig_player_shots = create_player_shotmap(shot_log, selected_player_name)
+                st.pyplot(fig_player_shots, use_container_width=True)
+                
+            with col_shot_table:
+                st.markdown("**Shot Log**")
+                
+                # Prepare display table
+                display_cols = ['Shot Number', 'Date', 'Opponent', 'Result', 'xG', 'Body Part', 'SCA']
+                table_display = shot_log[display_cols].rename(columns={
+                    'Shot Number': '#',
+                    'SCA': 'Creating Action'
+                }).sort_values(by='#', ascending=False) # Show newest first (highest number)
+                
+                st.dataframe(table_display, use_container_width=True, height=500, hide_index=True)
+
+            # --- NEW: SUMMARY TABLES ---
+            st.markdown("---")
+            col_sum1, col_sum2 = st.columns(2)
+            
+            with col_sum1:
+                st.markdown("**Stats by Body Part**")
+                body_summary = shot_log.groupby('Body Part').agg(
+                    Shots=('id', 'count'),
+                    Goals=('shot.isGoal', 'sum'),
+                    Total_xG=('xG', 'sum')
+                ).sort_values(by='Total_xG', ascending=False)
+                body_summary['xG/Shot'] = (body_summary['Total_xG'] / body_summary['Shots']).round(2)
+                body_summary['Total_xG'] = body_summary['Total_xG'].round(2)
+                st.dataframe(body_summary, use_container_width=True)
+                
+            with col_sum2:
+                st.markdown("**Stats by Creating Action**")
+                sca_summary = shot_log.groupby('SCA').agg(
+                    Shots=('id', 'count'),
+                    Goals=('shot.isGoal', 'sum'),
+                    Total_xG=('xG', 'sum')
+                ).sort_values(by='Total_xG', ascending=False)
+                sca_summary['xG/Shot'] = (sca_summary['Total_xG'] / sca_summary['Shots']).round(2)
+                sca_summary['Total_xG'] = sca_summary['Total_xG'].round(2)
+                st.dataframe(sca_summary, use_container_width=True)
+
+        else:
+            st.info("No shots recorded for this player.")
+        
         st.divider()
-        # --- End Shot Analysis ---
 
         # --- 8. Display Individual Match Stats (Unchanged) ---
         st.subheader("Individual Match Log")
