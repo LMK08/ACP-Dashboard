@@ -486,6 +486,86 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
     )
 
 @st.cache_data
+
+def add_custom_dribble_success(events_df):
+    """
+    Applies custom logic to determine if a dribble was successful.
+    
+    Definition of Attempt:
+    - Any event where type.secondary contains 'dribble' OR groundDuel.takeOn is True.
+    
+    Definition of Success (Any of the following):
+    1. Next action by same player is closer to goal (Carry/Shot).
+    2. Next action by same player is a successful pass ending closer to goal.
+    3. Next action by teammate is closer to goal (Teammate recovery).
+    4. Event ended in a foul suffered.
+    """
+    # Ensure we are working with a copy and sorted by time
+    df = events_df.sort_values(by=['matchId', 'matchTimestamp']).copy()
+    
+    # --- 1. Calculate Distances ---
+    # Wyscout coordinates: 100,50 is the center of the opponent's goal
+    # We need distance for the CURRENT event
+    df['dist_to_goal'] = np.sqrt((100 - df['location.x'].fillna(100))**2 + (50 - df['location.y'].fillna(50))**2)
+
+    # --- 2. Look Ahead: Get details of the NEXT event ---
+    grouped = df.groupby('matchId')
+    
+    df['next_player_id'] = grouped['player.id'].shift(-1)
+    df['next_team_name'] = grouped['team.name'].shift(-1)
+    df['next_type'] = grouped['type.primary'].shift(-1)
+    df['next_accurate'] = grouped['pass.accurate'].shift(-1)
+    
+    # Distance of where the NEXT event STARTED
+    df['next_start_dist'] = grouped['dist_to_goal'].shift(-1)
+    
+    # Distance of where the NEXT event ENDED (useful if next event is a pass)
+    # Calculate end distance for the current row (shifted up from next row)
+    next_end_x = grouped['pass.endLocation.x'].shift(-1)
+    next_end_y = grouped['pass.endLocation.y'].shift(-1)
+    df['next_end_dist'] = np.sqrt((100 - next_end_x.fillna(100))**2 + (50 - next_end_y.fillna(50))**2)
+
+    # --- 3. Identify Dribble Attempts ---
+    # "The dribble definition includes both these types [Take-on and Space]"
+    # We check for the 'dribble' tag OR the takeOn flag to be safe
+    df['is_dribble_attempt'] = df.get('type.secondary', pd.Series(dtype='object')).apply(
+        lambda x: isinstance(x, (list, np.ndarray)) and 'dribble' in x
+    ) | (df.get('groundDuel.takeOn') == True)
+
+    # --- 4. Evaluate Success Conditions ---
+    
+    # Helpers
+    is_same_player = (df['next_player_id'] == df['player.id'])
+    is_teammate = (df['next_team_name'] == df['team.name']) & (df['next_player_id'] != df['player.id'])
+    
+    # Condition A: Same player, next action is closer (Carry, Shot, etc.)
+    # Note: If next is a pass, we handle it in B to be stricter about accuracy
+    cond_a = is_same_player & (df['next_type'] != 'pass') & (df['next_start_dist'] < df['dist_to_goal'])
+    
+    # Condition B: "Successful forward pass from a dribble"
+    # Same player, next action is a PASS, it is ACCURATE, and it ENDS closer to goal
+    cond_b = is_same_player & (df['next_type'] == 'pass') & (df['next_accurate'] == True) & (df['next_end_dist'] < df['dist_to_goal'])
+    
+    # Condition C: "Touch of an attacking teammate closer to goal"
+    # Teammate picks up the ball closer to goal
+    cond_c = is_teammate & (df['next_start_dist'] < df['dist_to_goal'])
+    
+    # Condition D: Foul Suffered
+    cond_d = df.get('type.secondary', pd.Series(dtype='object')).apply(
+        lambda x: isinstance(x, (list, np.ndarray)) and 'foul_suffered' in x
+    )
+
+    # 5. Assign Result
+    df['is_custom_dribble_success'] = df['is_dribble_attempt'] & (cond_a | cond_b | cond_c | cond_d)
+    
+    # Cleanup temporary columns to save memory
+    cols_to_drop = ['dist_to_goal', 'next_player_id', 'next_team_name', 'next_type', 
+                    'next_accurate', 'next_start_dist', 'next_end_dist']
+    df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+    
+    return df
+
+@st.cache_data
 def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     """
     A new, streamlined, and correct function to calculate all player stats 
@@ -494,6 +574,9 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     print("--- STARTING: New All-Player-Stats Calculation ---")
     
     events_df = _raw_events_df.copy()
+    # --- NEW: Apply Custom Dribble Logic ---
+    events_df = add_custom_dribble_success(events_df)
+    # ---------------------------------------
     base_df = _player_minutes_df.copy().set_index('playerId') # Use playerId as index
     
     # Ensure player.id is int for all merging
@@ -577,9 +660,12 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     base_df = count_and_merge(base_df, duel_events, 'Offensive duels successful', check_secondary_list('offensive_duel') & (duel_events.get('groundDuel.progressedWithBall') == True))
     base_df = count_and_merge(base_df, duel_events, 'Sliding tackles', check_secondary_list('sliding_tackle'))
     base_df = count_and_merge(base_df, duel_events, 'Sliding tackles successful', check_secondary_list('sliding_tackle') & (duel_events.get('groundDuel.recoveredPossession') == True))
-    base_df = count_and_merge(base_df, duel_events, 'Dribbles', check_secondary_list('dribble'))
-    base_df = count_and_merge(base_df, duel_events, 'Dribbles successful', check_secondary_list('dribble') & (duel_events.get('groundDuel.takeOn') == True))
-
+    # -- Dribbles (Custom Logic) --
+    # Attempt: is_dribble_attempt == True
+    base_df = count_and_merge(base_df, events_df, 'Dribbles', events_df.get('is_dribble_attempt') == True)
+    # Success: is_custom_dribble_success == True
+    base_df = count_and_merge(base_df, events_df, 'Dribbles successful', events_df.get('is_custom_dribble_success') == True)
+    
     # -- Losses & Recoveries --
     base_df = count_and_merge(base_df, events_df, 'Losses', check_secondary_list('loss'))
     base_df = count_and_merge(base_df, events_df, 'Losses Opp Half', check_secondary_list('loss') & (events_df.get('location.x', 0) >= 50))
