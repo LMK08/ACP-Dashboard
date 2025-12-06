@@ -667,76 +667,88 @@ def add_custom_dribble_success(events_df):
     """
     Applies custom logic to determine if a dribble was successful.
     
-    Definition of Attempt:
-    - Any event where type.secondary contains 'dribble' OR groundDuel.takeOn is True.
-    
-    Definition of Success (Any of the following):
-    1. Next action by same player is closer to goal (Carry/Shot).
-    2. Next action by same player is a successful pass ending closer to goal.
-    3. Next action by teammate is closer to goal (Teammate recovery).
-    4. Event ended in a foul suffered.
+    IMPROVEMENT: Looks for the next event *by the same team* to skip 
+    interleaved opponent defensive events.
     """
-    # Ensure we are working with a copy and sorted by time
+    # 1. Work on a sorted copy
     df = events_df.sort_values(by=['matchId', 'matchTimestamp']).copy()
     
-    # --- 1. Calculate Distances ---
-    # Wyscout coordinates: 100,50 is the center of the opponent's goal
-    # We need distance for the CURRENT event
+    # 2. Calculate Distance to Goal for the CURRENT event
+    # (100, 50) is the center of the opponent's goal
     df['dist_to_goal'] = np.sqrt((100 - df['location.x'].fillna(100))**2 + (50 - df['location.y'].fillna(50))**2)
+    
+    # 3. Get details of the NEXT event for the SAME TEAM
+    # This skips opponent events (like defensive duels) that happen in between
+    team_grouped = df.groupby(['matchId', 'team.name'])
+    
+    df['next_team_player_id'] = team_grouped['player.id'].shift(-1)
+    df['next_team_type'] = team_grouped['type.primary'].shift(-1)
+    df['next_team_accurate'] = team_grouped['pass.accurate'].shift(-1)
+    df['next_team_start_x'] = team_grouped['location.x'].shift(-1)
+    df['next_team_start_y'] = team_grouped['location.y'].shift(-1)
+    df['next_team_timestamp'] = team_grouped['matchTimestamp'].shift(-1)
 
-    # --- 2. Look Ahead: Get details of the NEXT event ---
-    grouped = df.groupby('matchId')
+    # Calculate distance for the NEXT team event start
+    df['next_team_start_dist'] = np.sqrt((100 - df['next_team_start_x'].fillna(100))**2 + (50 - df['next_team_start_y'].fillna(50))**2)
     
-    df['next_player_id'] = grouped['player.id'].shift(-1)
-    df['next_team_name'] = grouped['team.name'].shift(-1)
-    df['next_type'] = grouped['type.primary'].shift(-1)
-    df['next_accurate'] = grouped['pass.accurate'].shift(-1)
-    
-    # Distance of where the NEXT event STARTED
-    df['next_start_dist'] = grouped['dist_to_goal'].shift(-1)
-    
-    # Distance of where the NEXT event ENDED (useful if next event is a pass)
-    # Calculate end distance for the current row (shifted up from next row)
-    next_end_x = grouped['pass.endLocation.x'].shift(-1)
-    next_end_y = grouped['pass.endLocation.y'].shift(-1)
-    df['next_end_dist'] = np.sqrt((100 - next_end_x.fillna(100))**2 + (50 - next_end_y.fillna(50))**2)
+    # For Pass Success Logic: We need where the next pass ENDED
+    # We can't easily get this from the simple shift above if the next event isn't a pass,
+    # but we can calculate it row-by-row or just look at the columns.
+    # For the "Successful Pass" condition, we assume 'next_team_accurate' == True implies it reached a target.
+    # We'll use the pass end location from the next row.
+    df['next_team_end_x'] = team_grouped['pass.endLocation.x'].shift(-1)
+    df['next_team_end_y'] = team_grouped['pass.endLocation.y'].shift(-1)
+    df['next_team_end_dist'] = np.sqrt((100 - df['next_team_end_x'].fillna(100))**2 + (50 - df['next_team_end_y'].fillna(50))**2)
 
-    # --- 3. Identify Dribble Attempts ---
-    # "The dribble definition includes both these types [Take-on and Space]"
-    # We check for the 'dribble' tag OR the takeOn flag to be safe
+    # 4. Time Delta Check
+    # If the next team event is > 4 seconds later, the chain is broken (possession was likely lost/regained)
+    df['time_diff'] = (df['next_team_timestamp'] - df['matchTimestamp']).dt.total_seconds()
+    is_chain_intact = df['time_diff'] <= 4.0
+
+    # 5. Identify Dribble Attempts
     df['is_dribble_attempt'] = df.get('type.secondary', pd.Series(dtype='object')).apply(
         lambda x: isinstance(x, (list, np.ndarray)) and 'dribble' in x
     ) | (df.get('groundDuel.takeOn') == True)
 
-    # --- 4. Evaluate Success Conditions ---
+    # 6. Evaluate Success Conditions
     
-    # Helpers
-    is_same_player = (df['next_player_id'] == df['player.id'])
-    is_teammate = (df['next_team_name'] == df['team.name']) & (df['next_player_id'] != df['player.id'])
-    
-    # Condition A: Same player, next action is closer (Carry, Shot, etc.)
-    # Note: If next is a pass, we handle it in B to be stricter about accuracy
-    cond_a = is_same_player & (df['next_type'] != 'pass') & (df['next_start_dist'] < df['dist_to_goal'])
+    # Condition A: Same player, next action is closer to goal (Carry, Shot, etc.)
+    # Must not be a pass (passes are handled in B)
+    cond_a = (
+        is_chain_intact &
+        (df['next_team_player_id'] == df['player.id']) & 
+        (df['next_team_type'] != 'pass') & 
+        (df['next_team_start_dist'] < df['dist_to_goal'])
+    )
     
     # Condition B: "Successful forward pass from a dribble"
-    # Same player, next action is a PASS, it is ACCURATE, and it ENDS closer to goal
-    cond_b = is_same_player & (df['next_type'] == 'pass') & (df['next_accurate'] == True) & (df['next_end_dist'] < df['dist_to_goal'])
+    # Same player, next action is Pass, Accurate, Ends closer
+    cond_b = (
+        is_chain_intact &
+        (df['next_team_player_id'] == df['player.id']) & 
+        (df['next_team_type'] == 'pass') & 
+        (df['next_team_accurate'] == True) & 
+        (df['next_team_end_dist'] < df['dist_to_goal'])
+    )
     
     # Condition C: "Touch of an attacking teammate closer to goal"
-    # Teammate picks up the ball closer to goal
-    cond_c = is_teammate & (df['next_start_dist'] < df['dist_to_goal'])
+    # Different player on same team picks it up closer to goal
+    cond_c = (
+        is_chain_intact &
+        (df['next_team_player_id'] != df['player.id']) & 
+        (df['next_team_start_dist'] < df['dist_to_goal'])
+    )
     
     # Condition D: Foul Suffered
     cond_d = df.get('type.secondary', pd.Series(dtype='object')).apply(
         lambda x: isinstance(x, (list, np.ndarray)) and 'foul_suffered' in x
     )
 
-    # 5. Assign Result
+    # 7. Assign Result
     df['is_custom_dribble_success'] = df['is_dribble_attempt'] & (cond_a | cond_b | cond_c | cond_d)
     
-    # Cleanup temporary columns to save memory
-    cols_to_drop = ['dist_to_goal', 'next_player_id', 'next_team_name', 'next_type', 
-                    'next_accurate', 'next_start_dist', 'next_end_dist']
+    # Cleanup
+    cols_to_drop = [c for c in df.columns if 'next_team_' in c] + ['dist_to_goal', 'time_diff']
     df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
     
     return df
