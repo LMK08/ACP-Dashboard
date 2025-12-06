@@ -497,6 +497,9 @@ def add_custom_dribble_success(events_df):
     # 1. Work on a sorted copy
     df = events_df.sort_values(by=['matchId', 'matchTimestamp']).copy()
     
+    # --- FIX: Force timestamp to datetime object to avoid string errors ---
+    df['matchTimestamp'] = pd.to_datetime(df['matchTimestamp'], errors='coerce')
+    
     # 2. Calculate Distance to Goal for the CURRENT event
     # (100, 50) is the center of the opponent's goal
     df['dist_to_goal'] = np.sqrt((100 - df['location.x'].fillna(100))**2 + (50 - df['location.y'].fillna(50))**2)
@@ -516,16 +519,12 @@ def add_custom_dribble_success(events_df):
     df['next_team_start_dist'] = np.sqrt((100 - df['next_team_start_x'].fillna(100))**2 + (50 - df['next_team_start_y'].fillna(50))**2)
     
     # For Pass Success Logic: We need where the next pass ENDED
-    # We can't easily get this from the simple shift above if the next event isn't a pass,
-    # but we can calculate it row-by-row or just look at the columns.
-    # For the "Successful Pass" condition, we assume 'next_team_accurate' == True implies it reached a target.
-    # We'll use the pass end location from the next row.
     df['next_team_end_x'] = team_grouped['pass.endLocation.x'].shift(-1)
     df['next_team_end_y'] = team_grouped['pass.endLocation.y'].shift(-1)
     df['next_team_end_dist'] = np.sqrt((100 - df['next_team_end_x'].fillna(100))**2 + (50 - df['next_team_end_y'].fillna(50))**2)
 
     # 4. Time Delta Check
-    # If the next team event is > 4 seconds later, the chain is broken (possession was likely lost/regained)
+    # If the next team event is > 4 seconds later, the chain is broken
     df['time_diff'] = (df['next_team_timestamp'] - df['matchTimestamp']).dt.total_seconds()
     is_chain_intact = df['time_diff'] <= 4.0
 
@@ -537,7 +536,6 @@ def add_custom_dribble_success(events_df):
     # 6. Evaluate Success Conditions
     
     # Condition A: Same player, next action is closer to goal (Carry, Shot, etc.)
-    # Must not be a pass (passes are handled in B)
     cond_a = (
         is_chain_intact &
         (df['next_team_player_id'] == df['player.id']) & 
@@ -546,7 +544,6 @@ def add_custom_dribble_success(events_df):
     )
     
     # Condition B: "Successful forward pass from a dribble"
-    # Same player, next action is Pass, Accurate, Ends closer
     cond_b = (
         is_chain_intact &
         (df['next_team_player_id'] == df['player.id']) & 
@@ -556,7 +553,6 @@ def add_custom_dribble_success(events_df):
     )
     
     # Condition C: "Touch of an attacking teammate closer to goal"
-    # Different player on same team picks it up closer to goal
     cond_c = (
         is_chain_intact &
         (df['next_team_player_id'] != df['player.id']) & 
