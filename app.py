@@ -574,6 +574,7 @@ def add_custom_dribble_success(events_df):
     return df
 
 @st.cache_data
+@st.cache_data
 def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     """
     A new, streamlined, and correct function to calculate all player stats 
@@ -582,9 +583,12 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     print("--- STARTING: New All-Player-Stats Calculation ---")
     
     events_df = _raw_events_df.copy()
+    
     # --- NEW: Apply Custom Dribble Logic ---
+    # Ensure this helper function is defined in app.py!
     events_df = add_custom_dribble_success(events_df)
     # ---------------------------------------
+
     base_df = _player_minutes_df.copy().set_index('playerId') # Use playerId as index
     
     # Ensure player.id is int for all merging
@@ -659,21 +663,38 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     # -- Dueling & Defensive Metrics --
     duel_events = events_df[events_df['type.primary'] == 'duel']
     base_df = count_and_merge(base_df, duel_events, 'Duels', pd.Series(True, index=duel_events.index))
-    base_df = count_and_merge(base_df, duel_events, 'Duels successful', (duel_events.get('groundDuel.keptPossession') == True) | (duel_events.get('groundDuel.recoveredPossession') == True) | (duel_events.get('aerialDuel.firstTouch') == True))
+    
+    # Success = Kept Poss OR Recovered Poss OR First Touch (Aerial) OR Stopped Progress (New Logic)
+    base_df = count_and_merge(base_df, duel_events, 'Duels successful', 
+                              (duel_events.get('groundDuel.keptPossession') == True) | 
+                              (duel_events.get('groundDuel.recoveredPossession') == True) | 
+                              (duel_events.get('groundDuel.stoppedProgress') == True) | 
+                              (duel_events.get('aerialDuel.firstTouch') == True))
+    
     base_df = count_and_merge(base_df, duel_events, 'Aerial duels', check_secondary_list('aerial_duel'))
     base_df = count_and_merge(base_df, duel_events, 'Aerial duels successful', check_secondary_list('aerial_duel') & (duel_events.get('aerialDuel.firstTouch') == True))
+    
     base_df = count_and_merge(base_df, duel_events, 'Defensive duels', check_secondary_list('defensive_duel'))
-    base_df = count_and_merge(base_df, duel_events, 'Defensive duels successful', check_secondary_list('defensive_duel') & (duel_events.get('groundDuel.recoveredPossession') == True))
+    # --- FIX: Added stoppedProgress ---
+    base_df = count_and_merge(base_df, duel_events, 'Defensive duels successful', 
+                              check_secondary_list('defensive_duel') & 
+                              ((duel_events.get('groundDuel.recoveredPossession') == True) | (duel_events.get('groundDuel.stoppedProgress') == True)))
+    
     base_df = count_and_merge(base_df, duel_events, 'Offensive duels', check_secondary_list('offensive_duel'))
     base_df = count_and_merge(base_df, duel_events, 'Offensive duels successful', check_secondary_list('offensive_duel') & (duel_events.get('groundDuel.progressedWithBall') == True))
+    
     base_df = count_and_merge(base_df, duel_events, 'Sliding tackles', check_secondary_list('sliding_tackle'))
-    base_df = count_and_merge(base_df, duel_events, 'Sliding tackles successful', check_secondary_list('sliding_tackle') & (duel_events.get('groundDuel.recoveredPossession') == True))
+    # --- FIX: Added stoppedProgress ---
+    base_df = count_and_merge(base_df, duel_events, 'Sliding tackles successful', 
+                              check_secondary_list('sliding_tackle') & 
+                              ((duel_events.get('groundDuel.recoveredPossession') == True) | (duel_events.get('groundDuel.stoppedProgress') == True)))
+
     # -- Dribbles (Custom Logic) --
     # Attempt: is_dribble_attempt == True
     base_df = count_and_merge(base_df, events_df, 'Dribbles', events_df.get('is_dribble_attempt') == True)
     # Success: is_custom_dribble_success == True
     base_df = count_and_merge(base_df, events_df, 'Dribbles successful', events_df.get('is_custom_dribble_success') == True)
-    
+
     # -- Losses & Recoveries --
     base_df = count_and_merge(base_df, events_df, 'Losses', check_secondary_list('loss'))
     base_df = count_and_merge(base_df, events_df, 'Losses Opp Half', check_secondary_list('loss') & (events_df.get('location.x', 0) >= 50))
@@ -683,7 +704,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
 
     # --- Step 2: Calculate xG, xA, xT, and special passing ---
     print("Step 2: Calculating xG, xA, xT...")
-    # This is the same logic from your (working) `calculate_player_profile_stats`
+    
     # -- xG --
     xg_series = events_df.groupby('player.id')['shot.xg'].sum()
     xg_series.name = 'xG'
@@ -703,7 +724,6 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     xa_final_df = xa_split_totals.unstack(fill_value=0).reset_index()
     final_stats_df = pd.merge(npxg_totals, xa_final_df, on='player.id', how='outer')
     base_df = base_df.merge(final_stats_df.set_index('player.id'), left_index=True, right_index=True, how='left')
-
 
     # -- Deep Completions and Progressive Passes --
     passes_df = events_df[(events_df['type.primary'] == 'pass') & (events_df.get('pass.accurate') == True)].dropna(subset=['location.x', 'pass.endLocation.x', 'player.id']).copy()
