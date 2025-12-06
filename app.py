@@ -1253,10 +1253,9 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     all_teams_stats = {}
     
     # --- Data Prep ---
-    # Ensure 'team.name' exists before using it
     if 'team.name' not in season_events_df.columns:
          print("Warning: 'team.name' column missing from events_df, cannot calculate radar stats.")
-         return pd.DataFrame(), pd.DataFrame() # Return empty DataFrames
+         return pd.DataFrame(), pd.DataFrame()
 
     teams = season_events_df['team.name'].unique()
     matches_played = season_events_df.groupby('team.name')['matchId'].nunique() if 'matchId' in season_events_df.columns else pd.Series(dtype='int')
@@ -1282,7 +1281,6 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
 
     # Pre-calculate opponent events for defensive stats
     if 'opponentTeam.name' not in season_events_df.columns and 'matchId' in season_events_df.columns:
-         # Use the correct column names from the new summary df
          temp_summary = matches_summary_df[['matchId', 'homeTeamName', 'awayTeamName']].copy()
          temp_summary.rename(columns={'homeTeamName':'ht', 'awayTeamName':'at'}, inplace=True)
          season_events_df = season_events_df.merge(temp_summary, on='matchId', how='left')
@@ -1302,7 +1300,7 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         goals = team_shots[team_shots.get('shot.isGoal') == True].shape[0] / games
         xg = team_shots['shot.xg'].sum() / games
         xg_per_shot = xg / shots if shots > 0 else 0
-        PENALTY_AREA_X=83; PENALTY_AREA_Y1, PENALTY_AREA_Y2 = (21, 79) # Note: Wyscout PA Y is ~21-79
+        PENALTY_AREA_X=83; PENALTY_AREA_Y1, PENALTY_AREA_Y2 = (21, 79) 
         actions_in_box = team_events[(team_events['location.x'].fillna(0) >= PENALTY_AREA_X) & (team_events['location.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
         team_passes = team_events[team_events.get('type.primary') == 'pass']
         passes_into_box = team_passes[(team_passes['pass.endLocation.x'].fillna(0) >= PENALTY_AREA_X) & (team_passes['pass.endLocation.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
@@ -1312,7 +1310,6 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
 
         # --- Distribution Stats ---
         passes_per_match = team_passes.shape[0] / games
-        # Use your notebook definition for Progressive Passes
         team_passes['start_dist_to_goal'] = np.sqrt((100 - team_passes['location.x'])**2 + (50 - team_passes['location.y'])**2)
         team_passes['end_dist_to_goal'] = np.sqrt((100 - team_passes['pass.endLocation.x'])**2 + (50 - team_passes['pass.endLocation.y'])**2)
         team_passes['progression'] = team_passes['start_dist_to_goal'] - team_passes['end_dist_to_goal']
@@ -1320,9 +1317,9 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         cond2 = (team_passes['location.x'] <= 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 15)
         cond3 = (team_passes['location.x'] > 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 10)
         progressive_passes = team_passes[cond1 | cond2 | cond3].shape[0] / games
-        directness = team_passes['progression'].mean() # Use your notebook definition of directness
+        directness = team_passes['progression'].mean() 
         team_possession_sec = total_possession_time_per_team.get(team, 0)
-        ball_possession_pct = (team_possession_sec / league_total_in_play_time) * 100 if league_total_in_play_time > 0 else 0 # Corrected %
+        ball_possession_pct = (team_possession_sec / league_total_in_play_time) * 100 if league_total_in_play_time > 0 else 0 
         final_third_entries = 0
         if 'possession.id' in team_events.columns and 'location.x' in team_events.columns:
             try:
@@ -1337,28 +1334,68 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         # --- Defensive Stats ---
         goals_against=0; xg_against=0; shots_against=0; xg_per_shot_against=0;
         aerial_duel_win_pct=0; defensive_duel_win_pct=0; interceptions=0; fouls=0; ppda=np.inf;
+        
         if not opponent_events.empty:
             opponent_shots = opponent_events[opponent_events.get('type.primary') == 'shot']
             goals_against = opponent_shots[opponent_shots.get('shot.isGoal') == True].shape[0] / games
             xg_against = opponent_shots['shot.xg'].sum() / games
             shots_against = opponent_shots.shape[0] / games
             xg_per_shot_against = xg_against / shots_against if shots_against > 0 else 0
+        
         team_duels_def = team_events[team_events.get('type.primary') == 'duel']
         aerial_duels = team_duels_def[team_duels_def.get('type.secondary','').astype(str).str.contains('aerial', na=False)]
         total_aerial_duels = aerial_duels.shape[0]; won_aerial_duels_count = aerial_duels[aerial_duels.get('aerialDuel.firstTouch') == True].shape[0]
         aerial_duel_win_pct = (won_aerial_duels_count / total_aerial_duels) * 100 if total_aerial_duels > 0 else 0
+        
         defensive_duels = team_duels_def[team_duels_def.get('groundDuel.duelType') == 'defensive_duel']
-        total_defensive_duels = defensive_duels.shape[0]; won_defensive_duels_count = defensive_duels[(defensive_duels.get('groundDuel.recoveredPossession') == True) | (defensive_duels.get('groundDuel.stoppedProgress') == True)].shape[0]
+        total_defensive_duels = defensive_duels.shape[0]
+        # Win = recovered possession OR stopped progress
+        won_defensive_duels_count = defensive_duels[
+            (defensive_duels.get('groundDuel.recoveredPossession') == True) | 
+            (defensive_duels.get('groundDuel.stoppedProgress') == True)
+        ].shape[0]
         defensive_duel_win_pct = (won_defensive_duels_count / total_defensive_duels) * 100 if total_defensive_duels > 0 else 0
+        
         interceptions = team_events[team_events.get('type.primary') == 'interception'].shape[0] / games
         fouls = team_events[team_events.get('type.primary') == 'infraction'].shape[0] / games
-        # PPDA
-        in_high_press_zone = season_events_df['location.x'].fillna(0) >= 40
-        # Align index for boolean mask
-        opponent_passes_df = opponent_events[(opponent_events.get('type.primary') == 'pass') & in_high_press_zone.reindex(opponent_events.index, fill_value=False)] 
-        team_def_actions_df = team_events[in_high_press_zone.reindex(team_events.index, fill_value=False)] # Align index
-        def_actions_for_ppda = team_def_actions_df[team_def_actions_df.get('type.primary').isin(['infraction', 'interception', 'duel'])].shape[0]
-        ppda = opponent_passes_df.shape[0] / def_actions_for_ppda if def_actions_for_ppda > 0 else np.inf
+        
+        # --- FIXED PPDA LOGIC ---
+        # Matches logic from process_data.py (consistent definition)
+        PRESS_ZONE_X = 40
+        
+        # 1. Opponent passes in pressing zone
+        opponent_passes_count = opponent_events[
+            (opponent_events.get('type.primary') == 'pass') & 
+            (opponent_events.get('location.x', 0) >= PRESS_ZONE_X)
+        ].shape[0]
+
+        # 2. Team defensive actions in pressing zone
+        team_press_events = team_events[team_events.get('location.x', 0) >= PRESS_ZONE_X]
+        
+        if not team_press_events.empty:
+            # A. Fouls
+            fouls_press = team_press_events[team_press_events.get('type.primary') == 'infraction'].shape[0]
+            # B. Interceptions
+            interceptions_press = team_press_events[team_press_events.get('type.primary') == 'interception'].shape[0]
+            # C. Won Defensive Duels (Recovered OR Stopped)
+            def_duels_press = team_press_events[
+                (team_press_events.get('type.primary') == 'duel') & 
+                (team_press_events.get('groundDuel.duelType') == 'defensive_duel')
+            ]
+            won_def_duels_press = def_duels_press[
+                (def_duels_press.get('groundDuel.recoveredPossession') == True) | 
+                (def_duels_press.get('groundDuel.stoppedProgress') == True)
+            ].shape[0]
+            # D. Sliding Tackles (Attempts)
+            sliding_tackles_press = team_press_events[
+                (team_press_events.get('type.primary') == 'duel') &
+                (team_press_events.get('groundDuel.duelType', '').astype(str).str.contains('sliding_tackle', na=False))
+            ].shape[0]
+            
+            total_def_actions = fouls_press + interceptions_press + won_def_duels_press + sliding_tackles_press
+            ppda = opponent_passes_count / total_def_actions if total_def_actions > 0 else np.inf
+        else:
+            ppda = np.inf
 
         all_teams_stats[team] = {
             'Goals': goals, 'xG': xg, 'xG per Shot': xg_per_shot, 'Shots': shots,
@@ -1377,7 +1414,7 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     stats_df_raw.replace([np.inf, -np.inf], 999, inplace=True)
     stats_df_pct = stats_df_raw.copy()
     metrics_to_invert_pct = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses']
-    # Ensure columns exist before inverting
+    
     valid_metrics_to_invert = [col for col in metrics_to_invert_pct if col in stats_df_pct.columns]
     stats_df_pct[valid_metrics_to_invert] = -stats_df_pct[valid_metrics_to_invert]
     for col in stats_df_pct.columns:
