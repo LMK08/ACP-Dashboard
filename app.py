@@ -1249,7 +1249,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars."""
     
-    print("Calculating team radar stats...") # Debug print
+    print("Calculating team radar stats...") 
     all_teams_stats = {}
     
     # --- Data Prep ---
@@ -1269,9 +1269,20 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     season_events_df['pass.length'] = pd.to_numeric(season_events_df.get('pass.length'), errors='coerce')
     season_events_df['shot.xg'] = pd.to_numeric(season_events_df.get('shot.xg'), errors='coerce')
 
-    # Pre-calculate possession time and losses
-    total_possession_time_per_team = season_events_df.drop_duplicates(subset='possession.id').groupby('possession.team.name')['possession.duration_sec'].sum()
-    league_total_in_play_time = total_possession_time_per_team.sum()
+    # --- FIX: Calculate Average Possession % Per Match ---
+    # 1. Get unique possessions with duration
+    possessions_df = season_events_df.drop_duplicates(subset='possession.id')[['matchId', 'possession.team.name', 'possession.duration_sec']]
+    # 2. Sum duration per team per match
+    match_team_duration = possessions_df.groupby(['matchId', 'possession.team.name'])['possession.duration_sec'].sum().reset_index()
+    # 3. Sum total duration per match (to handle variable match lengths)
+    match_total_duration = match_team_duration.groupby('matchId')['possession.duration_sec'].sum().reset_index().rename(columns={'possession.duration_sec': 'match_total_duration'})
+    # 4. Merge and calculate %
+    possession_data = pd.merge(match_team_duration, match_total_duration, on='matchId')
+    possession_data = possession_data[possession_data['match_total_duration'] > 0] # Avoid div/0
+    possession_data['possession_pct'] = (possession_data['possession.duration_sec'] / possession_data['match_total_duration']) * 100
+    # 5. Average per team
+    avg_possession_per_team = possession_data.groupby('possession.team.name')['possession_pct'].mean()
+    # -----------------------------------------------------
     
     losses_df = pd.DataFrame()
     if 'possession.id' in season_events_df.columns:
@@ -1318,8 +1329,10 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         cond3 = (team_passes['location.x'] > 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 10)
         progressive_passes = team_passes[cond1 | cond2 | cond3].shape[0] / games
         directness = team_passes['progression'].mean() 
-        team_possession_sec = total_possession_time_per_team.get(team, 0)
-        ball_possession_pct = (team_possession_sec / league_total_in_play_time) * 100 if league_total_in_play_time > 0 else 0 
+        
+        # --- FIX: Use pre-calculated average possession ---
+        ball_possession_pct = avg_possession_per_team.get(team, 0)
+        
         final_third_entries = 0
         if 'possession.id' in team_events.columns and 'location.x' in team_events.columns:
             try:
@@ -1359,25 +1372,18 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         interceptions = team_events[team_events.get('type.primary') == 'interception'].shape[0] / games
         fouls = team_events[team_events.get('type.primary') == 'infraction'].shape[0] / games
         
-        # --- FIXED PPDA LOGIC ---
-        # Matches logic from process_data.py (consistent definition)
+        # --- PPDA LOGIC ---
         PRESS_ZONE_X = 40
-        
-        # 1. Opponent passes in pressing zone
         opponent_passes_count = opponent_events[
             (opponent_events.get('type.primary') == 'pass') & 
             (opponent_events.get('location.x', 0) >= PRESS_ZONE_X)
         ].shape[0]
 
-        # 2. Team defensive actions in pressing zone
         team_press_events = team_events[team_events.get('location.x', 0) >= PRESS_ZONE_X]
         
         if not team_press_events.empty:
-            # A. Fouls
             fouls_press = team_press_events[team_press_events.get('type.primary') == 'infraction'].shape[0]
-            # B. Interceptions
             interceptions_press = team_press_events[team_press_events.get('type.primary') == 'interception'].shape[0]
-            # C. Won Defensive Duels (Recovered OR Stopped)
             def_duels_press = team_press_events[
                 (team_press_events.get('type.primary') == 'duel') & 
                 (team_press_events.get('groundDuel.duelType') == 'defensive_duel')
@@ -1386,7 +1392,6 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
                 (def_duels_press.get('groundDuel.recoveredPossession') == True) | 
                 (def_duels_press.get('groundDuel.stoppedProgress') == True)
             ].shape[0]
-            # D. Sliding Tackles (Attempts)
             sliding_tackles_press = team_press_events[
                 (team_press_events.get('type.primary') == 'duel') &
                 (team_press_events.get('groundDuel.duelType', '').astype(str).str.contains('sliding_tackle', na=False))
