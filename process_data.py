@@ -672,6 +672,7 @@ def add_custom_dribble_success(events_df):
     """
     # 1. Work on a sorted copy
     df = events_df.sort_values(by=['matchId', 'matchTimestamp']).copy()
+
     
     # --- FIX: Force timestamp to datetime object to avoid string errors ---
     df['matchTimestamp'] = pd.to_datetime(df['matchTimestamp'], errors='coerce')
