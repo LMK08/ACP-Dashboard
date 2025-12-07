@@ -19,7 +19,7 @@ from collections import defaultdict
 # Suppress SettingWithCopyWarning, use cautiously
 pd.options.mode.chained_assignment = None
 
-
+# forcing update
 # ==============================================================================
 # SECTION 2: DATA FETCHING FUNCTIONS
 # ==============================================================================
