@@ -2577,6 +2577,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
         
         # --- 4. Display Player Bio ---
+        # FIX: Robust lookup for Team and Position using player_minutes_df
+        # This ensures we get the official data even if the stats merge had issues
+        current_team = player_per_90_stats.get('teamName', 'N/A')
+        current_pos = player_per_90_stats.get('primaryPosition', 'N/A')
+        
+        # If 'Unknown', try to force a lookup in the minutes file
+        if (current_team in ['Unknown', 'N/A'] or current_pos in ['Unknown', 'N/A']) and not player_minutes_df.empty:
+            try:
+                # Ensure ID is an integer for the lookup
+                pid_int = int(player_id)
+                min_row = player_minutes_df[player_minutes_df['playerId'] == pid_int]
+                if not min_row.empty:
+                    current_team = min_row.iloc[0]['teamName']
+                    current_pos = min_row.iloc[0]['primaryPosition']
+            except Exception:
+                pass # Fallback to original values if lookup fails
+
         st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
         
         col1_bio, col2_bio = st.columns([1, 3])
@@ -2590,8 +2607,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         with col2_bio:
             st.subheader("Player Information")
             bio_row1 = st.columns(4)
-            bio_row1[0].metric("Team", player_per_90_stats.get('teamName', 'N/A'))
-            bio_row1[1].metric("Position", player_per_90_stats.get('primaryPosition', 'N/A'))
+            bio_row1[0].metric("Team", current_team)
+            bio_row1[1].metric("Position", current_pos)
             bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
             
             age = _calculate_age(player_bio.get('birthDate'))
@@ -2607,12 +2624,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
-        
+
         st.divider()
 
         # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
-        primary_pos = player_per_90_stats.get('primaryPosition', 'N/A')
+        
+        # FIX: Use 'current_pos' (calculated in the Bio section above) 
+        # instead of the potentially broken 'primaryPosition' from stats
+        primary_pos = current_pos 
+        
         eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
 
         if not eligible_groups:
