@@ -153,11 +153,13 @@ def fetch_events(username, password, match_ids):
     print(f"\n✅ Retrieved {len(events_df)} total events.")
     return events_df
 
-def fetch_official_player_minutes(username, password, match_ids):
+# In process_data.py...
+
+# 1. Update definition to accept 'name_map'
+def fetch_official_player_minutes(username, password, match_ids, name_map):
     """
-    Fetches minutes by CALCULATING them from the lineup and substitutions
-    found in the standard /matches/{id} endpoint.
-    Includes safety checks for missing formation data.
+    Fetches minutes from the API and looks up names using a local name_map
+    derived from event data.
     """
     base_url_v3 = "https://apirest.wyscout.com/v3"
     auth = HTTPBasicAuth(username, password)
@@ -179,36 +181,22 @@ def fetch_official_player_minutes(username, password, match_ids):
             r.raise_for_status()
             match_data = r.json()
             
-            # --- 1. BUILD PLAYER LOOKUP MAP ---
-            # The lineup objects often lack names, so we look them up here
-            player_map = {}
-            for p in match_data.get('players', []):
-                p_id = p.get('wyId')
-                if p_id:
-                    player_map[p_id] = p.get('shortName') or p.get('lastName') or "Unknown"
-
-            # Default duration 96 to capture stoppage time if not specified
             match_duration = 96 
-
             teams_data = match_data.get('teamsData', {})
             
             for team_id, team_info in teams_data.items():
                 team_name = team_info.get('name', 'Unknown')
                 formation = team_info.get('formation')
                 
-                # --- SAFETY FIX: Check if formation is None ---
-                if not formation:
-                    continue
-                # ----------------------------------------------
+                if not formation: continue 
                 
                 lineup = formation.get('lineup', [])
                 bench = formation.get('bench', [])
                 substitutions = formation.get('substitutions', [])
                 
-                # --- 2. MAP SUBSTITUTIONS ---
+                # Map Substitutions
                 sub_out_map = {}
                 sub_in_map = {}
-                
                 for sub in substitutions:
                     minute = sub.get('minute', 90)
                     player_out = sub.get('playerOut')
@@ -216,50 +204,45 @@ def fetch_official_player_minutes(username, password, match_ids):
                     if player_out: sub_out_map[player_out] = minute
                     if player_in: sub_in_map[player_in] = minute
 
-                # --- 3. PROCESS STARTERS ---
-                for player in lineup:
-                    p_id = player.get('playerId')
-                    # Lookup Name
-                    p_name = player_map.get(p_id, "Unknown Player")
+                # --- HELPER: Add Player with Name Lookup ---
+                def add_player(player_obj, minutes, p_type):
+                    p_id = player_obj.get('playerId')
                     
-                    if p_id in sub_out_map:
-                        mins_played = sub_out_map[p_id]
-                    else:
-                        mins_played = match_duration
+                    # 1. Try local map (Best Source)
+                    p_name = name_map.get(p_id)
                     
-                    if mins_played > 0:
+                    # 2. Fallback to API data if map fails
+                    if not p_name:
+                         p_name = player_obj.get('shortName') or player_obj.get('lastName') or "Unknown Player"
+
+                    if minutes > 0:
                         player_minutes_list.append({
                             'matchId': match_id,
                             'playerId': p_id,
                             'playerName': p_name,
                             'teamName': team_name,
-                            'minutes': mins_played,
-                            'position_code': player.get('role', {}).get('code2'),
-                            'type': 'Starter'
+                            'minutes': minutes,
+                            'position_code': player_obj.get('role', {}).get('code2'),
+                            'type': p_type
                         })
+                # -------------------------------------------
 
-                # --- 4. PROCESS BENCH ---
+                # Process Starters
+                for player in lineup:
+                    p_id = player.get('playerId')
+                    mins = sub_out_map.get(p_id, match_duration)
+                    add_player(player, mins, 'Starter')
+
+                # Process Bench
                 for player in bench:
                     p_id = player.get('playerId')
-                    p_name = player_map.get(p_id, "Unknown Player")
-                    
                     if p_id in sub_in_map:
-                        time_in = sub_in_map[p_id]
+                        t_in = sub_in_map[p_id]
                         if p_id in sub_out_map:
-                            mins_played = sub_out_map[p_id] - time_in
+                            mins = sub_out_map[p_id] - t_in
                         else:
-                            mins_played = match_duration - time_in
-                        
-                        if mins_played > 0:
-                            player_minutes_list.append({
-                                'matchId': match_id,
-                                'playerId': p_id,
-                                'playerName': p_name,
-                                'teamName': team_name,
-                                'minutes': mins_played,
-                                'position_code': player.get('role', {}).get('code2'),
-                                'type': 'Sub'
-                            })
+                            mins = match_duration - t_in
+                        add_player(player, mins, 'Sub')
                     
         except requests.exceptions.RequestException as e:
             print(f"  -> ⚠️ Failed match {match_id}: {e}")
@@ -271,17 +254,14 @@ def fetch_official_player_minutes(username, password, match_ids):
     minutes_df = pd.DataFrame(player_minutes_list)
     print(f"✅ Retrieved official minutes for {len(minutes_df)} records.")
     
-    # --- AGGREGATION ---
-    # Group to get season totals
+    # Aggregation
     total_minutes = minutes_df.groupby(['playerId', 'playerName', 'teamName'])['minutes'].sum().reset_index()
     total_minutes.rename(columns={'minutes': 'totalMinutes'}, inplace=True)
     
-    # Determine Primary Position
     pos_counts = minutes_df.groupby(['playerId', 'position_code']).size().reset_index(name='count')
     primary_positions = pos_counts.sort_values(['playerId', 'count'], ascending=[True, False]).drop_duplicates('playerId')
     primary_positions.rename(columns={'position_code': 'primaryPosition'}, inplace=True)
     
-    # Merge
     final_df = pd.merge(total_minutes, primary_positions[['playerId', 'primaryPosition']], on='playerId', how='left')
     final_df['primaryPosition'] = final_df['primaryPosition'].fillna('Unknown')
     final_df['playerId'] = final_df['playerId'].astype(int)
@@ -1555,16 +1535,34 @@ def main():
     with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
     print("✅ All season-long team stats (current season) saved to 'season_team_stats.pkl'")
 
+    
     # --- 9. FETCH OFFICIAL PLAYER MINUTES (API SOURCE) ---
     print("\nStarting official player minute retrieval (current season)...")
     
     current_match_ids = current_matches_summary_df['matchId'].dropna().unique().tolist()
     
-    # Call the new API fetch function
+    # --- NEW: Build Name Map from Events ---
+    print("Building player name map from event data...")
+    # Get all unique ID -> Name pairs from events
+    name_map = current_raw_events_df.dropna(subset=['player.id', 'player.name']) \
+        .set_index('player.id')['player.name'].to_dict()
+        
+    # Ensure keys are integers to match API IDs
+    # (Safe conversion that ignores weird non-numeric IDs if any exist)
+    clean_name_map = {}
+    for k, v in name_map.items():
+        try:
+            clean_name_map[int(k)] = v
+        except:
+            continue
+    # ---------------------------------------
+
+    # Call function with map
     player_minutes_df = fetch_official_player_minutes(
         wyscout_user,
         wyscout_pass,
-        current_match_ids
+        current_match_ids,
+        clean_name_map  # <--- PASS THE MAP HERE
     )
 
     if not player_minutes_df.empty:
