@@ -2533,6 +2533,32 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'Player Profile':
         st.header("Player Profile")
         
+        # --- DEBUGGING BLOCK (Delete this after fixing) ---
+        with st.expander("🕵️‍♂️ DEBUG: Data Inspection"):
+            st.write(f"**Selected Player ID:** {player_id} (Type: {type(player_id)})")
+            
+            if not player_minutes_df.empty:
+                st.write("**Player Minutes DataFrame Head:**")
+                st.dataframe(player_minutes_df.head())
+                
+                # Check if ID exists in minutes DF
+                try:
+                    pid_int = int(player_id)
+                    match = player_minutes_df[player_minutes_df['playerId'] == pid_int]
+                    st.write(f"**Lookup Result for ID {pid_int}:**")
+                    if match.empty:
+                        st.error("❌ Player ID NOT FOUND in player_minutes_df")
+                        # Show all IDs to see format
+                        st.write("Available IDs (First 10):", player_minutes_df['playerId'].head(10).tolist())
+                    else:
+                        st.success("✅ Player ID FOUND!")
+                        st.write(match)
+                except Exception as e:
+                    st.error(f"Error checking ID: {e}")
+            else:
+                st.error("❌ player_minutes_df is EMPTY!")
+        # --------------------------------------------------
+        
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
         
