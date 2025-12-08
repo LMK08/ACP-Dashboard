@@ -153,122 +153,233 @@ def fetch_events(username, password, match_ids):
     print(f"\n✅ Retrieved {len(events_df)} total events.")
     return events_df
 
+def fetch_official_player_minutes(username, password, match_ids):
+    """
+    Fetches minutes by CALCULATING them from the lineup and substitutions
+    found in the standard /matches/{id} endpoint.
+    Includes safety checks for missing formation data.
+    """
+    base_url_v3 = "https://apirest.wyscout.com/v3"
+    auth = HTTPBasicAuth(username, password)
+    
+    player_minutes_list = []
+    
+    session = requests.Session()
+    retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    
+    print(f"\n🚀 Fetching official minutes for {len(match_ids)} matches...")
+    
+    for match_id in tqdm(match_ids, desc="Fetching Match Info"):
+        url = f"{base_url_v3}/matches/{match_id}"
+        
+        try:
+            r = session.get(url, auth=auth, timeout=20)
+            r.raise_for_status()
+            match_data = r.json()
+            
+            # --- 1. BUILD PLAYER LOOKUP MAP ---
+            # The lineup objects often lack names, so we look them up here
+            player_map = {}
+            for p in match_data.get('players', []):
+                p_id = p.get('wyId')
+                if p_id:
+                    player_map[p_id] = p.get('shortName') or p.get('lastName') or "Unknown"
+
+            # Default duration 96 to capture stoppage time if not specified
+            match_duration = 96 
+
+            teams_data = match_data.get('teamsData', {})
+            
+            for team_id, team_info in teams_data.items():
+                team_name = team_info.get('name', 'Unknown')
+                formation = team_info.get('formation')
+                
+                # --- SAFETY FIX: Check if formation is None ---
+                if not formation:
+                    continue
+                # ----------------------------------------------
+                
+                lineup = formation.get('lineup', [])
+                bench = formation.get('bench', [])
+                substitutions = formation.get('substitutions', [])
+                
+                # --- 2. MAP SUBSTITUTIONS ---
+                sub_out_map = {}
+                sub_in_map = {}
+                
+                for sub in substitutions:
+                    minute = sub.get('minute', 90)
+                    player_out = sub.get('playerOut')
+                    player_in = sub.get('playerIn')
+                    if player_out: sub_out_map[player_out] = minute
+                    if player_in: sub_in_map[player_in] = minute
+
+                # --- 3. PROCESS STARTERS ---
+                for player in lineup:
+                    p_id = player.get('playerId')
+                    # Lookup Name
+                    p_name = player_map.get(p_id, "Unknown Player")
+                    
+                    if p_id in sub_out_map:
+                        mins_played = sub_out_map[p_id]
+                    else:
+                        mins_played = match_duration
+                    
+                    if mins_played > 0:
+                        player_minutes_list.append({
+                            'matchId': match_id,
+                            'playerId': p_id,
+                            'playerName': p_name,
+                            'teamName': team_name,
+                            'minutes': mins_played,
+                            'position_code': player.get('role', {}).get('code2'),
+                            'type': 'Starter'
+                        })
+
+                # --- 4. PROCESS BENCH ---
+                for player in bench:
+                    p_id = player.get('playerId')
+                    p_name = player_map.get(p_id, "Unknown Player")
+                    
+                    if p_id in sub_in_map:
+                        time_in = sub_in_map[p_id]
+                        if p_id in sub_out_map:
+                            mins_played = sub_out_map[p_id] - time_in
+                        else:
+                            mins_played = match_duration - time_in
+                        
+                        if mins_played > 0:
+                            player_minutes_list.append({
+                                'matchId': match_id,
+                                'playerId': p_id,
+                                'playerName': p_name,
+                                'teamName': team_name,
+                                'minutes': mins_played,
+                                'position_code': player.get('role', {}).get('code2'),
+                                'type': 'Sub'
+                            })
+                    
+        except requests.exceptions.RequestException as e:
+            print(f"  -> ⚠️ Failed match {match_id}: {e}")
+            
+    if not player_minutes_list:
+        print("❌ No player minutes data found.")
+        return pd.DataFrame()
+
+    minutes_df = pd.DataFrame(player_minutes_list)
+    print(f"✅ Retrieved official minutes for {len(minutes_df)} records.")
+    
+    # --- AGGREGATION ---
+    # Group to get season totals
+    total_minutes = minutes_df.groupby(['playerId', 'playerName', 'teamName'])['minutes'].sum().reset_index()
+    total_minutes.rename(columns={'minutes': 'totalMinutes'}, inplace=True)
+    
+    # Determine Primary Position
+    pos_counts = minutes_df.groupby(['playerId', 'position_code']).size().reset_index(name='count')
+    primary_positions = pos_counts.sort_values(['playerId', 'count'], ascending=[True, False]).drop_duplicates('playerId')
+    primary_positions.rename(columns={'position_code': 'primaryPosition'}, inplace=True)
+    
+    # Merge
+    final_df = pd.merge(total_minutes, primary_positions[['playerId', 'primaryPosition']], on='playerId', how='left')
+    final_df['primaryPosition'] = final_df['primaryPosition'].fillna('Unknown')
+    final_df['playerId'] = final_df['playerId'].astype(int)
+    
+    return final_df
+
 # ==============================================================================
 # SECTION 3: DATA PROCESSING FUNCTIONS
 # ==============================================================================
 
 # process_data.py (Add this new function in Section 3)
 
-def calculate_player_minutes_and_positions(events_df, match_ids, username, password):
+def calculate_player_minutes_and_positions(matches_df, events_df):
     """
-    Fetches match details to calculate precise minutes played and determines player positions.
-    Based on notebook cells 6 & 7.
+    Calculates total minutes played and primary positions for each player
+    using the direct 'minutesOnField' data from the matches_df (Wyscout API data).
     """
-    print("Processing: Calculating player minutes and positions...")
-    base_url = "https://apirest.wyscout.com/v3"
-    auth = HTTPBasicAuth(username, password)
+    print("Calculating player minutes and positions from API data...")
     
-    # --- Step 1: Prepare Context (from Cell 6 & 7) ---
-    player_map_df = events_df.dropna(subset=['player.id', 'player.name'])[['player.id', 'player.name']]
-    player_map_df['player.id'] = player_map_df['player.id'].astype(int)
-    player_map_df = player_map_df.drop_duplicates(subset='player.id')
-    player_name_map = pd.Series(player_map_df['player.name'].values, index=player_map_df['player.id']).to_dict()
+    player_stats_list = []
 
-    team_map_df = events_df.dropna(subset=['team.id', 'team.name'])[['team.id', 'team.name']]
-    team_map_df['team.id'] = team_map_df['team.id'].astype(int)
-    team_map_df = team_map_df.drop_duplicates(subset='team.id')
-    team_name_map = pd.Series(team_map_df['team.name'].values, index=team_map_df['team.id']).to_dict()
-    
-    match_length_map = events_df.groupby('matchId')['minute'].max().to_dict()
-    player_minutes = defaultdict(int)
-
-    print(f"  -> Context prepared. Found {len(player_name_map)} players in {len(match_ids)} matches.")
-
-    # --- Step 2: Iterate Matches for Minutes (from Cell 6) ---
-    for match_id in tqdm(match_ids, desc="Fetching Match Lineups"):
-        details_url = f"{base_url}/matches/{match_id}"
-        try:
-            r_details = requests.get(details_url, auth=auth, timeout=10)
-            if r_details.status_code != 200: continue
-            match_details = r_details.json()
-            teams_data = match_details.get('teamsData')
-            if not teams_data: continue
-
-            match_length = match_length_map.get(match_id, 90) # Default to 90
+    # Iterate through every match to scrape minute data
+    for index, match in matches_df.iterrows():
+        match_id = match.get('wyId')
+        teams_data = match.get('teamsData')
+        
+        if not teams_data:
+            continue
             
-            for team_id_str, team_info in teams_data.items():
-                team_id = int(team_id_str)
-                formation = team_info.get('formation', {})
-                lineup = formation.get('lineup', [])
-                substitutions = formation.get('substitutions', [])
+        for team_id, team_data in teams_data.items():
+            team_name = team_data.get('name', 'Unknown')
+            formation = team_data.get('formation')
+            
+            # Safety Check: Skip if formation data is missing
+            if not formation:
+                continue
                 
-                players_subbed_out = {sub['playerOut']: sub['minute'] for sub in substitutions if 'playerOut' in sub and 'minute' in sub}
-
-                # Process starters
-                for player in lineup:
-                    player_id = player.get('playerId')
-                    if not player_id: continue
-                    if player_id in players_subbed_out:
-                        player_minutes[(player_id, team_id)] += players_subbed_out[player_id]
-                    else:
-                        player_minutes[(player_id, team_id)] += match_length
+            # Combine starters (lineup) and subs (bench)
+            # Both lists contain player objects with 'minutesOnField'
+            all_players = formation.get('lineup', []) + formation.get('bench', [])
+            
+            for player in all_players:
+                p_id = player.get('playerId')
+                p_name = player.get('shortName') or player.get('lastName') or 'Unknown'
                 
-                # Process substitutes
-                for sub in substitutions:
-                    player_in_id = sub.get('playerIn')
-                    minute_in = sub.get('minute')
-                    if not player_in_id or minute_in is None: continue
-                    player_minutes[(player_in_id, team_id)] += (match_length - minute_in)
+                # --- MINUTES CALCULATION ---
+                # Wyscout usually uses 'minutesOnField'. We check 'minutesPlayed' as fallback.
+                minutes_played = player.get('minutesOnField')
+                if minutes_played is None:
+                     minutes_played = player.get('minutesPlayed', 0)
+                
+                # Only record if they actually played
+                if minutes_played > 0:
+                    # --- POSITION EXTRACTION ---
+                    # Wyscout provides a 'role' dict: {'code2': 'MD', 'name': 'Midfielder', ...}
+                    role = player.get('role', {})
+                    role_name = role.get('name') 
+                    role_code = role.get('code2') # e.g., 'GK', 'DF', 'MD', 'FW'
                     
-        except requests.exceptions.RequestException as e:
-            print(f"  -> ⚠️ Warning: Failed to fetch details for match {match_id}: {e}")
+                    player_stats_list.append({
+                        'playerId': p_id,
+                        'playerName': p_name,
+                        'teamName': team_name,
+                        'minutes': minutes_played,
+                        'matchId': match_id,
+                        'position_code': role_code,
+                        'position_name': role_name
+                    })
 
-    # --- Step 3: Create Minutes Report (from Cell 6) ---
-    if not player_minutes:
-        print("❌ Error: No player minutes were calculated.")
-        return pd.DataFrame()
-        
-    report_data = [{'playerId': pid, 'teamId': tid, 'totalMinutes': mins} for (pid, tid), mins in player_minutes.items()]
-    report_df = pd.DataFrame(report_data)
-    report_df['playerName'] = report_df['playerId'].map(player_name_map).fillna('Unknown Player')
-    report_df['teamName'] = report_df['teamId'].map(team_name_map).fillna('Unknown Team')
-    
-    print("✅ Player minutes calculated.")
+    # Create DataFrame from the list
+    if not player_stats_list:
+        print("Warning: No player minute data found.")
+        return pd.DataFrame(columns=['playerId', 'playerName', 'teamName', 'totalMinutes', 'primaryPosition'])
 
-    # --- Step 4: Calculate Positions (from Cell 7) ---
-    print("  -> Calculating player positions...")
-    positions_df = events_df.dropna(subset=['player.id', 'player.position'])[['player.id', 'player.position']]
-    positions_df['player.id'] = positions_df['player.id'].astype(int)
+    stats_df = pd.DataFrame(player_stats_list)
 
-    def get_player_positions(group):
-        position_counts = group['player.position'].value_counts()
-        positions = position_counts.index.tolist()
-        results = {
-            'primaryPosition': positions[0] if len(positions) > 0 else np.nan,
-            'secondaryPosition': positions[1] if len(positions) > 1 else np.nan,
-            'tertiaryPosition': positions[2] if len(positions) > 2 else np.nan,
-        }
-        return pd.Series(results)
+    # --- AGGREGATION ---
+    # 1. Group by Player to get Total Minutes
+    minutes_df = stats_df.groupby(['playerId', 'playerName', 'teamName'])['minutes'].sum().reset_index()
+    minutes_df.rename(columns={'minutes': 'totalMinutes'}, inplace=True)
 
-    ranked_positions_df = positions_df.groupby('player.id').apply(get_player_positions).reset_index()
+    # 2. Determine Primary Position (Most common position played)
+    # We group by player and position, count occurrences, and take the top one
+    pos_counts = stats_df.groupby(['playerId', 'position_code']).size().reset_index(name='count')
+    # Sort by count desc and drop duplicates to keep the most frequent
+    primary_positions = pos_counts.sort_values(['playerId', 'count'], ascending=[True, False]).drop_duplicates('playerId')
+    primary_positions.rename(columns={'position_code': 'primaryPosition'}, inplace=True)
+
+    # 3. Merge Position back into Minutes
+    final_df = pd.merge(minutes_df, primary_positions[['playerId', 'primaryPosition']], on='playerId', how='left')
+
+    # Fill missing positions
+    final_df['primaryPosition'] = final_df['primaryPosition'].fillna('Unknown')
     
-    # --- Step 5: Merge Positions into Report (from Cell 7) ---
-    enriched_df = pd.merge(report_df, ranked_positions_df, left_on='playerId', right_on='player.id', how='left')
-    
-    # Clean up and reorder
-    if 'player.id' in enriched_df.columns:
-        enriched_df = enriched_df.drop(columns=['player.id']) # Drop redundant column
-        
-    final_columns = ['playerId', 'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition']
-    # Ensure all columns exist, add if missing (e.g., if no positions found)
-    for col in final_columns:
-        if col not in enriched_df.columns:
-            enriched_df[col] = np.nan
-            
-    enriched_df = enriched_df[final_columns]
-    print("✅ Player positions calculated and merged.")
-    
-    return enriched_df
+    # Ensure IDs are integers
+    final_df['playerId'] = final_df['playerId'].astype(int)
+
+    return final_df
 
 
 def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
@@ -1444,21 +1555,24 @@ def main():
     with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
     print("✅ All season-long team stats (current season) saved to 'season_team_stats.pkl'")
 
-    # --- 9. CALCULATE PLAYER MINUTES (ONLY FOR CURRENT SEASON) ---
-    print("\nStarting player minute and position calculation (current season)...")
+    # --- 9. FETCH OFFICIAL PLAYER MINUTES (API SOURCE) ---
+    print("\nStarting official player minute retrieval (current season)...")
+    
     current_match_ids = current_matches_summary_df['matchId'].dropna().unique().tolist()
-    player_minutes_df = calculate_player_minutes_and_positions(
-        current_raw_events_df.copy(), # Use current events
-        current_match_ids,           # Use current match IDs
+    
+    # Call the new API fetch function
+    player_minutes_df = fetch_official_player_minutes(
         wyscout_user,
-        wyscout_pass
+        wyscout_pass,
+        current_match_ids
     )
+
     if not player_minutes_df.empty:
         player_minutes_df.to_pickle('player_minutes_and_positions.pkl')
-        print("✅ Player minutes and positions (current season) saved to 'player_minutes_and_positions.pkl'")
+        print("✅ Official player minutes saved to 'player_minutes_and_positions.pkl'")
     else:
-        print("❌ Failed to calculate player minutes, file not saved.")
-    
+        print("❌ Failed to fetch player minutes.")
+
     print("\n🎉 Data processing pipeline complete!")
 
 
