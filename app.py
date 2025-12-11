@@ -2557,22 +2557,39 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
         
-        # --- Use the percentile DF for the list, as it's pre-filtered by min_minutes ---
-        player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        # FIX: Include 'playerId' in the list dataframe so we can grab it later
+        # (Added 'playerId' to the list of columns below)
+        player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        
+        # Create unique display names
         player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
         
         selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
-        selected_player_name = player_list_df[player_list_df['display_name'] == selected_player_display]['playerName'].values[0]
         
         try:
-            # Get data from the 'with_scores' df
-            player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_name]
-            player_per_90_stats = player_data_row.iloc[0] # This is the series for the stats tables
-            player_id = player_per_90_stats.get('playerId')
+            # FIX: Get the UNIQUE ID corresponding to the selected display name
+            # (We use .values[0] to grab the actual integer ID)
+            selected_player_id = player_list_df[player_list_df['display_name'] == selected_player_display]['playerId'].values[0]
+            
+            # FIX: Filter the main dataframe by ID, not by Name
+            # This ensures we get the exact Miguel Lopes the user clicked on
+            player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_id]
+            
+            # Extract stats series
+            player_per_90_stats = player_data_row.iloc[0] 
+            
+            # Define player_id variable for use in other sections
+            player_id = selected_player_id
+            
+            # Load Bio
             player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
             total_minutes = player_per_90_stats.get('totalMinutes', 0)
+            
+            # Also update the 'selected_player_name' variable for the Match Log function
+            selected_player_name = player_per_90_stats.get('playerName')
+
         except Exception as e:
-            st.error(f"Could not load data for {selected_player_name}. Error: {e}")
+            st.error(f"Could not load data for {selected_player_display}. Error: {e}")
             st.stop()
         
         # --- DEBUGGING BLOCK (Delete this after fixing) ---
