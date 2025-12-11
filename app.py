@@ -2963,7 +2963,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.sidebar.subheader("Comparison Options")
         
         # --- Step A: Select Player A (from all players) ---
-        player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        # FIX: Include 'playerId' in the columns so we can use it for lookup
+        player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
         player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
         
         selected_player_a_display = st.sidebar.selectbox(
@@ -2971,14 +2972,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             player_list_df['display_name'], 
             index=0 # Default to first player
         )
-        selected_player_a_name = player_list_df[player_list_df['display_name'] == selected_player_a_display]['playerName'].values[0]
-        player_a_data = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_a_name]
+        
+        # FIX: Lookup by ID instead of Name
+        selected_player_a_id = player_list_df[player_list_df['display_name'] == selected_player_a_display]['playerId'].values[0]
+        player_a_data = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_a_id]
+        
+        # Get the name safely from the ID-filtered data
+        selected_player_a_name = player_a_data.iloc[0]['playerName']
 
         # --- Step B: Select Template ---
         all_templates = sorted(list(POSITION_GROUPS.keys()))
         
         # Find Player A's best-fit template as default
-        primary_pos_a = player_a_data['primaryPosition'].values[0]
+        primary_pos_a = player_a_data.iloc[0]['primaryPosition']
         eligible_groups_a = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos_a in pos_roles]
         highest_score = -1; default_template = all_templates[0]
         for group in eligible_groups_a:
@@ -3004,7 +3010,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         ]
         
         # Create the display list for Player B from the filtered df
-        player_b_list_df = filtered_player_df[['playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        # FIX: Include 'playerId' here too
+        player_b_list_df = filtered_player_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
         player_b_list_df['display_name'] = player_b_list_df['playerName'] + " (" + player_b_list_df['teamName'] + ", " + player_b_list_df['totalMinutes'].astype(int).astype(str) + " min)"
         
         # Find a smart default index for Player B (e.g., the second player in the list)
@@ -3018,8 +3025,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             player_b_list_df['display_name'],
             index=default_b_index 
         )
-        selected_player_b_name = player_b_list_df[player_b_list_df['display_name'] == selected_player_b_display]['playerName'].values[0]
-        player_b_data = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == selected_player_b_name]
+        
+        # FIX: Lookup by ID instead of Name
+        selected_player_b_id = player_b_list_df[player_b_list_df['display_name'] == selected_player_b_display]['playerId'].values[0]
+        player_b_data = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_b_id]
+        
+        # Get the name safely
+        selected_player_b_name = player_b_data.iloc[0]['playerName']
 
 
         # --- 4. Plot Radar ---
