@@ -2887,7 +2887,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --------------------------------------------------
         
         # --- 3. Get Player's Match Log ---
-        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
+        player_match_log_df = get_player_match_stats(selected_player_name, active_events, active_matches)
         
         # --- 4. Display Player Bio ---
         # FIX: Robust lookup for Team and Position using player_minutes_df
