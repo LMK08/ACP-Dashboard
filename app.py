@@ -2689,42 +2689,45 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'Player Profile':
         st.header("Player Profile")
         
-        # --- 1. Load Data (Current & History) ---
-        # Load standard current data (fast)
+        # --- 1. Load Lightweight Data (Fast) ---
         player_details_df = load_player_details()
         
-        # Load historical data (cached)
-        all_events_df, all_matches_df, all_time_minutes_df = load_historical_data()
+        # Load just the minutes (for the search bar) - This is fast!
+        all_time_minutes_df = load_all_time_minutes()
         
-        if all_events_df is None:
-            st.error("Historical data not found. Please ensure fetch_full_history.py has run.")
-            st.stop()
-
+        # Load standard current events (Already loaded at top of app usually)
+        # If not, ensure you have: current_events = pd.read_parquet('raw_events.parquet') available
+        
         # --- 2. View Mode Toggle ---
-        # This determines WHICH data we calculate stats on
         st.sidebar.subheader("Analysis Scope")
         view_mode = st.sidebar.radio("Stats View:", ["Current Season", "Career (Liga 3)"], horizontal=True)
 
-        # --- 3. Filter Data Based on View Mode ---
-        if view_mode == "Current Season":
-            # Use only current season data (Season ID 191782)
-            # Or simpler: just use the raw_events.parquet content if loaded separately
-            # Here we filter the master list for speed and accuracy
-            target_season_id = 191782
-            
-            # Filter Matches
-            active_matches = all_matches_df[all_matches_df['seasonId'] == target_season_id]
-            active_match_ids = active_matches['matchId'].unique()
-            
-            # Filter Events & Minutes
-            active_events = all_events_df[all_events_df['matchId'].isin(active_match_ids)]
-            active_minutes = player_minutes_df # Use the standard current season minutes file loaded at start
-            
+        # --- 3. Smart Data Loading ---
+        if view_mode == "Career (Liga 3)":
+            # ⚠️ HEAVY LOAD HAPPENS HERE ONLY IF USER CLICKS ⚠️
+            with st.spinner("Loading 5 years of history..."):
+                hist_events_df, hist_matches_df = get_heavy_historical_events()
+                
+                if hist_events_df is not None:
+                    # Combine Current + History
+                    # Note: We assume 'raw_events_df' is your global current events variable
+                    active_events = pd.concat([raw_events_df, hist_events_df], ignore_index=True)
+                    active_matches = pd.concat([matches_summary_df, hist_matches_df], ignore_index=True).drop_duplicates(subset=['matchId'])
+                    active_minutes = all_time_minutes_df
+                else:
+                    st.warning("Could not load history. Showing current season only.")
+                    active_events = raw_events_df
+                    active_matches = matches_summary_df
+                    active_minutes = all_time_minutes_df
+                    
         else:
-            # Career Mode: Use EVERYTHING
-            active_events = all_events_df
-            active_matches = all_matches_df
-            active_minutes = all_time_minutes_df # Use the master minutes file
+            # LIGHT LOAD (Default)
+            active_events = raw_events_df
+            active_matches = matches_summary_df
+            # For Current Season view, we can filter the minutes file to just current players if we want,
+            # or just use the master list. Using master list is fine.
+            active_minutes = all_time_minutes_df
+
 
         # --- 4. Calculate Stats (On the active dataset) ---
         try:
