@@ -2729,56 +2729,67 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning("Could not calculate raw league stats for custom plot.")
 
     
+   # --- PLAYER PROFILE TAB ---
     elif analysis_type == 'Player Profile':
         st.header("Player Profile")
         
-        # --- 1. Load Lightweight Data (Fast) ---
+        # --- 1. Load Data ---
         player_details_df = load_player_details()
-        
-        # Load just the minutes (for the search bar) - This is fast!
-        all_time_minutes_df = load_all_time_minutes()
-        
-        # Load standard current events (Already loaded at top of app usually)
-        # If not, ensure you have: current_events = pd.read_parquet('raw_events.parquet') available
+        all_time_minutes_df = load_all_time_minutes() # Tiny file, safe to load
         
         # --- 2. View Mode Toggle ---
-        st.sidebar.subheader("Analysis Scope")
+        st.sidebar.header("Analysis Scope")
         view_mode = st.sidebar.radio("Stats View:", ["Current Season", "Career (Liga 3)"], horizontal=True)
 
-        # --- 3. Smart Data Loading ---
+        # --- 3. Set Active Data Based on View ---
         if view_mode == "Career (Liga 3)":
-            # ⚠️ HEAVY LOAD HAPPENS HERE ONLY IF USER CLICKS ⚠️
-            with st.spinner("Loading 5 years of history..."):
-                hist_events_df, hist_matches_df = get_heavy_historical_events()
-                
-                if hist_events_df is not None:
+            # --- CAREER MODE ---
+            try:
+                with st.spinner("Loading 5 years of history..."):
+                    hist_events, hist_matches = get_heavy_historical_events()
+                    
+                    if hist_events is None:
+                        st.error("Could not load historical data. Check logs.")
+                        st.stop()
+                        
                     # Combine Current + History
-                    # Note: We assume 'raw_events_df' is your global current events variable
-                    active_events = pd.concat([raw_events_df, hist_events_df], ignore_index=True)
-                    active_matches = pd.concat([matches_summary_df, hist_matches_df], ignore_index=True).drop_duplicates(subset=['matchId'])
-                    active_minutes = all_time_minutes_df
-                else:
-                    st.warning("Could not load history. Showing current season only.")
-                    active_events = raw_events_df
-                    active_matches = matches_summary_df
+                    # Note: We use the global 'raw_events_df' and 'matches_summary_df' loaded at startup
+                    active_events = pd.concat([raw_events_df, hist_events], ignore_index=True)
+                    active_matches = pd.concat([matches_summary_df, hist_matches], ignore_index=True).drop_duplicates(subset=['matchId'])
+                    
+                    # Use the Master Minutes File
                     active_minutes = all_time_minutes_df
                     
+            except Exception as e:
+                st.error(f"Critical Error loading history: {e}")
+                st.stop()
+                
         else:
-            # LIGHT LOAD (Default)
+            # --- CURRENT SEASON MODE ---
+            # Use the global variables directly
             active_events = raw_events_df
             active_matches = matches_summary_df
-            # For Current Season view, we can filter the minutes file to just current players if we want,
-            # or just use the master list. Using master list is fine.
-            active_minutes = all_time_minutes_df
+            
+            # Filter the Minutes File to ONLY Current Season players
+            # We look for players who have a record in the 'player_minutes_and_positions.pkl' file
+            # or we just assume the 'active_minutes' should be the current season one.
+            try:
+                # Load the specific current season minutes file we created in process_data.py
+                active_minutes = pd.read_pickle('player_minutes_and_positions.pkl')
+            except:
+                # Fallback: Filter the big list? No, better to default to empty or keep big list.
+                # Let's keep the big list but mapped to current season stats.
+                active_minutes = pd.read_pickle('player_minutes_and_positions.pkl')
 
-
-        # --- 4. Calculate Stats (On the active dataset) ---
+        # --- 4. Calculate Stats (Dynamic) ---
         try:
-            # We calculate stats for the selected scope
-            # Note: For 'Career', this calculates stats for 2,000+ players.
-            # Streamlit cache helps, but this might take 5-10s on first load.
+            # Calculate stats for the selected scope
             current_stats_df = calculate_all_player_stats(active_events, active_minutes)
             
+            if current_stats_df.empty:
+                st.warning("No stats found for the selected view.")
+                st.stop()
+                
             player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                 current_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
             )
@@ -2786,41 +2797,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.error(f"Error calculating stats: {e}")
             st.stop()
 
-        # --- 5. Player Selector (Search ALL players in history) ---
-        # We always search the MASTER list so you can find old players
-        # even if 'Current Season' is selected (we'll just show N/A stats if they didn't play)
+        # --- 5. Player Selector (Unified) ---
+        st.sidebar.subheader("Select Player")
         
-        search_list = all_time_minutes_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        # We always search the active_minutes dataframe to ensure we pick valid players
+        # Sort by minutes so key players are at the top
+        search_list = active_minutes[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
+        
+        # Create a display string
         search_list['display_name'] = search_list['playerName'] + " (" + search_list['teamName'] + ")"
         
-        selected_player_display = st.sidebar.selectbox("Select Player:", search_list['display_name'])
+        selected_player_display = st.sidebar.selectbox("Search Player:", search_list['display_name'])
         
-        # ID Lookup
+        # Get ID
         selected_player_id = search_list[search_list['display_name'] == selected_player_display]['playerId'].values[0]
         
         # --- 6. Retrieve Selected Player Data ---
-        # Attempt to find player in the calculated stats (active scope)
         player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_id]
         
         if player_data_row.empty:
-            if view_mode == "Current Season":
-                st.warning(f"Player found in database, but has no minutes in Current Season. Switch view to 'Career'.")
-            else:
-                st.warning("No stats available for this player in the selected view.")
+            st.warning(f"Player selected but has no stats in '{view_mode}' view.")
             st.stop()
             
         player_per_90_stats = player_data_row.iloc[0]
         player_id = selected_player_id
-        
+        selected_player_name = player_per_90_stats.get('playerName')
+
         # Load Bio
         player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
+        total_minutes = player_per_90_stats.get('totalMinutes', 0)
 
-        # --- 7. Get Match Log (Using Active Matches) ---
-        # Ensure we pass the correct 'playerName' and the correct 'matches_df' (active_matches)
-        selected_player_name = player_per_90_stats.get('playerName')
+        # --- 7. Generate Match Log ---
+        # Crucial: Pass the ACTIVE datasets (Current or Career)
         player_match_log_df = get_player_match_stats(selected_player_name, active_events, active_matches)
 
-        # ... (Rest of your profile code: Bio, Radar, Tables stays exactly the same) ...
+        # ... (The rest of your code for Radar Charts / Tables can stay the same below) ...
 
         # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
