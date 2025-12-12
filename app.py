@@ -127,62 +127,77 @@ def _calculate_age(birth_date):
         return "N/A"
 
 @st.cache_data
-def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
+def get_player_match_stats(player_name, events_df, matches_df):
     """
-    Goes through all match data and extracts the individual match stats
-    for a single selected player.
+    Dynamically calculates a match log for a specific player using Raw Events.
+    Works for both Current Season and Career Mode.
     """
-    player_matches = []
-    
-    # Create a quick lookup map for match info
-    match_info_map = _matches_summary_df.set_index('matchId').to_dict('index')
-    
-    for match_id, match_data in _all_match_data.items():
-        if not match_data or 'player_stats' not in match_data:
-            continue
-            
-        home_df = match_data['player_stats'].get('home')
-        away_df = match_data['player_stats'].get('away')
-        
-        player_stats_series = None
-        opponent = "N/A"
-        
-        match_info = match_info_map.get(match_id, {})
-        home_team = match_info.get('homeTeamName', 'Home')
-        away_team = match_info.get('awayTeamName', 'Away')
-        
-        if home_df is not None and player_name in home_df.index:
-            player_stats_series = home_df.loc[player_name]
-            opponent = f"vs. {away_team} (H)"
-        elif away_df is not None and player_name in away_df.index:
-            player_stats_series = away_df.loc[player_name]
-            opponent = f"vs. {home_team} (A)"
-            
-        if player_stats_series is not None:
-            # Convert series to a dictionary and add match info
-            stats_dict = player_stats_series.to_dict()
-            stats_dict['Match'] = opponent
-            stats_dict['Date'] = match_info.get('dateutc', 'N/A')
-            stats_dict['Score'] = match_info.get('score', 'N/A')
-            player_matches.append(stats_dict)
-
-    if not player_matches:
+    if events_df is None or events_df.empty:
         return pd.DataFrame()
+
+    # 1. Filter events for this player
+    # We use 'player.name' from events. Note: Names might vary slightly, 
+    # but exact match from the profile selector is usually safe.
+    # Ideally, we'd use playerId, but sometimes event data uses name.
+    # Let's try filtering by the name provided.
+    
+    # Optimization: Filter by ID if possible, but events file usually has 'player.name'
+    # We will assume 'player_name' is accurate.
+    player_events = events_df[events_df['player.name'] == player_name]
+    
+    if player_events.empty:
+        return pd.DataFrame()
+
+    # 2. Group by Match to get stats
+    # We aggregate xG, Shots, Goals, etc.
+    stats_per_match = player_events.groupby('matchId').agg({
+        'shot.xg': 'sum',
+        'matchId': 'count' # Dummy count just to keep the row
+    }).rename(columns={'shot.xg': 'xg', 'matchId': 'event_count'})
+    
+    # 3. Calculate Goals manually (if 'goal' is in tags or specific type)
+    # Wyscout v3: 'shot.isGoal' is a boolean column usually
+    if 'shot.isGoal' in player_events.columns:
+        goals = player_events[player_events['shot.isGoal'] == True].groupby('matchId').size()
+        stats_per_match['goals'] = goals
+    else:
+        stats_per_match['goals'] = 0
         
-    # Create and format the DataFrame
-    match_log_df = pd.DataFrame(player_matches)
+    stats_per_match['goals'] = stats_per_match['goals'].fillna(0)
     
-    # Format the date
-    if 'Date' in match_log_df.columns:
-        match_log_df['Date'] = pd.to_datetime(match_log_df['Date']).dt.strftime('%Y-%m-%d')
+    # 4. Merge with Match Info (Date, Opponent)
+    # We need to join with matches_df
+    log_df = stats_per_match.reset_index()
     
-    # Reorder columns to put match info first
-    cols_to_front = ['Date', 'Match', 'Score', 'Minutes']
-    all_cols = cols_to_front + [col for col in match_log_df.columns if col not in cols_to_front]
-    match_log_df = match_log_df[all_cols].fillna(0)
-    match_log_df = match_log_df.sort_values(by='Date', ascending=False)
+    # Merge
+    merged_df = pd.merge(log_df, matches_df, on='matchId', how='left')
     
-    return match_log_df
+    # 5. Format the Result
+    # Determine Opponent (If player's team is Home, opponent is Away, etc.)
+    # We need to find the player's team first.
+    # Let's grab the team name from the first event in each match
+    team_map = player_events.groupby('matchId')['team.name'].first()
+    merged_df['player_team'] = merged_df['matchId'].map(team_map)
+    
+    def get_opponent(row):
+        if row['player_team'] == row['homeTeamName']:
+            return row['awayTeamName']
+        elif row['player_team'] == row['awayTeamName']:
+            return row['homeTeamName']
+        else:
+            return "Unknown"
+
+    merged_df['opponentName'] = merged_df.apply(get_opponent, axis=1)
+    
+    # Select final columns
+    final_cols = ['matchId', 'dateutc', 'opponentName', 'teamName', 'minutes', 'xg', 'goals']
+    
+    # Note: 'minutes' might not be in events. We usually get it from the Minutes file.
+    # Since this function only takes events, we might lack accurate minutes here.
+    # However, for the xG chart, we really just need Date + xG.
+    
+    # Return sorted by date
+    return merged_df[['matchId', 'dateutc', 'opponentName', 'player_team', 'xg', 'goals']].rename(columns={'player_team': 'teamName'}).sort_values('dateutc', ascending=False)
 
 @st.cache_data
 def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
