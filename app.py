@@ -2008,6 +2008,118 @@ def calculate_xg_history_data(_raw_events_df, _matches_summary_df):
 
 def plot_match_xg_history(all_matches_df, selected_team):
     """
+    Plots Match-by-Match xG with:
+    1. Ordinal X-Axis (removes summer/off-season gaps visually).
+    2. Conditional Fill (Blue for positive xG diff, Red for negative).
+    """
+    # 1. Filter for selected team
+    team_df = all_matches_df[all_matches_df['teamName'] == selected_team].copy()
+    if team_df.empty:
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data found.', ha='center'); return fig
+        
+    # 2. Filter for last 365 days
+    today = pd.to_datetime(datetime.date.today())
+    one_year_ago = today - pd.DateOffset(years=1)
+    team_df = team_df[(team_df['date'] >= one_year_ago) & (team_df['date'] <= today)]
+    
+    # --- 3. EXCLUDE OFF-SEASON (Strictly removing June/July data if any exists) ---
+    # This ensures no friendlies/playoffs in those months appear, as requested.
+    team_df = team_df[~team_df['date'].dt.month.isin([6, 7])]
+    
+    if team_df.empty:
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No matches found (excluding off-season).', ha='center'); return fig
+
+    # Sort and reset index to create the "Ordinal" axis (Match 1, Match 2, ...)
+    team_df = team_df.sort_values(by='date').reset_index(drop=True)
+    
+    # Create a sequential x-axis (0, 1, 2...) to eliminate time gaps
+    team_df['match_seq'] = team_df.index 
+
+    # 4. Calculate trendlines (Using match sequence, not dates)
+    team_df = team_df.dropna(subset=['xG_For', 'xG_Against', 'seasonId'])
+    
+    # Filter for current season data FOR TRENDLINE
+    current_season_id = team_df.iloc[-1]['seasonId'] 
+    current_season_df = team_df[team_df['seasonId'] == current_season_id].copy()
+
+    if len(current_season_df) > 1:
+        # Trendline for xG For
+        z_for = np.polyfit(current_season_df['match_seq'], current_season_df['xG_For'], 1)
+        p_for = np.poly1d(z_for)
+        current_season_df['xG_For_Trend'] = p_for(current_season_df['match_seq'])
+        
+        # Trendline for xG Against
+        z_against = np.polyfit(current_season_df['match_seq'], current_season_df['xG_Against'], 1)
+        p_against = np.poly1d(z_against)
+        current_season_df['xG_Against_Trend'] = p_against(current_season_df['match_seq'])
+    else:
+        current_season_df['xG_For_Trend'] = np.nan
+        current_season_df['xG_Against_Trend'] = np.nan
+
+    # 5. Get season markers (for Gameweek 1)
+    season_starts = team_df[team_df['season_marker'] == 'GW 1'].drop_duplicates(subset=['date'])
+
+    # 6. Plotting
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.set_facecolor('#f5f1e9')
+    ax.set_facecolor('#f5f1e9')
+    
+    # --- PLOT LINES ---
+    # We plot against 'match_seq' (0, 1, 2) instead of 'date'
+    ax.plot(team_df['match_seq'], team_df['xG_For'], label='Match xG For', color='#0077b6', marker='o', linestyle='-', lw=2, alpha=0.9, zorder=3)
+    ax.plot(team_df['match_seq'], team_df['xG_Against'], label='Match xG Against', color='#e63946', marker='o', linestyle='-', lw=2, alpha=0.9, zorder=3)
+    
+    # --- PLOT CONDITIONAL FILL ---
+    # Fill Blue where For > Against
+    ax.fill_between(
+        team_df['match_seq'], 
+        team_df['xG_For'], 
+        team_df['xG_Against'], 
+        where=(team_df['xG_For'] >= team_df['xG_Against']),
+        interpolate=True, color='#0077b6', alpha=0.2
+    )
+    
+    # Fill Red where Against > For
+    ax.fill_between(
+        team_df['match_seq'], 
+        team_df['xG_For'], 
+        team_df['xG_Against'], 
+        where=(team_df['xG_For'] < team_df['xG_Against']),
+        interpolate=True, color='#e63946', alpha=0.2
+    )
+
+    # --- PLOT TRENDLINES ---
+    ax.plot(current_season_df['match_seq'], current_season_df['xG_For_Trend'], label='Trend (Current Season)', color='#004466', linestyle='--', lw=2.5, zorder=4)
+    ax.plot(current_season_df['match_seq'], current_season_df['xG_Against_Trend'], label='Trend (Current Season)', color='#990000', linestyle='--', lw=2.5, zorder=4)
+    
+    # 7. Add Vertical Separators for Seasons
+    ylim_top = ax.get_ylim()[1]
+    for _, row in season_starts.iterrows():
+        # Find the sequence number corresponding to this date
+        seq_idx = team_df[team_df['date'] == row['date']]['match_seq'].values[0]
+        
+        ax.axvline(seq_idx, color='gray', linestyle=':', lw=1.5, zorder=0)
+        ax.text(seq_idx + 0.5, ylim_top, ' Season Start', ha='left', va='top', color='gray', rotation=90, fontsize=10)
+
+    # 8. Custom X-Axis Labels (Convert 0,1,2 back to Dates)
+    # Show a label every N matches to keep it clean
+    step = max(1, len(team_df) // 10)
+    tick_indices = team_df['match_seq'][::step]
+    tick_labels = team_df['date'].dt.strftime('%d/%m')[::step]
+    
+    ax.set_xticks(tick_indices)
+    ax.set_xticklabels(tick_labels, rotation=45)
+
+    # 9. Styling
+    ax.set_title(f"{selected_team} - Match-by-Match xG History (Off-Season Removed)", fontsize=16, weight='bold')
+    ax.set_ylabel('Expected Goals (xG)')
+    ax.legend(loc='upper left', frameon=False)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_ylim(bottom=0)
+    
+    plt.tight_layout()
+    return fig
+    """
     Plots the MATCH-BY-MATCH xG For and Against (No Rolling Average).
     Includes trendlines for the current season.
     """
@@ -2417,6 +2529,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.pyplot(fig_shots_against, use_container_width=True)
 
         # --- UPDATE THE APP EXECUTION BLOCK ---
+
         st.subheader("Match-by-Match xG (Last 365 Days)")
 
         # Load the NEW historical data
