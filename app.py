@@ -35,7 +35,35 @@ st.set_page_config(
     page_title="Soccer Match & Season Dashboard",
     layout="wide"
 )
+# --- HELPER FUNCTIONS (PASTE AT TOP OF APP.PY) ---
 
+@st.cache_data
+def load_all_time_minutes():
+    """
+    Loads ONLY the player list/minutes (Tiny file).
+    Safe to load on startup.
+    """
+    if os.path.exists('all_time_player_minutes.pkl'):
+        return pd.read_pickle('all_time_player_minutes.pkl')
+    else:
+        # Fallback to current season if history not found
+        return pd.read_pickle('player_minutes_and_positions.pkl')
+
+@st.cache_data
+def get_heavy_historical_events():
+    """
+    Loads the MASSIVE historical event data.
+    Only call this when absolutely necessary (Career Mode).
+    """
+    try:
+        # Load optimized history files
+        hist_events = pd.read_parquet('historical_events.parquet')
+        hist_matches = pd.read_parquet('historical_matches.parquet')
+        return hist_events, hist_matches
+    except Exception as e:
+        st.error(f"Error loading history: {e}")
+        return None, None
+    
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
