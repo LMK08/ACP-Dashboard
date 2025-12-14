@@ -35,35 +35,7 @@ st.set_page_config(
     page_title="Soccer Match & Season Dashboard",
     layout="wide"
 )
-# --- HELPER FUNCTIONS (PASTE AT TOP OF APP.PY) ---
 
-@st.cache_data
-def load_all_time_minutes():
-    """
-    Loads ONLY the player list/minutes (Tiny file).
-    Safe to load on startup.
-    """
-    if os.path.exists('all_time_player_minutes.pkl'):
-        return pd.read_pickle('all_time_player_minutes.pkl')
-    else:
-        # Fallback to current season if history not found
-        return pd.read_pickle('player_minutes_and_positions.pkl')
-
-@st.cache_data
-def get_heavy_historical_events():
-    """
-    Loads the MASSIVE historical event data.
-    Only call this when absolutely necessary (Career Mode).
-    """
-    try:
-        # Load optimized history files
-        hist_events = pd.read_parquet('historical_events.parquet')
-        hist_matches = pd.read_parquet('historical_matches.parquet')
-        return hist_events, hist_matches
-    except Exception as e:
-        st.error(f"Error loading history: {e}")
-        return None, None
-    
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
@@ -127,77 +99,62 @@ def _calculate_age(birth_date):
         return "N/A"
 
 @st.cache_data
-def get_player_match_stats(player_name, events_df, matches_df):
+def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
     """
-    Dynamically calculates a match log for a specific player using Raw Events.
-    Works for both Current Season and Career Mode.
+    Goes through all match data and extracts the individual match stats
+    for a single selected player.
     """
-    if events_df is None or events_df.empty:
-        return pd.DataFrame()
-
-    # 1. Filter events for this player
-    # We use 'player.name' from events. Note: Names might vary slightly, 
-    # but exact match from the profile selector is usually safe.
-    # Ideally, we'd use playerId, but sometimes event data uses name.
-    # Let's try filtering by the name provided.
+    player_matches = []
     
-    # Optimization: Filter by ID if possible, but events file usually has 'player.name'
-    # We will assume 'player_name' is accurate.
-    player_events = events_df[events_df['player.name'] == player_name]
+    # Create a quick lookup map for match info
+    match_info_map = _matches_summary_df.set_index('matchId').to_dict('index')
     
-    if player_events.empty:
-        return pd.DataFrame()
-
-    # 2. Group by Match to get stats
-    # We aggregate xG, Shots, Goals, etc.
-    stats_per_match = player_events.groupby('matchId').agg({
-        'shot.xg': 'sum',
-        'matchId': 'count' # Dummy count just to keep the row
-    }).rename(columns={'shot.xg': 'xg', 'matchId': 'event_count'})
-    
-    # 3. Calculate Goals manually (if 'goal' is in tags or specific type)
-    # Wyscout v3: 'shot.isGoal' is a boolean column usually
-    if 'shot.isGoal' in player_events.columns:
-        goals = player_events[player_events['shot.isGoal'] == True].groupby('matchId').size()
-        stats_per_match['goals'] = goals
-    else:
-        stats_per_match['goals'] = 0
+    for match_id, match_data in _all_match_data.items():
+        if not match_data or 'player_stats' not in match_data:
+            continue
+            
+        home_df = match_data['player_stats'].get('home')
+        away_df = match_data['player_stats'].get('away')
         
-    stats_per_match['goals'] = stats_per_match['goals'].fillna(0)
-    
-    # 4. Merge with Match Info (Date, Opponent)
-    # We need to join with matches_df
-    log_df = stats_per_match.reset_index()
-    
-    # Merge
-    merged_df = pd.merge(log_df, matches_df, on='matchId', how='left')
-    
-    # 5. Format the Result
-    # Determine Opponent (If player's team is Home, opponent is Away, etc.)
-    # We need to find the player's team first.
-    # Let's grab the team name from the first event in each match
-    team_map = player_events.groupby('matchId')['team.name'].first()
-    merged_df['player_team'] = merged_df['matchId'].map(team_map)
-    
-    def get_opponent(row):
-        if row['player_team'] == row['homeTeamName']:
-            return row['awayTeamName']
-        elif row['player_team'] == row['awayTeamName']:
-            return row['homeTeamName']
-        else:
-            return "Unknown"
+        player_stats_series = None
+        opponent = "N/A"
+        
+        match_info = match_info_map.get(match_id, {})
+        home_team = match_info.get('homeTeamName', 'Home')
+        away_team = match_info.get('awayTeamName', 'Away')
+        
+        if home_df is not None and player_name in home_df.index:
+            player_stats_series = home_df.loc[player_name]
+            opponent = f"vs. {away_team} (H)"
+        elif away_df is not None and player_name in away_df.index:
+            player_stats_series = away_df.loc[player_name]
+            opponent = f"vs. {home_team} (A)"
+            
+        if player_stats_series is not None:
+            # Convert series to a dictionary and add match info
+            stats_dict = player_stats_series.to_dict()
+            stats_dict['Match'] = opponent
+            stats_dict['Date'] = match_info.get('dateutc', 'N/A')
+            stats_dict['Score'] = match_info.get('score', 'N/A')
+            player_matches.append(stats_dict)
 
-    merged_df['opponentName'] = merged_df.apply(get_opponent, axis=1)
+    if not player_matches:
+        return pd.DataFrame()
+        
+    # Create and format the DataFrame
+    match_log_df = pd.DataFrame(player_matches)
     
-    # Select final columns
-    final_cols = ['matchId', 'dateutc', 'opponentName', 'teamName', 'minutes', 'xg', 'goals']
+    # Format the date
+    if 'Date' in match_log_df.columns:
+        match_log_df['Date'] = pd.to_datetime(match_log_df['Date']).dt.strftime('%Y-%m-%d')
     
-    # Note: 'minutes' might not be in events. We usually get it from the Minutes file.
-    # Since this function only takes events, we might lack accurate minutes here.
-    # However, for the xG chart, we really just need Date + xG.
+    # Reorder columns to put match info first
+    cols_to_front = ['Date', 'Match', 'Score', 'Minutes']
+    all_cols = cols_to_front + [col for col in match_log_df.columns if col not in cols_to_front]
+    match_log_df = match_log_df[all_cols].fillna(0)
+    match_log_df = match_log_df.sort_values(by='Date', ascending=False)
     
-    # Return sorted by date
-    return merged_df[['matchId', 'dateutc', 'opponentName', 'player_team', 'xg', 'goals']].rename(columns={'player_team': 'teamName'}).sort_values('dateutc', ascending=False)
+    return match_log_df
 
 @st.cache_data
 def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
@@ -362,34 +319,29 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
     return combined_df.fillna(0)
 
 @st.cache_data
-@st.cache_data
 def load_historical_data():
     """
-    Loads the large historical datasets separately to keep the app fast.
+    Load all historical data files for rolling charts.
+    --- OPTIMIZED to only load necessary columns to save memory. ---
     """
     try:
-        # Load Events
-        curr_events = pd.read_parquet('raw_events.parquet')
-        hist_events = pd.read_parquet('historical_events.parquet')
-        all_events_df = pd.concat([curr_events, hist_events], ignore_index=True)
+        # 1. Define only the columns we absolutely need
+        events_cols = ['type.primary', 'shot.xg', 'matchId', 'team.name']
+        # --- ADDED 'seasonId' to this list ---
+        matches_cols = ['matchId', 'dateutc', 'gameweek', 'homeTeamName', 'awayTeamName', 'seasonId']
         
-        # Load Matches
-        curr_matches = pd.read_parquet('matches_summary.parquet')
-        hist_matches = pd.read_parquet('historical_matches.parquet')
-        all_matches_df = pd.concat([curr_matches, hist_matches], ignore_index=True).drop_duplicates(subset=['matchId'])
+        # 2. Load *only* those columns
+        hist_events_df = pd.read_parquet('historical_events.parquet', columns=events_cols)
+        hist_matches_df = pd.read_parquet('historical_matches.parquet', columns=matches_cols)
         
-        # Load All-Time Minutes (The file you just created)
-        try:
-            all_time_minutes_df = pd.read_pickle('all_time_player_minutes.pkl')
-        except FileNotFoundError:
-            # Fallback if the merge didn't happen yet
-            all_time_minutes_df = pd.read_pickle('player_minutes_and_positions.pkl')
-            
-        return all_events_df, all_matches_df, all_time_minutes_df
-        
+        return hist_events_df, hist_matches_df
+    
     except FileNotFoundError as e:
-        print(f"⚠️ Historical data missing: {e}")
-        return None, None, None
+        st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py` (and force-push the files). Missing file: {e.filename}")
+        return None, None
+    except Exception as e:
+        st.error(f"An error occurred loading historical data: {e}")
+        return None, None
     
 # ==============================================================================
 # 3. GLOBAL CONSTANTS FOR PLAYER RADARS
@@ -2056,118 +2008,6 @@ def calculate_xg_history_data(_raw_events_df, _matches_summary_df):
 
 def plot_match_xg_history(all_matches_df, selected_team):
     """
-    Plots Match-by-Match xG with:
-    1. Ordinal X-Axis (removes summer/off-season gaps visually).
-    2. Conditional Fill (Blue for positive xG diff, Red for negative).
-    """
-    # 1. Filter for selected team
-    team_df = all_matches_df[all_matches_df['teamName'] == selected_team].copy()
-    if team_df.empty:
-        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data found.', ha='center'); return fig
-        
-    # 2. Filter for last 365 days
-    today = pd.to_datetime(datetime.date.today())
-    one_year_ago = today - pd.DateOffset(years=1)
-    team_df = team_df[(team_df['date'] >= one_year_ago) & (team_df['date'] <= today)]
-    
-    # --- 3. EXCLUDE OFF-SEASON (Strictly removing June/July data if any exists) ---
-    # This ensures no friendlies/playoffs in those months appear, as requested.
-    team_df = team_df[~team_df['date'].dt.month.isin([6, 7])]
-    
-    if team_df.empty:
-        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No matches found (excluding off-season).', ha='center'); return fig
-
-    # Sort and reset index to create the "Ordinal" axis (Match 1, Match 2, ...)
-    team_df = team_df.sort_values(by='date').reset_index(drop=True)
-    
-    # Create a sequential x-axis (0, 1, 2...) to eliminate time gaps
-    team_df['match_seq'] = team_df.index 
-
-    # 4. Calculate trendlines (Using match sequence, not dates)
-    team_df = team_df.dropna(subset=['xG_For', 'xG_Against', 'seasonId'])
-    
-    # Filter for current season data FOR TRENDLINE
-    current_season_id = team_df.iloc[-1]['seasonId'] 
-    current_season_df = team_df[team_df['seasonId'] == current_season_id].copy()
-
-    if len(current_season_df) > 1:
-        # Trendline for xG For
-        z_for = np.polyfit(current_season_df['match_seq'], current_season_df['xG_For'], 1)
-        p_for = np.poly1d(z_for)
-        current_season_df['xG_For_Trend'] = p_for(current_season_df['match_seq'])
-        
-        # Trendline for xG Against
-        z_against = np.polyfit(current_season_df['match_seq'], current_season_df['xG_Against'], 1)
-        p_against = np.poly1d(z_against)
-        current_season_df['xG_Against_Trend'] = p_against(current_season_df['match_seq'])
-    else:
-        current_season_df['xG_For_Trend'] = np.nan
-        current_season_df['xG_Against_Trend'] = np.nan
-
-    # 5. Get season markers (for Gameweek 1)
-    season_starts = team_df[team_df['season_marker'] == 'GW 1'].drop_duplicates(subset=['date'])
-
-    # 6. Plotting
-    fig, ax = plt.subplots(figsize=(14, 7))
-    fig.set_facecolor('#f5f1e9')
-    ax.set_facecolor('#f5f1e9')
-    
-    # --- PLOT LINES ---
-    # We plot against 'match_seq' (0, 1, 2) instead of 'date'
-    ax.plot(team_df['match_seq'], team_df['xG_For'], label='Match xG For', color='#0077b6', marker='o', linestyle='-', lw=2, alpha=0.9, zorder=3)
-    ax.plot(team_df['match_seq'], team_df['xG_Against'], label='Match xG Against', color='#e63946', marker='o', linestyle='-', lw=2, alpha=0.9, zorder=3)
-    
-    # --- PLOT CONDITIONAL FILL ---
-    # Fill Blue where For > Against
-    ax.fill_between(
-        team_df['match_seq'], 
-        team_df['xG_For'], 
-        team_df['xG_Against'], 
-        where=(team_df['xG_For'] >= team_df['xG_Against']),
-        interpolate=True, color='#0077b6', alpha=0.2
-    )
-    
-    # Fill Red where Against > For
-    ax.fill_between(
-        team_df['match_seq'], 
-        team_df['xG_For'], 
-        team_df['xG_Against'], 
-        where=(team_df['xG_For'] < team_df['xG_Against']),
-        interpolate=True, color='#e63946', alpha=0.2
-    )
-
-    # --- PLOT TRENDLINES ---
-    ax.plot(current_season_df['match_seq'], current_season_df['xG_For_Trend'], label='Trend (Current Season)', color='#004466', linestyle='--', lw=2.5, zorder=4)
-    ax.plot(current_season_df['match_seq'], current_season_df['xG_Against_Trend'], label='Trend (Current Season)', color='#990000', linestyle='--', lw=2.5, zorder=4)
-    
-    # 7. Add Vertical Separators for Seasons
-    ylim_top = ax.get_ylim()[1]
-    for _, row in season_starts.iterrows():
-        # Find the sequence number corresponding to this date
-        seq_idx = team_df[team_df['date'] == row['date']]['match_seq'].values[0]
-        
-        ax.axvline(seq_idx, color='gray', linestyle=':', lw=1.5, zorder=0)
-        ax.text(seq_idx + 0.5, ylim_top, ' Season Start', ha='left', va='top', color='gray', rotation=90, fontsize=10)
-
-    # 8. Custom X-Axis Labels (Convert 0,1,2 back to Dates)
-    # Show a label every N matches to keep it clean
-    step = max(1, len(team_df) // 10)
-    tick_indices = team_df['match_seq'][::step]
-    tick_labels = team_df['date'].dt.strftime('%d/%m')[::step]
-    
-    ax.set_xticks(tick_indices)
-    ax.set_xticklabels(tick_labels, rotation=45)
-
-    # 9. Styling
-    ax.set_title(f"{selected_team} - Match-by-Match xG History (Off-Season Removed)", fontsize=16, weight='bold')
-    ax.set_ylabel('Expected Goals (xG)')
-    ax.legend(loc='upper left', frameon=False)
-    ax.grid(True, linestyle='--', alpha=0.5)
-    ax.set_ylim(bottom=0)
-    
-    plt.tight_layout()
-    return fig
-    """
     Plots the MATCH-BY-MATCH xG For and Against (No Rolling Average).
     Includes trendlines for the current season.
     """
@@ -2577,7 +2417,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.pyplot(fig_shots_against, use_container_width=True)
 
         # --- UPDATE THE APP EXECUTION BLOCK ---
-
         st.subheader("Match-by-Match xG (Last 365 Days)")
 
         # Load the NEW historical data
@@ -2729,109 +2568,30 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning("Could not calculate raw league stats for custom plot.")
 
     
-   # --- PLAYER PROFILE TAB ---
+    # --- UPDATED: Renamed to Player Profile ---
     elif analysis_type == 'Player Profile':
         st.header("Player Profile")
         
-        # --- 1. Load Data ---
+
+
+        # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
-        all_time_minutes_df = load_all_time_minutes() # Tiny file, safe to load
         
-        # --- 2. View Mode Toggle ---
-        st.sidebar.header("Analysis Scope")
-        view_mode = st.sidebar.radio("Stats View:", ["Current Season", "Career (Liga 3)"], horizontal=True)
-
-        # --- 3. Set Active Data Based on View ---
-        if view_mode == "Career (Liga 3)":
-            # --- CAREER MODE ---
-            try:
-                with st.spinner("Loading 5 years of history..."):
-                    hist_events, hist_matches = get_heavy_historical_events()
-                    
-                    if hist_events is None:
-                        st.error("Could not load historical data. Check logs.")
-                        st.stop()
-                        
-                    # Combine Current + History
-                    # Note: We use the global 'raw_events_df' and 'matches_summary_df' loaded at startup
-                    active_events = pd.concat([raw_events_df, hist_events], ignore_index=True)
-                    active_matches = pd.concat([matches_summary_df, hist_matches], ignore_index=True).drop_duplicates(subset=['matchId'])
-                    
-                    # Use the Master Minutes File
-                    active_minutes = all_time_minutes_df
-                    
-            except Exception as e:
-                st.error(f"Critical Error loading history: {e}")
-                st.stop()
-                
-        else:
-            # --- CURRENT SEASON MODE ---
-            # Use the global variables directly
-            active_events = raw_events_df
-            active_matches = matches_summary_df
-            
-            # Filter the Minutes File to ONLY Current Season players
-            # We look for players who have a record in the 'player_minutes_and_positions.pkl' file
-            # or we just assume the 'active_minutes' should be the current season one.
-            try:
-                # Load the specific current season minutes file we created in process_data.py
-                active_minutes = pd.read_pickle('player_minutes_and_positions.pkl')
-            except:
-                # Fallback: Filter the big list? No, better to default to empty or keep big list.
-                # Let's keep the big list but mapped to current season stats.
-                active_minutes = pd.read_pickle('player_minutes_and_positions.pkl')
-
-        # --- 4. Calculate Stats (Dynamic) ---
         try:
-            # Calculate stats for the selected scope
-            current_stats_df = calculate_all_player_stats(active_events, active_minutes)
-            
-            if current_stats_df.empty:
-                st.warning("No stats found for the selected view.")
-                st.stop()
-                
+            player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+            # --- NEW: Calculate percentiles ---
             player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                current_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
             )
         except Exception as e:
-            st.error(f"Error calculating stats: {e}")
-            st.stop()
-
-        # --- 5. Player Selector (Unified) ---
-        st.sidebar.subheader("Select Player")
-        
-        # We always search the active_minutes dataframe to ensure we pick valid players
-        # Sort by minutes so key players are at the top
-        search_list = active_minutes[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-        
-        # Create a display string
-        search_list['display_name'] = search_list['playerName'] + " (" + search_list['teamName'] + ")"
-        
-        selected_player_display = st.sidebar.selectbox("Search Player:", search_list['display_name'])
-        
-        # Get ID
-        selected_player_id = search_list[search_list['display_name'] == selected_player_display]['playerId'].values[0]
-        
-        # --- 6. Retrieve Selected Player Data ---
-        player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_id]
-        
-        if player_data_row.empty:
-            st.warning(f"Player selected but has no stats in '{view_mode}' view.")
-            st.stop()
+            st.error(f"An error occurred calculating overall player stats: {e}")
+            st.exception(e)
+            player_stats_df = pd.DataFrame()
+            player_stats_with_scores_df = pd.DataFrame()
             
-        player_per_90_stats = player_data_row.iloc[0]
-        player_id = selected_player_id
-        selected_player_name = player_per_90_stats.get('playerName')
-
-        # Load Bio
-        player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
-        total_minutes = player_per_90_stats.get('totalMinutes', 0)
-
-        # --- 7. Generate Match Log ---
-        # Crucial: Pass the ACTIVE datasets (Current or Career)
-        player_match_log_df = get_player_match_stats(selected_player_name, active_events, active_matches)
-
-        # ... (The rest of your code for Radar Charts / Tables can stay the same below) ...
+        if player_stats_df.empty or player_details_df.empty or player_stats_with_scores_df.empty:
+            st.warning("Player data not available. Please ensure all processing scripts have run and data is loaded.")
+            st.stop()
 
         # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
@@ -2898,7 +2658,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --------------------------------------------------
         
         # --- 3. Get Player's Match Log ---
-        player_match_log_df = get_player_match_stats(selected_player_name, active_events, active_matches)
+        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
         
         # --- 4. Display Player Bio ---
         # FIX: Robust lookup for Team and Position using player_minutes_df
