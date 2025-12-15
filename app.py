@@ -2008,86 +2008,109 @@ def calculate_xg_history_data(_raw_events_df, _matches_summary_df):
 
 def plot_match_xg_history(all_matches_df, selected_team):
     """
-    Plots the MATCH-BY-MATCH xG For and Against (No Rolling Average).
-    Includes trendlines for the current season.
+    Plots Match-by-Match xG with:
+    1. Ordinal X-Axis (removes summer/off-season gaps visually).
+    2. Conditional Fill (Blue for positive xG diff, Red for negative).
     """
     # 1. Filter for selected team
     team_df = all_matches_df[all_matches_df['teamName'] == selected_team].copy()
     if team_df.empty:
-        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data found for this team.', ha='center'); return fig
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data found.', ha='center'); return fig
         
-    # 2. Filter for last 365 days
+    # 2. Filter for last 365 days (Optional: Adjust logic if you want more history)
+    # If you want ALL history since you have the data now, you can comment these 3 lines out:
     today = pd.to_datetime(datetime.date.today())
     one_year_ago = today - pd.DateOffset(years=1)
     team_df = team_df[(team_df['date'] >= one_year_ago) & (team_df['date'] <= today)]
     
-    if team_df.empty:
-        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No match data in the last 365 days.', ha='center'); return fig
+    # 3. Sort and Create "Ordinal" Axis (This removes the time gap)
+    team_df = team_df.sort_values(by='date').reset_index(drop=True)
+    team_df['match_seq'] = team_df.index  # 0, 1, 2, 3... regardless of date gap
 
-    # (Skipping Rolling Calculation - plotting raw data instead)
-    team_df = team_df.sort_values(by='date')
+    if team_df.empty:
+        fig, ax = plt.subplots(figsize=(14, 7)); ax.text(0.5, 0.5, 'No matches found in range.', ha='center'); return fig
+
+    # 4. Calculate trendlines (using the new ordinal axis)
+    team_df = team_df.dropna(subset=['xG_For', 'xG_Against'])
     
-    # 3. Calculate trendlines (Using RAW xG columns now)
-    team_df = team_df.dropna(subset=['xG_For', 'xG_Against', 'seasonId'])
-    team_df['date_numeric'] = mdates.date2num(team_df['date'])
-    
-    # Filter for current season data FOR TRENDLINE
-    current_season_id = team_df.iloc[-1]['seasonId'] 
-    current_season_df = team_df[team_df['seasonId'] == current_season_id].copy()
+    # Calculate trend only for the current season to keep it relevant
+    current_season_id = team_df.iloc[-1]['seasonId'] if 'seasonId' in team_df.columns else None
+    if current_season_id:
+        current_season_df = team_df[team_df['seasonId'] == current_season_id]
+    else:
+        current_season_df = team_df # Fallback if no seasonId
 
     if len(current_season_df) > 1:
-        # Trendline for xG For
-        z_for = np.polyfit(current_season_df['date_numeric'], current_season_df['xG_For'], 1)
+        z_for = np.polyfit(current_season_df['match_seq'], current_season_df['xG_For'], 1)
         p_for = np.poly1d(z_for)
-        current_season_df['xG_For_Trend'] = p_for(current_season_df['date_numeric'])
+        current_season_df = current_season_df.copy() # Avoid SettingWithCopy warning
+        current_season_df['xG_For_Trend'] = p_for(current_season_df['match_seq'])
         
-        # Trendline for xG Against
-        z_against = np.polyfit(current_season_df['date_numeric'], current_season_df['xG_Against'], 1)
+        z_against = np.polyfit(current_season_df['match_seq'], current_season_df['xG_Against'], 1)
         p_against = np.poly1d(z_against)
-        current_season_df['xG_Against_Trend'] = p_against(current_season_df['date_numeric'])
+        current_season_df['xG_Against_Trend'] = p_against(current_season_df['match_seq'])
     else:
         current_season_df['xG_For_Trend'] = np.nan
         current_season_df['xG_Against_Trend'] = np.nan
-
-    # 4. Get season markers
-    season_starts = team_df[team_df['season_marker'] == 'GW 1'].drop_duplicates(subset=['date'])
 
     # 5. Plotting
     fig, ax = plt.subplots(figsize=(14, 7))
     fig.set_facecolor('#f5f1e9')
     ax.set_facecolor('#f5f1e9')
     
-    # PLOT RAW DATA (Lines with Markers)
-    # Alpha is slightly lower (0.7) to let the trendline pop out
-    ax.plot(team_df['date'], team_df['xG_For'], label='Match xG For', color='#0077b6', marker='o', linestyle='-', lw=2, alpha=0.7)
-    ax.plot(team_df['date'], team_df['xG_Against'], label='Match xG Against', color='#e63946', marker='o', linestyle='-', lw=2, alpha=0.7)
+    # Plot Lines (using match_seq on X-axis)
+    ax.plot(team_df['match_seq'], team_df['xG_For'], label='Match xG For', color='#0077b6', marker='o', linestyle='-', lw=2, alpha=0.9, zorder=3)
+    ax.plot(team_df['match_seq'], team_df['xG_Against'], label='Match xG Against', color='#e63946', marker='o', linestyle='-', lw=2, alpha=0.9, zorder=3)
     
-    # PLOT TRENDLINES (Thicker, darker lines)
-    ax.plot(current_season_df['date'], current_season_df['xG_For_Trend'], label='Trend (Current Season)', color='#004466', linestyle='--', lw=2.5)
-    ax.plot(current_season_df['date'], current_season_df['xG_Against_Trend'], label='Trend (Current Season)', color='#990000', linestyle='--', lw=2.5)
-    
-    # 6. Plot season markers
-    ylim_top = ax.get_ylim()[1]
-    for _, row in season_starts.iterrows():
-        ax.axvline(row['date'], color='gray', linestyle=':', lw=1.5, zorder=0)
-        month = row['date'].month
-        if month in [7, 8, 9]: 
-            label = ' Regular Season Start'
-        else: 
-            label = ' Post Season Start'
-        ax.text(row['date'] + pd.Timedelta(days=2), ylim_top, label, 
-                ha='left', va='top', color='gray', rotation=90, fontsize=10)
+    # --- CONDITIONAL SHADING (The feature you requested) ---
+    # Fills blue when For > Against, Red when Against > For
+    ax.fill_between(
+        team_df['match_seq'], 
+        team_df['xG_For'], 
+        team_df['xG_Against'], 
+        where=(team_df['xG_For'] >= team_df['xG_Against']),
+        interpolate=True, color='#0077b6', alpha=0.2
+    )
+    ax.fill_between(
+        team_df['match_seq'], 
+        team_df['xG_For'], 
+        team_df['xG_Against'], 
+        where=(team_df['xG_For'] < team_df['xG_Against']),
+        interpolate=True, color='#e63946', alpha=0.2
+    )
 
-    # 7. Styling
+    # Plot Trendlines (Only for current season matches)
+    if 'xG_For_Trend' in current_season_df.columns:
+        ax.plot(current_season_df['match_seq'], current_season_df['xG_For_Trend'], label='Trend (Current Season)', color='#004466', linestyle='--', lw=2.5, zorder=4)
+        ax.plot(current_season_df['match_seq'], current_season_df['xG_Against_Trend'], label='Trend (Current Season)', color='#990000', linestyle='--', lw=2.5, zorder=4)
+    
+    # 6. Formatting the X-Axis to show DATES instead of numbers
+    # We pick a tick every few matches to avoid clutter
+    step = max(1, len(team_df) // 10)
+    tick_indices = team_df['match_seq'][::step]
+    tick_labels = team_df['date'].dt.strftime('%d/%m')[::step]
+    
+    ax.set_xticks(tick_indices)
+    ax.set_xticklabels(tick_labels, rotation=45)
+
+    # Add Vertical Separator for New Season (if multiple seasons exist)
+    if 'seasonId' in team_df.columns:
+        season_changes = team_df['seasonId'].diff() != 0
+        # Skip the first row (index 0)
+        new_season_indices = team_df[season_changes].index[1:] 
+        
+        ylim_top = ax.get_ylim()[1]
+        for idx in new_season_indices:
+            # Draw line between the last match of old season and first of new
+            # We place it at idx - 0.5
+            ax.axvline(idx - 0.5, color='gray', linestyle=':', lw=1.5, zorder=0)
+            ax.text(idx - 0.5, ylim_top, ' New Season', ha='left', va='top', color='gray', rotation=90, fontsize=10)
+
     ax.set_title(f"{selected_team} - Match-by-Match xG History", fontsize=16, weight='bold')
     ax.set_ylabel('Expected Goals (xG)')
     ax.legend(loc='upper left', frameon=False)
     ax.grid(True, linestyle='--', alpha=0.5)
-    ax.set_xlim(one_year_ago, today)
     ax.set_ylim(bottom=0)
-    
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
     
     plt.tight_layout()
     return fig
