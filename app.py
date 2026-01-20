@@ -2839,6 +2839,32 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             ]
             if len(final_population) < 5: final_population = player_stats_with_scores_df
 
+            # --- NEW: Recalculate percentiles for the specific selected template ---
+            # This ensures the radar chart reflects the player's standing within the NEW group,
+            # not their original primary position group.
+            player_data_row = player_data_row.copy()
+            
+            for metric in metrics_to_plot:
+                # 1. Get population values
+                pop_values = final_population[metric].dropna()
+                
+                # 2. Get player value
+                if metric in player_data_row.columns:
+                     player_val = player_data_row[metric].values[0]
+                     
+                     if not pop_values.empty:
+                         # 3. Calculate percentile (0-100)
+                         # kind='weak' counts values <= score. 
+                         pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
+                         
+                         # 4. Handle Inverted Metrics
+                         if metric in INVERT_METRICS:
+                             pct_score = 100.0 - pct_score
+                             
+                         # 5. Update the row (normalize to 0-1 for the plotting function)
+                         player_data_row[metric + '_percentile'] = pct_score / 100.0
+            # -----------------------------------------------------------------------
+
             # Plot
             fig_radar = create_radar_with_distributions(
                 player_data_row, 
