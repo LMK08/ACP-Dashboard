@@ -2737,7 +2737,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
        # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
         
-        # 1. Detect Raw Positions
+        # 1. Detect Raw Positions (What did they actually play?)
         try:
             player_events = raw_events_df[raw_events_df['player.id'] == player_id]
             if 'player.position' in player_events.columns:
@@ -2747,16 +2747,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 raw_positions = []
             
-            raw_positions = [str(x) for x in raw_positions if x and str(x) != 'nan']
+            # Filter out None/Nan
+            raw_positions = [x for x in raw_positions if x and str(x) != 'nan']
+            
         except:
             raw_positions = []
             
+        # Ensure we at least have the primary position from the bio
         if current_pos and current_pos not in raw_positions:
             raw_positions.append(current_pos)
             
-        raw_positions = sorted(list(set(raw_positions)))
+        # Sort for the dropdown
+        raw_positions = sorted([str(p) for p in raw_positions])
 
-        # 2. Position Selector
+        # 2. Position Selector (Simple Raw Codes)
         col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
         with col_rad_sel1:
             st.markdown("##### Played As:")
@@ -2768,107 +2772,81 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 key="radar_pos_selector"
             )
 
-        # 3. Best Fit Logic
+        # 3. Find the "Best Fit" Template for this Raw Position
+        # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
+        
+        # Find all roles that include this raw position
         eligible_roles = []
         for role, valid_codes in POSITION_GROUPS.items():
             if selected_raw_pos in valid_codes:
                 eligible_roles.append(role)
         
         if not eligible_roles:
-            st.warning(f"No radar templates defined for '{selected_raw_pos}'.")
+            st.warning(f"No radar templates defined for position '{selected_raw_pos}'.")
         else:
+            # Calculate Scores to find the best fit
             best_role = None
             best_score = -1
             
-            # Use RAW Per 90 Stats (player_stats_df), not Percentiles
-            # We already have 'player_per_90_stats' defined in the main loop, so we use that.
-            raw_player_series = player_per_90_stats 
-
-            # Identify Best Fit
+            # We calculate a simple score (sum of percentiles) for each eligible role
             for role in eligible_roles:
+                # Get metrics and weights
                 role_weights = WEIGHTS.get(role, {})
                 if not role_weights: continue
                 
-                # Get Raw Population
+                # Define Population for this role (for percentile calculation)
                 role_codes = POSITION_GROUPS[role]
-                raw_population = player_stats_df[player_stats_df['primaryPosition'].isin(role_codes)]
-                if len(raw_population) < 5: raw_population = player_stats_df 
+                population = player_stats_with_scores_df[
+                    player_stats_with_scores_df['primaryPosition'].isin(role_codes)
+                ]
+                if len(population) < 5: population = player_stats_with_scores_df # Fallback
                 
                 # Calculate Score
                 role_score = 0
                 total_weight = 0
                 
                 for metric, weight in role_weights.items():
-                    if metric in raw_player_series.index and metric in raw_population.columns:
-                        val = raw_player_series[metric]
-                        pop_vals = raw_population[metric].fillna(0)
+                    if metric in player_data_row.columns and metric in population.columns:
+                        val = player_data_row[metric].values[0]
+                        pop_vals = population[metric].fillna(0)
                         
+                        # Percentile
                         pct = (pop_vals < val).mean()
                         if metric in INVERT_METRICS: pct = 1.0 - pct
                         
                         role_score += (pct * weight)
                         total_weight += weight
                 
-                final_score = (role_score / total_weight) * 100 if total_weight > 0 else 0
+                final_score = (role_score / total_weight) if total_weight > 0 else 0
                 
                 if final_score > best_score:
                     best_score = final_score
                     best_role = role
             
+            # Handle case where no score could be calculated
             if best_role is None: best_role = eligible_roles[0]
 
-            # 4. Prepare Data for Chart
-            # We need to create a dataframe of SCORES (0-100), not raw stats.
+            # 4. Generate Chart for the Winner
+            st.caption(f"Best Template Match: **{best_role}**")
             
-            # A. Get Raw Population for the WINNER role
-            target_codes = POSITION_GROUPS[best_role]
-            raw_pop_df = player_stats_df[player_stats_df['primaryPosition'].isin(target_codes)]
-            if len(raw_pop_df) < 5: raw_pop_df = player_stats_df
-            
-            # B. Create a new DF for the Chart Population (Converted to Percentiles)
-            chart_pop_df = raw_pop_df.copy()
+            # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
-            metrics_to_plot = [m for m in metrics_to_plot if m in chart_pop_df.columns]
-
-            # Convert Raw Population to Percentiles (0-100)
-            for m in metrics_to_plot:
-                # Rank converts raw 0.5 to percentile 0.8
-                chart_pop_df[m] = raw_pop_df[m].rank(pct=True) * 100
-                if m in INVERT_METRICS:
-                    chart_pop_df[m] = 100 - chart_pop_df[m]
-
-            # C. Create Player Row (Converted to Percentile)
-            chart_player_row = player_data_row.copy() # Start with metadata
+            metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
             
-            # Overwrite metrics with NEW calculated percentiles
-            for m in metrics_to_plot:
-                val = raw_player_series.get(m, 0)
-                pop_vals = raw_pop_df[m].fillna(0)
-                
-                # Calculate percentile of Player within this Raw Population
-                pct = (pop_vals < val).mean() * 100
-                if m in INVERT_METRICS: pct = 100 - pct
-                
-                chart_player_row[m] = pct
+            # Get Population for distribution
+            final_population = player_stats_with_scores_df[
+                player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
+            ]
+            if len(final_population) < 5: final_population = player_stats_with_scores_df
 
-            # D. Update Metadata (Score & Position)
-            score_col_name = f"{best_role}_Score"
-            chart_player_row[score_col_name] = best_score 
-            simulated_position = target_codes[0] if target_codes else selected_raw_pos
-            chart_player_row['primaryPosition'] = simulated_position
-            
-            # Display Context
-            st.markdown(f"**Template:** {best_role} | **Rating:** {best_score:.1f} | **Comparison:** {len(raw_pop_df)} Players")
-
-            # Generate Chart
-            # Now passing Percentiles (0-100) for both Player and Population
+            # Plot
             fig_radar = create_radar_with_distributions(
-                chart_player_row,               
+                player_data_row, 
                 metrics_to_plot, 
                 best_role, 
-                eligible_roles, 
-                all_position_data=chart_pop_df,     # <-- Passed Percentile DF
-                full_df_for_ranking=chart_pop_df    # <-- Passed Percentile DF
+                eligible_roles, # Pass list of options just in case function needs it
+                all_position_data=final_population, 
+                full_df_for_ranking=player_stats_with_scores_df 
             )
             st.pyplot(fig_radar, use_container_width=True)
 
