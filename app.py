@@ -2793,7 +2793,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 population = player_stats_with_scores_df[
                     player_stats_with_scores_df['primaryPosition'].isin(role_codes)
                 ]
-                # Fallback if population is empty
                 if len(population) < 5: population = player_stats_with_scores_df 
                 
                 # Calculate Score
@@ -2802,7 +2801,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 
                 for metric, weight in role_weights.items():
                     if metric in player_data_row.columns and metric in population.columns:
-                        val = player_data_row[metric]
+                        # --- FIX: USE .values[0] TO GET SCALAR VALUE ---
+                        val = player_data_row[metric].values[0]
                         pop_vals = population[metric].fillna(0)
                         
                         # Calculate Rank
@@ -2827,28 +2827,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             ]
             if len(final_population) < 5: final_population = player_stats_with_scores_df
             
-            # --- CRITICAL FIXES FOR DISPLAY ---
-            
-            # A. Update the "Score" column in the data row so the Rating updates
-            # We create a COPY so we don't mess up the original dataframe
+            # A. Update the "Score" column so the Rating updates
             chart_player_row = player_data_row.copy()
-            score_col_name = f"{best_role}_Score" # e.g. 'Target Man_Score'
-            chart_player_row[score_col_name] = best_score # Inject the new score
+            score_col_name = f"{best_role}_Score" 
+            chart_player_row[score_col_name] = best_score 
             
             # B. Display Context
             st.markdown(f"**Template:** {best_role} | **Rating:** {best_score:.1f} | **Comparison:** {len(final_population)} Players")
 
             # C. Generate Chart
             metrics_to_plot = list(WEIGHTS[best_role].keys())
-            metrics_to_plot = [m for m in metrics_to_plot if m in chart_player_row.index]
+            metrics_to_plot = [m for m in metrics_to_plot if m in chart_player_row.columns]
             
             fig_radar = create_radar_with_distributions(
-                chart_player_row,               # Passed the modified row with new score
+                chart_player_row,
                 metrics_to_plot, 
                 best_role, 
                 eligible_roles, 
-                all_position_data=final_population,     # Correct Population for Distributions
-                full_df_for_ranking=final_population    # Correct Population for Percentiles (Crucial Fix)
+                all_position_data=final_population,     
+                full_df_for_ranking=final_population    
             )
             st.pyplot(fig_radar, use_container_width=True)
 
