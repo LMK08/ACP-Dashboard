@@ -2863,6 +2863,30 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                              
                          # 5. Update the row (normalize to 0-1 for the plotting function)
                          player_data_row[metric + '_percentile'] = pct_score / 100.0
+            
+            # --- NEW: Recalculate the Role Score based on new percentiles ---
+            # We calculate the weighted sum of the new percentiles
+            new_total_score = 0
+            total_weight = 0
+            role_weights = WEIGHTS.get(best_role, {})
+            
+            for metric, weight in role_weights.items():
+                if metric + '_percentile' in player_data_row.columns:
+                    # Get value (0-1)
+                    val = player_data_row[metric + '_percentile'].values[0]
+                    new_total_score += (val * weight)
+                    total_weight += weight
+            
+            # Normalize score to 0-100 (assuming weights sum roughly to 100 or simply scaling)
+            # The original calculation normalized against min/max of the population.
+            # Here we will approximate by taking the weighted average * 100
+            if total_weight > 0:
+                final_new_score = (new_total_score / total_weight) * 100
+                player_data_row[best_role + '_Score'] = final_new_score
+            
+            # --- NEW: Update Position Label for Chart ---
+            # This ensures the chart displays "CF" if we selected "CF", even if their bio says "RW"
+            player_data_row['primaryPosition'] = selected_raw_pos
             # -----------------------------------------------------------------------
 
             # Plot
