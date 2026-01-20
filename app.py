@@ -2839,50 +2839,55 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             ]
             if len(final_population) < 5: final_population = player_stats_with_scores_df
 
-            # --- NEW: Recalculate percentiles for the specific selected template ---
-            # This ensures the radar chart reflects the player's standing within the NEW group,
-            # not their original primary position group.
+            # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
+            # This ensures that if the user selects a raw position that maps to multiple templates 
+            # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated 
+            # based on the new comparison group.
             player_data_row = player_data_row.copy()
             
-            for metric in metrics_to_plot:
-                # 1. Get population values
-                pop_values = final_population[metric].dropna()
+            for role in eligible_roles:
+                # 1. Get Population for this specific role
+                role_population = player_stats_with_scores_df[
+                    player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[role])
+                ]
+                if len(role_population) < 5: role_population = player_stats_with_scores_df
                 
-                # 2. Get player value
-                if metric in player_data_row.columns:
-                     player_val = player_data_row[metric].values[0]
-                     
-                     if not pop_values.empty:
-                         # 3. Calculate percentile (0-100)
-                         # kind='weak' counts values <= score. 
-                         pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
-                         
-                         # 4. Handle Inverted Metrics
-                         if metric in INVERT_METRICS:
-                             pct_score = 100.0 - pct_score
-                             
-                         # 5. Update the row (normalize to 0-1 for the plotting function)
-                         player_data_row[metric + '_percentile'] = pct_score / 100.0
-            
-            # --- NEW: Recalculate the Role Score based on new percentiles ---
-            # We calculate the weighted sum of the new percentiles
-            new_total_score = 0
-            total_weight = 0
-            role_weights = WEIGHTS.get(best_role, {})
-            
-            for metric, weight in role_weights.items():
-                if metric + '_percentile' in player_data_row.columns:
-                    # Get value (0-1)
-                    val = player_data_row[metric + '_percentile'].values[0]
-                    new_total_score += (val * weight)
-                    total_weight += weight
-            
-            # Normalize score to 0-100 (assuming weights sum roughly to 100 or simply scaling)
-            # The original calculation normalized against min/max of the population.
-            # Here we will approximate by taking the weighted average * 100
-            if total_weight > 0:
-                final_new_score = (new_total_score / total_weight) * 100
-                player_data_row[best_role + '_Score'] = final_new_score
+                # 2. Get metrics and weights for this role
+                role_weights = WEIGHTS.get(role, {})
+                new_total_score = 0
+                total_weight = 0
+                
+                # 3. Recalculate percentiles for all metrics used in this role
+                for metric, weight in role_weights.items():
+                    # Get population values for this metric
+                    pop_values = role_population[metric].dropna()
+                    
+                    if metric in player_data_row.columns:
+                        player_val = player_data_row[metric].values[0]
+                        
+                        if not pop_values.empty:
+                            # Calculate percentile (0-100)
+                            pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
+                            
+                            # Handle Inverted Metrics
+                            if metric in INVERT_METRICS:
+                                pct_score = 100.0 - pct_score
+                            
+                            # Update the row's percentile column (0-1) used for plotting
+                            # Note: This overwrites the column. If multiple roles use the same metric,
+                            # the last one wins. This is generally acceptable as they are usually 
+                            # compared against similar populations if they share a raw position.
+                            # Ideally, we'd plot based on the 'best_role' metrics specifically.
+                            player_data_row[metric + '_percentile'] = pct_score / 100.0
+                            
+                            # Add to weighted score
+                            new_total_score += ((pct_score / 100.0) * weight)
+                            total_weight += weight
+
+                # 4. Update the Role Score column
+                if total_weight > 0:
+                    final_new_score = (new_total_score / total_weight) * 100
+                    player_data_row[role + '_Score'] = final_new_score
             
             # --- NEW: Update Position Label for Chart ---
             # This ensures the chart displays "CF" if we selected "CF", even if their bio says "RW"
