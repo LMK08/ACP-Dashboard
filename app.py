@@ -354,9 +354,9 @@ POSITION_GROUPS = {
     'Holding Mid': ['DMF', 'LDMF', 'RDMF'],
     'Deep-lying Playmaker': ['LCMF', 'RCMF', 'LCMF3', 'RCMF3', 'DMF', 'LDMF', 'RDMF'],
     'Advanced Playmaker': ['AMF', 'RAMF', 'LAMF', 'LW', 'RW'],
-    'Wide Winger': ['LW', 'RW', 'LWF', 'RWF', 'LWB', 'RWB'],
+    'Wide Winger': ['LW', 'RW', 'LWF', 'RWF', 'LWB', 'RWB', 'RAMF', 'LAMF'],
     'Creative Winger': ['LW', 'RW', 'LWF', 'RWF', 'RAMF', 'LAMF'],
-    'Inside Forward': ['LW', 'RW', 'LWF', 'RWF'],
+    'Inside Forward': ['LW', 'RW', 'LWF', 'RWF', 'RAMF', 'LAMF'],
     'Full Back': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
     'Wingback': ['LWB', 'RWB', 'LB5', 'RB5'],
     'Inverted Full Back': ['LB', 'RB', 'LWB', 'RWB', 'LB5', 'RB5'],
@@ -2737,40 +2737,117 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
         
-        # FIX: Use 'current_pos' (calculated in the Bio section above) 
-        # instead of the potentially broken 'primaryPosition' from stats
-        primary_pos = current_pos 
+        # 1. Detect Available Positions for this Player
+        # We look at the raw event data to see where they actually played
+        try:
+            player_events = raw_events_df[raw_events_df['player.id'] == player_id]
+            
+            # Check standard Wyscout column names for position
+            if 'player.position' in player_events.columns:
+                raw_positions = player_events['player.position'].unique()
+            elif 'position_name' in player_events.columns:
+                raw_positions = player_events['position_name'].unique()
+            else:
+                raw_positions = []
+        except:
+            raw_positions = []
+            
+        # 2. Map Raw Positions to your Template Names
+        # (This maps Wyscout codes like 'RW' to your Dashboard Group 'Winger')
+        POS_MAPPING = {
+            'GK': 'Goalkeeper',
+            'CB': 'Centre Back', 'LCB': 'Centre Back', 'RCB': 'Centre Back',
+            'RB': 'Fullback', 'LB': 'Fullback', 'RWB': 'Fullback', 'LWB': 'Fullback',
+            'DMF': 'Defensive Midfielder', 'LDMF': 'Defensive Midfielder', 'RDMF': 'Defensive Midfielder',
+            'CMF': 'Central Midfielder', 'LCMF': 'Central Midfielder', 'RCMF': 'Central Midfielder',
+            'AMF': 'Attacking Midfielder', 'LAMF': 'Attacking Midfielder', 'RAMF': 'Attacking Midfielder',
+            'RW': 'Winger', 'LW': 'Winger', 'RM': 'Winger', 'LM': 'Winger',
+            'SS': 'Shadow Striker',
+            'CF': 'Striker', 'Forward': 'Striker'
+        }
         
-        eligible_groups = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos in pos_roles]
+        detected_templates = set()
+        
+        # Add positions found in event data
+        for raw in raw_positions:
+            clean_raw = str(raw).strip()
+            if clean_raw in POS_MAPPING:
+                detected_templates.add(POS_MAPPING[clean_raw])
+        
+        # Add the "Primary" position from bio to ensure we always have a default
+        if current_pos:
+            # If current_pos is a Group Name (e.g. 'Striker'), add it
+            if current_pos in POSITION_GROUPS:
+                detected_templates.add(current_pos)
+            # If current_pos is a raw role (e.g. 'CF'), map it
+            elif current_pos in POS_MAPPING:
+                 detected_templates.add(POS_MAPPING[current_pos])
+            else:
+                # Fallback: check which group lists this role
+                for group, roles in POSITION_GROUPS.items():
+                     if current_pos in roles:
+                          detected_templates.add(group)
+                          
+        # Convert to sorted list for the dropdown
+        available_options = sorted(list(detected_templates))
+        
+        # Fallback if detection fails completely
+        if not available_options:
+            available_options = list(POSITION_GROUPS.keys())
 
-        if not eligible_groups:
-            st.warning(f"No radar templates found for player's primary position: {primary_pos}")
-        else:
-            # Find best-fit archetype
-            highest_score = -1; highest_scoring_group = None;
-            for group in eligible_groups:
-                score_col = group + '_Score'
-                if score_col in player_data_row.columns:
-                    player_score = player_data_row[score_col].values[0]
-                    if player_score > highest_score:
-                        highest_score = player_score; highest_scoring_group = group
-            
-            if highest_scoring_group is None: highest_scoring_group = eligible_groups[0]
-            
-            metrics_to_plot = list(WEIGHTS[highest_scoring_group].keys())
-            metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
-            
-            position_data_for_dist = player_stats_with_scores_df[player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[highest_scoring_group])]
-            
-            fig_radar = create_radar_with_distributions(
-                player_data_row, # The 1-row DataFrame for the selected player
-                metrics_to_plot, 
-                highest_scoring_group, 
-                eligible_groups,
-                all_position_data=position_data_for_dist, # df for distribution plots
-                full_df_for_ranking=player_stats_with_scores_df # full df for ranking
+        # 3. Position Selector
+        col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
+        with col_rad_sel1:
+            st.markdown("##### Radar Template:")
+        with col_rad_sel2:
+            selected_template = st.selectbox(
+                "Select Position Template:", 
+                available_options, 
+                label_visibility="collapsed",
+                key="radar_pos_selector"
             )
-            st.pyplot(fig_radar, use_container_width=True)
+
+        # 4. Configure & Plot
+        if selected_template in POSITION_GROUPS:
+            # A. Identify Metrics for this template (from WEIGHTS)
+            if selected_template in WEIGHTS:
+                metrics_to_plot = list(WEIGHTS[selected_template].keys())
+                # Filter to ensure they exist in our data
+                metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
+            else:
+                st.warning(f"No metrics defined for {selected_template}")
+                metrics_to_plot = []
+
+            # B. Define the Population for Comparison
+            # We filter the full dataset to only include players who play the roles associated with this template.
+            # This ensures a Striker is compared to other Strikers, not Goalkeepers.
+            roles_in_group = POSITION_GROUPS.get(selected_template, [])
+            
+            # Filter the stats dataframe
+            position_data_for_dist = player_stats_with_scores_df[
+                player_stats_with_scores_df['primaryPosition'].isin(roles_in_group)
+            ]
+            
+            # Safety: If population is too small (e.g. rare position), use full dataset
+            if len(position_data_for_dist) < 5:
+                position_data_for_dist = player_stats_with_scores_df
+
+            # C. Generate Chart
+            if metrics_to_plot:
+                fig_radar = create_radar_with_distributions(
+                    player_data_row, # The selected player's data
+                    metrics_to_plot, 
+                    selected_template, 
+                    available_options,
+                    all_position_data=position_data_for_dist, # The peer group for distributions
+                    full_df_for_ranking=player_stats_with_scores_df # Full context
+                )
+                st.pyplot(fig_radar, use_container_width=True)
+            else:
+                st.info("Not enough data to generate radar for this position.")
+            
+        else:
+            st.warning("Configuration not found for selected template.")
 
         st.divider()
         
