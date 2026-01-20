@@ -2752,7 +2752,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         except:
             raw_positions = []
             
-        # Ensure we at least have the primary position
         if current_pos and current_pos not in raw_positions:
             raw_positions.append(current_pos)
             
@@ -2787,12 +2786,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 role_weights = WEIGHTS.get(role, {})
                 if not role_weights: continue
                 
-                # Get Population for this specific role
+                # USE RAW STATS FOR POPULATION (player_stats_df)
                 role_codes = POSITION_GROUPS[role]
-                population = player_stats_with_scores_df[
-                    player_stats_with_scores_df['primaryPosition'].isin(role_codes)
+                population = player_stats_df[
+                    player_stats_df['primaryPosition'].isin(role_codes)
                 ]
-                if len(population) < 5: population = player_stats_with_scores_df 
+                if len(population) < 5: population = player_stats_df 
                 
                 # Calculate Score
                 role_score = 0
@@ -2800,7 +2799,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 
                 for metric, weight in role_weights.items():
                     if metric in player_data_row.columns and metric in population.columns:
-                        # Use .values[0] to prevent the ValueError
+                        # Use .values[0] for scalar
                         val = player_data_row[metric].values[0]
                         pop_vals = population[metric].fillna(0)
                         
@@ -2819,24 +2818,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if best_role is None: best_role = eligible_roles[0]
 
             # 4. Prepare Data for Chart
-            # Get the correct population for the WINNER role
+            # CRITICAL CHANGE: Use player_stats_df (RAW DATA) for the comparison population
             target_codes = POSITION_GROUPS[best_role]
-            final_population = player_stats_with_scores_df[
-                player_stats_with_scores_df['primaryPosition'].isin(target_codes)
+            final_population = player_stats_df[
+                player_stats_df['primaryPosition'].isin(target_codes)
             ]
-            if len(final_population) < 5: final_population = player_stats_with_scores_df
+            if len(final_population) < 5: final_population = player_stats_df
             
-            # --- CRITICAL FIX: OVERRIDE POSITION IN ROW ---
-            # We create a COPY of the row and force the 'primaryPosition' to match
-            # the selected template. This tricks the radar chart into treating
-            # the player as if they natively belong to this group.
+            # Override Data Row
             chart_player_row = player_data_row.copy()
             
-            # 1. Update Score
+            # Update Score
             score_col_name = f"{best_role}_Score"
             chart_player_row[score_col_name] = best_score 
             
-            # 2. Update Position (Grab the first valid code for this role, e.g. 'CF')
+            # Update Position to trick the chart labels
             simulated_position = target_codes[0] if target_codes else selected_raw_pos
             chart_player_row['primaryPosition'] = simulated_position
             
@@ -2848,12 +2844,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             metrics_to_plot = [m for m in metrics_to_plot if m in chart_player_row.columns]
             
             fig_radar = create_radar_with_distributions(
-                chart_player_row,               # Row with UPDATED position and score
+                chart_player_row,               
                 metrics_to_plot, 
                 best_role, 
                 eligible_roles, 
-                all_position_data=final_population,     
-                full_df_for_ranking=final_population    # Correct Comparison Group
+                all_position_data=final_population,     # <-- Now passing RAW stats
+                full_df_for_ranking=final_population    # <-- Now passing RAW stats
             )
             st.pyplot(fig_radar, use_container_width=True)
 
