@@ -2737,118 +2737,119 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
         
-        # 1. Detect Available Positions for this Player
-        # We look at the raw event data to see where they actually played
+        # 1. Detect Raw Positions (What did they actually play?)
         try:
             player_events = raw_events_df[raw_events_df['player.id'] == player_id]
-            
-            # Check standard Wyscout column names for position
             if 'player.position' in player_events.columns:
                 raw_positions = player_events['player.position'].unique()
             elif 'position_name' in player_events.columns:
                 raw_positions = player_events['position_name'].unique()
             else:
                 raw_positions = []
+            
+            # Filter out None/Nan
+            raw_positions = [x for x in raw_positions if x and str(x) != 'nan']
+            
         except:
             raw_positions = []
             
-        # 2. Map Raw Positions to your Template Names
-        # (This maps Wyscout codes like 'RW' to your Dashboard Group 'Winger')
-        POS_MAPPING = {
-            'GK': 'Goalkeeper',
-            'CB': 'Centre Back', 'LCB': 'Centre Back', 'RCB': 'Centre Back',
-            'RB': 'Fullback', 'LB': 'Fullback', 'RWB': 'Fullback', 'LWB': 'Fullback',
-            'DMF': 'Defensive Midfielder', 'LDMF': 'Defensive Midfielder', 'RDMF': 'Defensive Midfielder',
-            'CMF': 'Central Midfielder', 'LCMF': 'Central Midfielder', 'RCMF': 'Central Midfielder',
-            'AMF': 'Attacking Midfielder', 'LAMF': 'Attacking Midfielder', 'RAMF': 'Attacking Midfielder',
-            'RW': 'Winger', 'LW': 'Winger', 'RM': 'Winger', 'LM': 'Winger',
-            'SS': 'Shadow Striker',
-            'CF': 'Striker', 'Forward': 'Striker'
-        }
-        
-        detected_templates = set()
-        
-        # Add positions found in event data
-        for raw in raw_positions:
-            clean_raw = str(raw).strip()
-            if clean_raw in POS_MAPPING:
-                detected_templates.add(POS_MAPPING[clean_raw])
-        
-        # Add the "Primary" position from bio to ensure we always have a default
-        if current_pos:
-            # If current_pos is a Group Name (e.g. 'Striker'), add it
-            if current_pos in POSITION_GROUPS:
-                detected_templates.add(current_pos)
-            # If current_pos is a raw role (e.g. 'CF'), map it
-            elif current_pos in POS_MAPPING:
-                 detected_templates.add(POS_MAPPING[current_pos])
-            else:
-                # Fallback: check which group lists this role
-                for group, roles in POSITION_GROUPS.items():
-                     if current_pos in roles:
-                          detected_templates.add(group)
-                          
-        # Convert to sorted list for the dropdown
-        available_options = sorted(list(detected_templates))
-        
-        # Fallback if detection fails completely
-        if not available_options:
-            available_options = list(POSITION_GROUPS.keys())
+        # Ensure we at least have the primary position from the bio
+        if current_pos and current_pos not in raw_positions:
+            raw_positions.append(current_pos)
+            
+        # Sort for the dropdown
+        raw_positions = sorted([str(p) for p in raw_positions])
 
-        # 3. Position Selector
+        # 2. Position Selector (Simple Raw Codes)
         col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
         with col_rad_sel1:
-            st.markdown("##### Radar Template:")
+            st.markdown("##### Played As:")
         with col_rad_sel2:
-            selected_template = st.selectbox(
-                "Select Position Template:", 
-                available_options, 
+            selected_raw_pos = st.selectbox(
+                "Select Position:", 
+                raw_positions, 
                 label_visibility="collapsed",
                 key="radar_pos_selector"
             )
 
-        # 4. Configure & Plot
-        if selected_template in POSITION_GROUPS:
-            # A. Identify Metrics for this template (from WEIGHTS)
-            if selected_template in WEIGHTS:
-                metrics_to_plot = list(WEIGHTS[selected_template].keys())
-                # Filter to ensure they exist in our data
-                metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
-            else:
-                st.warning(f"No metrics defined for {selected_template}")
-                metrics_to_plot = []
-
-            # B. Define the Population for Comparison
-            # We filter the full dataset to only include players who play the roles associated with this template.
-            # This ensures a Striker is compared to other Strikers, not Goalkeepers.
-            roles_in_group = POSITION_GROUPS.get(selected_template, [])
-            
-            # Filter the stats dataframe
-            position_data_for_dist = player_stats_with_scores_df[
-                player_stats_with_scores_df['primaryPosition'].isin(roles_in_group)
-            ]
-            
-            # Safety: If population is too small (e.g. rare position), use full dataset
-            if len(position_data_for_dist) < 5:
-                position_data_for_dist = player_stats_with_scores_df
-
-            # C. Generate Chart
-            if metrics_to_plot:
-                fig_radar = create_radar_with_distributions(
-                    player_data_row, # The selected player's data
-                    metrics_to_plot, 
-                    selected_template, 
-                    available_options,
-                    all_position_data=position_data_for_dist, # The peer group for distributions
-                    full_df_for_ranking=player_stats_with_scores_df # Full context
-                )
-                st.pyplot(fig_radar, use_container_width=True)
-            else:
-                st.info("Not enough data to generate radar for this position.")
-            
+        # 3. Find the "Best Fit" Template for this Raw Position
+        # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
+        
+        # Find all roles that include this raw position
+        eligible_roles = []
+        for role, valid_codes in POSITION_GROUPS.items():
+            if selected_raw_pos in valid_codes:
+                eligible_roles.append(role)
+        
+        if not eligible_roles:
+            st.warning(f"No radar templates defined for position '{selected_raw_pos}'.")
         else:
-            st.warning("Configuration not found for selected template.")
+            # Calculate Scores to find the best fit
+            best_role = None
+            best_score = -1
+            
+            # We calculate a simple score (sum of percentiles) for each eligible role
+            for role in eligible_roles:
+                # Get metrics and weights
+                role_weights = WEIGHTS.get(role, {})
+                if not role_weights: continue
+                
+                # Define Population for this role (for percentile calculation)
+                role_codes = POSITION_GROUPS[role]
+                population = player_stats_with_scores_df[
+                    player_stats_with_scores_df['primaryPosition'].isin(role_codes)
+                ]
+                if len(population) < 5: population = player_stats_with_scores_df # Fallback
+                
+                # Calculate Score
+                role_score = 0
+                total_weight = 0
+                
+                for metric, weight in role_weights.items():
+                    if metric in player_data_row.columns and metric in population.columns:
+                        val = player_data_row[metric].values[0]
+                        pop_vals = population[metric].fillna(0)
+                        
+                        # Percentile
+                        pct = (pop_vals < val).mean()
+                        if metric in INVERT_METRICS: pct = 1.0 - pct
+                        
+                        role_score += (pct * weight)
+                        total_weight += weight
+                
+                final_score = (role_score / total_weight) if total_weight > 0 else 0
+                
+                if final_score > best_score:
+                    best_score = final_score
+                    best_role = role
+            
+            # Handle case where no score could be calculated
+            if best_role is None: best_role = eligible_roles[0]
 
+            # 4. Generate Chart for the Winner
+            st.caption(f"Best Template Match: **{best_role}**")
+            
+            # Prepare data for plotting
+            metrics_to_plot = list(WEIGHTS[best_role].keys())
+            metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
+            
+            # Get Population for distribution
+            final_population = player_stats_with_scores_df[
+                player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
+            ]
+            if len(final_population) < 5: final_population = player_stats_with_scores_df
+
+            # Plot
+            fig_radar = create_radar_with_distributions(
+                player_data_row, 
+                metrics_to_plot, 
+                best_role, 
+                eligible_roles, # Pass list of options just in case function needs it
+                all_position_data=final_population, 
+                full_df_for_ranking=player_stats_with_scores_df 
+            )
+            st.pyplot(fig_radar, use_container_width=True)
+            
         st.divider()
         
         # --- 6. STATS TOGGLE ---
