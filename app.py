@@ -2747,7 +2747,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 raw_positions = []
             
-            # Filter and stringify
             raw_positions = [str(x) for x in raw_positions if x and str(x) != 'nan']
             
         except:
@@ -2801,11 +2800,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 
                 for metric, weight in role_weights.items():
                     if metric in player_data_row.columns and metric in population.columns:
-                        # --- FIX: USE .values[0] TO GET SCALAR VALUE ---
+                        # Use .values[0] to prevent the ValueError
                         val = player_data_row[metric].values[0]
                         pop_vals = population[metric].fillna(0)
                         
-                        # Calculate Rank
                         pct = (pop_vals < val).mean()
                         if metric in INVERT_METRICS: pct = 1.0 - pct
                         
@@ -2822,30 +2820,40 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             # 4. Prepare Data for Chart
             # Get the correct population for the WINNER role
+            target_codes = POSITION_GROUPS[best_role]
             final_population = player_stats_with_scores_df[
-                player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
+                player_stats_with_scores_df['primaryPosition'].isin(target_codes)
             ]
             if len(final_population) < 5: final_population = player_stats_with_scores_df
             
-            # A. Update the "Score" column so the Rating updates
+            # --- CRITICAL FIX: OVERRIDE POSITION IN ROW ---
+            # We create a COPY of the row and force the 'primaryPosition' to match
+            # the selected template. This tricks the radar chart into treating
+            # the player as if they natively belong to this group.
             chart_player_row = player_data_row.copy()
-            score_col_name = f"{best_role}_Score" 
+            
+            # 1. Update Score
+            score_col_name = f"{best_role}_Score"
             chart_player_row[score_col_name] = best_score 
             
-            # B. Display Context
+            # 2. Update Position (Grab the first valid code for this role, e.g. 'CF')
+            simulated_position = target_codes[0] if target_codes else selected_raw_pos
+            chart_player_row['primaryPosition'] = simulated_position
+            
+            # Display Context
             st.markdown(f"**Template:** {best_role} | **Rating:** {best_score:.1f} | **Comparison:** {len(final_population)} Players")
 
-            # C. Generate Chart
+            # Generate Chart
             metrics_to_plot = list(WEIGHTS[best_role].keys())
             metrics_to_plot = [m for m in metrics_to_plot if m in chart_player_row.columns]
             
             fig_radar = create_radar_with_distributions(
-                chart_player_row,
+                chart_player_row,               # Row with UPDATED position and score
                 metrics_to_plot, 
                 best_role, 
                 eligible_roles, 
                 all_position_data=final_population,     
-                full_df_for_ranking=final_population    
+                full_df_for_ranking=final_population    # Correct Comparison Group
             )
             st.pyplot(fig_radar, use_container_width=True)
 
