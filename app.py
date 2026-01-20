@@ -2734,7 +2734,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
 
-        # --- 5. NEW: DISPLAY PLAYER RADAR ---
+       # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
         
         # 1. Detect Raw Positions
@@ -2748,7 +2748,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 raw_positions = []
             
             raw_positions = [str(x) for x in raw_positions if x and str(x) != 'nan']
-            
         except:
             raw_positions = []
             
@@ -2781,36 +2780,28 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             best_role = None
             best_score = -1
             
-            # --- CRITICAL: GET RAW STATS FOR CALCULATIONS ---
-            # We must use player_stats_df (Raw) not player_stats_with_scores_df (Percentiles)
-            try:
-                # Find the player's row in the RAW dataset
-                raw_stats_row = player_stats_df[player_stats_df['playerId'] == player_id].iloc[0]
-            except:
-                # Fallback if somehow missing
-                raw_stats_row = player_data_row 
+            # Use RAW Per 90 Stats (player_stats_df), not Percentiles
+            # We already have 'player_per_90_stats' defined in the main loop, so we use that.
+            raw_player_series = player_per_90_stats 
 
             # Identify Best Fit
             for role in eligible_roles:
                 role_weights = WEIGHTS.get(role, {})
                 if not role_weights: continue
                 
-                # Population: Raw Stats for this role
+                # Get Raw Population
                 role_codes = POSITION_GROUPS[role]
-                population = player_stats_df[
-                    player_stats_df['primaryPosition'].isin(role_codes)
-                ]
-                if len(population) < 5: population = player_stats_df 
+                raw_population = player_stats_df[player_stats_df['primaryPosition'].isin(role_codes)]
+                if len(raw_population) < 5: raw_population = player_stats_df 
                 
                 # Calculate Score
                 role_score = 0
                 total_weight = 0
                 
                 for metric, weight in role_weights.items():
-                    if metric in raw_stats_row.index and metric in population.columns:
-                        # Grab RAW value
-                        val = raw_stats_row[metric]
-                        pop_vals = population[metric].fillna(0)
+                    if metric in raw_player_series.index and metric in raw_population.columns:
+                        val = raw_player_series[metric]
+                        pop_vals = raw_population[metric].fillna(0)
                         
                         pct = (pop_vals < val).mean()
                         if metric in INVERT_METRICS: pct = 1.0 - pct
@@ -2827,53 +2818,57 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if best_role is None: best_role = eligible_roles[0]
 
             # 4. Prepare Data for Chart
+            # We need to create a dataframe of SCORES (0-100), not raw stats.
+            
+            # A. Get Raw Population for the WINNER role
             target_codes = POSITION_GROUPS[best_role]
-            final_population = player_stats_df[
-                player_stats_df['primaryPosition'].isin(target_codes)
-            ]
-            if len(final_population) < 5: final_population = player_stats_df
+            raw_pop_df = player_stats_df[player_stats_df['primaryPosition'].isin(target_codes)]
+            if len(raw_pop_df) < 5: raw_pop_df = player_stats_df
             
-            # --- CRITICAL FIX: OVERWRITE ROW WITH NEW PERCENTILES ---
-            chart_player_row = player_data_row.copy()
+            # B. Create a new DF for the Chart Population (Converted to Percentiles)
+            chart_pop_df = raw_pop_df.copy()
+            metrics_to_plot = list(WEIGHTS[best_role].keys())
+            metrics_to_plot = [m for m in metrics_to_plot if m in chart_pop_df.columns]
+
+            # Convert Raw Population to Percentiles (0-100)
+            for m in metrics_to_plot:
+                # Rank converts raw 0.5 to percentile 0.8
+                chart_pop_df[m] = raw_pop_df[m].rank(pct=True) * 100
+                if m in INVERT_METRICS:
+                    chart_pop_df[m] = 100 - chart_pop_df[m]
+
+            # C. Create Player Row (Converted to Percentile)
+            chart_player_row = player_data_row.copy() # Start with metadata
             
-            # 1. Update Score & Position
+            # Overwrite metrics with NEW calculated percentiles
+            for m in metrics_to_plot:
+                val = raw_player_series.get(m, 0)
+                pop_vals = raw_pop_df[m].fillna(0)
+                
+                # Calculate percentile of Player within this Raw Population
+                pct = (pop_vals < val).mean() * 100
+                if m in INVERT_METRICS: pct = 100 - pct
+                
+                chart_player_row[m] = pct
+
+            # D. Update Metadata (Score & Position)
             score_col_name = f"{best_role}_Score"
             chart_player_row[score_col_name] = best_score 
             simulated_position = target_codes[0] if target_codes else selected_raw_pos
             chart_player_row['primaryPosition'] = simulated_position
             
-            # 2. Recalculate Percentiles for the Chart Metrics
-            # We must inject the NEW percentiles into the row so the Spider updates
-            metrics_to_plot = list(WEIGHTS[best_role].keys())
-            
-            for metric in metrics_to_plot:
-                if metric in raw_stats_row.index and metric in final_population.columns:
-                    # Get Raw Value
-                    raw_val = raw_stats_row[metric]
-                    pop_vals = final_population[metric].fillna(0)
-                    
-                    # Calculate New Percentile (0-100)
-                    new_pct = (pop_vals < raw_val).mean() * 100
-                    if metric in INVERT_METRICS: new_pct = 100 - new_pct
-                    
-                    # Overwrite in the chart row
-                    chart_player_row[metric] = new_pct
-
             # Display Context
-            st.markdown(f"**Template:** {best_role} | **Rating:** {best_score:.1f} | **Comparison:** {len(final_population)} Players")
+            st.markdown(f"**Template:** {best_role} | **Rating:** {best_score:.1f} | **Comparison:** {len(raw_pop_df)} Players")
 
             # Generate Chart
-            # Now chart_player_row has correct NEW percentiles
-            # And final_population has correct RAW stats for the wave distributions
-            metrics_to_plot = [m for m in metrics_to_plot if m in chart_player_row.columns]
-            
+            # Now passing Percentiles (0-100) for both Player and Population
             fig_radar = create_radar_with_distributions(
                 chart_player_row,               
                 metrics_to_plot, 
                 best_role, 
                 eligible_roles, 
-                all_position_data=final_population,    
-                full_df_for_ranking=final_population    
+                all_position_data=chart_pop_df,     # <-- Passed Percentile DF
+                full_df_for_ranking=chart_pop_df    # <-- Passed Percentile DF
             )
             st.pyplot(fig_radar, use_container_width=True)
 
