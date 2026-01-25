@@ -78,7 +78,21 @@ def load_data():
 
     try:
         logger.info("Loading data files...")
-        raw_events_df = pd.read_parquet('raw_events.parquet')
+        # Only load columns actually used in the app (reduces memory from 510MB to 250MB)
+        events_columns = [
+            'id', 'matchId', 'seasonId', 'minute', 'second', 'matchTimestamp',
+            'type.primary', 'type.secondary', 'player.id', 'player.name', 'player.position',
+            'team.name', 'opponentTeam.name', 'location.x', 'location.y',
+            'pass', 'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
+            'shot', 'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.bodyPart', 'shot.postShotXg', 'shot.goalkeeper.id',
+            'groundDuel.duelType', 'groundDuel.keptPossession', 'groundDuel.progressedWithBall',
+            'groundDuel.recoveredPossession', 'groundDuel.stoppedProgress', 'groundDuel.takeOn',
+            'aerialDuel.firstTouch', 'carry.endLocation.x', 'carry.endLocation.y',
+            'possession.id', 'possession.eventIndex', 'possession.duration', 'possession.team.name', 'possession.types',
+            'infraction', 'infraction.type', 'infraction.yellowCard', 'infraction.redCard',
+            'is_dribble_attempt', 'is_custom_dribble_success', 'relatedEventId'
+        ]
+        raw_events_df = pd.read_parquet('raw_events.parquet', columns=events_columns)
         matches_summary_df = pd.read_parquet('matches_summary.parquet')
 
         with open('all_match_data.pkl', 'rb') as f:
