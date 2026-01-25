@@ -156,36 +156,30 @@ def fetch_events(username, password, match_ids):
 # In process_data.py...
 
 # ==============================================================================
-# FINAL HYBRID METHOD: Minutes from API + Identity from Events
+# PLAYER MINUTES: Using Player Advanced Stats Endpoint (Direct Minutes)
 # ==============================================================================
-def fetch_official_player_minutes(username, password, match_ids, raw_events_df):
+def fetch_official_player_minutes(username, password, match_ids, raw_events_df, competition_id=43324, season_id=191782):
     """
-    1. Fetches IDs and Minutes from API Lineups (ignoring bad metadata).
-    2. Fetches Name, Team, Position from Local Event Data.
-    3. Merges them strictly on Player ID.
+    Fetches player minutes directly from Wyscout Player Advanced Stats endpoint.
+
+    1. Collects unique player IDs from match lineups
+    2. Fetches each player's advanced stats (includes direct minutesOnField)
+    3. Uses event data for player name/team identity
     """
     base_url_v3 = "https://apirest.wyscout.com/v3"
     auth = HTTPBasicAuth(username, password)
-    
-    # --- STEP 1: Build the Identity Map from Events ---
+
+    # --- STEP 1: Build Identity Map from Events ---
     print("Building Player Identity Map from Events...")
-    
-    # Filter for rows that have all the info we need
+
     valid_events = raw_events_df.dropna(subset=['player.id', 'team.name', 'player.position'])
-    
-    # Calculate the "Mode" (Most Common) Team and Position for each player
-    # This ensures we get their MAIN team/pos, not a one-off
-    id_map = {}
-    
-    # Group by ID and grab the top value for each column
     grouped = valid_events.groupby('player.id')
-    
-    # (Optimized for speed using pandas aggregations)
+
     names = grouped['player.name'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else "Unknown")
     teams = grouped['team.name'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else "Unknown")
     positions = grouped['player.position'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else "Unknown")
-    
-    # Create the dictionary: {12345: {'name': 'X', 'team': 'Y', 'pos': 'Z'}}
+
+    id_map = {}
     for pid in names.index:
         try:
             pid_int = int(pid)
@@ -196,80 +190,103 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df):
             }
         except:
             continue
-            
+
     print(f"✅ Identity Map ready for {len(id_map)} players.")
 
-    # --- STEP 2: Fetch Time Data from API ---
-    player_minutes_list = []
-    
+    # --- STEP 2: Collect unique player IDs from match lineups ---
     session = requests.Session()
     retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("https://", adapter)
-    
-    print(f"\n🚀 Fetching minutes skeleton for {len(match_ids)} matches...")
-    
-    for match_id in tqdm(match_ids, desc="Fetching Lineups"):
+
+    unique_player_ids = set()
+
+    print(f"\n🔍 Collecting player IDs from {len(match_ids)} matches...")
+
+    for match_id in tqdm(match_ids, desc="Scanning Lineups"):
         url = f"{base_url_v3}/matches/{match_id}"
         try:
             r = session.get(url, auth=auth, timeout=20)
             r.raise_for_status()
             match_data = r.json()
-            match_duration = 96
-            
+
             teams_data = match_data.get('teamsData', {})
             for team_id, team_info in teams_data.items():
                 formation = team_info.get('formation')
-                if not formation: continue
-                
-                # 2a. Calculate Subs logic
-                sub_out = {}; sub_in = {}
-                for sub in formation.get('substitutions', []):
-                    minute = sub.get('minute', 90)
-                    if sub.get('playerOut'): sub_out[sub['playerOut']] = minute
-                    if sub.get('playerIn'): sub_in[sub['playerIn']] = minute
-                
-                # 2b. Collect IDs and Minutes (We do NOT care about API names here)
-                # Starters
+                if not formation:
+                    continue
+
+                # Collect all player IDs from lineup and bench
                 for player in formation.get('lineup', []):
                     pid = player.get('playerId')
-                    mins = sub_out.get(pid, match_duration)
-                    if mins > 0:
-                        player_minutes_list.append({'matchId': match_id, 'playerId': pid, 'minutes': mins, 'type': 'Starter'})
-                        
-                # Bench
+                    if pid:
+                        unique_player_ids.add(pid)
+
                 for player in formation.get('bench', []):
                     pid = player.get('playerId')
-                    if pid in sub_in:
-                        t_in = sub_in[pid]
-                        mins = sub_out.get(pid, match_duration) - t_in if pid in sub_out else match_duration - t_in
-                        if mins > 0:
-                            player_minutes_list.append({'matchId': match_id, 'playerId': pid, 'minutes': mins, 'type': 'Sub'})
+                    if pid:
+                        unique_player_ids.add(pid)
 
         except Exception as e:
-            print(f"  -> ⚠️ Error match {match_id}: {e}")
+            print(f"  -> ⚠️ Error scanning match {match_id}: {e}")
 
-    # --- STEP 3: Merge Identity onto Time ---
-    minutes_df = pd.DataFrame(player_minutes_list)
-    
-    # Function to apply the map
-    def fill_identity(pid):
-        data = id_map.get(pid, {'name': 'Unknown', 'team': 'Unknown', 'pos': 'Unknown'})
-        return pd.Series([data['name'], data['team'], data['pos']])
+    print(f"✅ Found {len(unique_player_ids)} unique players.")
 
-    # Create the columns
-    print("Merging identity data...")
-    minutes_df[['playerName', 'teamName', 'primaryPosition']] = minutes_df['playerId'].apply(fill_identity)
-    
-    # --- AGGREGATION ---
-    # Total minutes per player
-    total_minutes = minutes_df.groupby(['playerId', 'playerName', 'teamName', 'primaryPosition'])['minutes'].sum().reset_index()
-    total_minutes.rename(columns={'minutes': 'totalMinutes'}, inplace=True)
-    
-    # Ensure ID is int
-    total_minutes['playerId'] = total_minutes['playerId'].astype(int)
-    
-    return total_minutes
+    # --- STEP 3: Fetch minutes from Player Advanced Stats endpoint ---
+    print(f"\n🚀 Fetching player stats from Advanced Stats endpoint...")
+    print(f"   (Competition: {competition_id}, Season: {season_id})")
+
+    player_stats_list = []
+
+    for pid in tqdm(unique_player_ids, desc="Fetching Player Stats"):
+        url = f"{base_url_v3}/players/{pid}/advancedstats"
+        params = {'compId': competition_id, 'seasonId': season_id}
+
+        try:
+            r = session.get(url, auth=auth, params=params, timeout=20)
+
+            if r.status_code != 200:
+                continue
+
+            data = r.json()
+            total_stats = data.get('total', {})
+
+            # Get direct minutes from API
+            minutes = total_stats.get('minutesOnField', 0)
+
+            if minutes and minutes > 0:
+                # Get position from API response (most played position)
+                positions_data = data.get('positions', [])
+                api_position = None
+                if positions_data:
+                    # First position is most played
+                    api_position = positions_data[0].get('position', {}).get('code', '').upper()
+
+                # Get identity from events (fallback to API position)
+                identity = id_map.get(pid, {'name': 'Unknown', 'team': 'Unknown', 'pos': 'Unknown'})
+
+                player_stats_list.append({
+                    'playerId': pid,
+                    'playerName': identity['name'],
+                    'teamName': identity['team'],
+                    'primaryPosition': api_position if api_position else identity['pos'],
+                    'totalMinutes': minutes
+                })
+
+        except Exception as e:
+            print(f"  -> ⚠️ Error fetching player {pid}: {e}")
+
+    # --- STEP 4: Create DataFrame ---
+    if not player_stats_list:
+        print("❌ No player minutes data retrieved.")
+        return pd.DataFrame(columns=['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes'])
+
+    total_minutes_df = pd.DataFrame(player_stats_list)
+    total_minutes_df['playerId'] = total_minutes_df['playerId'].astype(int)
+
+    print(f"✅ Retrieved direct minutes for {len(total_minutes_df)} players.")
+
+    return total_minutes_df
 
 # ==============================================================================
 # SECTION 3: DATA PROCESSING FUNCTIONS
@@ -1544,12 +1561,14 @@ def main():
     
     current_match_ids = current_matches_summary_df['matchId'].dropna().unique().tolist()
     
-    # 1. Calculate Current Season Minutes (Using existing logic)
+    # 1. Calculate Current Season Minutes (Using Player Advanced Stats endpoint)
     current_minutes_df = fetch_official_player_minutes(
         wyscout_user,
         wyscout_pass,
         current_match_ids,
-        current_raw_events_df
+        current_raw_events_df,
+        competition_id=competition_id,
+        season_id=CURRENT_SEASON_ID
     )
     
     if not current_minutes_df.empty:
