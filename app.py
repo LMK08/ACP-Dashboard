@@ -3080,89 +3080,97 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- CAREER RADAR SECTION ---
         st.divider()
 
-        # Load career data
-        hist_events_full = load_historical_events_full()
+        # First check if player has history (lightweight check - only loads minutes file)
         history_minutes_df = load_history_player_minutes()
 
-        # Check if player has multi-season data (exists in history file)
         player_has_career_data = False
         career_total_minutes = 0
+        history_minutes = 0
 
         if history_minutes_df is not None and not history_minutes_df.empty:
-            # Check if this player exists in the history data
             history_row = history_minutes_df[history_minutes_df['playerId'] == player_id]
             if not history_row.empty:
-                # Player has historical data - calculate combined career minutes
                 history_minutes = history_row['totalMinutes'].values[0]
                 career_total_minutes = total_minutes + history_minutes
                 player_has_career_data = True
 
-        if player_has_career_data and hist_events_full is not None:
-            st.subheader("All-Time Liga 3 Performance")
-            st.caption(f"Career stats from {career_total_minutes:.0f} total minutes across multiple Liga 3 seasons")
+        if player_has_career_data:
+            # Use expander to defer heavy data loading until user clicks
+            with st.expander(f"All-Time Liga 3 Performance ({career_total_minutes:.0f} career minutes)", expanded=False):
+                st.caption(f"Career stats from {career_total_minutes:.0f} total minutes across multiple Liga 3 seasons")
 
-            with st.spinner("Calculating career statistics..."):
-                # Combine current + history minutes for career calculation
-                career_minutes_df = get_combined_career_minutes(player_minutes_df, history_minutes_df)
+                # Only load heavy historical events when expander is opened
+                try:
+                    hist_events_full = load_historical_events_full()
 
-                # Calculate career stats
-                career_stats_df = calculate_career_player_stats(raw_events_df, hist_events_full, career_minutes_df)
-
-                if career_stats_df is not None and not career_stats_df.empty:
-                    # Calculate percentiles for career stats
-                    career_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                        career_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
-                    )
-
-                    if not career_stats_with_scores_df.empty:
-                        # Get career data for selected player
-                        career_player_data = career_stats_with_scores_df[
-                            career_stats_with_scores_df['playerId'] == player_id
-                        ]
-
-                        if not career_player_data.empty:
-                            career_player_row = career_player_data.iloc[[0]].copy()
-
-                            # Use same position template as current season radar
-                            career_role_weights = WEIGHTS.get(best_role, {})
-                            career_metrics_to_plot = list(career_role_weights.keys())
-
-                            # Get career population for the position
-                            career_role_codes = POSITION_GROUPS.get(best_role, [])
-                            career_population = career_stats_with_scores_df[
-                                career_stats_with_scores_df['primaryPosition'].isin(career_role_codes)
-                            ]
-
-                            # Recalculate percentiles for career data against career population
-                            for metric in career_metrics_to_plot:
-                                if metric in career_population.columns:
-                                    pop_values = career_population[metric].dropna()
-                                    player_val = career_player_row[metric].values[0]
-                                    if len(pop_values) > 0:
-                                        pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
-                                        if metric in INVERT_METRICS:
-                                            pct_score = 100.0 - pct_score
-                                        career_player_row[metric + '_percentile'] = pct_score / 100.0
-
-                            # Override position for display
-                            career_player_row['primaryPosition'] = selected_raw_pos
-
-                            # Create career radar chart
-                            fig_career_radar = create_radar_with_distributions(
-                                career_player_row,
-                                career_metrics_to_plot,
-                                best_role,
-                                eligible_roles,
-                                all_position_data=career_population,
-                                full_df_for_ranking=career_stats_with_scores_df
-                            )
-                            st.pyplot(fig_career_radar, use_container_width=True)
-                        else:
-                            st.info("Career statistics could not be calculated for this player.")
+                    if hist_events_full is None:
+                        st.warning("Historical event data not available. Run fetch_full_history.py to enable career stats.")
                     else:
-                        st.info("Not enough data to calculate career percentiles.")
-                else:
-                    st.info("Career statistics could not be calculated.")
+                        with st.spinner("Calculating career statistics..."):
+                            # Combine current + history minutes for career calculation
+                            career_minutes_df = get_combined_career_minutes(player_minutes_df, history_minutes_df)
+
+                            # Calculate career stats
+                            career_stats_df = calculate_career_player_stats(raw_events_df, hist_events_full, career_minutes_df)
+
+                            if career_stats_df is not None and not career_stats_df.empty:
+                                # Calculate percentiles for career stats
+                                career_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                                    career_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                                )
+
+                                if not career_stats_with_scores_df.empty:
+                                    # Get career data for selected player
+                                    career_player_data = career_stats_with_scores_df[
+                                        career_stats_with_scores_df['playerId'] == player_id
+                                    ]
+
+                                    if not career_player_data.empty:
+                                        career_player_row = career_player_data.iloc[[0]].copy()
+
+                                        # Use same position template as current season radar
+                                        career_role_weights = WEIGHTS.get(best_role, {})
+                                        career_metrics_to_plot = list(career_role_weights.keys())
+
+                                        # Get career population for the position
+                                        career_role_codes = POSITION_GROUPS.get(best_role, [])
+                                        career_population = career_stats_with_scores_df[
+                                            career_stats_with_scores_df['primaryPosition'].isin(career_role_codes)
+                                        ]
+
+                                        # Recalculate percentiles for career data against career population
+                                        for metric in career_metrics_to_plot:
+                                            if metric in career_population.columns:
+                                                pop_values = career_population[metric].dropna()
+                                                player_val = career_player_row[metric].values[0]
+                                                if len(pop_values) > 0:
+                                                    pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
+                                                    if metric in INVERT_METRICS:
+                                                        pct_score = 100.0 - pct_score
+                                                    career_player_row[metric + '_percentile'] = pct_score / 100.0
+
+                                        # Override position for display
+                                        career_player_row['primaryPosition'] = selected_raw_pos
+
+                                        # Create career radar chart
+                                        fig_career_radar = create_radar_with_distributions(
+                                            career_player_row,
+                                            career_metrics_to_plot,
+                                            best_role,
+                                            eligible_roles,
+                                            all_position_data=career_population,
+                                            full_df_for_ranking=career_stats_with_scores_df
+                                        )
+                                        st.pyplot(fig_career_radar, use_container_width=True)
+                                    else:
+                                        st.info("Career statistics could not be calculated for this player.")
+                                else:
+                                    st.info("Not enough data to calculate career percentiles.")
+                            else:
+                                st.info("Career statistics could not be calculated.")
+                except Exception as e:
+                    st.error(f"Error loading career data: {e}")
+                    logger.exception("Error in career radar section")
         else:
             with st.expander("Career Stats", expanded=False):
                 st.info("Career statistics will be available once this player has data from multiple Liga 3 seasons.")
