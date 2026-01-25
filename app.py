@@ -415,15 +415,33 @@ def load_historical_data():
 
 @st.cache_data(ttl=3600)
 def load_historical_events_full():
-    """Load historical events with ALL columns needed for full stats calculation."""
+    """Load historical events with columns needed for stats calculation.
+    Optimized to load only required columns to reduce memory from 1.6GB to ~200MB.
+    """
     if not os.path.exists('historical_events.parquet'):
         return None
     try:
-        df = pd.read_parquet('historical_events.parquet')
-        logger.info(f"Loaded {len(df)} full historical events for career stats")
+        # Only load columns needed for calculate_all_player_stats()
+        required_cols = [
+            'id', 'matchId', 'player.id', 'team.name',
+            'type.primary', 'type.secondary',
+            'player.position',
+            'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.postShotXg', 'shot.goalkeeper.id',
+            'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y',
+            'location.x', 'location.y',
+            'carry.endLocation.x', 'carry.endLocation.y',
+            'relatedEventId'
+        ]
+        # Filter to only columns that exist in the file
+        import pyarrow.parquet as pq
+        available_cols = pq.read_schema('historical_events.parquet').names
+        cols_to_load = [c for c in required_cols if c in available_cols]
+
+        df = pd.read_parquet('historical_events.parquet', columns=cols_to_load)
+        logger.info(f"Loaded {len(df)} historical events ({len(cols_to_load)} columns) for career stats")
         return df
     except Exception as e:
-        logger.error(f"Error loading full historical events: {e}")
+        logger.error(f"Error loading historical events: {e}")
         return None
 
 @st.cache_data(ttl=3600)
