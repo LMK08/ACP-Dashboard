@@ -440,7 +440,6 @@ def load_history_player_minutes():
         logger.error(f"Error loading history minutes: {e}")
         return None
 
-@st.cache_data(ttl=3600)
 def get_combined_career_minutes(_current_minutes_df, _history_minutes_df):
     """Combine current season and historical minutes for career totals."""
     if _history_minutes_df is None:
@@ -986,7 +985,6 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     print("--- FINISHED: New All-Player-Stats Calculation ---")
     return base_df.fillna(0)
 
-@st.cache_data(ttl=3600)
 def calculate_career_player_stats(_current_events, _hist_events, _all_time_minutes):
     """
     Calculate career stats across all seasons by combining current and historical data.
