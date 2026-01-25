@@ -4,7 +4,27 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
+import logging
+import yaml
 import matplotlib.pyplot as plt
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load configuration from YAML
+def load_config():
+    """Load configuration from YAML file."""
+    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    try:
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.warning("config.yaml not found, using default configuration")
+        return None
+    except yaml.YAMLError as e:
+        logger.error(f"Error parsing config.yaml: {e}")
+        return None
 from mplsoccer import Pitch
 from matplotlib.lines import Line2D
 import matplotlib.colors as mcolors
@@ -39,46 +59,79 @@ st.set_page_config(
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
-@st.cache_data
+@st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
 def load_data():
     """Load all pre-processed data files."""
+    required_files = [
+        'raw_events.parquet',
+        'matches_summary.parquet',
+        'all_match_data.pkl',
+        'season_team_stats.pkl',
+        'player_minutes_and_positions.pkl'
+    ]
+
+    # Check all files exist before loading
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+    if missing_files:
+        st.error(f"❌ Error: Missing data files: {', '.join(missing_files)}. Please run `process_data.py` first.")
+        return None, None, None, None, None
+
     try:
+        logger.info("Loading data files...")
         raw_events_df = pd.read_parquet('raw_events.parquet')
         matches_summary_df = pd.read_parquet('matches_summary.parquet')
-        
+
         with open('all_match_data.pkl', 'rb') as f:
             all_match_data = pickle.load(f)
-            
+
         with open('season_team_stats.pkl', 'rb') as f:
             season_team_stats = pickle.load(f)
-            
+
         with open('player_minutes_and_positions.pkl', 'rb') as f:
             player_minutes_df = pickle.load(f)
 
+        logger.info(f"Loaded {len(raw_events_df)} events, {len(matches_summary_df)} matches")
         return raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df
-    
+
     except FileNotFoundError as e:
-        st.error(f"❌ Error: A data file was not found. Please run `process_data.py` (including the new player minutes step) first. Missing file: {e.filename}")
+        st.error(f"❌ Error: A data file was not found. Please run `process_data.py` first. Missing file: {e.filename}")
+        logger.error(f"FileNotFoundError: {e}")
+        return None, None, None, None, None
+    except (pickle.UnpicklingError, pd.errors.ParserError) as e:
+        st.error(f"❌ Error: Data file is corrupted. Please regenerate with `process_data.py`. Details: {e}")
+        logger.error(f"Data corruption error: {e}")
         return None, None, None, None, None
     except Exception as e:
-        st.error(f"An error occurred loading data: {e}")
+        st.error(f"An unexpected error occurred loading data: {e}")
+        logger.exception("Unexpected error in load_data")
         return None, None, None, None, None
 
-# ... after your @st.cache_data def load_data(): ...
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_player_details():
     """Loads the player details (foot, height, etc.) from the pkl file."""
     try:
         with open('player_details.pkl', 'rb') as f:
             player_details_list = pickle.load(f)
-        
+
         players_df = pd.DataFrame(player_details_list)
+        players_df = players_df.dropna(subset=['playerId'])
+        # Safe conversion with validation
+        players_df['playerId'] = pd.to_numeric(players_df['playerId'], errors='coerce')
+        invalid_ids = players_df['playerId'].isna().sum()
+        if invalid_ids > 0:
+            logger.warning(f"{invalid_ids} player IDs could not be converted to numeric")
         players_df = players_df.dropna(subset=['playerId'])
         players_df['playerId'] = players_df['playerId'].astype(int)
         players_df = players_df.set_index('playerId')
+        logger.info(f"Loaded {len(players_df)} player details")
         return players_df
     except FileNotFoundError:
         st.error("❌ Error: `player_details.pkl` not found. Please run `get_player_details.py` locally and push the file.")
+        logger.error("player_details.pkl not found")
+        return pd.DataFrame()
+    except (pickle.UnpicklingError, KeyError) as e:
+        st.error(f"❌ Error loading player details: {e}")
+        logger.error(f"Error loading player_details.pkl: {e}")
         return pd.DataFrame()
     except Exception as e:
         st.error(f"An error occurred loading player details: {e}")
@@ -93,19 +146,20 @@ def _calculate_age(birth_date):
         birth = datetime.datetime.strptime(birth_date, '%Y-%m-%d').date()
         # Calculate age as a float
         age_in_days = (today - birth).days
-        age = age_in_days / 365.25 
+        age = age_in_days / 365.25
         return age # Return the float
-    except Exception:
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Failed to parse birth date '{birth_date}': {e}")
         return "N/A"
 
-@st.cache_data
+@st.cache_data(ttl=3600)
 def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
     """
     Goes through all match data and extracts the individual match stats
     for a single selected player.
     """
     player_matches = []
-    
+
     # Create a quick lookup map for match info
     match_info_map = _matches_summary_df.set_index('matchId').to_dict('index')
     
@@ -275,14 +329,16 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
         move_df['end_x'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
         move_df['end_y'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
         move_df = move_df.dropna(subset=['end_x', 'end_y', 'player.id'])
-        def get_xt_zone(x, y, xt_rows, xt_cols):
-            if pd.isna(x) or pd.isna(y): return None, None
-            col = min(int(x / 100 * xt_cols), xt_cols - 1); row = min(int(y / 100 * xt_rows), xt_rows - 1)
-            return row, col
-        move_df[['start_row', 'start_col']] = move_df.apply(lambda row: get_xt_zone(row['start_x'], row['start_y'], rows, cols), axis=1, result_type='expand')
-        move_df[['end_row', 'end_col']] = move_df.apply(lambda row: get_xt_zone(row['end_x'], row['end_y'], rows, cols), axis=1, result_type='expand')
-        move_df['xt_start'] = move_df.apply(lambda row: xt_grid[int(row['start_row']), int(row['start_col'])] if pd.notna(row['start_row']) else 0, axis=1)
-        move_df['xt_end'] = move_df.apply(lambda row: xt_grid[int(row['end_row']), int(row['end_col'])] if pd.notna(row['end_row']) else 0, axis=1)
+
+        # Vectorized xT zone calculation (much faster than apply)
+        move_df['start_col'] = np.clip((move_df['start_x'] / 100 * cols).astype(float).fillna(0).astype(int), 0, cols - 1)
+        move_df['start_row'] = np.clip((move_df['start_y'] / 100 * rows).astype(float).fillna(0).astype(int), 0, rows - 1)
+        move_df['end_col'] = np.clip((move_df['end_x'] / 100 * cols).astype(float).fillna(0).astype(int), 0, cols - 1)
+        move_df['end_row'] = np.clip((move_df['end_y'] / 100 * rows).astype(float).fillna(0).astype(int), 0, rows - 1)
+
+        # Vectorized xT lookup using numpy advanced indexing
+        move_df['xt_start'] = xt_grid[move_df['start_row'].values, move_df['start_col'].values]
+        move_df['xt_end'] = xt_grid[move_df['end_row'].values, move_df['end_col'].values]
         move_df['xT'] = move_df['xt_end'] - move_df['xt_start']
         successful_threat = move_df[move_df['xT'] > 0]
         player_xt = successful_threat.groupby('player.id')['xT'].sum().reset_index()
@@ -318,7 +374,7 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
     print("--- FINISHED: Streamlined player stats ---")
     return combined_df.fillna(0)
 
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_historical_data():
     """
     Load all historical data files for rolling charts.
@@ -327,25 +383,40 @@ def load_historical_data():
     try:
         # 1. Define only the columns we absolutely need
         events_cols = ['type.primary', 'shot.xg', 'matchId', 'team.name']
-        # --- ADDED 'seasonId' to this list ---
         matches_cols = ['matchId', 'dateutc', 'gameweek', 'homeTeamName', 'awayTeamName', 'seasonId']
-        
-        # 2. Load *only* those columns
+
+        # 2. Check files exist before loading
+        if not os.path.exists('historical_events.parquet'):
+            st.error("❌ Error: historical_events.parquet not found. Please run `process_data.py`.")
+            return None, None
+        if not os.path.exists('historical_matches.parquet'):
+            st.error("❌ Error: historical_matches.parquet not found. Please run `process_data.py`.")
+            return None, None
+
+        # 3. Load *only* those columns
         hist_events_df = pd.read_parquet('historical_events.parquet', columns=events_cols)
         hist_matches_df = pd.read_parquet('historical_matches.parquet', columns=matches_cols)
-        
+
+        logger.info(f"Loaded {len(hist_events_df)} historical events, {len(hist_matches_df)} historical matches")
         return hist_events_df, hist_matches_df
-    
+
     except FileNotFoundError as e:
-        st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py` (and force-push the files). Missing file: {e.filename}")
+        st.error(f"❌ Error: A historical data file was not found. Please run `process_data.py`. Missing file: {e.filename}")
+        logger.error(f"Historical data file not found: {e}")
+        return None, None
+    except (ValueError, KeyError) as e:
+        st.error(f"❌ Error: Historical data file has missing columns: {e}")
+        logger.error(f"Column mismatch in historical data: {e}")
         return None, None
     except Exception as e:
-        st.error(f"An error occurred loading historical data: {e}")
+        st.error(f"An unexpected error occurred loading historical data: {e}")
+        logger.exception("Error in load_historical_data")
         return None, None
     
 # ==============================================================================
 # 3. GLOBAL CONSTANTS FOR PLAYER RADARS
 # ==============================================================================
+# Hardcoded defaults (will be overridden by config.yaml if available)
 POSITION_GROUPS = {
     'Shot Stopper': ['GK'], 'Cross Claimer': ['GK'], 'Ball-playing GK': ['GK'],
     'Mobile Striker': ['CF', 'SS'], 'Shadow Striker': ['CF', 'SS'], 'Poacher': ['CF', 'SS'], 'Target Man': ['CF', 'SS'], 'Pressing Forward': ['CF', 'SS'],
@@ -418,6 +489,20 @@ DISTRIBUTION_METRICS_BY_POSITION = {
     'Target Man': ['Goals', 'npxG', 'Shots', 'xG per Shot',  'Assists', 'xAOP', 'Loss index', 'Aerial duels', 'Aerial duels successful %','Clearances'],
     'Pressing Forward': ['Goals', 'npxG', 'Shots', 'xG per Shot',  'Assists', 'xAOP', 'Loss index', 'Defensive duels successful', 'Interceptions', 'Recoveries', 'Counterpressing Recoveries']
 }
+
+# Override from config.yaml if available
+_config = load_config()
+if _config:
+    POSITION_GROUPS = _config.get('position_groups', POSITION_GROUPS)
+    WEIGHTS = _config.get('weights', WEIGHTS)
+    INVERT_METRICS = _config.get('invert_metrics', INVERT_METRICS)
+    OUTPUT_METRICS = _config.get('metric_categories', {}).get('output', OUTPUT_METRICS)
+    PASSING_METRICS = _config.get('metric_categories', {}).get('passing', PASSING_METRICS)
+    DEFENSIVE_METRICS = _config.get('metric_categories', {}).get('defensive', DEFENSIVE_METRICS)
+    DRIBBLING_METRICS = _config.get('metric_categories', {}).get('dribbling', DRIBBLING_METRICS)
+    GOALKEEPING_METRICS = _config.get('metric_categories', {}).get('goalkeeping', GOALKEEPING_METRICS)
+    DISTRIBUTION_METRICS_BY_POSITION = _config.get('distribution_metrics_by_position', DISTRIBUTION_METRICS_BY_POSITION)
+    logger.info("Configuration loaded from config.yaml")
 
 
 # ==============================================================================
@@ -573,8 +658,7 @@ def add_custom_dribble_success(events_df):
     
     return df
 
-@st.cache_data
-@st.cache_data
+@st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
 def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     """
     A new, streamlined, and correct function to calculate all player stats 
@@ -614,12 +698,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
         base_df = base_df.merge(stat_series, left_index=True, right_index=True, how='left')
         return base_df
 
-    # --- Helper for list-checking ---
+    # --- Helper for list-checking (vectorized for performance) ---
+    # Pre-compute secondary tags as sets for O(1) lookup
+    _secondary_col = events_df.get('type.secondary', pd.Series(dtype='object'))
+    _secondary_sets = _secondary_col.apply(
+        lambda x: set(x) if isinstance(x, (list, np.ndarray)) else set()
+    )
+
     def check_secondary_list(tag):
-        """Returns a boolean Series if tag is in the 'type.secondary' list."""
-        return events_df.get('type.secondary', pd.Series(dtype='object')).apply(
-            lambda x: isinstance(x, (list, np.ndarray)) and tag in x
-        )
+        """Returns a boolean Series if tag is in the 'type.secondary' list (vectorized)."""
+        return _secondary_sets.apply(lambda s: tag in s)
 
     # --- Step 1: Calculate All Counting Stats (Totals) ---
     print("Step 1: Calculating counting stats...")
@@ -753,14 +841,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
     move_df['end_x'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
     move_df['end_y'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
     move_df = move_df.dropna(subset=['end_x', 'end_y', 'player.id'])
-    def get_xt_zone(x, y, xt_rows, xt_cols):
-        if pd.isna(x) or pd.isna(y): return None, None
-        col = min(int(x / 100 * xt_cols), xt_cols - 1); row = min(int(y / 100 * xt_rows), xt_rows - 1)
-        return row, col
-    move_df[['start_row', 'start_col']] = move_df.apply(lambda row: get_xt_zone(row['start_x'], row['start_y'], rows, cols), axis=1, result_type='expand')
-    move_df[['end_row', 'end_col']] = move_df.apply(lambda row: get_xt_zone(row['end_x'], row['end_y'], rows, cols), axis=1, result_type='expand')
-    move_df['xt_start'] = move_df.apply(lambda row: xt_grid[int(row['start_row']), int(row['start_col'])] if pd.notna(row['start_row']) else 0, axis=1)
-    move_df['xt_end'] = move_df.apply(lambda row: xt_grid[int(row['end_row']), int(row['end_col'])] if pd.notna(row['end_row']) else 0, axis=1)
+
+    # Vectorized xT zone calculation (much faster than apply)
+    move_df['start_col'] = np.clip((move_df['start_x'] / 100 * cols).astype(float).fillna(0).astype(int), 0, cols - 1)
+    move_df['start_row'] = np.clip((move_df['start_y'] / 100 * rows).astype(float).fillna(0).astype(int), 0, rows - 1)
+    move_df['end_col'] = np.clip((move_df['end_x'] / 100 * cols).astype(float).fillna(0).astype(int), 0, cols - 1)
+    move_df['end_row'] = np.clip((move_df['end_y'] / 100 * rows).astype(float).fillna(0).astype(int), 0, rows - 1)
+
+    # Vectorized xT lookup using numpy advanced indexing
+    move_df['xt_start'] = xt_grid[move_df['start_row'].values, move_df['start_col'].values]
+    move_df['xt_end'] = xt_grid[move_df['end_row'].values, move_df['end_col'].values]
     move_df['xT'] = move_df['xt_end'] - move_df['xt_start']
     successful_threat = move_df[move_df['xT'] > 0]
     player_xt = successful_threat.groupby('player.id')['xT'].sum().reset_index()
@@ -1341,7 +1431,9 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
                 if not valid_groups.empty:
                      final_third_entries_series = valid_groups.groupby('possession.id')['location.x'].transform(lambda x: x.min() < 66.6 and x.max() >= 66.6)
                      final_third_entries = final_third_entries_series[final_third_entries_series].index.get_level_values('possession.id').nunique() / games
-            except Exception: final_third_entries = 0
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Failed to calculate final third entries for team: {e}")
+                final_third_entries = 0
         losses = losses_df[losses_df.get('team.name') == team].shape[0] / games if not losses_df.empty else 0
 
         # --- Defensive Stats ---
@@ -2244,7 +2336,8 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
 st.title("Atlético CP Analysis") # You can change this title
 
 # --- Load Data ---
-raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
+with st.spinner("Loading match data..."):
+    raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
 
 
 # --- Declare player_stats_with_scores_df globally for the app session ---
@@ -2280,7 +2373,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         matches_summary_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
         
         selected_match_display = st.sidebar.selectbox("Select a Match", matches_summary_df['display_name'])
-        selected_match_info = matches_summary_df[matches_summary_df['display_name'] == selected_match_display].iloc[0]
+        matching_matches = matches_summary_df[matches_summary_df['display_name'] == selected_match_display]
+        if matching_matches.empty:
+            st.error("Selected match not found. Please refresh the page and try again.")
+            st.stop()
+        selected_match_info = matching_matches.iloc[0]
         selected_match_id = selected_match_info['matchId']
         
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
@@ -2599,16 +2696,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
-        
+
         try:
-            player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
-            # --- NEW: Calculate percentiles ---
-            player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
-            )
+            with st.spinner("Calculating player statistics (this may take a moment on first load)..."):
+                player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+                # --- NEW: Calculate percentiles ---
+                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                )
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
-            st.exception(e)
+            logger.exception("Error in calculate_all_player_stats")
             player_stats_df = pd.DataFrame()
             player_stats_with_scores_df = pd.DataFrame()
             
@@ -3142,12 +3240,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 1. Load Data ---
         try:
-            player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
-            player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
-            )
+            with st.spinner("Loading player statistics..."):
+                player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
+            logger.exception("Error in Player Comparison stats calculation")
             st.stop()
             
         if player_stats_with_scores_df.empty:

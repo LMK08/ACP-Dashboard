@@ -1,0 +1,508 @@
+# Player Radar Configuration
+# This file contains position groups, weights, and metrics for player analysis
+
+position_groups:
+  Shot Stopper: ['GK']
+  Cross Claimer: ['GK']
+  Ball-playing GK: ['GK']
+  Mobile Striker: ['CF', 'SS']
+  Shadow Striker: ['CF', 'SS']
+  Poacher: ['CF', 'SS']
+  Target Man: ['CF', 'SS']
+  Pressing Forward: ['CF', 'SS']
+  Box-to-Box: ['LCMF', 'RCMF', 'AMF', 'LCMF3', 'RCMF3', 'DMF', 'LDMF', 'RDMF']
+  Ball-Winning Mid: ['LCMF', 'RCMF', 'LCMF3', 'RCMF3', 'DMF', 'LDMF', 'RDMF']
+  Holding Mid: ['DMF', 'LDMF', 'RDMF']
+  Deep-lying Playmaker: ['LCMF', 'RCMF', 'LCMF3', 'RCMF3', 'DMF', 'LDMF', 'RDMF']
+  Advanced Playmaker: ['AMF', 'RAMF', 'LAMF', 'LW', 'RW']
+  Wide Winger: ['LW', 'RW', 'LWF', 'RWF', 'LWB', 'RWB', 'RAMF', 'LAMF']
+  Creative Winger: ['LW', 'RW', 'LWF', 'RWF', 'RAMF', 'LAMF']
+  Inside Forward: ['LW', 'RW', 'LWF', 'RWF', 'RAMF', 'LAMF']
+  Full Back: ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB']
+  Wingback: ['LWB', 'RWB', 'LB5', 'RB5']
+  Inverted Full Back: ['LB', 'RB', 'LWB', 'RWB', 'LB5', 'RB5']
+  Ball-Playing Centerback: ['LCB', 'RCB', 'CB', 'LCB3', 'RCB3']
+  Stopper: ['LCB', 'RCB', 'CB', 'LCB3', 'RCB3']
+  Athletic Centerback: ['LCB', 'RCB', 'CB', 'LCB3', 'RCB3']
+
+weights:
+  Shot Stopper:
+    goalsPrevented: 10.0
+    goalsPreventedPerSOT: 10.0
+    goalsConceded: 1.0
+    exits: 2.0
+    Passes successful %: 1.0
+    Long passes successful %: 1.0
+    passes_gk: 1.0
+    recoveries_gk: 2.0
+  Cross Claimer:
+    goalsPrevented: 10.0
+    goalsPreventedPerSOT: 10.0
+    goalsConceded: 1.0
+    exits: 20.0
+    Passes successful %: 1.0
+    longPassesSuccessful_gk: 1
+    passes_gk: 1.0
+    recoveries_gk: 10
+  Ball-playing GK:
+    goalsPrevented: 10.0
+    goalsPreventedPerSOT: 10.0
+    goalsConceded: 1.0
+    exits: 2.0
+    Passes successful %: 10.0
+    longPassesSuccessful_gk: 6.0
+    passes_gk: 4.0
+    recoveries_gk: 3.0
+  Ball-Playing Centerback:
+    npxG: 1.0
+    xAOP: 1.0
+    xT: 5.0
+    Passes: 20
+    Passes successful %: 10
+    Progressive Passes: 20
+    Progressive runs: 6
+    Aerial duels: 2
+    Aerial duels successful %: 6
+    Defensive duels: 2
+    Defensive duels successful %: 8
+    Interceptions: 6
+    Recoveries: 6
+    Clearances: 2
+  Stopper:
+    npxG: 3.0
+    xAOP: 1.0
+    xT: 1.0
+    Passes: 1.0
+    Passes successful %: 1.0
+    Progressive Passes: 1.0
+    Progressive runs: 1.0
+    Aerial duels: 8
+    Aerial duels successful %: 10
+    Defensive duels: 8
+    Defensive duels successful %: 10
+    Interceptions: 8
+    Recoveries: 8
+    Clearances: 6
+  Athletic Centerback:
+    npxG: 3.0
+    xAOP: 1.0
+    xT: 1.0
+    Passes: 1.0
+    Passes successful %: 1.0
+    Progressive Passes: 1.0
+    Progressive runs: 6
+    Aerial duels: 6
+    Aerial duels successful %: 10
+    Defensive duels: 8
+    Defensive duels successful %: 10
+    Interceptions: 10
+    Recoveries: 10
+    Clearances: 6
+  Box-to-Box:
+    Passes: 4
+    Passes successful %: 3
+    Progressive Passes: 2
+    xT: 4.0
+    Goals: 1.0
+    npxG: 4
+    Shots: 2
+    xG per Shot: 1.0
+    Assists: 1.0
+    xAOP: 4
+    Progressive runs: 5
+    Dribbles successful: 4
+    Aerial duels successful: 1.0
+    Defensive duels successful: 2
+    Interceptions: 3
+    Recoveries: 4
+  Holding Mid:
+    Passes: 6
+    Passes successful %: 6
+    Progressive Passes: 2
+    xT: 4.0
+    npxG: 1.0
+    xAOP: 1.0
+    Progressive runs: 1.0
+    Dribbles successful: 1.0
+    Aerial duels successful: 4
+    Defensive duels successful: 6
+    Interceptions: 6
+    Recoveries: 6
+  Ball-Winning Mid:
+    Passes: 4
+    Passes successful %: 6
+    Progressive Passes: 2
+    xT: 2.0
+    npxG: 1.0
+    xAOP: 1.0
+    Progressive runs: 1.0
+    Aerial duels: 4
+    Aerial duels successful %: 6
+    Defensive duels: 6
+    Defensive duels successful %: 10
+    Interceptions: 10
+    Recoveries: 10
+    Recoveries Opp Half: 4
+  Deep-lying Playmaker:
+    Passes: 10
+    Passes successful %: 6
+    Progressive Passes: 10
+    Passes to final third successful: 8
+    xT: 10
+    npxG: 1.0
+    xAOP: 8
+    Progressive runs: 2
+    Dribbles successful: 1.0
+    Aerial duels successful: 1.0
+    Defensive duels successful: 4
+    Interceptions: 4
+    Recoveries: 6
+  Advanced Playmaker:
+    Passes: 6
+    Passes successful %: 2
+    Progressive Passes: 4
+    xT: 8
+    Goals: 2
+    npxG: 8
+    Shots: 2
+    xG per Shot: 2
+    Assists: 2
+    xAOP: 8
+    Progressive runs: 2
+    Dribbles successful: 2
+    Aerial duels successful: 1.0
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 1.0
+    Counterpressing Recoveries: 1
+  Full Back:
+    npxG: 4
+    xAOP: 4
+    xT: 3
+    Passes: 2
+    Passes successful %: 2
+    Progressive Passes: 2
+    Progressive runs: 2
+    Aerial duels: 2
+    Aerial duels successful %: 8
+    Defensive duels: 4
+    Defensive duels successful %: 10
+    Interceptions: 8
+    Recoveries: 8
+    Clearances: 2
+  Wingback:
+    Goals: 2
+    npxG: 4
+    Shots: 2
+    xG per Shot: 1
+    Assists: 6
+    xAOP: 8
+    xT: 6
+    Passes: 1.0
+    Passes successful %: 1.0
+    Progressive Passes: 2
+    Crosses successful: 2
+    Progressive runs: 3
+    Aerial duels: 1.0
+    Aerial duels successful %: 1.0
+    Defensive duels: 1.0
+    Defensive duels successful %: 4
+    Interceptions: 4
+    Recoveries: 4
+    Clearances: 1.0
+  Inverted Full Back:
+    npxG: 1.0
+    xAOP: 1.0
+    xT: 12
+    Passes: 16
+    Passes successful %: 6
+    Progressive Passes: 8
+    Progressive runs: 2
+    Aerial duels: 1.0
+    Aerial duels successful %: 4
+    Defensive duels: 4
+    Defensive duels successful %: 6
+    Interceptions: 6
+    Recoveries: 4
+    Clearances: 1.0
+  Wide Winger:
+    Goals: 4
+    npxG: 8
+    Shots: 2
+    xG per Shot: 2
+    Assists: 4
+    xAOP: 8
+    xT: 6
+    Passes: 1.0
+    Passes successful %: 1.0
+    Progressive Passes: 1.0
+    Deep Completions: 2
+    Crosses successful: 2
+    Progressive runs: 2
+    Dribbles: 4
+    Dribbles successful %: 2
+    Loss index: 5
+    Aerial duels successful: 1.0
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 1.0
+    Counterpressing Recoveries: 1
+  Creative Winger:
+    Goals: 4
+    npxG: 8
+    Shots: 2
+    xG per Shot: 2
+    Assists: 6
+    xAOP: 12
+    xT: 10
+    Passes: 2
+    Passes successful %: 1.0
+    Progressive Passes: 2
+    Deep Completions: 3
+    Crosses successful: 2
+    Progressive runs: 2
+    Dribbles: 2
+    Dribbles successful %: 4
+    Loss index: 5
+    Aerial duels successful: 1.0
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 1.0
+    Counterpressing Recoveries: 1
+  Inside Forward:
+    Goals: 15
+    npxG: 30
+    Shots: 6
+    xG per Shot: 8
+    Assists: 10
+    xAOP: 20
+    xT: 2
+    Passes: 1.0
+    Passes successful %: 1.0
+    Progressive runs: 2
+    Dribbles: 4
+    Dribbles successful %: 4
+    Loss index: 5
+    Aerial duels successful: 4
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 1.0
+    Counterpressing Recoveries: 1
+  Shadow Striker:
+    Goals: 15
+    npxG: 30
+    Shots: 10
+    xG per Shot: 8
+    Assists: 10
+    xAOP: 20
+    xT: 4
+    Passes: 2
+    Passes successful %: 2
+    Progressive Passes: 3
+    Deep Completions: 3
+    Progressive runs: 2
+    Dribbles: 4
+    Dribbles successful %: 4
+    Loss index: 5
+    Aerial duels successful: 2
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 3
+  Mobile Striker:
+    Goals: 15
+    npxG: 30
+    Shots: 10
+    xG per Shot: 8
+    Assists: 10
+    xAOP: 20
+    xT: 4
+    Passes: 2
+    Passes successful %: 1.0
+    Progressive Passes: 1.0
+    Deep Completions: 1.0
+    Progressive runs: 8
+    Dribbles: 8
+    Dribbles successful %: 6
+    Loss index: 5
+    Aerial duels: 1.0
+    Aerial duels successful %: 1.0
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 6
+  Poacher:
+    Goals: 20
+    npxG: 40
+    Shots: 10
+    xG per Shot: 10
+    Assists: 10
+    xAOP: 20
+    Passes: 1.0
+    Passes successful %: 1.0
+    Progressive Passes: 1.0
+    Deep Completions: 1.0
+    Progressive runs: 1.0
+    Dribbles successful: 1.0
+    Loss index: 5
+    Aerial duels: 5
+    Aerial duels successful %: 5
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 1.0
+  Target Man:
+    Goals: 15
+    npxG: 30
+    Shots: 10
+    xG per Shot: 8
+    Assists: 10
+    xAOP: 20
+    xT: 2
+    Passes: 2
+    Passes successful %: 2
+    Progressive Passes: 1.0
+    Deep Completions: 1.0
+    Progressive runs: 1.0
+    Dribbles: 1.0
+    Dribbles successful %: 1.0
+    Loss index: 5
+    Aerial duels: 10
+    Aerial duels successful %: 10
+    Defensive duels successful: 1.0
+    Interceptions: 1.0
+    Recoveries: 1.0
+    Clearances: 10
+  Pressing Forward:
+    Goals: 15
+    npxG: 30
+    Shots: 10
+    xG per Shot: 8
+    Assists: 10
+    xAOP: 20
+    xT: 2
+    Passes: 2
+    Passes successful %: 1.0
+    Progressive Passes: 1.0
+    Deep Completions: 1.0
+    Progressive runs: 2
+    Dribbles: 2
+    Dribbles successful %: 2
+    Loss index: 5
+    Aerial duels: 1.0
+    Aerial duels successful %: 1.0
+    Defensive duels successful: 1.0
+    Interceptions: 8
+    Recoveries: 10
+    Counterpressing Recoveries: 4
+
+invert_metrics:
+  - Loss index
+  - goalsConceded
+
+metric_categories:
+  output:
+    - Goals
+    - Assists
+    - xG
+    - npxG
+    - xA
+    - xAOP
+    - xASP
+    - xT
+    - Second assists
+    - Shots
+    - xG per Shot
+  passing:
+    - Passes
+    - Passes successful
+    - Passes successful %
+    - Long passes
+    - Long passes successful
+    - Long passes successful %
+    - Crosses
+    - Crosses successful
+    - Crosses successful %
+    - Through passes
+    - Through passes successful
+    - Progressive Passes
+    - Passes to final third
+    - Passes to final third successful
+    - Forward passes
+    - Forward passes successful
+    - Back passes
+    - Back passes successful
+    - Passes to penalty area
+    - Passes to penalty area successful
+    - Deep Completions
+  defensive:
+    - Interceptions
+    - Aerial duels
+    - Aerial duels successful
+    - Aerial duels successful %
+    - Sliding tackles
+    - Sliding tackles successful
+    - Sliding tackles successful %
+    - Recoveries
+    - Recoveries Opp Half
+    - Counterpressing Recoveries
+    - Defensive duels
+    - Defensive duels successful
+    - Defensive duels successful %
+    - Clearances
+    - Fouls
+    - Yellow cards
+    - Red cards
+  dribbling:
+    - Dribbles
+    - Dribbles successful
+    - Dribbles successful %
+    - Touches in penalty area
+    - Progressive runs
+    - Fouls suffered
+  goalkeeping:
+    - shotsOnTargetAgainst
+    - goalsConceded
+    - exits
+    - saves
+    - goalsPrevented
+    - goalsPreventedPerSOT
+    - savePercentage
+    - recoveries_gk
+    - passes_gk
+    - passesSuccessful_gk
+    - Long passes successful %
+    - longPasses_gk
+    - longPassesSuccessful_gk
+
+distribution_metrics_by_position:
+  Shot Stopper: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
+  Cross Claimer: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
+  Ball-playing GK: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'recoveries_gk', 'passes_gk', 'Passes successful %', 'longPassesSuccessful_gk']
+  Ball-Playing Centerback: ['xT', 'Passes', 'Passes successful %', 'Progressive Passes', 'Progressive runs']
+  Stopper: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances']
+  Athletic Centerback: ['npxG', 'Progressive runs', 'Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances']
+  Box-to-Box: ['Progressive Passes', 'npxG', 'Shots', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
+  Holding Mid: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
+  Ball-Winning Mid: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Recoveries Opp Half']
+  Deep-lying Playmaker: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'xAOP', 'Progressive runs']
+  Advanced Playmaker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful']
+  Full Back: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances']
+  Wingback: ['Assists', 'xAOP', 'xT', 'Passes', 'Crosses successful', 'Progressive runs', 'Interceptions', 'Recoveries']
+  Inverted Full Back: ['Progressive Passes', 'xT', 'Progressive runs', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries']
+  Wide Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Crosses successful', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Creative Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Inside Forward: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index']
+  Shadow Striker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Mobile Striker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Poacher: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index']
+  Target Man: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index', 'Aerial duels', 'Aerial duels successful %', 'Clearances']
+  Pressing Forward: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index', 'Defensive duels successful', 'Interceptions', 'Recoveries', 'Counterpressing Recoveries']
+
+# Expected Threat (xT) Grid - 8x12 matrix
+xt_grid:
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05]
+  - [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]
