@@ -2627,26 +2627,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.pyplot(fig_shots_against, use_container_width=True)
 
         # --- UPDATE THE APP EXECUTION BLOCK ---
-        st.subheader("Match-by-Match xG (Last 365 Days)")
+        # Wrap in expander to defer loading historical data until needed (saves ~100MB memory)
+        with st.expander("Match-by-Match xG (Last 365 Days)", expanded=False):
+            try:
+                # Load historical data only when expander is opened
+                hist_events_df, hist_matches_df = load_historical_data()
 
-        # Load the NEW historical data
-        hist_events_df, hist_matches_df = load_historical_data()
+                if hist_events_df is not None and hist_matches_df is not None:
+                    rolling_xg_data_for_plot = calculate_xg_history_data(hist_events_df, hist_matches_df)
 
-        if hist_events_df is not None and hist_matches_df is not None:
-            # Use the new function name
-            rolling_xg_data_for_plot = calculate_xg_history_data(hist_events_df, hist_matches_df)
-            
-            if not rolling_xg_data_for_plot.empty:
-                try:
-                    # Use the new plotting function
-                    fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
-                    st.pyplot(fig_rolling_xg, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"Could not generate xG chart: {e}")
-            else:
-                st.warning("No data available to calculate xG history.")
-        else:
-            st.warning("Historical data files not loaded, cannot display xG chart.")
+                    if not rolling_xg_data_for_plot.empty:
+                        fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
+                        st.pyplot(fig_rolling_xg, use_container_width=True)
+                    else:
+                        st.warning("No data available to calculate xG history.")
+                else:
+                    st.warning("Historical data files not available.")
+            except Exception as e:
+                st.error(f"Error loading xG history: {e}")
 
         st.subheader("Corner Kick Analysis")
         col_c1, col_c2 = st.columns(2)
