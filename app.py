@@ -2451,9 +2451,27 @@ player_stats_with_scores_df = pd.DataFrame()
 
 # --- Main App Logic ---
 if raw_events_df is not None and matches_summary_df is not None and player_minutes_df is not None:
+    # --- Initialize Session State ---
+    if 'selected_player_id' not in st.session_state:
+        st.session_state.selected_player_id = None
+    if 'nav_to_profile' not in st.session_state:
+        st.session_state.nav_to_profile = False
+
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
-    analysis_type = st.sidebar.radio("Choose Analysis Type", ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis'))
+
+    # Check if we should navigate to Player Profile
+    if st.session_state.nav_to_profile:
+        default_analysis_index = 3  # Index of 'Player Profile'
+        st.session_state.nav_to_profile = False  # Reset flag
+    else:
+        default_analysis_index = 0
+
+    analysis_type = st.sidebar.radio(
+        "Choose Analysis Type",
+        ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis'),
+        index=default_analysis_index
+    )
     if analysis_type == 'Match Analysis':
         st.header("Match Analysis")
         
@@ -2801,15 +2819,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 2. Player Selector ---
         st.sidebar.subheader("Player Analysis Options")
-        
+
         # FIX: Include 'playerId' in the list dataframe so we can grab it later
         # (Added 'playerId' to the list of columns below)
         player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-        
+
         # Create unique display names
         player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
-        
-        selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'])
+
+        # Check if navigating from Player Analysis
+        default_player_index = 0
+        if st.session_state.selected_player_id is not None:
+            # Find the index of the pre-selected player
+            matching_rows = player_list_df[player_list_df['playerId'] == st.session_state.selected_player_id]
+            if not matching_rows.empty:
+                default_player_index = player_list_df.index.get_loc(matching_rows.index[0])
+            # Clear the session state after using it
+            st.session_state.selected_player_id = None
+
+        selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'], index=default_player_index)
         
         try:
             # FIX: Get the UNIQUE ID corresponding to the selected display name
@@ -3559,6 +3587,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Display table
             st.dataframe(display_df.set_index('Rank'), use_container_width=True)
 
+            # --- View Profile Option ---
+            st.markdown("---")
+            player_options = sorted_df['playerName'] + " (" + sorted_df['teamName'] + ")"
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_for_profile = st.selectbox(
+                    "Select player to view profile:",
+                    player_options.tolist(),
+                    key="position_rating_profile_select"
+                )
+            with col2:
+                st.write("")  # Spacing
+                if st.button("View Profile", key="position_rating_view_btn"):
+                    # Get player ID from selection
+                    selected_name = selected_for_profile.split(" (")[0]
+                    player_id = sorted_df[sorted_df['playerName'] == selected_name]['playerId'].values[0]
+                    st.session_state.selected_player_id = player_id
+                    st.session_state.nav_to_profile = True
+                    st.rerun()
+
         else:  # Individual Metric mode
             # Build metric options from constants
             metric_categories = {
@@ -3655,6 +3703,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             # Display table
             st.dataframe(display_df.set_index('Rank'), use_container_width=True)
+
+            # --- View Profile Option ---
+            st.markdown("---")
+            player_options = sorted_df['playerName'] + " (" + sorted_df['teamName'] + ")"
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_for_profile = st.selectbox(
+                    "Select player to view profile:",
+                    player_options.tolist(),
+                    key="individual_metric_profile_select"
+                )
+            with col2:
+                st.write("")  # Spacing
+                if st.button("View Profile", key="individual_metric_view_btn"):
+                    # Get player ID from selection
+                    selected_name = selected_for_profile.split(" (")[0]
+                    player_id = sorted_df[sorted_df['playerName'] == selected_name]['playerId'].values[0]
+                    st.session_state.selected_player_id = player_id
+                    st.session_state.nav_to_profile = True
+                    st.rerun()
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
