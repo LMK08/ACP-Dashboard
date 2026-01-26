@@ -2821,18 +2821,68 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         with col_xi2:
             st.write(f"**Formation:** {primary_formation}")
-            st.write("**Starting XI by Position:**")
-            # Sort positions in a logical order (Wyscout position codes)
-            position_order = ['GK',
-                              'RB', 'RB5', 'RCB', 'RCB3', 'CB', 'LCB', 'LCB3', 'LB', 'LB5',
-                              'RWB', 'LWB',
-                              'RDMF', 'DMF', 'LDMF', 'RCMF', 'RCMF3', 'CMF', 'LCMF', 'LCMF3',
-                              'RAMF', 'AMF', 'LAMF',
-                              'RW', 'RWF', 'LW', 'LWF',
-                              'RCF', 'CF', 'LCF', 'SS']
-            sorted_xi = sorted(starting_xi.items(), key=lambda x: position_order.index(x[0]) if x[0] in position_order else 99)
-            for pos, player in sorted_xi:
-                st.write(f"- **{pos}:** {player['name']}")
+
+            # Build roster table with unique players
+            if starting_xi:
+                # Get unique players (same player may appear at multiple positions)
+                unique_players = {}
+                for pos, player in starting_xi.items():
+                    pid = player['id']
+                    if pid not in unique_players:
+                        unique_players[pid] = {'name': player['name'], 'positions': [pos], 'id': pid}
+                    else:
+                        unique_players[pid]['positions'].append(pos)
+
+                # Build table data
+                roster_data = []
+                player_id_list = []
+                for pid, pinfo in unique_players.items():
+                    row = {'Player': pinfo['name'], 'Position': pinfo['positions'][0]}
+
+                    # Get age and nationality from player_details
+                    if pid in player_details_df.index:
+                        details = player_details_df.loc[pid]
+                        age = _calculate_age(details.get('birthDate'))
+                        row['Age'] = int(age) if isinstance(age, (int, float)) and age != "N/A" else "N/A"
+                        row['Nationality'] = details.get('passportArea', 'N/A')
+                    else:
+                        row['Age'] = "N/A"
+                        row['Nationality'] = "N/A"
+
+                    # Get minutes from player_minutes_df
+                    player_mins = player_minutes_df[player_minutes_df['playerId'] == pid]
+                    if not player_mins.empty:
+                        row['Minutes'] = int(player_mins['totalMinutes'].values[0])
+                    else:
+                        row['Minutes'] = 0
+
+                    roster_data.append(row)
+                    player_id_list.append(pid)
+
+                roster_df = pd.DataFrame(roster_data)
+                roster_df = roster_df.sort_values('Minutes', ascending=False).reset_index(drop=True)
+                # Reorder player_id_list to match sorted dataframe
+                player_id_list = [player_id_list[i] for i in roster_df.index] if len(roster_data) > 0 else []
+                roster_df = roster_df.reset_index(drop=True)
+
+                st.write("**Squad Roster** (click to view profile):")
+                selection = st.dataframe(
+                    roster_df,
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="team_roster_table",
+                    hide_index=True
+                )
+
+                # Handle row selection for navigation to Player Profile
+                if selection and selection.selection and selection.selection.rows:
+                    selected_row_idx = selection.selection.rows[0]
+                    if selected_row_idx < len(player_id_list):
+                        selected_player_id = player_id_list[selected_row_idx]
+                        st.session_state.selected_player_id = selected_player_id
+                        st.session_state.nav_to_profile = True
+                        st.rerun()
 
         st.subheader("Season Shot Maps (Non-Penalty)")
         col1_shot, col2_shot = st.columns(2)
