@@ -3584,28 +3584,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Add rank column
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
 
-            # Display table
-            st.dataframe(display_df.set_index('Rank'), use_container_width=True)
+            # Store player IDs for lookup (hidden from display)
+            player_ids = sorted_df['playerId'].tolist()
 
-            # --- View Profile Option ---
-            st.markdown("---")
-            player_options = sorted_df['playerName'] + " (" + sorted_df['teamName'] + ")"
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                selected_for_profile = st.selectbox(
-                    "Select player to view profile:",
-                    player_options.tolist(),
-                    key="position_rating_profile_select"
-                )
-            with col2:
-                st.write("")  # Spacing
-                if st.button("View Profile", key="position_rating_view_btn"):
-                    # Get player ID from selection
-                    selected_name = selected_for_profile.split(" (")[0]
-                    player_id = sorted_df[sorted_df['playerName'] == selected_name]['playerId'].values[0]
-                    st.session_state.selected_player_id = player_id
-                    st.session_state.nav_to_profile = True
-                    st.rerun()
+            # Display table with row selection
+            st.caption("Click on a row to view that player's profile")
+            selection = st.dataframe(
+                display_df.set_index('Rank'),
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="position_rating_table"
+            )
+
+            # Handle row selection
+            if selection and selection.selection and selection.selection.rows:
+                selected_row_idx = selection.selection.rows[0]
+                selected_player_id = player_ids[selected_row_idx]
+                st.session_state.selected_player_id = selected_player_id
+                st.session_state.nav_to_profile = True
+                st.rerun()
 
         else:  # Individual Metric mode
             # Build metric options from constants
@@ -3701,28 +3699,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Add rank column
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
 
-            # Display table
-            st.dataframe(display_df.set_index('Rank'), use_container_width=True)
+            # Store player IDs for lookup (hidden from display)
+            player_ids = sorted_df['playerId'].tolist()
 
-            # --- View Profile Option ---
-            st.markdown("---")
-            player_options = sorted_df['playerName'] + " (" + sorted_df['teamName'] + ")"
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                selected_for_profile = st.selectbox(
-                    "Select player to view profile:",
-                    player_options.tolist(),
-                    key="individual_metric_profile_select"
-                )
-            with col2:
-                st.write("")  # Spacing
-                if st.button("View Profile", key="individual_metric_view_btn"):
-                    # Get player ID from selection
-                    selected_name = selected_for_profile.split(" (")[0]
-                    player_id = sorted_df[sorted_df['playerName'] == selected_name]['playerId'].values[0]
-                    st.session_state.selected_player_id = player_id
-                    st.session_state.nav_to_profile = True
-                    st.rerun()
+            # Display table with row selection
+            st.caption("Click on a row to view that player's profile")
+            selection = st.dataframe(
+                display_df.set_index('Rank'),
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="individual_metric_table"
+            )
+
+            # Handle row selection
+            if selection and selection.selection and selection.selection.rows:
+                selected_row_idx = selection.selection.rows[0]
+                selected_player_id = player_ids[selected_row_idx]
+                st.session_state.selected_player_id = selected_player_id
+                st.session_state.nav_to_profile = True
+                st.rerun()
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
