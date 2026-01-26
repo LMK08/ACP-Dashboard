@@ -2668,6 +2668,150 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
     print("✅ Expanded team stats calculated.")
     return stats_per_game_df.fillna(0)
 
+@st.cache_data(ttl=3600)
+def calculate_set_piece_metrics(_events_df):
+    """Calculate set piece xG and goals metrics for all teams."""
+    # Convert minute/second to total seconds
+    events_df = _events_df.copy()
+    events_df['total_seconds'] = events_df['minute'] * 60 + events_df['second']
+
+    # Attacking third threshold (Opta: 0-100, attacking third > 66.67)
+    ATTACKING_THIRD = 66.67
+    LONG_THROW_THRESHOLD = 25  # meters
+
+    results = {}
+    teams = events_df['team.name'].dropna().unique()
+
+    for team in teams:
+        results[team] = {
+            'xG from Corners': 0, 'Goals from Corners': 0, 'Corners': 0,
+            'xG from Att Throw-ins': 0, 'Goals from Att Throw-ins': 0, 'Att Throw-ins': 0,
+            'xG from Free Kicks': 0, 'Goals from Free Kicks': 0, 'Free Kicks Att Third': 0,
+            'xG from Set Pieces': 0, 'Goals from Set Pieces': 0, 'Set Pieces Att Third': 0,
+            'Long Throws': 0,
+            'xG Conceded Corners': 0, 'Goals Conceded Corners': 0, 'Corners Against': 0,
+            'xG Conceded Att Throw-ins': 0, 'Goals Conceded Att Throw-ins': 0,
+            'xG Conceded Free Kicks': 0, 'Goals Conceded Free Kicks': 0,
+            'xG Conceded Set Pieces': 0, 'Goals Conceded Set Pieces': 0,
+        }
+
+    # Process by match
+    for match_id in events_df['matchId'].unique():
+        match_events = events_df[events_df['matchId'] == match_id].sort_values('total_seconds')
+        match_teams = match_events['team.name'].dropna().unique()
+        shots = match_events[match_events['type.primary'] == 'shot'].copy()
+
+        # Corners
+        corners = match_events[match_events['type.primary'] == 'corner']
+        for _, corner in corners.iterrows():
+            team = corner['team.name']
+            if pd.isna(team) or team not in results:
+                continue
+            corner_time = corner['total_seconds']
+            results[team]['Corners'] += 1
+
+            team_shots = shots[(shots['team.name'] == team) &
+                              (shots['total_seconds'] >= corner_time) &
+                              (shots['total_seconds'] <= corner_time + 15)]
+
+            xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+            goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+
+            results[team]['xG from Corners'] += xg
+            results[team]['Goals from Corners'] += goals
+            results[team]['xG from Set Pieces'] += xg
+            results[team]['Goals from Set Pieces'] += goals
+            results[team]['Set Pieces Att Third'] += 1
+
+            for opp_team in match_teams:
+                if opp_team != team and opp_team in results:
+                    results[opp_team]['Corners Against'] += 1
+                    results[opp_team]['xG Conceded Corners'] += xg
+                    results[opp_team]['Goals Conceded Corners'] += goals
+                    results[opp_team]['xG Conceded Set Pieces'] += xg
+                    results[opp_team]['Goals Conceded Set Pieces'] += goals
+
+        # Attacking throw-ins
+        throw_ins = match_events[match_events['type.primary'] == 'throw_in']
+        att_throw_ins = throw_ins[throw_ins['location.x'] >= ATTACKING_THIRD]
+        for _, throw in att_throw_ins.iterrows():
+            team = throw['team.name']
+            if pd.isna(team) or team not in results:
+                continue
+            throw_time = throw['total_seconds']
+            results[team]['Att Throw-ins'] += 1
+            results[team]['Set Pieces Att Third'] += 1
+
+            team_shots = shots[(shots['team.name'] == team) &
+                              (shots['total_seconds'] >= throw_time) &
+                              (shots['total_seconds'] <= throw_time + 15)]
+
+            xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+            goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+
+            results[team]['xG from Att Throw-ins'] += xg
+            results[team]['Goals from Att Throw-ins'] += goals
+            results[team]['xG from Set Pieces'] += xg
+            results[team]['Goals from Set Pieces'] += goals
+
+            for opp_team in match_teams:
+                if opp_team != team and opp_team in results:
+                    results[opp_team]['xG Conceded Att Throw-ins'] += xg
+                    results[opp_team]['Goals Conceded Att Throw-ins'] += goals
+                    results[opp_team]['xG Conceded Set Pieces'] += xg
+                    results[opp_team]['Goals Conceded Set Pieces'] += goals
+
+        # Long throws (pass.length >= 25m on throw-in events)
+        long_throws = throw_ins[throw_ins['pass.length'] >= LONG_THROW_THRESHOLD]
+        for _, throw in long_throws.iterrows():
+            team = throw['team.name']
+            if pd.isna(team) or team not in results:
+                continue
+            results[team]['Long Throws'] += 1
+
+        # Free kicks in attacking third
+        free_kicks = match_events[match_events['type.primary'] == 'free_kick']
+        att_free_kicks = free_kicks[free_kicks['location.x'] >= ATTACKING_THIRD]
+        for _, fk in att_free_kicks.iterrows():
+            team = fk['team.name']
+            if pd.isna(team) or team not in results:
+                continue
+            fk_time = fk['total_seconds']
+            results[team]['Free Kicks Att Third'] += 1
+            results[team]['Set Pieces Att Third'] += 1
+
+            team_shots = shots[(shots['team.name'] == team) &
+                              (shots['total_seconds'] >= fk_time) &
+                              (shots['total_seconds'] <= fk_time + 15)]
+
+            xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+            goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+
+            results[team]['xG from Free Kicks'] += xg
+            results[team]['Goals from Free Kicks'] += goals
+            results[team]['xG from Set Pieces'] += xg
+            results[team]['Goals from Set Pieces'] += goals
+
+            for opp_team in match_teams:
+                if opp_team != team and opp_team in results:
+                    results[opp_team]['xG Conceded Free Kicks'] += xg
+                    results[opp_team]['Goals Conceded Free Kicks'] += goals
+                    results[opp_team]['xG Conceded Set Pieces'] += xg
+                    results[opp_team]['Goals Conceded Set Pieces'] += goals
+
+    # Calculate per-event metrics
+    for team in results:
+        r = results[team]
+        r['xG per Corner'] = round(r['xG from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
+        r['xG per Att Set Piece'] = round(r['xG from Set Pieces'] / r['Set Pieces Att Third'], 3) if r['Set Pieces Att Third'] > 0 else 0
+        r['xG Conceded per Corner'] = round(r['xG Conceded Corners'] / r['Corners Against'], 3) if r['Corners Against'] > 0 else 0
+        r['Goals per Corner'] = round(r['Goals from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
+        r['Goals Conceded per Corner'] = round(r['Goals Conceded Corners'] / r['Corners Against'], 3) if r['Corners Against'] > 0 else 0
+
+    result_df = pd.DataFrame.from_dict(results, orient='index')
+    logger.info(f"✅ Set piece metrics calculated for {len(result_df)} teams")
+    return result_df
+
 # ==============================================================================
 # 5. STREAMLIT APP UI
 # ==============================================================================
@@ -3009,7 +3153,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
         except Exception as e:
             st.warning(f"Could not calculate expanded match stats: {e}")
-            combined_stats_df = stats_df_raw.copy() 
+            combined_stats_df = stats_df_raw.copy()
+
+        # Calculate and merge set piece metrics
+        try:
+            set_piece_df = calculate_set_piece_metrics(raw_events_df)
+            combined_stats_df = pd.merge(combined_stats_df, set_piece_df, left_index=True, right_index=True, how='outer').fillna(0)
+        except Exception as e:
+            st.warning(f"Could not calculate set piece metrics: {e}")
 
         # --- 2. Define Team Lists ---
         GROUP_A_TEAMS = [
