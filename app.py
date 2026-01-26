@@ -2762,7 +2762,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         all_teams_t = sorted(pd.concat([matches_summary_df.get('homeTeamName'), matches_summary_df.get('awayTeamName')]).dropna().unique())
         selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
         st.header(f"Team Report: {selected_team_t}")
-        
+
+        # Load player details for roster table
+        player_details_df = load_player_details()
+
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
 
         st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
