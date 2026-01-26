@@ -2847,7 +2847,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type",
-        ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis'),
+        ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor'),
         index=default_analysis_index
     )
     if analysis_type == 'Match Analysis':
@@ -4237,6 +4237,219 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.session_state.selected_player_id = selected_player_id
                 st.session_state.nav_to_profile = True
                 st.rerun()
+
+    elif analysis_type == 'Match Predictor':
+        st.header("Match Outcome Predictor")
+        st.markdown("Predict the outcome of upcoming matches based on team performance data with season-specific priors.")
+
+        # Load prediction model
+        @st.cache_resource
+        def load_prediction_model():
+            try:
+                with open('match_predictor_model.pkl', 'rb') as f:
+                    return pickle.load(f)
+            except FileNotFoundError:
+                return None
+
+        # Helper functions for decay priors
+        def get_decay_weight(matches_played, decay_rate=0.15):
+            """Exponential decay weight for prior season stats"""
+            return np.exp(-decay_rate * matches_played)
+
+        def get_blended_stat(current_value, current_matches, prior_per_game, decay_rate=0.15, default_prior=None):
+            """Blend current season stat with decaying prior"""
+            if current_matches == 0:
+                return prior_per_game if prior_per_game is not None else (default_prior if default_prior else 0.0)
+            current_per_game = current_value / current_matches
+            if prior_per_game is None:
+                return current_per_game
+            prior_weight = get_decay_weight(current_matches, decay_rate)
+            current_weight = 1 - prior_weight
+            return current_weight * current_per_game + prior_weight * prior_per_game
+
+        def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
+            """Calculate features for a team with decaying priors"""
+            curr = team_stats
+            m = curr['matches']
+
+            # Get prior per-game stats
+            if prior_stats and prior_stats.get('matches', 0) > 0:
+                pm = prior_stats['matches']
+                prior_ppg = prior_stats['points'] / pm
+                prior_gpg = prior_stats['goals_for'] / pm
+                prior_gapg = prior_stats['goals_against'] / pm
+                prior_xgpg = prior_stats['xG_for'] / pm if prior_stats['xG_for'] > 0 else 1.0
+                prior_xgapg = prior_stats['xG_against'] / pm if prior_stats['xG_against'] > 0 else 1.0
+                prior_winrate = prior_stats['wins'] / pm
+                prior_csrate = prior_stats['clean_sheets'] / pm
+                prior_shot_conv = prior_stats['goals_for'] / max(prior_stats['shots_for'], 1)
+                prior_sot_rate = prior_stats['sot_for'] / max(prior_stats['shots_for'], 1)
+                if is_home and prior_stats['home_matches'] > 0:
+                    prior_venue_wr = prior_stats['home_wins'] / prior_stats['home_matches']
+                    prior_venue_gpg = prior_stats['home_goals'] / prior_stats['home_matches']
+                elif not is_home and prior_stats['away_matches'] > 0:
+                    prior_venue_wr = prior_stats['away_wins'] / prior_stats['away_matches']
+                    prior_venue_gpg = prior_stats['away_goals'] / prior_stats['away_matches']
+                else:
+                    prior_venue_wr = prior_winrate
+                    prior_venue_gpg = prior_gpg
+            else:
+                # Promoted team: use league average (slightly below)
+                prior_ppg = league_avg.get('ppg', 1.0) * 0.85
+                prior_gpg = league_avg.get('gpg', 1.0) * 0.85
+                prior_gapg = league_avg.get('gapg', 1.0) * 1.15
+                prior_xgpg = league_avg.get('xgpg', 1.0) * 0.85
+                prior_xgapg = league_avg.get('xgapg', 1.0) * 1.15
+                prior_winrate = 0.28
+                prior_csrate = league_avg.get('csrate', 0.25) * 0.85
+                prior_shot_conv = league_avg.get('shot_conv', 0.1) * 0.9
+                prior_sot_rate = league_avg.get('sot_rate', 0.35) * 0.95
+                prior_venue_wr = 0.28
+                prior_venue_gpg = prior_gpg
+
+            decay_rate = 0.15
+            # Blend current and prior stats
+            ppg = get_blended_stat(curr['points'], m, prior_ppg, decay_rate)
+            gpg = get_blended_stat(curr['goals_for'], m, prior_gpg, decay_rate)
+            gapg = get_blended_stat(curr['goals_against'], m, prior_gapg, decay_rate)
+            xgpg = get_blended_stat(curr['xG_for'], m, prior_xgpg, decay_rate)
+            xgapg = get_blended_stat(curr['xG_against'], m, prior_xgapg, decay_rate)
+            win_rate = get_blended_stat(curr['wins'], m, prior_winrate, decay_rate)
+            cs_rate = get_blended_stat(curr['clean_sheets'], m, prior_csrate, decay_rate)
+
+            curr_shot_conv = curr['goals_for'] / max(curr['shots_for'], 1) if m > 0 else 0
+            curr_sot_rate = curr['sot_for'] / max(curr['shots_for'], 1) if m > 0 else 0
+            shot_conv = curr_shot_conv if m > 3 else prior_shot_conv
+            sot_rate = curr_sot_rate if m > 3 else prior_sot_rate
+
+            venue_key = 'home' if is_home else 'away'
+            venue_wr = get_blended_stat(
+                curr[f'{venue_key}_wins'], curr[f'{venue_key}_matches'],
+                prior_venue_wr, decay_rate
+            )
+            venue_gpg = get_blended_stat(
+                curr[f'{venue_key}_goals'], curr[f'{venue_key}_matches'],
+                prior_venue_gpg, decay_rate
+            )
+
+            gd = gpg - gapg
+            xg_diff = xgpg - xgapg
+            form = np.mean(curr['last_5_results'][-5:]) if curr['last_5_results'] else 1.0
+            xg_form = np.mean(curr['last_5_xG'][-5:]) if curr['last_5_xG'] else prior_xgpg
+
+            return {
+                'ppg': ppg, 'gpg': gpg, 'gapg': gapg, 'xgpg': xgpg, 'xgapg': xgapg,
+                'win_rate': win_rate, 'cs_rate': cs_rate, 'shot_conv': shot_conv,
+                'sot_rate': sot_rate, 'gd': gd, 'xg_diff': xg_diff, 'form': form,
+                'xg_form': xg_form, 'venue_wr': venue_wr, 'venue_gpg': venue_gpg
+            }
+
+        model_data = load_prediction_model()
+
+        if model_data is None:
+            st.error("Prediction model not found. Please ensure 'match_predictor_model.pkl' exists.")
+        else:
+            model = model_data['model']
+            scaler = model_data['scaler']
+            team_stats = model_data['team_stats']
+            model_accuracy = model_data.get('accuracy', 0)
+            prior_season_stats = model_data.get('prior_season_stats', {})
+            league_avg_stats = model_data.get('league_avg_stats', {'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0, 'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35})
+            model_version = model_data.get('version', 1)
+
+            # Count returning vs promoted teams
+            returning_count = len([t for t, s in team_stats.items() if s.get('prior_stats')])
+            promoted_count = len(team_stats) - returning_count
+
+            st.info(f"Model Accuracy: {model_accuracy:.1%} | {returning_count} returning teams, {promoted_count} promoted teams")
+
+            # Team selection
+            all_teams = sorted(team_stats.keys())
+
+            col1, col2 = st.columns(2)
+            with col1:
+                home_team = st.selectbox("Home Team", all_teams, key="pred_home")
+            with col2:
+                away_options = [t for t in all_teams if t != home_team]
+                away_team = st.selectbox("Away Team", away_options, key="pred_away")
+
+            # Show team status
+            home_status = "Returning" if team_stats[home_team].get('prior_stats') else "Promoted"
+            away_status = "Returning" if team_stats[away_team].get('prior_stats') else "Promoted"
+            st.caption(f"{home_team}: {home_status} | {away_team}: {away_status}")
+
+            if st.button("Predict Match Outcome", type="primary"):
+                home_cum = team_stats.get(home_team)
+                away_cum = team_stats.get(away_team)
+
+                # Get prior stats (from model or from prior_season_stats)
+                home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home_team)
+                away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away_team)
+
+                # Calculate features with decay priors
+                home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
+                away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
+
+                feature_vector = [
+                    home_feats['ppg'], away_feats['ppg'], home_feats['ppg'] - away_feats['ppg'],
+                    home_feats['form'], away_feats['form'], home_feats['form'] - away_feats['form'],
+                    home_feats['gpg'], away_feats['gpg'], home_feats['gpg'] - away_feats['gpg'],
+                    home_feats['gd'], away_feats['gd'], home_feats['gd'] - away_feats['gd'],
+                    home_feats['xgpg'], away_feats['xgpg'], home_feats['xgpg'] - away_feats['xgpg'],
+                    home_feats['xgapg'], away_feats['xgapg'],
+                    home_feats['xg_diff'], away_feats['xg_diff'], home_feats['xg_diff'] - away_feats['xg_diff'],
+                    home_feats['xg_form'], away_feats['xg_form'],
+                    home_feats['win_rate'], away_feats['win_rate'], home_feats['win_rate'] - away_feats['win_rate'],
+                    home_feats['venue_wr'], away_feats['venue_wr'],
+                    home_feats['shot_conv'], away_feats['shot_conv'],
+                    home_feats['sot_rate'], away_feats['sot_rate'],
+                    home_feats['cs_rate'], away_feats['cs_rate'],
+                    home_feats['venue_gpg'], away_feats['venue_gpg'],
+                ]
+
+                X = scaler.transform([feature_vector])
+                proba = model.predict_proba(X)[0]
+                pred = model.predict(X)[0]
+
+                # Display results
+                st.subheader(f"{home_team} vs {away_team}")
+
+                # Probability bars
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Home Win", f"{proba[1]:.1%}")
+                    st.progress(proba[1])
+                with col2:
+                    st.metric("Draw", f"{proba[0]:.1%}")
+                    st.progress(proba[0])
+                with col3:
+                    st.metric("Away Win", f"{proba[2]:.1%}")
+                    st.progress(proba[2])
+
+                # Prediction
+                if pred == 1:
+                    st.success(f"**Predicted Outcome: {home_team} Win**")
+                elif pred == 2:
+                    st.success(f"**Predicted Outcome: {away_team} Win**")
+                else:
+                    st.info(f"**Predicted Outcome: Draw**")
+
+                # Team stats comparison (using blended stats)
+                st.subheader("Team Comparison (Season Stats with Priors)")
+                comparison_data = {
+                    'Metric': ['Points/Game', 'Goals/Game', 'xG/Game', 'xG Against/Game', 'Win Rate', 'Form (Last 5)', 'Clean Sheet Rate'],
+                    home_team: [f"{home_feats['ppg']:.2f}", f"{home_feats['gpg']:.2f}", f"{home_feats['xgpg']:.2f}", f"{home_feats['xgapg']:.2f}", f"{home_feats['win_rate']:.1%}", f"{home_feats['form']:.2f}", f"{home_feats['cs_rate']:.1%}"],
+                    away_team: [f"{away_feats['ppg']:.2f}", f"{away_feats['gpg']:.2f}", f"{away_feats['xgpg']:.2f}", f"{away_feats['xgapg']:.2f}", f"{away_feats['win_rate']:.1%}", f"{away_feats['form']:.2f}", f"{away_feats['cs_rate']:.1%}"]
+                }
+                comparison_df = pd.DataFrame(comparison_data)
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+                # Show decay weight info
+                home_matches = home_cum['matches']
+                away_matches = away_cum['matches']
+                home_decay = get_decay_weight(home_matches)
+                away_decay = get_decay_weight(away_matches)
+                st.caption(f"Prior weight: {home_team} {home_decay:.0%} ({home_matches} matches) | {away_team} {away_decay:.0%} ({away_matches} matches)")
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
