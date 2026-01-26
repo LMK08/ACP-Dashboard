@@ -90,7 +90,8 @@ def load_data():
             'aerialDuel.firstTouch', 'carry.endLocation.x', 'carry.endLocation.y',
             'possession.id', 'possession.eventIndex', 'possession.duration', 'possession.team.name', 'possession.types',
             'infraction', 'infraction.type', 'infraction.yellowCard', 'infraction.redCard',
-            'is_dribble_attempt', 'is_custom_dribble_success', 'relatedEventId'
+            'is_dribble_attempt', 'is_custom_dribble_success', 'relatedEventId',
+            'team.formation'
         ]
         raw_events_df = pd.read_parquet('raw_events.parquet', columns=events_columns)
         matches_summary_df = pd.read_parquet('matches_summary.parquet')
@@ -582,10 +583,168 @@ if _config:
     DISTRIBUTION_METRICS_BY_POSITION = _config.get('distribution_metrics_by_position', DISTRIBUTION_METRICS_BY_POSITION)
     logger.info("Configuration loaded from config.yaml")
 
+# Formation coordinates for XI graphic (Opta 0-100 coordinate system)
+FORMATION_COORDS = {
+    '4-4-2': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LM', 'LCM', 'RCM', 'RM', 'LST', 'RST'],
+        'coords': [(50, 7), (15, 25), (38, 25), (62, 25), (85, 25),
+                   (15, 50), (38, 50), (62, 50), (85, 50), (38, 75), (62, 75)]
+    },
+    '4-3-3': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LCM', 'CDM', 'RCM', 'LW', 'CF', 'RW'],
+        'coords': [(50, 7), (15, 25), (38, 25), (62, 25), (85, 25),
+                   (30, 50), (50, 45), (70, 50), (18, 72), (50, 80), (82, 72)]
+    },
+    '4-2-3-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LDM', 'RDM', 'LAM', 'CAM', 'RAM', 'CF'],
+        'coords': [(50, 7), (15, 25), (38, 25), (62, 25), (85, 25),
+                   (35, 42), (65, 42), (22, 62), (50, 62), (78, 62), (50, 80)]
+    },
+    '3-5-2': {
+        'positions': ['GK', 'LCB', 'CB', 'RCB', 'LWB', 'LCM', 'CDM', 'RCM', 'RWB', 'LST', 'RST'],
+        'coords': [(50, 7), (25, 25), (50, 25), (75, 25), (10, 50),
+                   (35, 50), (50, 42), (65, 50), (90, 50), (38, 75), (62, 75)]
+    },
+    '3-4-3': {
+        'positions': ['GK', 'LCB', 'CB', 'RCB', 'LM', 'LCM', 'RCM', 'RM', 'LW', 'CF', 'RW'],
+        'coords': [(50, 7), (25, 25), (50, 25), (75, 25), (15, 50),
+                   (38, 50), (62, 50), (85, 50), (20, 75), (50, 80), (80, 75)]
+    },
+    '4-1-4-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'CDM', 'LM', 'LCM', 'RCM', 'RM', 'CF'],
+        'coords': [(50, 7), (15, 25), (38, 25), (62, 25), (85, 25),
+                   (50, 38), (15, 55), (38, 55), (62, 55), (85, 55), (50, 78)]
+    },
+    '4-4-1-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LM', 'LCM', 'RCM', 'RM', 'CAM', 'CF'],
+        'coords': [(50, 7), (15, 25), (38, 25), (62, 25), (85, 25),
+                   (15, 48), (38, 48), (62, 48), (85, 48), (50, 65), (50, 80)]
+    },
+    '5-3-2': {
+        'positions': ['GK', 'LWB', 'LCB', 'CB', 'RCB', 'RWB', 'LCM', 'CDM', 'RCM', 'LST', 'RST'],
+        'coords': [(50, 7), (10, 28), (28, 22), (50, 22), (72, 22), (90, 28),
+                   (30, 50), (50, 45), (70, 50), (38, 75), (62, 75)]
+    },
+    '5-4-1': {
+        'positions': ['GK', 'LWB', 'LCB', 'CB', 'RCB', 'RWB', 'LM', 'LCM', 'RCM', 'RM', 'CF'],
+        'coords': [(50, 7), (10, 28), (28, 22), (50, 22), (72, 22), (90, 28),
+                   (18, 52), (38, 52), (62, 52), (82, 52), (50, 78)]
+    },
+}
+
 
 # ==============================================================================
 # 4. HELPER & PLOTTING FUNCTIONS
 # ==============================================================================
+
+# --- Helper Functions for Team Formation XI Graphic ---
+def get_team_primary_formation(events_df, team_name):
+    """Get the most commonly used formation for a team."""
+    team_events = events_df[events_df['team.name'] == team_name]
+    if 'team.formation' not in team_events.columns:
+        return '4-4-2'
+    formation_counts = team_events['team.formation'].dropna().value_counts()
+    if len(formation_counts) > 0:
+        return formation_counts.index[0]
+    return '4-4-2'  # Default fallback
+
+def get_team_starting_xi(events_df, team_name):
+    """Get the most frequent player at each position for a team."""
+    team_events = events_df[events_df['team.name'] == team_name]
+
+    position_players = {}
+    # Include all position codes used in the data (Wyscout format)
+    all_positions = ['GK',
+                     'RB', 'RB5', 'RCB', 'RCB3', 'CB', 'LCB', 'LCB3', 'LB', 'LB5',
+                     'RWB', 'LWB',
+                     'RDMF', 'DMF', 'LDMF', 'RCMF', 'RCMF3', 'CMF', 'LCMF', 'LCMF3',
+                     'RAMF', 'AMF', 'LAMF',
+                     'RW', 'RWF', 'LW', 'LWF',
+                     'RCF', 'CF', 'LCF', 'SS']
+
+    for pos in all_positions:
+        pos_events = team_events[team_events['player.position'] == pos]
+        if len(pos_events) > 0:
+            player_counts = pos_events.groupby(['player.id', 'player.name']).size()
+            if len(player_counts) > 0:
+                top_player = player_counts.idxmax()
+                position_players[pos] = {'id': top_player[0], 'name': top_player[1]}
+
+    return position_players
+
+def map_players_to_formation(starting_xi, formation_slots):
+    """Map actual player positions to formation display slots."""
+    mapping = {}
+
+    # Position equivalencies - which Wyscout positions can fill each formation slot
+    equivalents = {
+        'GK': ['GK'],
+        # Defenders
+        'LB': ['LB', 'LB5', 'LWB'], 'RB': ['RB', 'RB5', 'RWB'],
+        'LCB': ['LCB', 'LCB3', 'CB'], 'RCB': ['RCB', 'RCB3', 'CB'], 'CB': ['CB', 'LCB3', 'RCB3', 'LCB', 'RCB'],
+        'LWB': ['LWB', 'LB5', 'LB', 'LWF'], 'RWB': ['RWB', 'RB5', 'RB', 'RWF'],
+        # Midfielders
+        'LDM': ['LDMF', 'DMF', 'LCMF'], 'RDM': ['RDMF', 'DMF', 'RCMF'], 'CDM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF'],
+        'LCM': ['LCMF', 'LCMF3', 'CMF', 'LDMF'], 'RCM': ['RCMF', 'RCMF3', 'CMF', 'RDMF'],
+        'LM': ['LWF', 'LW', 'LAMF', 'LCMF'], 'RM': ['RWF', 'RW', 'RAMF', 'RCMF'],
+        # Attacking Mids
+        'LAM': ['LAMF', 'AMF', 'LWF', 'LW'], 'RAM': ['RAMF', 'AMF', 'RWF', 'RW'], 'CAM': ['AMF', 'LAMF', 'RAMF', 'SS'],
+        # Wingers
+        'LW': ['LW', 'LWF', 'LAMF'], 'RW': ['RW', 'RWF', 'RAMF'],
+        # Forwards
+        'CF': ['CF', 'LCF', 'RCF', 'SS'], 'LST': ['LCF', 'CF', 'SS'], 'RST': ['RCF', 'CF', 'SS'],
+    }
+
+    used_players = set()
+    for slot in formation_slots:
+        for pos in equivalents.get(slot, [slot]):
+            if pos in starting_xi and starting_xi[pos]['name'] not in used_players:
+                mapping[slot] = starting_xi[pos]
+                used_players.add(starting_xi[pos]['name'])
+                break
+        if slot not in mapping:
+            mapping[slot] = {'name': slot, 'id': None}  # Show position name if no player found
+
+    return mapping
+
+def create_formation_graphic(formation, starting_xi, team_name):
+    """Create a pitch graphic showing the team formation with player names."""
+    from mplsoccer import VerticalPitch
+
+    pitch = VerticalPitch(pitch_type='opta', pitch_color='#1a472a', line_color='white',
+                          linewidth=1, goal_type='box')
+    fig, ax = pitch.draw(figsize=(6, 8))
+
+    # Get formation coordinates (fallback to 4-4-2 if unknown)
+    formation_key = formation if formation in FORMATION_COORDS else '4-4-2'
+    formation_data = FORMATION_COORDS[formation_key]
+
+    # Map actual player positions to formation slots
+    position_mapping = map_players_to_formation(starting_xi, formation_data['positions'])
+
+    for slot, coords in zip(formation_data['positions'], formation_data['coords']):
+        x, y = coords
+        # Draw player circle
+        ax.scatter(x, y, s=800, c='white', edgecolors='#1a472a', linewidth=2, zorder=5)
+
+        # Get player name for this slot
+        player_info = position_mapping.get(slot, {'name': slot})
+        player_name = player_info.get('name', slot)
+
+        # Shorten to last name
+        if ' ' in player_name:
+            display_name = player_name.split()[-1][:12]
+        else:
+            display_name = player_name[:12]
+
+        ax.text(x, y - 6, display_name, ha='center', va='top', fontsize=7,
+                fontweight='bold', color='white')
+
+    ax.set_title(f'{team_name}\n{formation}', fontsize=12, fontweight='bold',
+                 color='white', pad=10)
+    fig.patch.set_facecolor('#1a472a')
+
+    return fig
 
 # --- Helper for Player Radars (from Cell 11) ---
 def calculate_and_merge(base_df, events_df, stat_name, primary_type=None, bool_condition=None):
@@ -2644,7 +2803,37 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      st.pyplot(fig_def, use_container_width=True)
         else:
             st.warning(f"Could not find calculated radar statistics for {selected_team_t}.")
-        
+
+        # Primary Formation XI Graphic
+        st.subheader("Primary Formation")
+        primary_formation = get_team_primary_formation(raw_events_df, selected_team_t)
+        starting_xi = get_team_starting_xi(raw_events_df, selected_team_t)
+
+        col_xi1, col_xi2 = st.columns([1, 1])
+
+        with col_xi1:
+            if primary_formation and starting_xi:
+                fig_xi = create_formation_graphic(primary_formation, starting_xi, selected_team_t)
+                st.pyplot(fig_xi, use_container_width=True)
+                plt.close(fig_xi)
+            else:
+                st.info("Formation data not available for this team.")
+
+        with col_xi2:
+            st.write(f"**Formation:** {primary_formation}")
+            st.write("**Starting XI by Position:**")
+            # Sort positions in a logical order (Wyscout position codes)
+            position_order = ['GK',
+                              'RB', 'RB5', 'RCB', 'RCB3', 'CB', 'LCB', 'LCB3', 'LB', 'LB5',
+                              'RWB', 'LWB',
+                              'RDMF', 'DMF', 'LDMF', 'RCMF', 'RCMF3', 'CMF', 'LCMF', 'LCMF3',
+                              'RAMF', 'AMF', 'LAMF',
+                              'RW', 'RWF', 'LW', 'LWF',
+                              'RCF', 'CF', 'LCF', 'SS']
+            sorted_xi = sorted(starting_xi.items(), key=lambda x: position_order.index(x[0]) if x[0] in position_order else 99)
+            for pos, player in sorted_xi:
+                st.write(f"- **{pos}:** {player['name']}")
+
         st.subheader("Season Shot Maps (Non-Penalty)")
         col1_shot, col2_shot = st.columns(2)
         with col1_shot:
