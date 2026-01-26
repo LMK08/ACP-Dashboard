@@ -814,8 +814,9 @@ def calculate_league_table(matches_df, team_list):
         ascending=[False, False, False]
     ).reset_index(drop=True)
 
-    # Add position column
+    # Add position column and reorder columns (Pts after P)
     table_df.insert(0, 'Pos', range(1, len(table_df) + 1))
+    table_df = table_df[['Pos', 'Team', 'P', 'Pts', 'W', 'D', 'L', 'GF', 'GA', 'GD']]
 
     return table_df
 
