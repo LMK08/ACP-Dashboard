@@ -2453,7 +2453,7 @@ player_stats_with_scores_df = pd.DataFrame()
 if raw_events_df is not None and matches_summary_df is not None and player_minutes_df is not None:
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
-    analysis_type = st.sidebar.radio("Choose Analysis Type", ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison'))
+    analysis_type = st.sidebar.radio("Choose Analysis Type", ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis'))
     if analysis_type == 'Match Analysis':
         st.header("Match Analysis")
         
@@ -3437,6 +3437,224 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         )
         
         st.pyplot(fig, use_container_width=True)
+
+    # --- NEW: Player Analysis Section ---
+    elif analysis_type == 'Player Analysis':
+        st.header("Player Analysis")
+
+        # --- 1. Load Data ---
+        try:
+            with st.spinner("Loading player statistics..."):
+                player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                )
+        except Exception as e:
+            st.error(f"An error occurred calculating player stats: {e}")
+            logger.exception("Error in Player Analysis stats calculation")
+            st.stop()
+
+        if player_stats_with_scores_df.empty:
+            st.warning("No players found with sufficient minutes for analysis.")
+            st.stop()
+
+        # --- 2. Sidebar Controls ---
+        st.sidebar.subheader("Analysis Options")
+
+        # Mode selector
+        analysis_mode = st.sidebar.radio(
+            "Sort By:",
+            ("Position Rating", "Individual Metric"),
+            key="player_analysis_mode"
+        )
+
+        # Minimum minutes filter
+        max_minutes = int(player_stats_with_scores_df['totalMinutes'].max())
+        min_minutes_filter = st.sidebar.slider(
+            "Minimum Minutes Played:",
+            min_value=0,
+            max_value=max_minutes,
+            value=90,
+            step=45,
+            key="player_analysis_min_minutes"
+        )
+
+        # Number of players to display
+        num_players = st.sidebar.slider(
+            "Number of Players to Display:",
+            min_value=5,
+            max_value=50,
+            value=20,
+            step=5,
+            key="player_analysis_num_players"
+        )
+
+        # Apply minutes filter
+        filtered_df = player_stats_with_scores_df[
+            player_stats_with_scores_df['totalMinutes'] >= min_minutes_filter
+        ].copy()
+
+        if filtered_df.empty:
+            st.warning(f"No players found with {min_minutes_filter}+ minutes. Try lowering the threshold.")
+            st.stop()
+
+        # --- 3. Mode-Specific Controls and Display ---
+        if analysis_mode == "Position Rating":
+            # Position template selector
+            all_templates = sorted(list(POSITION_GROUPS.keys()))
+            selected_template = st.sidebar.selectbox(
+                "Select Position Template:",
+                all_templates,
+                key="player_analysis_template"
+            )
+
+            # Get positions that map to this template
+            positions_in_group = POSITION_GROUPS.get(selected_template, [])
+
+            # Filter to players who play these positions
+            template_filtered_df = filtered_df[
+                filtered_df['primaryPosition'].isin(positions_in_group)
+            ]
+
+            if template_filtered_df.empty:
+                st.warning(f"No players found for {selected_template} template with current filters.")
+                st.stop()
+
+            # Sort by position score
+            score_col = f"{selected_template}_Score"
+            if score_col in template_filtered_df.columns:
+                sorted_df = template_filtered_df.sort_values(by=score_col, ascending=False).head(num_players)
+            else:
+                st.error(f"Score column '{score_col}' not found.")
+                st.stop()
+
+            # Display header
+            st.subheader(f"Top {selected_template}s by Rating")
+
+            # Define display columns based on position type
+            key_metrics = list(WEIGHTS.get(selected_template, {}).keys())[:5]
+            display_cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', score_col] + \
+                           [m for m in key_metrics if m in sorted_df.columns]
+
+            # Create display dataframe
+            display_df = sorted_df[display_cols].copy()
+            display_df = display_df.rename(columns={
+                'playerName': 'Player',
+                'teamName': 'Team',
+                'primaryPosition': 'Position',
+                'totalMinutes': 'Minutes',
+                score_col: 'Rating'
+            })
+            display_df['Rating'] = display_df['Rating'].round(1)
+            display_df['Minutes'] = display_df['Minutes'].astype(int)
+
+            # Round numeric columns
+            for col in display_df.columns:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating']:
+                    display_df[col] = display_df[col].round(2)
+
+            # Add rank column
+            display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
+
+            # Display table
+            st.dataframe(display_df.set_index('Rank'), use_container_width=True)
+
+        else:  # Individual Metric mode
+            # Build metric options from constants
+            metric_categories = {
+                "Output": OUTPUT_METRICS,
+                "Passing": PASSING_METRICS,
+                "Defensive": DEFENSIVE_METRICS,
+                "Dribbling": DRIBBLING_METRICS,
+                "Goalkeeping": GOALKEEPING_METRICS
+            }
+
+            # Category selector
+            selected_category = st.sidebar.selectbox(
+                "Metric Category:",
+                list(metric_categories.keys()),
+                key="player_analysis_metric_category"
+            )
+
+            # Get available metrics for this category (that exist in dataframe)
+            available_metrics = [m for m in metric_categories[selected_category]
+                               if m in filtered_df.columns]
+
+            if not available_metrics:
+                st.warning(f"No metrics available for {selected_category} category.")
+                st.stop()
+
+            # Metric selector
+            selected_metric = st.sidebar.selectbox(
+                "Select Metric:",
+                available_metrics,
+                key="player_analysis_metric"
+            )
+
+            # Optional: Position filter for metric view
+            all_positions = sorted(filtered_df['primaryPosition'].dropna().unique().tolist())
+            position_filter = st.sidebar.multiselect(
+                "Filter by Position (optional):",
+                all_positions,
+                default=[],
+                key="player_analysis_position_filter"
+            )
+
+            # Apply position filter
+            if position_filter:
+                metric_filtered_df = filtered_df[filtered_df['primaryPosition'].isin(position_filter)]
+            else:
+                metric_filtered_df = filtered_df
+
+            if metric_filtered_df.empty:
+                st.warning("No players found with current filters.")
+                st.stop()
+
+            # Sort by selected metric
+            sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=False).head(num_players)
+
+            # Display header
+            st.subheader(f"Top Players by {selected_metric} (per 90)")
+
+            # Define display columns - include related metrics for context
+            related_metrics = []
+            if selected_metric in OUTPUT_METRICS:
+                related_metrics = ['Goals', 'xG', 'npxG', 'Shots', 'Assists', 'xAOP']
+            elif selected_metric in PASSING_METRICS:
+                related_metrics = ['Passes', 'Passes successful %', 'Progressive Passes', 'xT']
+            elif selected_metric in DEFENSIVE_METRICS:
+                related_metrics = ['Interceptions', 'Recoveries', 'Defensive duels', 'Aerial duels']
+            elif selected_metric in DRIBBLING_METRICS:
+                related_metrics = ['Dribbles', 'Dribbles successful %', 'Progressive runs']
+            elif selected_metric in GOALKEEPING_METRICS:
+                related_metrics = ['goalsPrevented', 'savePercentage', 'exits']
+
+            # Remove selected metric from related and filter to available
+            related_metrics = [m for m in related_metrics if m in sorted_df.columns and m != selected_metric][:4]
+
+            display_cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', selected_metric] + related_metrics
+            display_cols = [c for c in display_cols if c in sorted_df.columns]
+
+            # Create display dataframe
+            display_df = sorted_df[display_cols].copy()
+            display_df = display_df.rename(columns={
+                'playerName': 'Player',
+                'teamName': 'Team',
+                'primaryPosition': 'Position',
+                'totalMinutes': 'Minutes'
+            })
+            display_df['Minutes'] = display_df['Minutes'].astype(int)
+
+            # Round numeric columns
+            for col in display_df.columns:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col != 'Minutes':
+                    display_df[col] = display_df[col].round(2)
+
+            # Add rank column
+            display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
+
+            # Display table
+            st.dataframe(display_df.set_index('Rank'), use_container_width=True)
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
