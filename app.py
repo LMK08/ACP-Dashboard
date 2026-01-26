@@ -746,6 +746,79 @@ def create_formation_graphic(formation, starting_xi, team_name):
 
     return fig
 
+# --- Helper Function for League Table ---
+def calculate_league_table(matches_df, team_list):
+    """Calculate league standings for a list of teams."""
+    standings = {}
+
+    for team in team_list:
+        standings[team] = {
+            'P': 0, 'W': 0, 'D': 0, 'L': 0,
+            'GF': 0, 'GA': 0, 'GD': 0, 'Pts': 0
+        }
+
+    for _, match in matches_df.iterrows():
+        home_team = match['homeTeamName']
+        away_team = match['awayTeamName']
+        score = match.get('score', '')
+
+        # Only process matches between teams in our list
+        if home_team not in team_list or away_team not in team_list:
+            continue
+
+        if not score or pd.isna(score) or '-' not in str(score):
+            continue
+
+        try:
+            home_goals, away_goals = map(int, str(score).split('-'))
+        except (ValueError, AttributeError):
+            continue
+
+        # Update home team stats
+        standings[home_team]['P'] += 1
+        standings[home_team]['GF'] += home_goals
+        standings[home_team]['GA'] += away_goals
+
+        # Update away team stats
+        standings[away_team]['P'] += 1
+        standings[away_team]['GF'] += away_goals
+        standings[away_team]['GA'] += home_goals
+
+        # Determine result
+        if home_goals > away_goals:
+            standings[home_team]['W'] += 1
+            standings[home_team]['Pts'] += 3
+            standings[away_team]['L'] += 1
+        elif home_goals < away_goals:
+            standings[away_team]['W'] += 1
+            standings[away_team]['Pts'] += 3
+            standings[home_team]['L'] += 1
+        else:
+            standings[home_team]['D'] += 1
+            standings[home_team]['Pts'] += 1
+            standings[away_team]['D'] += 1
+            standings[away_team]['Pts'] += 1
+
+    # Calculate goal difference
+    for team in standings:
+        standings[team]['GD'] = standings[team]['GF'] - standings[team]['GA']
+
+    # Convert to DataFrame
+    table_df = pd.DataFrame.from_dict(standings, orient='index')
+    table_df.index.name = 'Team'
+    table_df = table_df.reset_index()
+
+    # Sort by Points, then GD, then GF
+    table_df = table_df.sort_values(
+        by=['Pts', 'GD', 'GF'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    # Add position column
+    table_df.insert(0, 'Pos', range(1, len(table_df) + 1))
+
+    return table_df
+
 # --- Helper for Player Radars (from Cell 11) ---
 def calculate_and_merge(base_df, events_df, stat_name, primary_type=None, bool_condition=None):
     """
@@ -2937,17 +3010,67 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             combined_stats_df = stats_df_raw.copy() 
 
         # --- 2. Define Team Lists ---
+        GROUP_A_TEAMS = [
+            'Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
+            'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'
+        ]
         GROUP_B_TEAMS = [
             '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
             'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'
         ]
+        valid_group_a_teams = [t for t in GROUP_A_TEAMS if t in combined_stats_df.index]
         valid_group_b_teams = [t for t in GROUP_B_TEAMS if t in combined_stats_df.index]
-        
+
         ALL_TEAMS_TO_HIGHLIGHT = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
         valid_all_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in combined_stats_df.index]
 
+        # --- 3. League Tables ---
+        st.subheader("League Standings")
+        col_table_a, col_table_b = st.columns(2)
 
-        # --- 3. Group B Strength Chart (NOW FIRST) ---
+        with col_table_a:
+            st.markdown("**Group A**")
+            table_a = calculate_league_table(matches_summary_df, GROUP_A_TEAMS)
+            st.dataframe(
+                table_a,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Pos': st.column_config.NumberColumn('Pos', width='small'),
+                    'Team': st.column_config.TextColumn('Team', width='medium'),
+                    'P': st.column_config.NumberColumn('P', help='Played', width='small'),
+                    'W': st.column_config.NumberColumn('W', help='Won', width='small'),
+                    'D': st.column_config.NumberColumn('D', help='Drawn', width='small'),
+                    'L': st.column_config.NumberColumn('L', help='Lost', width='small'),
+                    'GF': st.column_config.NumberColumn('GF', help='Goals For', width='small'),
+                    'GA': st.column_config.NumberColumn('GA', help='Goals Against', width='small'),
+                    'GD': st.column_config.NumberColumn('GD', help='Goal Difference', width='small'),
+                    'Pts': st.column_config.NumberColumn('Pts', help='Points', width='small'),
+                }
+            )
+
+        with col_table_b:
+            st.markdown("**Group B**")
+            table_b = calculate_league_table(matches_summary_df, GROUP_B_TEAMS)
+            st.dataframe(
+                table_b,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Pos': st.column_config.NumberColumn('Pos', width='small'),
+                    'Team': st.column_config.TextColumn('Team', width='medium'),
+                    'P': st.column_config.NumberColumn('P', help='Played', width='small'),
+                    'W': st.column_config.NumberColumn('W', help='Won', width='small'),
+                    'D': st.column_config.NumberColumn('D', help='Drawn', width='small'),
+                    'L': st.column_config.NumberColumn('L', help='Lost', width='small'),
+                    'GF': st.column_config.NumberColumn('GF', help='Goals For', width='small'),
+                    'GA': st.column_config.NumberColumn('GA', help='Goals Against', width='small'),
+                    'GD': st.column_config.NumberColumn('GD', help='Goal Difference', width='small'),
+                    'Pts': st.column_config.NumberColumn('Pts', help='Points', width='small'),
+                }
+            )
+
+        # --- 4. Group B Strength Chart ---
         st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
         if not team_strength_df.empty:
             valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
