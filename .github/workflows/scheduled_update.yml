@@ -45,6 +45,12 @@ jobs:
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
         run: python get_player_details.py
 
+      - name: Fetch team advanced stats
+        env:
+          WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
+          WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
+        run: python fetch_team_stats.py
+
       - name: Update prediction model
         run: python update_model.py
 

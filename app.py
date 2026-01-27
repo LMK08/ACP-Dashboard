@@ -1674,13 +1674,82 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
 # --- Radar Stats Calculation ---
 @st.cache_data
+def load_team_advanced_stats():
+    """Load Wyscout team advanced stats from parquet if available."""
+    try:
+        df = pd.read_parquet('team_advanced_stats.parquet')
+        if df.empty:
+            return None
+        return df
+    except FileNotFoundError:
+        return None
+
+@st.cache_data
 def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
-    """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars."""
-    
-    print("Calculating team radar stats...") 
+    """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars.
+    Uses Wyscout team advanced stats if available, otherwise falls back to event-based calculation."""
+
+    wyscout_stats = load_team_advanced_stats()
+    if wyscout_stats is not None:
+        print("Using Wyscout team advanced stats for radars...")
+        return _build_radars_from_wyscout(wyscout_stats)
+
+    print("Wyscout stats not available, calculating from events...")
+    return _calculate_radars_from_events(season_events_df, matches_summary_df)
+
+def _build_radars_from_wyscout(df):
+    """Build radar DataFrames from Wyscout team advanced stats."""
     all_teams_stats = {}
-    
-    # --- Data Prep ---
+
+    for _, row in df.iterrows():
+        team = row['team_name']
+        shots = row.get('shots', 0)
+        xg = row.get('xg', 0)
+        shots_against = row.get('shots_against', 0)
+        xg_against = row.get('xg_shot_against', 0)
+        passes = row.get('passes', 0)
+        forward_passes = row.get('forward_passes', 0)
+
+        all_teams_stats[team] = {
+            'Goals': row.get('goals', 0),
+            'xG': xg,
+            'xG per Shot': xg / shots if shots > 0 else 0,
+            'Shots': shots,
+            'Actions in Box': row.get('touch_in_box', 0),
+            'Passes into Box': row.get('passes_to_final_third', 0),
+            'Crosses': row.get('crosses', 0),
+            'Dribbles': row.get('successful_dribbles', 0),
+            'Passes': passes,
+            'Progressive Passes': row.get('progressive_run', 0),
+            'Directness': (forward_passes / passes * 100) if passes > 0 else 0,
+            'Ball Possession': row.get('possession_percent', 0),
+            'Losses': row.get('ball_losses', 0),
+            'Goals Against': row.get('conceded_goals', 0),
+            'xG Against': xg_against,
+            'xG per Shot Against': xg_against / shots_against if shots_against > 0 else 0,
+            'Shots Against': shots_against,
+            'Aerial Duel Win %': row.get('aerial_duels_won_pct', 0),
+            'Defensive Duel Win %': row.get('defensive_duels_won_pct', 0),
+            'Interceptions': row.get('interceptions', 0),
+            'Fouls': row.get('fouls', 0),
+            'PPDA': row.get('ppda', 0),
+        }
+
+    stats_df_raw = pd.DataFrame.from_dict(all_teams_stats, orient='index').fillna(0).round(2)
+    stats_df_raw.replace([np.inf, -np.inf], 999, inplace=True)
+    stats_df_pct = stats_df_raw.copy()
+    metrics_to_invert_pct = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses']
+    valid_metrics_to_invert = [col for col in metrics_to_invert_pct if col in stats_df_pct.columns]
+    stats_df_pct[valid_metrics_to_invert] = -stats_df_pct[valid_metrics_to_invert]
+    for col in stats_df_pct.columns:
+        stats_df_pct[col] = stats_df_pct[col].rank(pct=True) * 100
+    return stats_df_raw, stats_df_pct
+
+def _calculate_radars_from_events(season_events_df, matches_summary_df):
+    """Fallback: calculate radar stats from raw events data."""
+
+    all_teams_stats = {}
+
     if 'team.name' not in season_events_df.columns:
          print("Warning: 'team.name' column missing from events_df, cannot calculate radar stats.")
          return pd.DataFrame(), pd.DataFrame()
@@ -1688,7 +1757,6 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     teams = season_events_df['team.name'].unique()
     matches_played = season_events_df.groupby('team.name')['matchId'].nunique() if 'matchId' in season_events_df.columns else pd.Series(dtype='int')
 
-    # Convert relevant columns safely
     season_events_df['possession.duration_sec'] = pd.to_numeric(season_events_df.get('possession.duration', pd.Series(dtype='str')).str.replace('s', ''), errors='coerce')
     season_events_df['location.x'] = pd.to_numeric(season_events_df.get('location.x'), errors='coerce')
     season_events_df['location.y'] = pd.to_numeric(season_events_df.get('location.y'), errors='coerce')
@@ -1697,28 +1765,20 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     season_events_df['pass.length'] = pd.to_numeric(season_events_df.get('pass.length'), errors='coerce')
     season_events_df['shot.xg'] = pd.to_numeric(season_events_df.get('shot.xg'), errors='coerce')
 
-    # --- FIX: Calculate Average Possession % Per Match ---
-    # 1. Get unique possessions with duration
     possessions_df = season_events_df.drop_duplicates(subset='possession.id')[['matchId', 'possession.team.name', 'possession.duration_sec']]
-    # 2. Sum duration per team per match
     match_team_duration = possessions_df.groupby(['matchId', 'possession.team.name'])['possession.duration_sec'].sum().reset_index()
-    # 3. Sum total duration per match (to handle variable match lengths)
     match_total_duration = match_team_duration.groupby('matchId')['possession.duration_sec'].sum().reset_index().rename(columns={'possession.duration_sec': 'match_total_duration'})
-    # 4. Merge and calculate %
     possession_data = pd.merge(match_team_duration, match_total_duration, on='matchId')
-    possession_data = possession_data[possession_data['match_total_duration'] > 0] # Avoid div/0
+    possession_data = possession_data[possession_data['match_total_duration'] > 0]
     possession_data['possession_pct'] = (possession_data['possession.duration_sec'] / possession_data['match_total_duration']) * 100
-    # 5. Average per team
     avg_possession_per_team = possession_data.groupby('possession.team.name')['possession_pct'].mean()
-    # -----------------------------------------------------
-    
+
     losses_df = pd.DataFrame()
     if 'possession.id' in season_events_df.columns:
         season_events_df['next_possession.id'] = season_events_df['possession.id'].shift(-1)
         possession_changes = season_events_df[season_events_df['possession.id'] != season_events_df['next_possession.id']]
         losses_df = possession_changes[possession_changes.get('infraction.type') != 'foul_suffered'].copy()
 
-    # Pre-calculate opponent events for defensive stats
     if 'opponentTeam.name' not in season_events_df.columns and 'matchId' in season_events_df.columns:
          temp_summary = matches_summary_df[['matchId', 'homeTeamName', 'awayTeamName']].copy()
          temp_summary.rename(columns={'homeTeamName':'ht', 'awayTeamName':'at'}, inplace=True)
@@ -1726,20 +1786,18 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
          season_events_df['opponentTeam.name'] = np.where(season_events_df['team.name'] == season_events_df['ht'], season_events_df['at'], season_events_df['ht'])
          season_events_df.drop(columns=['ht', 'at'], inplace=True, errors='ignore')
 
-    # --- Loop Through Teams ---
     for team in teams:
         team_events = season_events_df[season_events_df.get('team.name') == team]
         opponent_events = season_events_df[season_events_df.get('opponentTeam.name') == team] if 'opponentTeam.name' in season_events_df.columns else pd.DataFrame()
         games = matches_played.get(team, 0)
         if games == 0: continue
 
-        # --- Offensive Stats ---
         team_shots = team_events[team_events.get('type.primary') == 'shot']
         shots = team_shots.shape[0] / games
         goals = team_shots[team_shots.get('shot.isGoal') == True].shape[0] / games
         xg = team_shots['shot.xg'].sum() / games
         xg_per_shot = xg / shots if shots > 0 else 0
-        PENALTY_AREA_X=83; PENALTY_AREA_Y1, PENALTY_AREA_Y2 = (21, 79) 
+        PENALTY_AREA_X=83; PENALTY_AREA_Y1, PENALTY_AREA_Y2 = (21, 79)
         actions_in_box = team_events[(team_events['location.x'].fillna(0) >= PENALTY_AREA_X) & (team_events['location.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
         team_passes = team_events[team_events.get('type.primary') == 'pass']
         passes_into_box = team_passes[(team_passes['pass.endLocation.x'].fillna(0) >= PENALTY_AREA_X) & (team_passes['pass.endLocation.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
@@ -1747,7 +1805,6 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         team_duels_off = team_events[team_events.get('type.primary') == 'duel']
         dribbles = team_duels_off[team_duels_off.get('groundDuel.takeOn') == True].shape[0] / games
 
-        # --- Distribution Stats ---
         passes_per_match = team_passes.shape[0] / games
         team_passes['start_dist_to_goal'] = np.sqrt((100 - team_passes['location.x'])**2 + (50 - team_passes['location.y'])**2)
         team_passes['end_dist_to_goal'] = np.sqrt((100 - team_passes['pass.endLocation.x'])**2 + (50 - team_passes['pass.endLocation.y'])**2)
@@ -1756,11 +1813,10 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
         cond2 = (team_passes['location.x'] <= 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 15)
         cond3 = (team_passes['location.x'] > 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 10)
         progressive_passes = team_passes[cond1 | cond2 | cond3].shape[0] / games
-        directness = team_passes['progression'].mean() 
-        
-        # --- FIX: Use pre-calculated average possession ---
+        directness = team_passes['progression'].mean()
+
         ball_possession_pct = avg_possession_per_team.get(team, 0)
-        
+
         final_third_entries = 0
         if 'possession.id' in team_events.columns and 'location.x' in team_events.columns:
             try:
@@ -1774,59 +1830,56 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
                 final_third_entries = 0
         losses = losses_df[losses_df.get('team.name') == team].shape[0] / games if not losses_df.empty else 0
 
-        # --- Defensive Stats ---
         goals_against=0; xg_against=0; shots_against=0; xg_per_shot_against=0;
         aerial_duel_win_pct=0; defensive_duel_win_pct=0; interceptions=0; fouls=0; ppda=np.inf;
-        
+
         if not opponent_events.empty:
             opponent_shots = opponent_events[opponent_events.get('type.primary') == 'shot']
             goals_against = opponent_shots[opponent_shots.get('shot.isGoal') == True].shape[0] / games
             xg_against = opponent_shots['shot.xg'].sum() / games
             shots_against = opponent_shots.shape[0] / games
             xg_per_shot_against = xg_against / shots_against if shots_against > 0 else 0
-        
+
         team_duels_def = team_events[team_events.get('type.primary') == 'duel']
         aerial_duels = team_duels_def[team_duels_def.get('type.secondary','').astype(str).str.contains('aerial', na=False)]
         total_aerial_duels = aerial_duels.shape[0]; won_aerial_duels_count = aerial_duels[aerial_duels.get('aerialDuel.firstTouch') == True].shape[0]
         aerial_duel_win_pct = (won_aerial_duels_count / total_aerial_duels) * 100 if total_aerial_duels > 0 else 0
-        
+
         defensive_duels = team_duels_def[team_duels_def.get('groundDuel.duelType') == 'defensive_duel']
         total_defensive_duels = defensive_duels.shape[0]
-        # Win = recovered possession OR stopped progress
         won_defensive_duels_count = defensive_duels[
-            (defensive_duels.get('groundDuel.recoveredPossession') == True) | 
+            (defensive_duels.get('groundDuel.recoveredPossession') == True) |
             (defensive_duels.get('groundDuel.stoppedProgress') == True)
         ].shape[0]
         defensive_duel_win_pct = (won_defensive_duels_count / total_defensive_duels) * 100 if total_defensive_duels > 0 else 0
-        
+
         interceptions = team_events[team_events.get('type.primary') == 'interception'].shape[0] / games
         fouls = team_events[team_events.get('type.primary') == 'infraction'].shape[0] / games
-        
-        # --- PPDA LOGIC ---
+
         PRESS_ZONE_X = 40
         opponent_passes_count = opponent_events[
-            (opponent_events.get('type.primary') == 'pass') & 
+            (opponent_events.get('type.primary') == 'pass') &
             (opponent_events.get('location.x', 0) >= PRESS_ZONE_X)
         ].shape[0]
 
         team_press_events = team_events[team_events.get('location.x', 0) >= PRESS_ZONE_X]
-        
+
         if not team_press_events.empty:
             fouls_press = team_press_events[team_press_events.get('type.primary') == 'infraction'].shape[0]
             interceptions_press = team_press_events[team_press_events.get('type.primary') == 'interception'].shape[0]
             def_duels_press = team_press_events[
-                (team_press_events.get('type.primary') == 'duel') & 
+                (team_press_events.get('type.primary') == 'duel') &
                 (team_press_events.get('groundDuel.duelType') == 'defensive_duel')
             ]
             won_def_duels_press = def_duels_press[
-                (def_duels_press.get('groundDuel.recoveredPossession') == True) | 
+                (def_duels_press.get('groundDuel.recoveredPossession') == True) |
                 (def_duels_press.get('groundDuel.stoppedProgress') == True)
             ].shape[0]
             sliding_tackles_press = team_press_events[
                 (team_press_events.get('type.primary') == 'duel') &
                 (team_press_events.get('groundDuel.duelType', '').astype(str).str.contains('sliding_tackle', na=False))
             ].shape[0]
-            
+
             total_def_actions = fouls_press + interceptions_press + won_def_duels_press + sliding_tackles_press
             ppda = opponent_passes_count / total_def_actions if total_def_actions > 0 else np.inf
         else:
@@ -1849,7 +1902,6 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
     stats_df_raw.replace([np.inf, -np.inf], 999, inplace=True)
     stats_df_pct = stats_df_raw.copy()
     metrics_to_invert_pct = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses']
-    
     valid_metrics_to_invert = [col for col in metrics_to_invert_pct if col in stats_df_pct.columns]
     stats_df_pct[valid_metrics_to_invert] = -stats_df_pct[valid_metrics_to_invert]
     for col in stats_df_pct.columns:
