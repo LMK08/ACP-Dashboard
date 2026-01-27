@@ -4352,16 +4352,28 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             model = model_data['model']
             scaler = model_data['scaler']
             team_stats = model_data['team_stats']
-            model_accuracy = model_data.get('accuracy', 0)
             prior_season_stats = model_data.get('prior_season_stats', {})
             league_avg_stats = model_data.get('league_avg_stats', {'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0, 'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35})
-            model_version = model_data.get('version', 1)
+            team_ratings = model_data.get('team_ratings', {})
 
-            # Count returning vs promoted teams
-            returning_count = len([t for t, s in team_stats.items() if s.get('prior_stats')])
-            promoted_count = len(team_stats) - returning_count
+            # Display Team Strength Ratings
+            if team_ratings:
+                with st.expander("Team Strength Ratings", expanded=False):
+                    sorted_ratings = sorted(team_ratings.items(), key=lambda x: x[1]['overall'], reverse=True)
 
-            st.info(f"Model Accuracy: {model_accuracy:.1%} | {returning_count} returning teams, {promoted_count} promoted teams")
+                    ratings_df = pd.DataFrame([
+                        {
+                            'Rank': i+1,
+                            'Team': team,
+                            'Overall': f"{r['overall']:.1f}",
+                            'Home': f"{r['home_strength']:.0f}",
+                            'Away': f"{r['away_strength']:.0f}",
+                            'Attack (xG)': f"{r['attack']:.2f}",
+                            'Defense (xGA)': f"{r['defense']:.2f}"
+                        }
+                        for i, (team, r) in enumerate(sorted_ratings)
+                    ])
+                    st.dataframe(ratings_df, use_container_width=True, hide_index=True)
 
             # Team selection
             all_teams = sorted(team_stats.keys())
@@ -4372,11 +4384,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with col2:
                 away_options = [t for t in all_teams if t != home_team]
                 away_team = st.selectbox("Away Team", away_options, key="pred_away")
-
-            # Show team status
-            home_status = "Returning" if team_stats[home_team].get('prior_stats') else "Promoted"
-            away_status = "Returning" if team_stats[away_team].get('prior_stats') else "Promoted"
-            st.caption(f"{home_team}: {home_status} | {away_team}: {away_status}")
 
             if st.button("Predict Match Outcome", type="primary"):
                 home_cum = team_stats.get(home_team)
@@ -4414,6 +4421,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # Display results
                 st.subheader(f"{home_team} vs {away_team}")
 
+                # Show team strength ratings
+                if team_ratings:
+                    home_rating = team_ratings.get(home_team, {})
+                    away_rating = team_ratings.get(away_team, {})
+                    if home_rating and away_rating:
+                        rcol1, rcol2 = st.columns(2)
+                        with rcol1:
+                            st.caption(f"**{home_team}** Rating: {home_rating['overall']:.1f}")
+                        with rcol2:
+                            st.caption(f"**{away_team}** Rating: {away_rating['overall']:.1f}")
+
                 # Probability bars
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -4444,12 +4462,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 comparison_df = pd.DataFrame(comparison_data)
                 st.dataframe(comparison_df, use_container_width=True, hide_index=True)
 
-                # Show decay weight info
+                # Show matches played
                 home_matches = home_cum['matches']
                 away_matches = away_cum['matches']
-                home_decay = get_decay_weight(home_matches)
-                away_decay = get_decay_weight(away_matches)
-                st.caption(f"Prior weight: {home_team} {home_decay:.0%} ({home_matches} matches) | {away_team} {away_decay:.0%} ({away_matches} matches)")
+                st.caption(f"Based on {home_matches} matches for {home_team} and {away_matches} matches for {away_team}")
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")

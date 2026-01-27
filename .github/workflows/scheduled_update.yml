@@ -45,6 +45,9 @@ jobs:
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
         run: python get_player_details.py
 
+      - name: Update prediction model
+        run: python update_model.py
+
       - name: Commit and push new data
         run: |
           git config --global user.name 'GitHub Actions Bot'

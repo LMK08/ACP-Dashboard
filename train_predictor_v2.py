@@ -39,8 +39,42 @@ def normalize_match_df(df):
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
+    # Parse label format: "Home Team - Away Team, H-A" (historical data format)
+    if 'label' in df.columns and 'home_team' not in df.columns:
+        def parse_label(label):
+            if pd.isna(label) or not isinstance(label, str):
+                return None, None, None, None
+            try:
+                # Format: "Home Team - Away Team, H-A"
+                # Split by comma to get teams and score
+                if ', ' in label:
+                    teams_part, score_part = label.rsplit(', ', 1)
+                else:
+                    return None, None, None, None
+
+                # Split teams by " - "
+                if ' - ' in teams_part:
+                    home_team, away_team = teams_part.split(' - ', 1)
+                else:
+                    return None, None, None, None
+
+                # Parse score
+                if '-' in score_part:
+                    home_score, away_score = score_part.split('-')
+                    return home_team.strip(), away_team.strip(), int(home_score), int(away_score)
+                else:
+                    return None, None, None, None
+            except:
+                return None, None, None, None
+
+        parsed = df['label'].apply(parse_label)
+        df['home_team'] = parsed.apply(lambda x: x[0])
+        df['away_team'] = parsed.apply(lambda x: x[1])
+        df['home_score'] = parsed.apply(lambda x: x[2])
+        df['away_score'] = parsed.apply(lambda x: x[3])
+
     # Parse score if it's combined (e.g., "2-1")
-    if 'score' in df.columns and 'home_score' not in df.columns:
+    elif 'score' in df.columns and 'home_score' not in df.columns:
         def parse_score(s):
             if pd.isna(s) or s == '' or '-' not in str(s):
                 return None, None
@@ -590,49 +624,86 @@ else:
     prior_season_stats = {}
     print("No prior season data - all teams will use league average priors")
 
-# Build training data for BOTH seasons
-# Train on prior season (without priors) + current season (with priors)
-print("\n--- Building Training Data ---")
+# Build training data for ALL historical seasons
+# Train on prior seasons (188221, 188222, 189147, 190090), hold out current (191782) for testing
+print("\n--- Building Training Data (Multi-Season with Held-Out Test) ---")
 
-# First, train on prior season (no priors - using league average)
-if prior_season_id:
-    prior_season_match_data = historical_matches[historical_matches['season_id'] == prior_season_id]
-    prior_season_event_data = historical_events[historical_events['matchId'].isin(prior_season_match_data['match_id'])]
+# Get all seasons sorted chronologically
+all_seasons = sorted(historical_matches['season_id'].unique())
+current_season_id = 191782  # Held-out test season
+training_seasons = [s for s in all_seasons if s != current_season_id]
 
-    print(f"Training on prior season ({prior_season_id}): {len(prior_season_match_data)} matches")
-    X_prior, y_prior, _, _ = build_training_data(
-        prior_season_match_data, prior_season_event_data,
-        prior_season_stats=None,  # No priors for first season
+print(f"Training seasons: {training_seasons}")
+print(f"Held-out test season: {current_season_id}")
+
+# Build training data season by season, accumulating priors
+X_all = []
+y_all = []
+season_end_stats = {}  # Track end-of-season stats for priors
+
+for i, season_id in enumerate(training_seasons):
+    season_matches = historical_matches[historical_matches['season_id'] == season_id]
+    season_events = historical_events[historical_events['matchId'].isin(season_matches['match_id'])]
+
+    # Get priors from previous season (if exists)
+    if i > 0:
+        prior_season = training_seasons[i-1]
+        prior_stats = season_end_stats.get(prior_season, None)
+    else:
+        prior_stats = None
+
+    print(f"\nSeason {season_id}: {len(season_matches)} matches")
+    if prior_stats:
+        print(f"  Using priors from season {training_seasons[i-1]} ({len(prior_stats)} teams)")
+    else:
+        print(f"  No priors (first season)")
+
+    X_season, y_season, _, final_stats = build_training_data(
+        season_matches, season_events,
+        prior_season_stats=prior_stats,
         league_avg_stats=league_avg_stats
     )
-    print(f"Prior season samples: {len(X_prior)}")
-else:
-    X_prior, y_prior = np.array([]).reshape(0, 0), np.array([])
 
-# Then train on current season with priors
-print(f"Training on current season ({current_season_id}): {len(current_matches)} matches")
-X_current, y_current, match_info, final_team_stats = build_training_data(
-    current_matches, current_events,
-    prior_season_stats=prior_season_stats,
-    league_avg_stats=league_avg_stats
-)
-print(f"Current season samples: {len(X_current)}")
+    print(f"  Samples: {len(X_season)}")
 
-# Combine training data
-if len(X_prior) > 0:
-    X = np.vstack([X_prior, X_current])
-    y = np.concatenate([y_prior, y_current])
-else:
-    X = X_current
-    y = y_current
+    if len(X_season) > 0:
+        X_all.append(X_season)
+        y_all.append(y_season)
+
+    # Calculate and store end-of-season stats for next season's priors
+    season_end_stats[season_id] = calculate_end_of_season_stats(
+        historical_matches, historical_events, season_id=season_id
+    )
+
+# Combine all training data
+X = np.vstack(X_all) if X_all else np.array([])
+y = np.concatenate(y_all) if y_all else np.array([])
 
 print(f"\nTotal training samples: {len(X)}")
 print(f"Outcome distribution: Home={sum(y==1)}, Draw={sum(y==0)}, Away={sum(y==2)}")
+
+# Build test data from held-out current season
+print("\n--- Building Held-Out Test Data ---")
+# Get priors from most recent training season
+prior_season_id = max(training_seasons)
+prior_season_stats = season_end_stats.get(prior_season_id, {})
+print(f"Using priors from season {prior_season_id} ({len(prior_season_stats)} teams)")
+
+test_matches = historical_matches[historical_matches['season_id'] == current_season_id]
+test_events = historical_events[historical_events['matchId'].isin(test_matches['match_id'])]
+
+X_test, y_test, test_match_info, final_team_stats = build_training_data(
+    test_matches, test_events,
+    prior_season_stats=prior_season_stats,
+    league_avg_stats=league_avg_stats
+)
+print(f"Held-out test samples: {len(X_test)}")
 
 # Train model
 print("\n--- Training Models ---")
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
+X_test_scaled = scaler.transform(X_test)
 
 # Calculate class weights (to handle imbalanced outcomes)
 from sklearn.utils.class_weight import compute_class_weight
@@ -656,23 +727,51 @@ models = {
 }
 
 best_model = None
-best_score = 0
+best_cv_score = 0
+best_test_score = 0
 best_name = ""
 
+print("\nCross-validation on training data + Held-out test evaluation:")
 for name, model in models.items():
+    # Cross-validation on training data
     scores = cross_val_score(model, X_scaled, y, cv=5)
-    avg_score = scores.mean()
-    print(f"{name}: {avg_score:.3f} (+/- {scores.std()*2:.3f})")
+    cv_score = scores.mean()
 
-    if avg_score > best_score:
-        best_score = avg_score
+    # Fit on training data and evaluate on held-out test set
+    model.fit(X_scaled, y)
+    test_pred = model.predict(X_test_scaled)
+    test_score = (test_pred == y_test).mean()
+
+    print(f"{name}:")
+    print(f"  CV (train): {cv_score:.3f} (+/- {scores.std()*2:.3f})")
+    print(f"  Held-out test: {test_score:.3f} ({test_score:.1%})")
+
+    if test_score > best_test_score:
+        best_test_score = test_score
+        best_cv_score = cv_score
         best_model = model
         best_name = name
 
-print(f"\nBest model: {best_name} with {best_score:.1%} accuracy")
+print(f"\nBest model: {best_name}")
+print(f"  Training CV accuracy: {best_cv_score:.1%}")
+print(f"  Held-out test accuracy: {best_test_score:.1%}")
+print(f"  (Random baseline: 33.3%)")
 
-# Train final model on all data
+# Re-fit best model on training data
 best_model.fit(X_scaled, y)
+
+# Show detailed test set results
+print("\n--- Held-Out Test Set Analysis ---")
+test_pred = best_model.predict(X_test_scaled)
+from sklearn.metrics import classification_report, confusion_matrix
+print("\nConfusion Matrix (rows=actual, cols=predicted):")
+print("         Draw  Home  Away")
+cm = confusion_matrix(y_test, test_pred)
+for i, label in enumerate(['Draw', 'Home', 'Away']):
+    print(f"{label:5s}  {cm[i]}")
+
+print("\nClassification Report:")
+print(classification_report(y_test, test_pred, target_names=['Draw', 'Home Win', 'Away Win']))
 
 # Prepare team stats for prediction (include priors for newly promoted teams)
 prediction_team_stats = {}
@@ -689,9 +788,15 @@ model_data = {
     'team_stats': prediction_team_stats,
     'prior_season_stats': prior_season_stats,
     'league_avg_stats': league_avg_stats,
-    'accuracy': best_score,
+    'cv_accuracy': best_cv_score,
+    'test_accuracy': best_test_score,
+    'accuracy': best_test_score,  # Use test accuracy as primary metric
     'model_type': best_name,
-    'version': 2
+    'training_seasons': training_seasons,
+    'test_season': current_season_id,
+    'training_samples': len(X),
+    'test_samples': len(X_test),
+    'version': 3
 }
 
 with open('match_predictor_model.pkl', 'wb') as f:
