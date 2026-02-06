@@ -2886,22 +2886,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.selected_player_id = None
     if 'nav_to_profile' not in st.session_state:
         st.session_state.nav_to_profile = False
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = 'Match Analysis'
+    if 'radio_key_version' not in st.session_state:
+        st.session_state.radio_key_version = 0
 
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
 
     # Check if we should navigate to Player Profile
     if st.session_state.nav_to_profile:
-        default_analysis_index = 3  # Index of 'Player Profile'
-        st.session_state.nav_to_profile = False  # Reset flag
-    else:
-        default_analysis_index = 0
+        st.session_state.current_page = 'Player Profile'
+        st.session_state.radio_key_version += 1
+        st.session_state.nav_to_profile = False
+
+    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor')
 
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type",
-        ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor'),
-        index=default_analysis_index
+        ANALYSIS_OPTIONS,
+        index=ANALYSIS_OPTIONS.index(st.session_state.current_page),
+        key=f"analysis_type_radio_{st.session_state.radio_key_version}"
     )
+    st.session_state.current_page = analysis_type
     if analysis_type == 'Match Analysis':
         st.header("Match Analysis")
         
@@ -3404,10 +3411,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             matching_rows = player_list_df[player_list_df['playerId'] == st.session_state.selected_player_id]
             if not matching_rows.empty:
                 default_player_index = player_list_df.index.get_loc(matching_rows.index[0])
-            # Clear the session state after using it
+            # Clear the session state and bump the key so the selectbox uses the new index
             st.session_state.selected_player_id = None
+            st.session_state.player_select_key_version = st.session_state.get('player_select_key_version', 0) + 1
 
-        selected_player_display = st.sidebar.selectbox("Select Player:", player_list_df['display_name'], index=default_player_index)
+        selected_player_display = st.sidebar.selectbox(
+            "Select Player:",
+            player_list_df['display_name'],
+            index=default_player_index,
+            key=f"player_selector_{st.session_state.get('player_select_key_version', 0)}"
+        )
         
         try:
             # FIX: Get the UNIQUE ID corresponding to the selected display name
