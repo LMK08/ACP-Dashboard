@@ -54,14 +54,14 @@ jobs:
       - name: Update prediction model
         run: python update_model.py
 
-      - name: Commit and push new data
+      - name: Commit and push new data to GitHub
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'github-actions-bot@users.noreply.github.com'
-          
+
           git add -f *.parquet
           git add -f *.pkl
-          
+
           if [ -n "$(git status --porcelain)" ]; then
             echo "New data found. Committing and pushing..."
             git commit -m "chore: Automated data refresh"
@@ -69,3 +69,11 @@ jobs:
           else
             echo "No data changes to commit."
           fi
+
+      - name: Push updated data to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git remote add hf https://LMK08:$HF_TOKEN@huggingface.co/spaces/LMK08/ACP-Dashboard || true
+          git lfs install
+          git push hf main --force
