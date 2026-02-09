@@ -76,6 +76,16 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git remote add hf https://LMK08:$HF_TOKEN@huggingface.co/spaces/LMK08/ACP-Dashboard || true
-          git lfs install
-          git push hf main --force
+          pip install huggingface-hub
+          python - <<'PYEOF'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          api.upload_folder(
+              folder_path=".",
+              repo_id="LMK08/ACP-Dashboard",
+              repo_type="space",
+              ignore_patterns=[".*", "venv/**", "__pycache__/**"],
+          )
+          print("Successfully synced to Hugging Face Space")
+          PYEOF
