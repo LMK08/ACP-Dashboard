@@ -57,6 +57,18 @@ st.set_page_config(
 )
 
 # ==============================================================================
+# 1B. SEASON CONSTANTS
+# ==============================================================================
+SEASON_ID_MAP = {
+    191782: "2025/26",
+    190090: "2024/25",
+    189147: "2023/24",
+    188222: "2022/23",
+    188221: "2021/22",
+}
+CURRENT_SEASON_ID = 191782
+
+# ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
 @st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
@@ -103,10 +115,20 @@ def load_data():
             season_team_stats = pickle.load(f)
 
         with open('player_minutes_and_positions.pkl', 'rb') as f:
-            player_minutes_df = pickle.load(f)
+            player_minutes_data = pickle.load(f)
+
+        # Handle both old format (DataFrame) and new format (dict of DataFrames)
+        if isinstance(player_minutes_data, pd.DataFrame):
+            # Old format: single DataFrame -> wrap as {CURRENT_SEASON_ID: df}
+            player_minutes_data = {CURRENT_SEASON_ID: player_minutes_data}
+
+        # Handle old season_team_stats format {team_name: stats} vs new {season_id: {team: stats}}
+        # Old format has string keys (team names), new format has int keys (season IDs)
+        if season_team_stats and isinstance(next(iter(season_team_stats.keys())), str):
+            season_team_stats = {CURRENT_SEASON_ID: season_team_stats}
 
         logger.info(f"Loaded {len(raw_events_df)} events, {len(matches_summary_df)} matches")
-        return raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df
+        return raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data
 
     except FileNotFoundError as e:
         st.error(f"❌ Error: A data file was not found. Please run `process_data.py` first. Missing file: {e.filename}")
@@ -151,6 +173,78 @@ def load_player_details():
     except Exception as e:
         st.error(f"An error occurred loading player details: {e}")
         return pd.DataFrame()
+
+# ==============================================================================
+# 2B. SEASON FILTERING HELPERS
+# ==============================================================================
+def get_season_events(raw_events_df, season_id):
+    """Filter events by season_id, or return all if None."""
+    if season_id is None:
+        return raw_events_df
+    return raw_events_df[raw_events_df['seasonId'] == season_id]
+
+def get_season_matches(matches_summary_df, season_id):
+    """Filter matches by season_id, or return all if None."""
+    if season_id is None:
+        return matches_summary_df
+    return matches_summary_df[matches_summary_df['seasonId'] == season_id]
+
+def get_season_player_minutes(player_minutes_data, season_id):
+    """Get player minutes for a season. Returns DataFrame.
+    player_minutes_data is {season_id: DataFrame}.
+    If season_id is None, combine all seasons.
+    """
+    if isinstance(player_minutes_data, pd.DataFrame):
+        return player_minutes_data
+    if season_id is None:
+        # Combine all seasons
+        all_dfs = [df for df in player_minutes_data.values() if isinstance(df, pd.DataFrame) and not df.empty]
+        if not all_dfs:
+            return pd.DataFrame()
+        combined = pd.concat(all_dfs)
+        return combined.groupby('playerId').agg({
+            'playerName': 'first',
+            'teamName': 'first',
+            'primaryPosition': 'first',
+            'totalMinutes': 'sum'
+        }).reset_index()
+    return player_minutes_data.get(season_id, pd.DataFrame())
+
+def get_season_team_stats(season_team_stats, season_id):
+    """Get team stats for a season. Returns {team: stats} dict.
+    season_team_stats is {season_id: {team: stats}}.
+    """
+    if season_id is None:
+        # Merge all seasons (last season's data takes precedence)
+        merged = {}
+        for sid in sorted(season_team_stats.keys()):
+            merged.update(season_team_stats.get(sid, {}))
+        return merged
+    return season_team_stats.get(season_id, {})
+
+def season_selector(section_key, include_all_seasons=False):
+    """Render a season selector in the sidebar. Returns season_id (int) or None for 'All Seasons'."""
+    options = list(SEASON_ID_MAP.values())
+    if include_all_seasons:
+        options = ["All Seasons"] + options
+
+    session_key = f"season_select_{section_key}"
+    default_idx = 1 if include_all_seasons else 0  # Default to current season (2025/26)
+
+    selected_label = st.sidebar.selectbox(
+        "Season",
+        options,
+        index=default_idx,
+        key=session_key
+    )
+
+    if selected_label == "All Seasons":
+        return None
+    # Reverse lookup: label -> season_id
+    for sid, label in SEASON_ID_MAP.items():
+        if label == selected_label:
+            return sid
+    return CURRENT_SEASON_ID
 
 def _calculate_age(birth_date):
     """Helper function to calculate age from birth_date string."""
@@ -2871,7 +2965,7 @@ st.title("Atlético CP Analysis") # You can change this title
 
 # --- Load Data ---
 with st.spinner("Loading match data..."):
-    raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_df = load_data()
+    raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data = load_data()
 
 
 # --- Declare player_stats_with_scores_df globally for the app session ---
@@ -2880,7 +2974,7 @@ player_stats_with_scores_df = pd.DataFrame()
 
 
 # --- Main App Logic ---
-if raw_events_df is not None and matches_summary_df is not None and player_minutes_df is not None:
+if raw_events_df is not None and matches_summary_df is not None and player_minutes_data is not None:
     # --- Initialize Session State ---
     if 'selected_player_id' not in st.session_state:
         st.session_state.selected_player_id = None
@@ -2911,28 +3005,32 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     st.session_state.current_page = analysis_type
     if analysis_type == 'Match Analysis':
         st.header("Match Analysis")
-        
-        # --- Match Selection (Using correct column names) ---
-        if 'dateutc' in matches_summary_df.columns:
-            matches_summary_df['display_date'] = pd.to_datetime(matches_summary_df['dateutc']).dt.strftime('%Y-%m-%d')
-        else: matches_summary_df['display_date'] = 'Unknown Date'
-        
-        # Create a display-ready gameweek column
-        matches_summary_df['gw_display'] = "GW " + matches_summary_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
-        
-        # Build the full display name using the new columns (GW: Teams (Score) - Date)
-        matches_summary_df['display_name'] = matches_summary_df['gw_display'] + ": " + \
-                                             matches_summary_df.get('homeTeamName', '?').fillna('?') + " vs " + \
-                                             matches_summary_df.get('awayTeamName', '?').fillna('?') + \
-                                             " (" + matches_summary_df.get('score', '?-?').fillna('?-?') + ") - " + \
-                                             matches_summary_df['display_date']
 
-        sort_key = 'dateutc' if 'dateutc' in matches_summary_df.columns else 'matchId'
+        # --- Season Selector ---
+        selected_season_id = season_selector("match_analysis")
+        season_matches_df = get_season_matches(matches_summary_df, selected_season_id).copy()
+
+        # --- Match Selection (Using correct column names) ---
+        if 'dateutc' in season_matches_df.columns:
+            season_matches_df['display_date'] = pd.to_datetime(season_matches_df['dateutc']).dt.strftime('%Y-%m-%d')
+        else: season_matches_df['display_date'] = 'Unknown Date'
+
+        # Create a display-ready gameweek column
+        season_matches_df['gw_display'] = "GW " + season_matches_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
+
+        # Build the full display name using the new columns (GW: Teams (Score) - Date)
+        season_matches_df['display_name'] = season_matches_df['gw_display'] + ": " + \
+                                             season_matches_df.get('homeTeamName', '?').fillna('?') + " vs " + \
+                                             season_matches_df.get('awayTeamName', '?').fillna('?') + \
+                                             " (" + season_matches_df.get('score', '?-?').fillna('?-?') + ") - " + \
+                                             season_matches_df['display_date']
+
+        sort_key = 'dateutc' if 'dateutc' in season_matches_df.columns else 'matchId'
         # Sort descending to show newest matches first
-        matches_summary_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
-        
-        selected_match_display = st.sidebar.selectbox("Select a Match", matches_summary_df['display_name'])
-        matching_matches = matches_summary_df[matches_summary_df['display_name'] == selected_match_display]
+        season_matches_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
+
+        selected_match_display = st.sidebar.selectbox("Select a Match", season_matches_df['display_name'])
+        matching_matches = season_matches_df[season_matches_df['display_name'] == selected_match_display]
         if matching_matches.empty:
             st.error("Selected match not found. Please refresh the page and try again.")
             st.stop()
@@ -3037,14 +3135,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     elif analysis_type == 'Team Analysis':
         st.header("Team Analysis")
-        all_teams_t = sorted(pd.concat([matches_summary_df.get('homeTeamName'), matches_summary_df.get('awayTeamName')]).dropna().unique())
+
+        # --- Season Selector ---
+        selected_season_id = season_selector("team_analysis")
+        season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown")
+        team_events_df = get_season_events(raw_events_df, selected_season_id)
+        team_matches_df = get_season_matches(matches_summary_df, selected_season_id)
+        team_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+        team_season_stats = get_season_team_stats(season_team_stats, selected_season_id)
+
+        all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
         selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
         st.header(f"Team Report: {selected_team_t}")
 
         # Load player details for roster table
         player_details_df = load_player_details()
 
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df)
 
         st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
@@ -3054,7 +3161,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA']
             team_stats_raw = stats_df_raw.loc[selected_team_t]
             team_stats_pct = stats_df_pct.loc[selected_team_t]
-            current_league = "Liga 3 Portugal"; current_season = "2025/26"
+            current_league = "Liga 3 Portugal"; current_season = season_label
             
             with col_r1:
                 st.markdown("**Offensive Radar**")
@@ -3087,8 +3194,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # Primary Formation XI Graphic
         st.subheader("Primary Formation")
-        primary_formation = get_team_primary_formation(raw_events_df, selected_team_t)
-        starting_xi = get_team_starting_xi(raw_events_df, selected_team_t)
+        primary_formation = get_team_primary_formation(team_events_df, selected_team_t)
+        starting_xi = get_team_starting_xi(team_events_df, selected_team_t)
 
         col_xi1, col_xi2 = st.columns([1, 1])
 
@@ -3130,8 +3237,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         row['Age'] = "N/A"
                         row['Nationality'] = "N/A"
 
-                    # Get minutes from player_minutes_df
-                    player_mins = player_minutes_df[player_minutes_df['playerId'] == pid]
+                    # Get minutes from team_player_minutes_df
+                    player_mins = team_player_minutes_df[team_player_minutes_df['playerId'] == pid] if not team_player_minutes_df.empty else pd.DataFrame()
                     if not player_mins.empty:
                         row['Minutes'] = int(player_mins['totalMinutes'].values[0])
                     else:
@@ -3170,45 +3277,50 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         with col1_shot:
             st.markdown(f"**Shots FOR {selected_team_t}**")
             # --- (REVERTED) ---
-            fig_shots_for = create_season_shotmap(raw_events_df, selected_team_t)
+            fig_shots_for = create_season_shotmap(team_events_df, selected_team_t)
             st.pyplot(fig_shots_for, use_container_width=True)
         with col2_shot:
             st.markdown(f"**Shots AGAINST {selected_team_t}**")
-            # --- (REVERTED) ---
-            fig_shots_against = create_season_shots_against_shotmap(raw_events_df, matches_summary_df, selected_team_t)
+            fig_shots_against = create_season_shots_against_shotmap(team_events_df, team_matches_df, selected_team_t)
             st.pyplot(fig_shots_against, use_container_width=True)
-
-        # Historical xG chart disabled to reduce memory usage
-        # TODO: Re-enable when Streamlit Cloud resources are upgraded
 
         st.subheader("Corner Kick Analysis")
         col_c1, col_c2 = st.columns(2)
         with col_c1:
             st.markdown("**Corners from Left Side**")
-            fig_corner_left = plot_corner_analysis(raw_events_df, selected_team_t, 'left')
+            fig_corner_left = plot_corner_analysis(team_events_df, selected_team_t, 'left')
             st.pyplot(fig_corner_left, use_container_width=True)
         with col_c2:
             st.markdown("**Corners from Right Side**")
-            fig_corner_right = plot_corner_analysis(raw_events_df, selected_team_t, 'right')
+            fig_corner_right = plot_corner_analysis(team_events_df, selected_team_t, 'right')
             st.pyplot(fig_corner_right, use_container_width=True)
 
         st.subheader("Season-Long Stats")
-        if selected_team_t in season_team_stats and 'corners' in season_team_stats[selected_team_t]:
+        if selected_team_t in team_season_stats and 'corners' in team_season_stats[selected_team_t]:
             st.markdown("**Corner Kick Summary**")
-            st.dataframe(season_team_stats[selected_team_t]['corners'])
+            st.dataframe(team_season_stats[selected_team_t]['corners'])
         else:
             st.write("No season-long stats available for this team.")
             
 
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
-        
+
+        # --- Season Selector ---
+        selected_season_id = season_selector("league_analysis")
+        league_events_df = get_season_events(raw_events_df, selected_season_id)
+        league_matches_df = get_season_matches(matches_summary_df, selected_season_id)
+
         # --- 1. ALL DATA CALCS ---
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(raw_events_df, matches_summary_df)
-        team_strength_df = calculate_team_strength(raw_events_df, matches_summary_df).copy()
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df)
+        team_strength_df = calculate_team_strength(league_events_df, league_matches_df).copy()
+
+        # Filter all_match_data to only include matches from selected season
+        season_match_ids = set(league_matches_df['matchId'].dropna().unique())
+        season_match_data = {mid: data for mid, data in all_match_data.items() if mid in season_match_ids}
 
         try:
-            expanded_stats_df = calculate_expanded_team_stats(all_match_data, matches_summary_df)
+            expanded_stats_df = calculate_expanded_team_stats(season_match_data, league_matches_df)
             combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
         except Exception as e:
             st.warning(f"Could not calculate expanded match stats: {e}")
@@ -3216,117 +3328,110 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # Calculate and merge set piece metrics
         try:
-            set_piece_df = calculate_set_piece_metrics(raw_events_df)
+            set_piece_df = calculate_set_piece_metrics(league_events_df)
             combined_stats_df = pd.merge(combined_stats_df, set_piece_df, left_index=True, right_index=True, how='outer').fillna(0)
         except Exception as e:
             st.warning(f"Could not calculate set piece metrics: {e}")
 
-        # --- 2. Define Team Lists ---
-        GROUP_A_TEAMS = [
-            'Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
-            'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'
-        ]
-        GROUP_B_TEAMS = [
-            '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-            'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'
-        ]
-        valid_group_a_teams = [t for t in GROUP_A_TEAMS if t in combined_stats_df.index]
-        valid_group_b_teams = [t for t in GROUP_B_TEAMS if t in combined_stats_df.index]
+        # --- 2. Define Team Lists (Season-dependent groups) ---
+        # Only 2025/26 has defined Group A/B; other seasons show all teams together
+        SEASON_GROUPS = {
+            191782: {
+                'Group A': ['Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
+                            'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'],
+                'Group B': ['1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+                            'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
+            }
+        }
 
-        ALL_TEAMS_TO_HIGHLIGHT = [ '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP', 'Fafe', 'Varzim', 'Atlético CP', 'Mafra', 'Caldas', 'Paredes', 'Sanjoanense', 'São João Ver', 'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09' ]
+        has_groups = selected_season_id in SEASON_GROUPS
+        all_season_teams = sorted(pd.concat([league_matches_df.get('homeTeamName'), league_matches_df.get('awayTeamName')]).dropna().unique())
+
+        if has_groups:
+            GROUP_A_TEAMS = SEASON_GROUPS[selected_season_id]['Group A']
+            GROUP_B_TEAMS = SEASON_GROUPS[selected_season_id]['Group B']
+            valid_group_a_teams = [t for t in GROUP_A_TEAMS if t in combined_stats_df.index]
+            valid_group_b_teams = [t for t in GROUP_B_TEAMS if t in combined_stats_df.index]
+            ALL_TEAMS_TO_HIGHLIGHT = list(set(GROUP_A_TEAMS + GROUP_B_TEAMS))
+        else:
+            ALL_TEAMS_TO_HIGHLIGHT = all_season_teams
+
         valid_all_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in combined_stats_df.index]
 
         # --- 3. League Tables ---
         st.subheader("League Standings")
-        col_table_a, col_table_b = st.columns(2)
 
-        with col_table_a:
-            st.markdown("**Group A**")
-            table_a = calculate_league_table(matches_summary_df, GROUP_A_TEAMS)
-            st.dataframe(
-                table_a,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'Pos': st.column_config.NumberColumn('Pos', width='small'),
-                    'Team': st.column_config.TextColumn('Team', width='medium'),
-                    'P': st.column_config.NumberColumn('P', help='Played', width='small'),
-                    'W': st.column_config.NumberColumn('W', help='Won', width='small'),
-                    'D': st.column_config.NumberColumn('D', help='Drawn', width='small'),
-                    'L': st.column_config.NumberColumn('L', help='Lost', width='small'),
-                    'GF': st.column_config.NumberColumn('GF', help='Goals For', width='small'),
-                    'GA': st.column_config.NumberColumn('GA', help='Goals Against', width='small'),
-                    'GD': st.column_config.NumberColumn('GD', help='Goal Difference', width='small'),
-                    'Pts': st.column_config.NumberColumn('Pts', help='Points', width='small'),
-                }
-            )
+        league_table_config = {
+            'Pos': st.column_config.NumberColumn('Pos', width='small'),
+            'Team': st.column_config.TextColumn('Team', width='medium'),
+            'P': st.column_config.NumberColumn('P', help='Played', width='small'),
+            'W': st.column_config.NumberColumn('W', help='Won', width='small'),
+            'D': st.column_config.NumberColumn('D', help='Drawn', width='small'),
+            'L': st.column_config.NumberColumn('L', help='Lost', width='small'),
+            'GF': st.column_config.NumberColumn('GF', help='Goals For', width='small'),
+            'GA': st.column_config.NumberColumn('GA', help='Goals Against', width='small'),
+            'GD': st.column_config.NumberColumn('GD', help='Goal Difference', width='small'),
+            'Pts': st.column_config.NumberColumn('Pts', help='Points', width='small'),
+        }
 
-        with col_table_b:
-            st.markdown("**Group B**")
-            table_b = calculate_league_table(matches_summary_df, GROUP_B_TEAMS)
-            st.dataframe(
-                table_b,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'Pos': st.column_config.NumberColumn('Pos', width='small'),
-                    'Team': st.column_config.TextColumn('Team', width='medium'),
-                    'P': st.column_config.NumberColumn('P', help='Played', width='small'),
-                    'W': st.column_config.NumberColumn('W', help='Won', width='small'),
-                    'D': st.column_config.NumberColumn('D', help='Drawn', width='small'),
-                    'L': st.column_config.NumberColumn('L', help='Lost', width='small'),
-                    'GF': st.column_config.NumberColumn('GF', help='Goals For', width='small'),
-                    'GA': st.column_config.NumberColumn('GA', help='Goals Against', width='small'),
-                    'GD': st.column_config.NumberColumn('GD', help='Goal Difference', width='small'),
-                    'Pts': st.column_config.NumberColumn('Pts', help='Points', width='small'),
-                }
-            )
-
-        # --- 4. Group B Strength Chart ---
-        st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
-        if not team_strength_df.empty:
-            valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
-            fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
-            st.pyplot(fig_group_b_strength, use_container_width=True)
-            with st.expander("View Group B Raw Strength Data"):
-                if valid_group_b_strength_teams:
-                    st.dataframe(team_strength_df.loc[valid_group_b_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
+        if has_groups:
+            col_table_a, col_table_b = st.columns(2)
+            with col_table_a:
+                st.markdown("**Group A**")
+                table_a = calculate_league_table(league_matches_df, GROUP_A_TEAMS)
+                st.dataframe(table_a, use_container_width=True, hide_index=True, column_config=league_table_config)
+            with col_table_b:
+                st.markdown("**Group B**")
+                table_b = calculate_league_table(league_matches_df, GROUP_B_TEAMS)
+                st.dataframe(table_b, use_container_width=True, hide_index=True, column_config=league_table_config)
         else:
-            st.warning("Could not calculate team strength data for Group B.")
+            st.markdown("**All Teams**")
+            table_all = calculate_league_table(league_matches_df, all_season_teams)
+            st.dataframe(table_all, use_container_width=True, hide_index=True, column_config=league_table_config)
 
-        
-        # --- 4. Group B Custom Scatterplot (NOW SECOND) ---
-        st.subheader("Group B Custom Scatterplot")
-        if not combined_stats_df.empty and valid_group_b_teams:
-            group_b_stats_df = combined_stats_df.loc[valid_group_b_teams]
-            
-            metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
-            available_metrics_gb = sorted([col for col in group_b_stats_df.columns if col not in metrics_to_exclude])
-            
-            col_x_gb, col_y_gb = st.columns(2)
-            with col_x_gb:
-                default_x_gb_index = available_metrics_gb.index('xG') if 'xG' in available_metrics_gb else 0
-                x_metric_gb = st.selectbox("Select X-Axis Metric:", available_metrics_gb, index=default_x_gb_index, key='x_metric_group_b')
-            with col_y_gb:
-                default_y_gb_index = available_metrics_gb.index('xG Against') if 'xG Against' in available_metrics_gb else 1
-                y_metric_gb = st.selectbox("Select Y-Axis Metric:", available_metrics_gb, index=default_y_gb_index, key='y_metric_group_b')
-            
-            col_inv_x_gb, col_inv_y_gb = st.columns(2)
-            with col_inv_x_gb:
-                invert_x_gb = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_group_b')
-            with col_inv_y_gb:
-                default_invert_y_gb = 'Against' in y_metric_gb or 'PPDA' in y_metric_gb or 'Losses' in y_metric_gb
-                invert_y_gb = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_gb, key='invert_y_group_b')
-            
-            if x_metric_gb and y_metric_gb:
-                fig_custom_gb = plot_custom_scatter(group_b_stats_df, x_metric_gb, y_metric_gb, invert_x_gb, invert_y_gb)
-                st.pyplot(fig_custom_gb, use_container_width=True)
-        else:
-            st.info("No data available for Group B custom plot.")
+        # --- 4. Strength Charts ---
+        if has_groups:
+            st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
+            if not team_strength_df.empty:
+                valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
+                fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
+                st.pyplot(fig_group_b_strength, use_container_width=True)
+                with st.expander("View Group B Raw Strength Data"):
+                    if valid_group_b_strength_teams:
+                        st.dataframe(team_strength_df.loc[valid_group_b_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
+            else:
+                st.warning("Could not calculate team strength data for Group B.")
 
+            # Group B Custom Scatterplot
+            st.subheader("Group B Custom Scatterplot")
+            if not combined_stats_df.empty and valid_group_b_teams:
+                group_b_stats_df = combined_stats_df.loc[valid_group_b_teams]
+                metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
+                available_metrics_gb = sorted([col for col in group_b_stats_df.columns if col not in metrics_to_exclude])
 
-        # --- 5. All Teams Strength Chart (Unchanged) ---
-        st.subheader("Team Strength Scatterplot (All Highlighted Teams)")
+                col_x_gb, col_y_gb = st.columns(2)
+                with col_x_gb:
+                    default_x_gb_index = available_metrics_gb.index('xG') if 'xG' in available_metrics_gb else 0
+                    x_metric_gb = st.selectbox("Select X-Axis Metric:", available_metrics_gb, index=default_x_gb_index, key='x_metric_group_b')
+                with col_y_gb:
+                    default_y_gb_index = available_metrics_gb.index('xG Against') if 'xG Against' in available_metrics_gb else 1
+                    y_metric_gb = st.selectbox("Select Y-Axis Metric:", available_metrics_gb, index=default_y_gb_index, key='y_metric_group_b')
+
+                col_inv_x_gb, col_inv_y_gb = st.columns(2)
+                with col_inv_x_gb:
+                    invert_x_gb = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_group_b')
+                with col_inv_y_gb:
+                    default_invert_y_gb = 'Against' in y_metric_gb or 'PPDA' in y_metric_gb or 'Losses' in y_metric_gb
+                    invert_y_gb = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_gb, key='invert_y_group_b')
+
+                if x_metric_gb and y_metric_gb:
+                    fig_custom_gb = plot_custom_scatter(group_b_stats_df, x_metric_gb, y_metric_gb, invert_x_gb, invert_y_gb)
+                    st.pyplot(fig_custom_gb, use_container_width=True)
+            else:
+                st.info("No data available for Group B custom plot.")
+
+        # --- 5. All Teams Strength Chart ---
+        st.subheader("Team Strength Scatterplot (All Teams)")
         if not team_strength_df.empty:
             valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
             fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
@@ -3336,13 +3441,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         else:
             st.warning("Could not calculate team strength data.")
 
-        
-        # --- 6. All Teams Custom Scatterplot (Unchanged) ---
+        # --- 6. All Teams Custom Scatterplot ---
         st.subheader("All Teams Custom Scatterplot")
         if not combined_stats_df.empty:
             metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
             available_metrics_all = sorted([col for col in combined_stats_df.columns if col not in metrics_to_exclude])
-            
+
             col_x_all, col_y_all = st.columns(2)
             with col_x_all:
                 default_x_all_index = available_metrics_all.index('xG') if 'xG' in available_metrics_all else 0
@@ -3350,18 +3454,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with col_y_all:
                 default_y_all_index = available_metrics_all.index('xG Against') if 'xG Against' in available_metrics_all else 1
                 y_metric_all = st.selectbox("Select Y-Axis Metric:", available_metrics_all, index=default_y_all_index, key='y_metric_all')
-            
+
             col_inv_x_all, col_inv_y_all = st.columns(2)
             with col_inv_x_all:
                 invert_x_all = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_all')
             with col_inv_y_all:
                 default_invert_y_all = 'Against' in y_metric_all or 'PPDA' in y_metric_all or 'Losses' in y_metric_all
                 invert_y_all = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_all, key='invert_y_all')
-            
+
             if x_metric_all and y_metric_all:
                 fig_custom_all = plot_custom_scatter(combined_stats_df, x_metric_all, y_metric_all, invert_x_all, invert_y_all)
                 st.pyplot(fig_custom_all, use_container_width=True)
-            
+
             with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
                 st.dataframe(combined_stats_df.round(2))
         else:
@@ -3371,15 +3475,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # --- UPDATED: Renamed to Player Profile ---
     elif analysis_type == 'Player Profile':
         st.header("Player Profile")
-        
 
+        # --- Season Selector ---
+        selected_season_id = season_selector("player_profile", include_all_seasons=True)
+        profile_events_df = get_season_events(raw_events_df, selected_season_id)
+        profile_matches_df = get_season_matches(matches_summary_df, selected_season_id)
+        profile_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
 
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
 
         try:
             with st.spinner("Calculating player statistics (this may take a moment on first load)..."):
-                player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+                player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
@@ -3448,47 +3556,42 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.error(f"Could not load data for {selected_player_display}. Error: {e}")
             st.stop()
         
-        # --- DEBUGGING BLOCK (Delete this after fixing) ---
-        with st.expander("🕵️‍♂️ DEBUG: Data Inspection"):
+        # --- DEBUGGING BLOCK ---
+        with st.expander("DEBUG: Data Inspection"):
             st.write(f"**Selected Player ID:** {player_id} (Type: {type(player_id)})")
-            
-            if not player_minutes_df.empty:
+
+            if not profile_player_minutes_df.empty:
                 st.write("**Player Minutes DataFrame Head:**")
-                st.dataframe(player_minutes_df.head())
-                
-                # Check if ID exists in minutes DF
+                st.dataframe(profile_player_minutes_df.head())
+
                 try:
                     pid_int = int(player_id)
-                    match = player_minutes_df[player_minutes_df['playerId'] == pid_int]
+                    match = profile_player_minutes_df[profile_player_minutes_df['playerId'] == pid_int]
                     st.write(f"**Lookup Result for ID {pid_int}:**")
                     if match.empty:
-                        st.error("❌ Player ID NOT FOUND in player_minutes_df")
-                        # Show all IDs to see format
-                        st.write("Available IDs (First 10):", player_minutes_df['playerId'].head(10).tolist())
+                        st.error("Player ID NOT FOUND in player_minutes_df")
+                        st.write("Available IDs (First 10):", profile_player_minutes_df['playerId'].head(10).tolist())
                     else:
-                        st.success("✅ Player ID FOUND!")
+                        st.success("Player ID FOUND!")
                         st.write(match)
                 except Exception as e:
                     st.error(f"Error checking ID: {e}")
             else:
-                st.error("❌ player_minutes_df is EMPTY!")
+                st.error("profile_player_minutes_df is EMPTY!")
         # --------------------------------------------------
-        
+
         # --- 3. Get Player's Match Log ---
-        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, matches_summary_df)
-        
+        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df)
+
         # --- 4. Display Player Bio ---
-        # FIX: Robust lookup for Team and Position using player_minutes_df
-        # This ensures we get the official data even if the stats merge had issues
         current_team = player_per_90_stats.get('teamName', 'N/A')
         current_pos = player_per_90_stats.get('primaryPosition', 'N/A')
-        
+
         # If 'Unknown', try to force a lookup in the minutes file
-        if (current_team in ['Unknown', 'N/A'] or current_pos in ['Unknown', 'N/A']) and not player_minutes_df.empty:
+        if (current_team in ['Unknown', 'N/A'] or current_pos in ['Unknown', 'N/A']) and not profile_player_minutes_df.empty:
             try:
-                # Ensure ID is an integer for the lookup
                 pid_int = int(player_id)
-                min_row = player_minutes_df[player_minutes_df['playerId'] == pid_int]
+                min_row = profile_player_minutes_df[profile_player_minutes_df['playerId'] == pid_int]
                 if not min_row.empty:
                     current_team = min_row.iloc[0]['teamName']
                     current_pos = min_row.iloc[0]['primaryPosition']
@@ -3533,7 +3636,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         # 1. Detect Raw Positions (What did they actually play?)
         try:
-            player_events = raw_events_df[raw_events_df['player.id'] == player_id]
+            player_events = profile_events_df[profile_events_df['player.id'] == player_id]
             if 'player.position' in player_events.columns:
                 raw_positions = player_events['player.position'].unique()
             elif 'position_name' in player_events.columns:
@@ -3780,7 +3883,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.subheader("Shot Analysis")
         
         # 1. Get all player events
-        player_events_all = raw_events_df[raw_events_df['player.name'] == selected_player_name].copy()
+        player_events_all = profile_events_df[profile_events_df['player.name'] == selected_player_name].copy()
         
         # 2. Filter for shots (non-penalty) for the map/analysis
         shot_log = player_events_all[
@@ -3834,9 +3937,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             # Shot Creating Action (SCA)
             relevant_match_ids = shot_log['matchId'].unique()
-            context_events = raw_events_df[
-                (raw_events_df['matchId'].isin(relevant_match_ids)) &
-                (raw_events_df['team.name'] == shot_log.iloc[0]['team.name']) 
+            context_events = profile_events_df[
+                (profile_events_df['matchId'].isin(relevant_match_ids)) &
+                (profile_events_df['team.name'] == shot_log.iloc[0]['team.name'])
             ].copy()
             
             shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
@@ -3937,10 +4040,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'Player Comparison':
         st.header("Player Comparison")
 
+        # --- Season Selector ---
+        selected_season_id = season_selector("player_comparison", include_all_seasons=True)
+        comp_events_df = get_season_events(raw_events_df, selected_season_id)
+        comp_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+
         # --- 1. Load Data ---
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+                player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
                 )
@@ -4053,10 +4161,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     elif analysis_type == 'Player Analysis':
         st.header("Player Analysis")
 
+        # --- Season Selector ---
+        selected_season_id = season_selector("player_analysis", include_all_seasons=True)
+        analysis_events_df = get_season_events(raw_events_df, selected_season_id)
+        analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+
         # --- 1. Load Data ---
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(raw_events_df, player_minutes_df)
+                player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
                 )
