@@ -3084,6 +3084,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.selected_player_id = None
     if 'nav_to_profile' not in st.session_state:
         st.session_state.nav_to_profile = False
+    if 'nav_season_id' not in st.session_state:
+        st.session_state.nav_season_id = None
+    if 'nav_has_season' not in st.session_state:
+        st.session_state.nav_has_season = False
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 'Match Analysis'
     if 'radio_key_version' not in st.session_state:
@@ -3374,6 +3378,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         selected_player_id = player_id_list[selected_row_idx]
                         st.session_state.selected_player_id = selected_player_id
                         st.session_state.nav_to_profile = True
+                        st.session_state.nav_season_id = selected_season_id
+                        st.session_state.nav_has_season = True
                         st.rerun()
 
         st.subheader("Season Shot Maps (Non-Penalty)")
@@ -3579,6 +3585,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # --- UPDATED: Renamed to Player Profile ---
     elif analysis_type == 'Player Profile':
         st.header("Player Profile")
+
+        # If navigating from another section, set the season selector to match
+        if st.session_state.get('nav_has_season', False):
+            nav_sid = st.session_state.nav_season_id
+            if nav_sid is None:
+                # "All Seasons" was selected
+                st.session_state['season_select_player_profile'] = "All Seasons"
+            else:
+                nav_label = SEASON_ID_MAP.get(nav_sid)
+                if nav_label:
+                    st.session_state['season_select_player_profile'] = nav_label
+            st.session_state.nav_season_id = None
+            st.session_state.nav_has_season = False
 
         # --- Season Selector ---
         selected_season_id = season_selector("player_profile", include_all_seasons=True)
@@ -4407,6 +4426,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 selected_player_id = player_ids[selected_row_idx]
                 st.session_state.selected_player_id = selected_player_id
                 st.session_state.nav_to_profile = True
+                st.session_state.nav_season_id = selected_season_id
+                st.session_state.nav_has_season = True
                 st.rerun()
 
         else:  # Individual Metric mode
@@ -4522,6 +4543,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 selected_player_id = player_ids[selected_row_idx]
                 st.session_state.selected_player_id = selected_player_id
                 st.session_state.nav_to_profile = True
+                st.session_state.nav_season_id = selected_season_id
+                st.session_state.nav_has_season = True
                 st.rerun()
 
     elif analysis_type == 'Match Predictor':
