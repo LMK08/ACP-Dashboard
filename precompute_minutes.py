@@ -140,6 +140,10 @@ def main():
                     still_missing[['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']]
                 ], ignore_index=True)
 
+        # Remove invalid entries (playerId=0, playerName='0')
+        if not minutes_df.empty:
+            minutes_df = minutes_df[(minutes_df['playerId'] != 0) & (minutes_df['playerName'].astype(str) != '0')].copy()
+
         print(f"  Total: {len(minutes_df)} players")
         complete_minutes[sid] = minutes_df
 
