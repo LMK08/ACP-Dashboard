@@ -3535,7 +3535,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
 
         # Create unique display names
-        player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
+        player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
 
         # Check if navigating from Player Analysis
         default_player_index = 0
@@ -4092,7 +4092,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- Step A: Select Player A (from all players) ---
         # FIX: Include 'playerId' in the columns so we can use it for lookup
         player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-        player_list_df['display_name'] = player_list_df['playerName'] + " (" + player_list_df['teamName'] + ", " + player_list_df['totalMinutes'].astype(int).astype(str) + " min)"
+        player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
         
         selected_player_a_display = st.sidebar.selectbox(
             "Select Player A:", 
@@ -4139,7 +4139,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create the display list for Player B from the filtered df
         # FIX: Include 'playerId' here too
         player_b_list_df = filtered_player_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-        player_b_list_df['display_name'] = player_b_list_df['playerName'] + " (" + player_b_list_df['teamName'] + ", " + player_b_list_df['totalMinutes'].astype(int).astype(str) + " min)"
+        player_b_list_df['display_name'] = player_b_list_df['playerName'].astype(str) + " (" + player_b_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_b_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
         
         # Find a smart default index for Player B (e.g., the second player in the list)
         default_b_index = 0
