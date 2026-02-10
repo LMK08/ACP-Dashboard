@@ -48,6 +48,15 @@ import io # For saving the in-memory image
 import base64
 
 
+# Metrics that need 3 decimal places (thousandths) instead of the default 2
+THOUSANDTHS_METRICS = {'goalsPreventedPerSOT'}
+
+def fmt_val(metric, value):
+    """Format a stat value: 3 decimals for THOUSANDTHS_METRICS, 2 otherwise."""
+    if metric in THOUSANDTHS_METRICS:
+        return f"{value:.3f}"
+    return f"{value:.2f}"
+
 # ==============================================================================
 # 1. PAGE CONFIGURATION
 # ==============================================================================
@@ -1527,7 +1536,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     # Plot raw values
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
-        label = f"{player_data[metric].values[0]:.2f}"
+        label = fmt_val(metric, player_data[metric].values[0])
         ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
 
     # Plot metric names
@@ -1651,9 +1660,9 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             if pd.isna(min_value) or pd.isna(max_value) or min_value == max_value: min_value = player_value - 0.1; max_value = player_value + 0.1
             if min_value == max_value: max_value = min_value + 1.0 # Handle 0 case
             
-            ax_dist.set_xlim(min_value, max_value); ax_dist.set_xticks([min_value, max_value]); ax_dist.set_xticklabels([f"{min_value:.2f}", f"{max_value:.2f}"], fontsize=8)
+            ax_dist.set_xlim(min_value, max_value); ax_dist.set_xticks([min_value, max_value]); ax_dist.set_xticklabels([fmt_val(metric, min_value), fmt_val(metric, max_value)], fontsize=8)
             ax_dist.axvline(player_value, color='blue', linestyle='--')
-            raw_value = f"{player_value:.2f}"
+            raw_value = fmt_val(metric, player_value)
             ax_dist.text(1.05, 0.5, f"%-tile: {percentile_rank_int}{suffix}\np/90 value: {raw_value}", transform=ax_dist.transAxes, fontsize=8, verticalalignment='center')
             ax_dist.set_yticks([]); ax_dist.set_ylabel(""); ax_dist.set_title(""); ax_dist.set_xlabel("");
             legend = ax_dist.get_legend();
@@ -1724,12 +1733,12 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         # Player A stats (raw and percentile)
         val_a_raw = player_a_data.get(metric, 0).values[0]
         val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
-        label_a = f"{val_a_raw:.2f} ({int(val_a_pct*100)}th)"
-        
+        label_a = f"{fmt_val(metric, val_a_raw)} ({int(val_a_pct*100)}th)"
+
         # Player B stats (raw and percentile)
         val_b_raw = player_b_data.get(metric, 0).values[0]
         val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
-        label_b = f"{val_b_raw:.2f} ({int(val_b_pct*100)}th)"
+        label_b = f"{fmt_val(metric, val_b_raw)} ({int(val_b_pct*100)}th)"
         
         # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
         angle_deg = np.degrees(angle_rad) % 360
@@ -3914,7 +3923,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         if show_totals:
             st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
             total_stats = per_90_stats.copy()
-            rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col]
+            rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col.lower() or 'index' in col or 'Percentage' in col]
             
             for col in total_stats.index:
                 if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
@@ -3969,9 +3978,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         continue
                         
                     stats_subset = stats_subset_series.to_frame(name='Value')
-                    stats_subset['Value'] = stats_subset['Value'].apply(
-                        lambda x: f"{x:.0f}" if (isinstance(x, (int, float)) and np.round(x) == x and '%' not in str(x)) else (f"{x:.2f}" if isinstance(x, (float)) else str(x))
-                    )
+                    def _fmt_stat(metric_name, x):
+                        if not isinstance(x, (int, float)):
+                            return str(x)
+                        if metric_name in THOUSANDTHS_METRICS:
+                            return f"{x:.3f}"
+                        if np.round(x) == x and '%' not in str(x):
+                            return f"{x:.0f}"
+                        return f"{x:.2f}"
+                    stats_subset['Value'] = [_fmt_stat(m, v) for m, v in zip(stats_subset.index, stats_subset['Value'])]
                     st.dataframe(stats_subset, use_container_width=True)
         
         st.divider()
@@ -4372,7 +4387,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Round numeric columns
             for col in display_df.columns:
                 if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating']:
-                    display_df[col] = display_df[col].round(2)
+                    decimals = 3 if col in THOUSANDTHS_METRICS else 2
+                    display_df[col] = display_df[col].round(decimals)
 
             # Add rank column
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
@@ -4489,7 +4505,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Round numeric columns
             for col in display_df.columns:
                 if pd.api.types.is_numeric_dtype(display_df[col]) and col != 'Minutes':
-                    display_df[col] = display_df[col].round(2)
+                    decimals = 3 if col in THOUSANDTHS_METRICS else 2
+                    display_df[col] = display_df[col].round(decimals)
 
             # Add rank column
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
