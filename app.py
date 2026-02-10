@@ -67,6 +67,7 @@ SEASON_ID_MAP = {
     188221: "2021/22",
 }
 CURRENT_SEASON_ID = 191782
+STATS_CACHE_DIR = 'stats_cache'
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -1084,6 +1085,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     for the player profile page (Per 90 and Totals).
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
+    # Disk cache: load pre-computed results if available
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            print(f"Loading cached player stats for season {season_id}")
+            cached = pd.read_parquet(cache_path)
+            if cached.index.name == 'playerId':
+                cached = cached.reset_index()
+            return cached
+
     print("--- STARTING: New All-Player-Stats Calculation ---")
     
     events_df = _raw_events_df.copy()
@@ -1359,7 +1370,19 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df = base_df.drop(columns=cols_to_drop, errors='ignore')
     
     print("--- FINISHED: New All-Player-Stats Calculation ---")
-    return base_df.fillna(0)
+    result = base_df.fillna(0).reset_index()
+
+    # Save to disk cache for fast loading on restart
+    if season_id is not None:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{season_id}.parquet')
+        try:
+            result.to_parquet(cache_path)
+            print(f"  Cached player stats to {cache_path}")
+        except Exception as e:
+            print(f"  Warning: Could not cache player stats: {e}")
+
+    return result
 
 def calculate_career_player_stats(_current_events, _hist_events, _all_time_minutes):
     """
@@ -1391,6 +1414,16 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
 def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90, season_id=None):
     """Calculates percentiles and scores for all players based on position.
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
+    # Disk cache: load pre-computed results if available
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            print(f"Loading cached player percentiles for season {season_id}")
+            cached = pd.read_parquet(cache_path)
+            if cached.index.name == 'playerId':
+                cached = cached.reset_index()
+            return cached
+
     print("Calculating player percentiles and scores...")
     data = _player_data_df.copy()
     
@@ -1441,7 +1474,19 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
             data.loc[position_data_indices, position + '_Score'] = 0.0
 
     print("✅ Player percentiles and scores calculated.")
-    return data.fillna(0)
+    result = data.fillna(0)
+
+    # Save to disk cache for fast loading on restart
+    if season_id is not None:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{season_id}.parquet')
+        try:
+            result.to_parquet(cache_path)
+            print(f"  Cached player percentiles to {cache_path}")
+        except Exception as e:
+            print(f"  Warning: Could not cache percentiles: {e}")
+
+    return result
 
 
 def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None):

@@ -1,0 +1,442 @@
+"""
+Pre-compute player stats and percentiles for all seasons.
+Saves to stats_cache/ so the Streamlit app loads instantly.
+
+Run this after process_data.py or whenever data changes.
+"""
+import os
+import sys
+import pandas as pd
+import pickle
+import numpy as np
+
+# We need the computation logic from app.py but can't import it directly
+# due to Streamlit decorators. So we replicate the essential functions here.
+
+STATS_CACHE_DIR = 'stats_cache'
+ALL_SEASON_IDS = [191782, 190090, 189147, 188222, 188221]
+
+# --- Import position/weight config from app.py by reading it ---
+# These are hardcoded in app.py, so we define them here too
+POSITION_GROUPS = {
+    'Forward': ['CF', 'SS', 'LW', 'RW', 'LWF', 'RWF'],
+    'Midfielder': ['AMF', 'CMF', 'DMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3', 'LDMF', 'RDMF', 'LAMF', 'RAMF'],
+    'Defender': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3', 'LB', 'RB', 'LWB', 'RWB', 'LB5', 'RB5'],
+    'Goalkeeper': ['GK'],
+}
+
+# We need to get WEIGHTS and INVERT_METRICS from app.py
+# Let's extract them programmatically
+def extract_config_from_app():
+    """Extract WEIGHTS, INVERT_METRICS, and POSITION_GROUPS from app.py"""
+    import ast
+
+    with open('app.py', 'r') as f:
+        content = f.read()
+
+    # Find WEIGHTS
+    weights_start = content.find('WEIGHTS = {')
+    if weights_start == -1:
+        weights_start = content.find('WEIGHTS= {')
+    if weights_start == -1:
+        print("Could not find WEIGHTS in app.py, using defaults")
+        return None, None, None
+
+    # Find INVERT_METRICS
+    invert_start = content.find('INVERT_METRICS = ')
+    if invert_start == -1:
+        invert_start = content.find('INVERT_METRICS= ')
+
+    # Find POSITION_GROUPS
+    pg_start = content.find('POSITION_GROUPS = {')
+    if pg_start == -1:
+        pg_start = content.find('POSITION_GROUPS= {')
+
+    return weights_start, invert_start, pg_start
+
+
+def add_custom_dribble_success(events_df):
+    """Applies custom logic to determine if a dribble was successful."""
+    df = events_df.sort_values(['matchId', 'minute', 'second']).copy()
+
+    dribble_mask = (df['type.primary'] == 'duel') & (df.get('groundDuel.takeOn') == True)
+    df['is_dribble_attempt'] = dribble_mask
+    df['is_custom_dribble_success'] = False
+
+    if not dribble_mask.any():
+        return df
+
+    dribble_indices = df[dribble_mask].index.tolist()
+
+    for idx in dribble_indices:
+        try:
+            pos = df.index.get_loc(idx)
+            dribbler_team = df.at[idx, 'team.name']
+
+            # Look at next few events for same team
+            for next_pos in range(pos + 1, min(pos + 4, len(df))):
+                next_idx = df.index[next_pos]
+                if df.at[next_idx, 'matchId'] != df.at[idx, 'matchId']:
+                    break
+                if df.at[next_idx, 'team.name'] == dribbler_team:
+                    next_type = df.at[next_idx, 'type.primary']
+                    if next_type in ['pass', 'shot', 'carry', 'touch', 'cross']:
+                        df.at[idx, 'is_custom_dribble_success'] = True
+                    break
+        except Exception:
+            continue
+
+    cols_to_drop = [c for c in df.columns if 'next_team_' in c] + ['dist_to_goal', 'time_diff']
+    df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+
+    return df
+
+
+def main():
+    print("Loading data...")
+
+    # Load events
+    events_columns = [
+        'id', 'matchId', 'seasonId', 'minute', 'second', 'matchTimestamp',
+        'type.primary', 'type.secondary', 'player.id', 'player.name', 'player.position',
+        'team.name', 'opponentTeam.name', 'location.x', 'location.y',
+        'pass', 'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
+        'shot', 'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.bodyPart', 'shot.postShotXg', 'shot.goalkeeper.id',
+        'groundDuel.duelType', 'groundDuel.keptPossession', 'groundDuel.progressedWithBall',
+        'groundDuel.recoveredPossession', 'groundDuel.stoppedProgress', 'groundDuel.takeOn',
+        'aerialDuel.firstTouch', 'carry.endLocation.x', 'carry.endLocation.y',
+        'possession.id', 'possession.eventIndex', 'possession.duration', 'possession.team.name', 'possession.types',
+        'infraction', 'infraction.type', 'infraction.yellowCard', 'infraction.redCard',
+        'is_dribble_attempt', 'is_custom_dribble_success', 'relatedEventId',
+        'team.formation'
+    ]
+    raw_events_df = pd.read_parquet('raw_events.parquet', columns=events_columns)
+
+    # Load player minutes
+    if os.path.exists('complete_player_minutes.pkl'):
+        with open('complete_player_minutes.pkl', 'rb') as f:
+            player_minutes_data = pickle.load(f)
+    else:
+        with open('player_minutes_and_positions.pkl', 'rb') as f:
+            player_minutes_data = pickle.load(f)
+
+    # We need to exec the WEIGHTS/INVERT_METRICS/POSITION_GROUPS from app.py
+    # Read them from the file
+    print("Extracting config from app.py...")
+    with open('app.py', 'r') as f:
+        app_content = f.read()
+
+    # Extract globals we need
+    config_globals = {}
+
+    # Find and exec POSITION_GROUPS
+    for var_name in ['POSITION_GROUPS', 'WEIGHTS', 'INVERT_METRICS']:
+        start = app_content.find(f'{var_name} = ')
+        if start == -1:
+            start = app_content.find(f'{var_name}= ')
+        if start == -1:
+            print(f"Could not find {var_name} in app.py!")
+            return
+
+        # Find the end of the assignment (look for next unindented line)
+        lines = app_content[start:].split('\n')
+        block_lines = [lines[0]]
+        for line in lines[1:]:
+            if line and not line[0].isspace() and not line.startswith('#') and '=' in line and not line.strip().startswith("'") and not line.strip().startswith('"'):
+                break
+            block_lines.append(line)
+
+        block = '\n'.join(block_lines)
+        try:
+            exec(block, config_globals)
+        except Exception as e:
+            print(f"Error parsing {var_name}: {e}")
+            print(f"Block was: {block[:200]}")
+            return
+
+    POSITION_GROUPS = config_globals['POSITION_GROUPS']
+    WEIGHTS = config_globals['WEIGHTS']
+    INVERT_METRICS = config_globals['INVERT_METRICS']
+
+    print(f"Config loaded: {len(POSITION_GROUPS)} position groups, {len(WEIGHTS)} weight sets")
+
+    os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+
+    for season_id in ALL_SEASON_IDS:
+        stats_cache = os.path.join(STATS_CACHE_DIR, f'player_stats_{season_id}.parquet')
+        pct_cache = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{season_id}.parquet')
+
+        if os.path.exists(stats_cache) and os.path.exists(pct_cache):
+            print(f"\nSeason {season_id}: Already cached, skipping")
+            continue
+
+        print(f"\n--- Computing stats for season {season_id} ---")
+
+        season_events = raw_events_df[raw_events_df['seasonId'] == season_id].copy()
+        season_minutes = player_minutes_data.get(season_id, pd.DataFrame())
+
+        if season_events.empty or season_minutes.empty:
+            print(f"  Skipping: no data")
+            continue
+
+        # Apply dribble logic
+        print(f"  Applying dribble logic to {len(season_events)} events...")
+        season_events = add_custom_dribble_success(season_events)
+
+        # Build base_df from minutes
+        season_minutes['totalMinutes'] = pd.to_numeric(season_minutes['totalMinutes'], errors='coerce').fillna(0)
+        base_df = season_minutes.copy().set_index('playerId')
+
+        # Ensure player.id is int
+        season_events['player.id'] = pd.to_numeric(season_events['player.id'], errors='coerce')
+        season_events = season_events.dropna(subset=['player.id'])
+        season_events['player.id'] = season_events['player.id'].astype(int)
+
+        # --- Counting stats (same logic as app.py) ---
+        print(f"  Computing counting stats...")
+
+        def count_and_merge(base_df, events_df, stat_name, filter_condition):
+            if isinstance(filter_condition, pd.Series):
+                filter_condition = filter_condition.reindex(events_df.index, fill_value=False)
+            safe_condition = filter_condition & events_df['player.id'].notna()
+            if safe_condition.empty or not safe_condition.any():
+                stat_series = pd.Series(dtype='int', name=stat_name)
+            else:
+                stat_series = events_df[safe_condition].groupby(events_df['player.id']).size()
+                stat_series.name = stat_name
+            base_df = base_df.merge(stat_series, left_index=True, right_index=True, how='left')
+            return base_df
+
+        def sum_and_merge(base_df, events_df, stat_name, filter_condition, value_col):
+            if isinstance(filter_condition, pd.Series):
+                filter_condition = filter_condition.reindex(events_df.index, fill_value=False)
+            safe_condition = filter_condition & events_df['player.id'].notna()
+            if safe_condition.empty or not safe_condition.any():
+                stat_series = pd.Series(dtype='float', name=stat_name)
+            else:
+                stat_series = events_df.loc[safe_condition].groupby(events_df['player.id'])[value_col].sum()
+                stat_series.name = stat_name
+            base_df = base_df.merge(stat_series, left_index=True, right_index=True, how='left')
+            return base_df
+
+        events_df = season_events
+
+        _secondary_col = events_df.get('type.secondary', pd.Series(dtype='object'))
+        _secondary_sets = _secondary_col.apply(
+            lambda x: set(x) if isinstance(x, (list, np.ndarray)) else set()
+        )
+        def check_secondary_list(tag):
+            return _secondary_sets.apply(lambda s: tag in s)
+
+        # Basic counts
+        pass_events = events_df[events_df['type.primary'] == 'pass']
+        base_df = count_and_merge(base_df, pass_events, 'Passes', pd.Series(True, index=pass_events.index))
+        base_df = count_and_merge(base_df, pass_events, 'Passes accurate', pass_events.get('pass.accurate') == True)
+
+        shot_events = events_df[events_df['type.primary'] == 'shot']
+        base_df = count_and_merge(base_df, shot_events, 'Shots', pd.Series(True, index=shot_events.index))
+        base_df = count_and_merge(base_df, shot_events, 'Shots on target', shot_events.get('shot.onTarget') == True)
+        base_df = count_and_merge(base_df, shot_events, 'Goals', shot_events.get('shot.isGoal') == True)
+
+        shot_events['shot.xg'] = pd.to_numeric(shot_events.get('shot.xg'), errors='coerce').fillna(0)
+        base_df = sum_and_merge(base_df, shot_events, 'xG', pd.Series(True, index=shot_events.index), 'shot.xg')
+
+        non_penalty = ~check_secondary_list('penalty').reindex(shot_events.index, fill_value=False)
+        base_df = sum_and_merge(base_df, shot_events, 'npxG', non_penalty, 'shot.xg')
+        base_df = count_and_merge(base_df, shot_events, 'npGoals',
+                                   (shot_events.get('shot.isGoal') == True) & non_penalty)
+
+        # Assists / Key passes / xA
+        is_assist = check_secondary_list('assist')
+        base_df = count_and_merge(base_df, events_df, 'Assists', is_assist)
+
+        is_key_pass = check_secondary_list('key_pass')
+        base_df = count_and_merge(base_df, events_df, 'Key passes', is_key_pass)
+
+        # xA
+        if 'relatedEventId' in events_df.columns and not shot_events.empty:
+            shot_xg_map = shot_events.set_index('id')['shot.xg'].to_dict()
+            events_df['_xa_value'] = events_df['relatedEventId'].map(shot_xg_map)
+            xa_mask = events_df['_xa_value'].notna() & (events_df['type.primary'] == 'pass')
+            base_df = sum_and_merge(base_df, events_df, 'xA', xa_mask, '_xa_value')
+            events_df.drop(columns=['_xa_value'], inplace=True, errors='ignore')
+
+        # Crosses
+        is_cross = check_secondary_list('cross')
+        cross_events = events_df[is_cross]
+        base_df = count_and_merge(base_df, cross_events, 'Crosses', pd.Series(True, index=cross_events.index))
+        base_df = count_and_merge(base_df, cross_events, 'Crosses accurate', cross_events.get('pass.accurate') == True)
+
+        # Progressive passes
+        pass_events_prog = pass_events.copy()
+        pass_events_prog['pass.endLocation.x'] = pd.to_numeric(pass_events_prog.get('pass.endLocation.x'), errors='coerce').fillna(0)
+        pass_events_prog['location.x'] = pd.to_numeric(pass_events_prog.get('location.x'), errors='coerce').fillna(0)
+        pass_events_prog['_x_progress'] = pass_events_prog['pass.endLocation.x'] - pass_events_prog['location.x']
+        base_df = count_and_merge(base_df, pass_events_prog, 'Progressive passes',
+                                   (pass_events_prog.get('pass.accurate') == True) & (pass_events_prog['_x_progress'] >= 10))
+
+        # Passes into final third / penalty area
+        base_df = count_and_merge(base_df, pass_events, 'Passes to final third',
+                                   (pass_events.get('pass.accurate') == True) &
+                                   (pd.to_numeric(pass_events.get('pass.endLocation.x'), errors='coerce').fillna(0) >= 66))
+        base_df = count_and_merge(base_df, pass_events, 'Passes to penalty area',
+                                   (pass_events.get('pass.accurate') == True) &
+                                   (pd.to_numeric(pass_events.get('pass.endLocation.x'), errors='coerce').fillna(0) >= 83) &
+                                   (pd.to_numeric(pass_events.get('pass.endLocation.y'), errors='coerce').fillna(0).between(21, 79)))
+
+        # Deep completions
+        base_df = count_and_merge(base_df, pass_events, 'Deep completions',
+                                   (pass_events.get('pass.accurate') == True) &
+                                   (pd.to_numeric(pass_events.get('pass.endLocation.x'), errors='coerce').fillna(0) >= 80))
+
+        # Dribbles
+        dribble_events = events_df[events_df.get('is_dribble_attempt') == True]
+        base_df = count_and_merge(base_df, dribble_events, 'Dribbles', pd.Series(True, index=dribble_events.index))
+        base_df = count_and_merge(base_df, dribble_events, 'Dribbles successful',
+                                   dribble_events.get('is_custom_dribble_success') == True)
+
+        # Touches in box
+        base_df = count_and_merge(base_df, events_df, 'Touches in penalty area',
+                                   (events_df['type.primary'] == 'touch') &
+                                   (pd.to_numeric(events_df.get('location.x'), errors='coerce').fillna(0) >= 83) &
+                                   (pd.to_numeric(events_df.get('location.y'), errors='coerce').fillna(0).between(21, 79)))
+
+        # Duels
+        duel_events = events_df[events_df['type.primary'] == 'duel']
+        base_df = count_and_merge(base_df, duel_events, 'Duels', pd.Series(True, index=duel_events.index))
+        base_df = count_and_merge(base_df, duel_events, 'Duels successful',
+                                   (duel_events.get('groundDuel.keptPossession') == True) |
+                                   (duel_events.get('groundDuel.recoveredPossession') == True) |
+                                   (duel_events.get('groundDuel.stoppedProgress') == True) |
+                                   (duel_events.get('aerialDuel.firstTouch') == True))
+
+        # Aerial duels
+        aerial_mask = check_secondary_list('aerial_duel').reindex(duel_events.index, fill_value=False)
+        aerial_events = duel_events[aerial_mask]
+        base_df = count_and_merge(base_df, aerial_events, 'Aerial duels', pd.Series(True, index=aerial_events.index))
+        base_df = count_and_merge(base_df, aerial_events, 'Aerial duels won',
+                                   aerial_events.get('aerialDuel.firstTouch') == True)
+
+        # Defensive
+        base_df = count_and_merge(base_df, events_df, 'Interceptions', events_df['type.primary'] == 'interception')
+        base_df = count_and_merge(base_df, events_df, 'Clearances', events_df['type.primary'] == 'clearance')
+
+        # Fouls
+        infraction_events = events_df[events_df['type.primary'] == 'infraction']
+        is_foul = check_secondary_list('foul').reindex(infraction_events.index, fill_value=False)
+        base_df = count_and_merge(base_df, infraction_events, 'Fouls committed', is_foul)
+        base_df = count_and_merge(base_df, infraction_events, 'Yellow cards', infraction_events.get('infraction.yellowCard') == True)
+        base_df = count_and_merge(base_df, infraction_events, 'Red cards', infraction_events.get('infraction.redCard') == True)
+
+        # GK stats
+        gk_events = events_df[events_df['type.primary'] == 'shot_against']
+        base_df = count_and_merge(base_df, gk_events, 'Shots faced', pd.Series(True, index=gk_events.index))
+        base_df = count_and_merge(base_df, gk_events, 'Saves', gk_events.get('shot.onTarget') == True)
+        base_df = count_and_merge(base_df, gk_events, 'Goals conceded', gk_events.get('shot.isGoal') == True)
+
+        if not gk_events.empty:
+            gk_events_copy = gk_events.copy()
+            gk_events_copy['shot.xg'] = pd.to_numeric(gk_events_copy.get('shot.xg'), errors='coerce').fillna(0)
+            gk_events_copy['shot.postShotXg'] = pd.to_numeric(gk_events_copy.get('shot.postShotXg'), errors='coerce').fillna(0)
+            base_df = sum_and_merge(base_df, gk_events_copy, 'xG faced', pd.Series(True, index=gk_events_copy.index), 'shot.xg')
+            base_df = sum_and_merge(base_df, gk_events_copy, 'PSxG faced', pd.Series(True, index=gk_events_copy.index), 'shot.postShotXg')
+
+        # Progressive carries
+        carry_events = events_df[events_df['type.primary'] == 'carry'].copy() if 'carry' in events_df.get('type.primary', pd.Series()).values else pd.DataFrame()
+        if not carry_events.empty:
+            carry_events['carry.endLocation.x'] = pd.to_numeric(carry_events.get('carry.endLocation.x'), errors='coerce').fillna(0)
+            carry_events['location.x'] = pd.to_numeric(carry_events.get('location.x'), errors='coerce').fillna(0)
+            carry_events['_carry_progress'] = carry_events['carry.endLocation.x'] - carry_events['location.x']
+            base_df = count_and_merge(base_df, carry_events, 'Progressive carries', carry_events['_carry_progress'] >= 10)
+
+        # Per 90 normalization
+        print(f"  Normalizing to per-90...")
+        base_df['totalMinutes'] = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
+        stat_cols = [c for c in base_df.columns if c not in ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', 'playerId']]
+
+        for col in stat_cols:
+            base_df[col] = pd.to_numeric(base_df[col], errors='coerce').fillna(0)
+            per90_col = col + '_per90'
+            base_df[per90_col] = base_df.apply(
+                lambda row: (row[col] / row['totalMinutes']) * 90 if row['totalMinutes'] > 0 else 0, axis=1
+            )
+
+        # Derived metrics
+        base_df['Pass accuracy'] = base_df.apply(
+            lambda r: (r['Passes accurate'] / r['Passes'] * 100) if r.get('Passes', 0) > 0 else 0, axis=1)
+        base_df['Shot accuracy'] = base_df.apply(
+            lambda r: (r['Shots on target'] / r['Shots'] * 100) if r.get('Shots', 0) > 0 else 0, axis=1)
+        base_df['Cross accuracy'] = base_df.apply(
+            lambda r: (r['Crosses accurate'] / r['Crosses'] * 100) if r.get('Crosses', 0) > 0 else 0, axis=1)
+        base_df['Dribble success rate'] = base_df.apply(
+            lambda r: (r['Dribbles successful'] / r['Dribbles'] * 100) if r.get('Dribbles', 0) > 0 else 0, axis=1)
+        base_df['Aerial duel win rate'] = base_df.apply(
+            lambda r: (r['Aerial duels won'] / r['Aerial duels'] * 100) if r.get('Aerial duels', 0) > 0 else 0, axis=1)
+
+        # Cleanup
+        cols_to_drop = [col for col in base_df.columns if 'player.id' in str(col)]
+        base_df = base_df.drop(columns=cols_to_drop, errors='ignore')
+
+        result = base_df.fillna(0)
+        # Ensure string columns are actually strings before saving to parquet
+        for col in ['playerName', 'teamName', 'primaryPosition']:
+            if col in result.columns:
+                result[col] = result[col].astype(str)
+        result.to_parquet(os.path.join(STATS_CACHE_DIR, f'player_stats_{season_id}.parquet'))
+        print(f"  Saved player_stats_{season_id}.parquet ({len(result)} players)")
+
+        # --- Percentiles ---
+        print(f"  Computing percentiles...")
+        data = result.copy()
+        data['totalMinutes'] = pd.to_numeric(data['totalMinutes'], errors='coerce')
+        data = data[data['totalMinutes'] >= 90]
+
+        if not data.empty:
+            for position, group in POSITION_GROUPS.items():
+                metrics = list(WEIGHTS[position].keys())
+                position_data_mask = data['primaryPosition'].isin(group)
+                position_data_indices = data[position_data_mask].index
+                if position_data_indices.empty:
+                    continue
+                for metric in metrics:
+                    if metric in data.columns:
+                        data[metric] = pd.to_numeric(data[metric], errors='coerce').fillna(0)
+                        percentiles = data.loc[position_data_indices, metric].rank(pct=True)
+                        if metric in INVERT_METRICS:
+                            percentiles = 1 - (percentiles.fillna(0.5))
+                        data.loc[position_data_indices, metric + '_percentile'] = percentiles
+
+            for position, group in POSITION_GROUPS.items():
+                metrics = list(WEIGHTS[position].keys())
+                position_data_mask = data['primaryPosition'].isin(group)
+                position_data_indices = data[position_data_mask].index
+                if position_data_indices.empty:
+                    continue
+                total_score = pd.Series(0.0, index=position_data_indices, dtype='float64')
+                for metric in metrics:
+                    percentile_col = metric + '_percentile'
+                    if percentile_col in data.columns:
+                        weight = WEIGHTS[position].get(metric, 0)
+                        total_score = total_score.add(data.loc[position_data_indices, percentile_col].fillna(0) * weight, fill_value=0)
+                data.loc[position_data_indices, position + '_TotalScore'] = total_score
+                min_score = total_score.min()
+                max_score = total_score.max()
+                if (max_score - min_score) != 0:
+                    data.loc[position_data_indices, position + '_Score'] = (total_score - min_score) / (max_score - min_score) * 100
+                else:
+                    data.loc[position_data_indices, position + '_Score'] = 0.0
+
+            pct_result = data.fillna(0)
+            for col in ['playerName', 'teamName', 'primaryPosition']:
+                if col in pct_result.columns:
+                    pct_result[col] = pct_result[col].astype(str)
+            pct_result.to_parquet(os.path.join(STATS_CACHE_DIR, f'player_percentiles_{season_id}.parquet'))
+            print(f"  Saved player_percentiles_{season_id}.parquet ({len(pct_result)} players)")
+        else:
+            print(f"  No players with >= 90 minutes, skipping percentiles")
+
+    print("\nDone! All seasons cached.")
+
+
+if __name__ == '__main__':
+    main()
