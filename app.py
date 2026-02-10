@@ -3635,26 +3635,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create unique display names
         player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
 
-        # Check if navigating from another section
-        default_player_index = 0
+        # If navigating from another section, set the player selectbox value directly
         if st.session_state.selected_player_id is not None:
-            # Find the 0-based position of the pre-selected player in the sorted list
             sorted_player_ids = player_list_df['playerId'].tolist()
             target_id = st.session_state.selected_player_id
-            # Handle type mismatch (numpy.int64 vs int)
             for i, pid in enumerate(sorted_player_ids):
                 if int(pid) == int(target_id):
-                    default_player_index = i
+                    st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
                     break
-            # Clear the session state and bump the key so the selectbox uses the new index
             st.session_state.selected_player_id = None
-            st.session_state.player_select_key_version = st.session_state.get('player_select_key_version', 0) + 1
 
         selected_player_display = st.sidebar.selectbox(
             "Select Player:",
             player_list_df['display_name'],
-            index=default_player_index,
-            key=f"player_selector_{st.session_state.get('player_select_key_version', 0)}"
+            key="player_profile_selector"
         )
         
         try:
