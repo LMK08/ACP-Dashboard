@@ -3677,30 +3677,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.error(f"Could not load data for {selected_player_display}. Error: {e}")
             st.stop()
         
-        # --- DEBUGGING BLOCK ---
-        with st.expander("DEBUG: Data Inspection"):
-            st.write(f"**Selected Player ID:** {player_id} (Type: {type(player_id)})")
-
-            if not profile_player_minutes_df.empty:
-                st.write("**Player Minutes DataFrame Head:**")
-                st.dataframe(profile_player_minutes_df.head())
-
-                try:
-                    pid_int = int(player_id)
-                    match = profile_player_minutes_df[profile_player_minutes_df['playerId'] == pid_int]
-                    st.write(f"**Lookup Result for ID {pid_int}:**")
-                    if match.empty:
-                        st.error("Player ID NOT FOUND in player_minutes_df")
-                        st.write("Available IDs (First 10):", profile_player_minutes_df['playerId'].head(10).tolist())
-                    else:
-                        st.success("Player ID FOUND!")
-                        st.write(match)
-                except Exception as e:
-                    st.error(f"Error checking ID: {e}")
-            else:
-                st.error("profile_player_minutes_df is EMPTY!")
-        # --------------------------------------------------
-
         # --- 3. Get Player's Match Log ---
         player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df, season_id=selected_season_id)
 
