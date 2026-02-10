@@ -435,6 +435,247 @@ def main():
         else:
             print(f"  No players with >= 90 minutes, skipping percentiles")
 
+    # =====================================================================
+    # PHASE 2: Pre-compute TEAM stats for all seasons
+    # =====================================================================
+    print("\n=== Pre-computing team stats ===")
+
+    # Load additional data needed for team stats
+    matches_summary_df = pd.read_parquet('matches_summary.parquet')
+    with open('all_match_data.pkl', 'rb') as f:
+        all_match_data = pickle.load(f)
+
+    for season_id in ALL_SEASON_IDS:
+        print(f"\n--- Team stats for season {season_id} ---")
+        season_events = raw_events_df[raw_events_df['seasonId'] == season_id].copy()
+        season_matches = matches_summary_df[matches_summary_df['seasonId'] == season_id].copy()
+
+        if season_events.empty or season_matches.empty:
+            print(f"  Skipping: no data")
+            continue
+
+        # --- Team Strength ---
+        ts_cache = os.path.join(STATS_CACHE_DIR, f'team_strength_{season_id}.parquet')
+        if os.path.exists(ts_cache):
+            print(f"  team_strength: already cached")
+        else:
+            print(f"  Computing team strength...")
+            all_shots = season_events[season_events['type.primary'] == 'shot'].copy()
+            all_shots['shot.xg'] = pd.to_numeric(all_shots.get('shot.xg'), errors='coerce').fillna(0)
+            all_shots['shot.isGoal'] = all_shots.get('shot.isGoal') == True
+
+            matches_played = season_events.groupby('team.name')['matchId'].nunique()
+            all_teams_in_data = season_events['team.name'].unique()
+
+            if 'opponentTeam.name' not in all_shots.columns and 'matchId' in all_shots.columns:
+                temp_summary = season_matches[['matchId', 'homeTeamName', 'awayTeamName']].copy()
+                temp_summary.rename(columns={'homeTeamName': 'ht', 'awayTeamName': 'at'}, inplace=True)
+                all_shots = all_shots.merge(temp_summary, on='matchId', how='left')
+                all_shots['opponentTeam.name'] = np.where(
+                    all_shots['team.name'] == all_shots['ht'], all_shots['at'], all_shots['ht']
+                )
+                all_shots.drop(columns=['ht', 'at'], inplace=True, errors='ignore')
+
+            team_stats = {}
+            for team in all_teams_in_data:
+                team_shots = all_shots[all_shots['team.name'] == team]
+                goals_for = team_shots['shot.isGoal'].sum()
+                xg_for = team_shots['shot.xg'].sum()
+                opponent_shots = all_shots[all_shots.get('opponentTeam.name') == team]
+                goals_against = opponent_shots['shot.isGoal'].sum()
+                xg_against = opponent_shots['shot.xg'].sum()
+                games = matches_played.get(team, 0)
+                if games > 0:
+                    team_stats[team] = {
+                        'GF_per_match': goals_for / games,
+                        'GA_per_match': goals_against / games,
+                        'xGF_per_match': xg_for / games,
+                        'xGA_per_match': xg_against / games,
+                    }
+
+            ts_df = pd.DataFrame.from_dict(team_stats, orient='index').fillna(0)
+            if not ts_df.empty:
+                ts_df['Attacking Strength'] = (ts_df['GF_per_match'] * 0.3) + (ts_df['xGF_per_match'] * 0.7)
+                ts_df['Defending Strength'] = (ts_df['GA_per_match'] * 0.3) + (ts_df['xGA_per_match'] * 0.7)
+                ts_df.to_parquet(ts_cache)
+                print(f"  Saved team_strength ({len(ts_df)} teams)")
+
+        # --- Expanded Team Stats ---
+        ets_cache = os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet')
+        if os.path.exists(ets_cache):
+            print(f"  expanded_team_stats: already cached")
+        else:
+            print(f"  Computing expanded team stats...")
+            from collections import defaultdict
+            season_match_ids = set(season_matches['matchId'].dropna().unique())
+            season_match_data = {mid: data for mid, data in all_match_data.items() if mid in season_match_ids}
+
+            all_stats_agg = defaultdict(lambda: defaultdict(float))
+            games_played = defaultdict(int)
+            team_name_map = {}
+            for _, row in season_matches.iterrows():
+                team_name_map[row['matchId']] = (row['homeTeamName'], row['awayTeamName'])
+
+            for match_id, match_data in season_match_data.items():
+                if match_id not in team_name_map:
+                    continue
+                home_team, away_team = team_name_map[match_id]
+                games_played[home_team] += 1
+                games_played[away_team] += 1
+
+                if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict):
+                    for category, df in match_data['team_stats'].items():
+                        if isinstance(df, pd.DataFrame) and not df.empty:
+                            if home_team in df.columns and away_team in df.columns:
+                                try:
+                                    df[home_team] = pd.to_numeric(df[home_team], errors='coerce').fillna(0)
+                                    df[away_team] = pd.to_numeric(df[away_team], errors='coerce').fillna(0)
+                                    for metric_name, row in df.iterrows():
+                                        all_stats_agg[home_team][metric_name] += row[home_team]
+                                        all_stats_agg[away_team][metric_name] += row[away_team]
+                                except Exception as e:
+                                    print(f"    Warning: match {match_id}: {e}")
+
+            if all_stats_agg:
+                stats_df = pd.DataFrame.from_dict(all_stats_agg, orient='index').fillna(0)
+                games_series = pd.Series(games_played, name='games')
+                stats_df = stats_df.loc[games_series.index]
+                stats_per_game_df = stats_df.div(games_series, axis=0)
+                stats_per_game_df.replace([np.inf, -np.inf], 0, inplace=True)
+                result = stats_per_game_df.fillna(0)
+                result.to_parquet(ets_cache)
+                print(f"  Saved expanded_team_stats ({len(result)} teams)")
+
+        # --- Set Piece Metrics ---
+        sp_cache = os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{season_id}.parquet')
+        if os.path.exists(sp_cache):
+            print(f"  set_piece_metrics: already cached")
+        else:
+            print(f"  Computing set piece metrics...")
+            events_df = season_events.copy()
+            events_df['total_seconds'] = events_df['minute'] * 60 + events_df['second']
+            ATTACKING_THIRD = 66.67
+            LONG_THROW_THRESHOLD = 25
+
+            results = {}
+            teams = events_df['team.name'].dropna().unique()
+            for team in teams:
+                results[team] = {
+                    'xG from Corners': 0, 'Goals from Corners': 0, 'Corners': 0,
+                    'xG from Att Throw-ins': 0, 'Goals from Att Throw-ins': 0, 'Att Throw-ins': 0,
+                    'xG from Free Kicks': 0, 'Goals from Free Kicks': 0, 'Free Kicks Att Third': 0,
+                    'xG from Set Pieces': 0, 'Goals from Set Pieces': 0, 'Set Pieces Att Third': 0,
+                    'Long Throws': 0,
+                    'xG Conceded Corners': 0, 'Goals Conceded Corners': 0, 'Corners Against': 0,
+                    'xG Conceded Att Throw-ins': 0, 'Goals Conceded Att Throw-ins': 0,
+                    'xG Conceded Free Kicks': 0, 'Goals Conceded Free Kicks': 0,
+                    'xG Conceded Set Pieces': 0, 'Goals Conceded Set Pieces': 0,
+                }
+
+            for match_id in events_df['matchId'].unique():
+                match_events = events_df[events_df['matchId'] == match_id].sort_values('total_seconds')
+                match_teams = match_events['team.name'].dropna().unique()
+                shots = match_events[match_events['type.primary'] == 'shot'].copy()
+
+                # Corners
+                corners = match_events[match_events['type.primary'] == 'corner']
+                for _, corner in corners.iterrows():
+                    team = corner['team.name']
+                    if pd.isna(team) or team not in results:
+                        continue
+                    corner_time = corner['total_seconds']
+                    results[team]['Corners'] += 1
+                    team_shots = shots[(shots['team.name'] == team) &
+                                      (shots['total_seconds'] >= corner_time) &
+                                      (shots['total_seconds'] <= corner_time + 15)]
+                    xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+                    goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+                    results[team]['xG from Corners'] += xg
+                    results[team]['Goals from Corners'] += goals
+                    results[team]['xG from Set Pieces'] += xg
+                    results[team]['Goals from Set Pieces'] += goals
+                    results[team]['Set Pieces Att Third'] += 1
+                    for opp_team in match_teams:
+                        if opp_team != team and opp_team in results:
+                            results[opp_team]['Corners Against'] += 1
+                            results[opp_team]['xG Conceded Corners'] += xg
+                            results[opp_team]['Goals Conceded Corners'] += goals
+                            results[opp_team]['xG Conceded Set Pieces'] += xg
+                            results[opp_team]['Goals Conceded Set Pieces'] += goals
+
+                # Attacking throw-ins
+                throw_ins = match_events[match_events['type.primary'] == 'throw_in']
+                att_throw_ins = throw_ins[throw_ins['location.x'] >= ATTACKING_THIRD]
+                for _, throw in att_throw_ins.iterrows():
+                    team = throw['team.name']
+                    if pd.isna(team) or team not in results:
+                        continue
+                    throw_time = throw['total_seconds']
+                    results[team]['Att Throw-ins'] += 1
+                    results[team]['Set Pieces Att Third'] += 1
+                    team_shots = shots[(shots['team.name'] == team) &
+                                      (shots['total_seconds'] >= throw_time) &
+                                      (shots['total_seconds'] <= throw_time + 15)]
+                    xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+                    goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+                    results[team]['xG from Att Throw-ins'] += xg
+                    results[team]['Goals from Att Throw-ins'] += goals
+                    results[team]['xG from Set Pieces'] += xg
+                    results[team]['Goals from Set Pieces'] += goals
+                    for opp_team in match_teams:
+                        if opp_team != team and opp_team in results:
+                            results[opp_team]['xG Conceded Att Throw-ins'] += xg
+                            results[opp_team]['Goals Conceded Att Throw-ins'] += goals
+                            results[opp_team]['xG Conceded Set Pieces'] += xg
+                            results[opp_team]['Goals Conceded Set Pieces'] += goals
+
+                # Long throws
+                long_throws = throw_ins[throw_ins['pass.length'] >= LONG_THROW_THRESHOLD]
+                for _, throw in long_throws.iterrows():
+                    team = throw['team.name']
+                    if pd.isna(team) or team not in results:
+                        continue
+                    results[team]['Long Throws'] += 1
+
+                # Free kicks in attacking third
+                free_kicks = match_events[match_events['type.primary'] == 'free_kick']
+                att_free_kicks = free_kicks[free_kicks['location.x'] >= ATTACKING_THIRD]
+                for _, fk in att_free_kicks.iterrows():
+                    team = fk['team.name']
+                    if pd.isna(team) or team not in results:
+                        continue
+                    fk_time = fk['total_seconds']
+                    results[team]['Free Kicks Att Third'] += 1
+                    results[team]['Set Pieces Att Third'] += 1
+                    team_shots = shots[(shots['team.name'] == team) &
+                                      (shots['total_seconds'] >= fk_time) &
+                                      (shots['total_seconds'] <= fk_time + 15)]
+                    xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+                    goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+                    results[team]['xG from Free Kicks'] += xg
+                    results[team]['Goals from Free Kicks'] += goals
+                    results[team]['xG from Set Pieces'] += xg
+                    results[team]['Goals from Set Pieces'] += goals
+                    for opp_team in match_teams:
+                        if opp_team != team and opp_team in results:
+                            results[opp_team]['xG Conceded Free Kicks'] += xg
+                            results[opp_team]['Goals Conceded Free Kicks'] += goals
+                            results[opp_team]['xG Conceded Set Pieces'] += xg
+                            results[opp_team]['Goals Conceded Set Pieces'] += goals
+
+            # Per-event metrics
+            for team in results:
+                r = results[team]
+                r['xG per Corner'] = round(r['xG from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
+                r['xG per Att Set Piece'] = round(r['xG from Set Pieces'] / r['Set Pieces Att Third'], 3) if r['Set Pieces Att Third'] > 0 else 0
+                r['xG Conceded per Corner'] = round(r['xG Conceded Corners'] / r['Corners Against'], 3) if r['Corners Against'] > 0 else 0
+                r['Goals per Corner'] = round(r['Goals from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
+                r['Goals Conceded per Corner'] = round(r['Goals Conceded Corners'] / r['Corners Against'], 3) if r['Corners Against'] > 0 else 0
+
+            sp_df = pd.DataFrame.from_dict(results, orient='index')
+            sp_df.to_parquet(sp_cache)
+            print(f"  Saved set_piece_metrics ({len(sp_df)} teams)")
+
     print("\nDone! All seasons cached.")
 
 

@@ -72,7 +72,7 @@ STATS_CACHE_DIR = 'stats_cache'
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
-@st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
+@st.cache_resource(ttl=3600)  # cache_resource avoids serializing large DataFrames
 def load_data():
     """Load all pre-processed data files."""
     required_files = [
@@ -2275,8 +2275,13 @@ def create_player_shotmap(player_shots_df, player_name):
 
 # --- NEW FUNCTION: Calculate Team Strength ---
 @st.cache_data
-def calculate_team_strength(season_events_df, matches_summary_df):
+def calculate_team_strength(season_events_df, matches_summary_df, season_id=None):
     """Calculates Attacking and Defending Strength metrics for all teams."""
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'team_strength_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            print(f"Loading cached team strength for season {season_id}")
+            return pd.read_parquet(cache_path)
     print("Calculating team strength stats...") # Debug print
     team_stats = {}
 
@@ -2329,6 +2334,13 @@ def calculate_team_strength(season_events_df, matches_summary_df):
     # Calculate Strength Metrics
     stats_df['Attacking Strength'] = (stats_df['GF_per_match'] * 0.3) + (stats_df['xGF_per_match'] * 0.7)
     stats_df['Defending Strength'] = (stats_df['GA_per_match'] * 0.3) + (stats_df['xGA_per_match'] * 0.7)
+
+    if season_id is not None:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        try:
+            stats_df.to_parquet(os.path.join(STATS_CACHE_DIR, f'team_strength_{season_id}.parquet'))
+        except Exception:
+            pass
 
     return stats_df
 
@@ -2811,6 +2823,11 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     season-long per-game average.
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            print(f"Loading cached expanded team stats for season {season_id}")
+            return pd.read_parquet(cache_path)
     print("Calculating expanded team stats...") # Debug print
     
     # Use defaultdict for easy aggregation
@@ -2843,17 +2860,16 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
             # Loop through each stat DataFrame (e.g., 'Passing', 'Defense')
             for category, df in match_data['team_stats'].items():
                 
-                # We expect df format: ['Metric', homeTeamName, awayTeamName]
-                if isinstance(df, pd.DataFrame) and not df.empty and 'Metric' in df.columns:
+                # df format: index=metric names, columns=[homeTeamName, awayTeamName]
+                if isinstance(df, pd.DataFrame) and not df.empty:
                     if home_team in df.columns and away_team in df.columns:
                         try:
                             # Convert all stats to numeric, coercing errors
                             df[home_team] = pd.to_numeric(df[home_team], errors='coerce').fillna(0)
                             df[away_team] = pd.to_numeric(df[away_team], errors='coerce').fillna(0)
-                            
-                            # Loop through each metric row (e.g., 'Passes', 'Duels')
-                            for _, row in df.iterrows():
-                                metric_name = row['Metric']
+
+                            # Loop through each metric row (metric name is the index)
+                            for metric_name, row in df.iterrows():
                                 # Add to the aggregate totals
                                 all_stats_agg[home_team][metric_name] += row[home_team]
                                 all_stats_agg[away_team][metric_name] += row[away_team]
@@ -2882,12 +2898,24 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     stats_per_game_df.replace([np.inf, -np.inf], 0, inplace=True)
     
     print("✅ Expanded team stats calculated.")
-    return stats_per_game_df.fillna(0)
+    result = stats_per_game_df.fillna(0)
+    if season_id is not None:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        try:
+            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet'))
+        except Exception:
+            pass
+    return result
 
 @st.cache_data(ttl=3600)
 def calculate_set_piece_metrics(_events_df, season_id=None):
     """Calculate set piece xG and goals metrics for all teams.
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            print(f"Loading cached set piece metrics for season {season_id}")
+            return pd.read_parquet(cache_path)
     # Convert minute/second to total seconds
     events_df = _events_df.copy()
     events_df['total_seconds'] = events_df['minute'] * 60 + events_df['second']
@@ -3027,6 +3055,12 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
 
     result_df = pd.DataFrame.from_dict(results, orient='index')
     logger.info(f"✅ Set piece metrics calculated for {len(result_df)} teams")
+    if season_id is not None:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        try:
+            result_df.to_parquet(os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{season_id}.parquet'))
+        except Exception:
+            pass
     return result_df
 
 # ==============================================================================
@@ -3383,7 +3417,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 1. ALL DATA CALCS ---
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df, season_id=selected_season_id)
-        team_strength_df = calculate_team_strength(league_events_df, league_matches_df).copy()
+        team_strength_df = calculate_team_strength(league_events_df, league_matches_df, season_id=selected_season_id).copy()
 
         # Filter all_match_data to only include matches from selected season
         season_match_ids = set(league_matches_df['matchId'].dropna().unique())
