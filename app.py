@@ -3352,7 +3352,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     player_id_list.append(pid)
 
                 roster_df = pd.DataFrame(roster_data)
-                roster_df = roster_df.sort_values('Minutes', ascending=False).reset_index(drop=True)
+                roster_df = roster_df.sort_values('Minutes', ascending=False)
                 # Reorder player_id_list to match sorted dataframe
                 player_id_list = [player_id_list[i] for i in roster_df.index] if len(roster_data) > 0 else []
                 roster_df = roster_df.reset_index(drop=True)
@@ -3616,13 +3616,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create unique display names
         player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
 
-        # Check if navigating from Player Analysis
+        # Check if navigating from another section
         default_player_index = 0
         if st.session_state.selected_player_id is not None:
-            # Find the index of the pre-selected player
-            matching_rows = player_list_df[player_list_df['playerId'] == st.session_state.selected_player_id]
-            if not matching_rows.empty:
-                default_player_index = player_list_df.index.get_loc(matching_rows.index[0])
+            # Find the 0-based position of the pre-selected player in the sorted list
+            sorted_player_ids = player_list_df['playerId'].tolist()
+            target_id = st.session_state.selected_player_id
+            # Handle type mismatch (numpy.int64 vs int)
+            for i, pid in enumerate(sorted_player_ids):
+                if int(pid) == int(target_id):
+                    default_player_index = i
+                    break
             # Clear the session state and bump the key so the selectbox uses the new index
             st.session_state.selected_player_id = None
             st.session_state.player_select_key_version = st.session_state.get('player_select_key_version', 0) + 1

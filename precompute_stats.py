@@ -349,6 +349,50 @@ def main():
             carry_events['_carry_progress'] = carry_events['carry.endLocation.x'] - carry_events['location.x']
             base_df = count_and_merge(base_df, carry_events, 'Progressive carries', carry_events['_carry_progress'] >= 10)
 
+        # --- GK Advanced Stats ---
+        print(f"  Computing GK advanced stats...")
+        gk_ids = events_df[events_df.get('player.position') == 'GK']['player.id'].dropna().unique().astype(int)
+        gk_events_all = events_df[events_df['player.id'].isin(gk_ids)].copy()
+        shots_faced = events_df[
+            (events_df.get('type.primary') == 'shot') &
+            (events_df.get('shot.onTarget') == True) &
+            (events_df.get('shot.goalkeeper.id').notna())
+        ].copy()
+        if not shots_faced.empty:
+            shots_faced['shot.goalkeeper.id'] = shots_faced['shot.goalkeeper.id'].astype(int)
+            shots_faced['shot.postShotXg'] = pd.to_numeric(shots_faced.get('shot.postShotXg'), errors='coerce').fillna(0)
+            gk_shot_stats = shots_faced.groupby('shot.goalkeeper.id').agg(
+                shotsOnTargetAgainst=('shot.isGoal', 'count'),
+                goalsConceded=('shot.isGoal', 'sum'),
+                psxG_faced=('shot.postShotXg', 'sum'),
+            ).reset_index().rename(columns={'shot.goalkeeper.id': 'player.id'})
+            gk_shot_stats['goalsPrevented'] = gk_shot_stats['psxG_faced'] - gk_shot_stats['goalsConceded']
+            gk_shot_stats['goalsPreventedPerSOT'] = (gk_shot_stats['goalsPrevented'] / gk_shot_stats['shotsOnTargetAgainst']).fillna(0)
+            gk_shot_stats['savePercentage'] = ((gk_shot_stats['shotsOnTargetAgainst'] - gk_shot_stats['goalsConceded']) / gk_shot_stats['shotsOnTargetAgainst'] * 100).fillna(0)
+        else:
+            gk_shot_stats = pd.DataFrame(columns=['player.id', 'shotsOnTargetAgainst', 'goalsConceded', 'psxG_faced', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage'])
+
+        exits = gk_events_all[gk_events_all['type.primary'] == 'goalkeeper_exit'].groupby('player.id').size().reset_index(name='exits')
+        _gk_secondary = gk_events_all.get('type.secondary', pd.Series(dtype='object')).apply(
+            lambda x: set(x) if isinstance(x, (list, np.ndarray)) else set()
+        )
+        recovery_mask = _gk_secondary.apply(lambda s: 'recovery' in s)
+        recoveries_gk = gk_events_all[recovery_mask].groupby('player.id').size().reset_index(name='recoveries_gk')
+        gk_passes = gk_events_all[gk_events_all['type.primary'] == 'pass']
+        passes_total_gk = gk_passes.groupby('player.id').size().reset_index(name='passes_gk')
+        passes_succ_gk = gk_passes[gk_passes['pass.accurate'] == True].groupby('player.id').size().reset_index(name='passesSuccessful_gk')
+        _gkp_secondary = gk_passes.get('type.secondary', pd.Series(dtype='object')).apply(
+            lambda x: set(x) if isinstance(x, (list, np.ndarray)) else set()
+        )
+        long_pass_mask = _gkp_secondary.apply(lambda s: 'long_pass' in s)
+        long_passes_total_gk = gk_passes[long_pass_mask].groupby('player.id').size().reset_index(name='longPasses_gk')
+        long_passes_succ_gk = gk_passes[long_pass_mask & (gk_passes['pass.accurate'] == True)].groupby('player.id').size().reset_index(name='longPassesSuccessful_gk')
+
+        gk_report_df = pd.DataFrame({'player.id': gk_ids})
+        for gk_merge_df in [gk_shot_stats, exits, recoveries_gk, passes_total_gk, passes_succ_gk, long_passes_total_gk, long_passes_succ_gk]:
+            gk_report_df = pd.merge(gk_report_df, gk_merge_df, on='player.id', how='left')
+        base_df = base_df.merge(gk_report_df.set_index('player.id'), left_index=True, right_index=True, how='left')
+
         # Per 90 normalization
         print(f"  Normalizing to per-90...")
         base_df['totalMinutes'] = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
