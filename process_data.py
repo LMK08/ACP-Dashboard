@@ -27,15 +27,14 @@ pd.options.mode.chained_assignment = None
 # === REPLACED FUNCTION ===
 def fetch_match_schedule(username, password, competition_id, season_id):
     """Fetches the full match schedule (IDs, dates, teams, GW, score) for a specific season."""
-    url = f"https://apirest.wyscout.com/v3/competitions/{competition_id}/matches"
+    url = f"https://apirest.wyscout.com/v3/seasons/{season_id}/matches"
     auth = HTTPBasicAuth(username, password)
-    print(f"Attempting to fetch match schedule for competitionId: {competition_id}...")
+    print(f"Attempting to fetch match schedule for seasonId: {season_id}...")
     try:
-        r = requests.get(url, auth=auth, timeout=20) # Increased timeout
-        r.raise_for_status() # Check for HTTP errors
+        r = requests.get(url, auth=auth, timeout=20)
+        r.raise_for_status()
 
-        all_matches_data = r.json().get("matches", [])
-        season_matches = [m for m in all_matches_data if m.get("seasonId") == season_id]
+        season_matches = r.json().get("matches", [])
         print(f"✅ Found {len(season_matches)} matches for seasonId {season_id}.")
 
         if not season_matches:

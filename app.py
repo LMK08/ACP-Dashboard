@@ -1779,20 +1779,27 @@ def load_team_advanced_stats():
         return None
 
 @st.cache_data
-def calculate_all_team_radars_stats(season_events_df, matches_summary_df):
+def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season_id=None):
     """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars.
-    Uses Wyscout team advanced stats if available, otherwise falls back to event-based calculation."""
+    Uses Wyscout team advanced stats if available, otherwise falls back to event-based calculation.
+    season_id filters the Wyscout stats to compare within a single season."""
 
     wyscout_stats = load_team_advanced_stats()
     if wyscout_stats is not None:
         print("Using Wyscout team advanced stats for radars...")
-        return _build_radars_from_wyscout(wyscout_stats)
+        return _build_radars_from_wyscout(wyscout_stats, season_id=season_id)
 
     print("Wyscout stats not available, calculating from events...")
     return _calculate_radars_from_events(season_events_df, matches_summary_df)
 
-def _build_radars_from_wyscout(df):
-    """Build radar DataFrames from Wyscout team advanced stats."""
+def _build_radars_from_wyscout(df, season_id=None):
+    """Build radar DataFrames from Wyscout team advanced stats.
+    Filters by season_id so percentiles are compared within the selected season."""
+    if season_id is not None and 'seasonId' in df.columns:
+        df = df[df['seasonId'] == season_id]
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
     all_teams_stats = {}
 
     for _, row in df.iterrows():
@@ -3151,7 +3158,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Load player details for roster table
         player_details_df = load_player_details()
 
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df)
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df, season_id=selected_season_id)
 
         st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
@@ -3312,7 +3319,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         league_matches_df = get_season_matches(matches_summary_df, selected_season_id)
 
         # --- 1. ALL DATA CALCS ---
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df)
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df, season_id=selected_season_id)
         team_strength_df = calculate_team_strength(league_events_df, league_matches_df).copy()
 
         # Filter all_match_data to only include matches from selected season
