@@ -262,7 +262,7 @@ def _calculate_age(birth_date):
         return "N/A"
 
 @st.cache_data(ttl=3600)
-def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
+def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None):
     """
     Goes through all match data and extracts the individual match stats
     for a single selected player.
@@ -309,7 +309,7 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df):
     
     # Format the date
     if 'Date' in match_log_df.columns:
-        match_log_df['Date'] = pd.to_datetime(match_log_df['Date']).dt.strftime('%Y-%m-%d')
+        match_log_df['Date'] = pd.to_datetime(match_log_df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
     
     # Reorder columns to put match info first
     cols_to_front = ['Date', 'Match', 'Score', 'Minutes']
@@ -1065,10 +1065,11 @@ def add_custom_dribble_success(events_df):
     return df
 
 @st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
-def calculate_all_player_stats(_raw_events_df, _player_minutes_df):
+def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None):
     """
-    A new, streamlined, and correct function to calculate all player stats 
+    A new, streamlined, and correct function to calculate all player stats
     for the player profile page (Per 90 and Totals).
+    season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     print("--- STARTING: New All-Player-Stats Calculation ---")
     
@@ -1366,14 +1367,15 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     print(f"All-time minutes: {len(_all_time_minutes)} players")
 
     # Use the existing stats calculation function with combined data
-    career_stats = calculate_all_player_stats(combined_events, _all_time_minutes)
+    career_stats = calculate_all_player_stats(combined_events, _all_time_minutes, season_id="career")
 
     print("--- FINISHED: Career Stats Calculation ---")
     return career_stats
 
 @st.cache_data
-def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90):
-    """Calculates percentiles and scores for all players based on position."""
+def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90, season_id=None):
+    """Calculates percentiles and scores for all players based on position.
+    season_id is used as a cache key so Streamlit recomputes when the season changes."""
     print("Calculating player percentiles and scores...")
     data = _player_data_df.copy()
     
@@ -2743,10 +2745,11 @@ def plot_match_xg_history(all_matches_df, selected_team):
     return fig
 
 @st.cache_data
-def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
+def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_id=None):
     """
     Aggregates all per-match team stats from all_match_data into a
     season-long per-game average.
+    season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     print("Calculating expanded team stats...") # Debug print
     
@@ -2822,8 +2825,9 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df):
     return stats_per_game_df.fillna(0)
 
 @st.cache_data(ttl=3600)
-def calculate_set_piece_metrics(_events_df):
-    """Calculate set piece xG and goals metrics for all teams."""
+def calculate_set_piece_metrics(_events_df, season_id=None):
+    """Calculate set piece xG and goals metrics for all teams.
+    season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Convert minute/second to total seconds
     events_df = _events_df.copy()
     events_df['total_seconds'] = events_df['minute'] * 60 + events_df['second']
@@ -3327,7 +3331,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         season_match_data = {mid: data for mid, data in all_match_data.items() if mid in season_match_ids}
 
         try:
-            expanded_stats_df = calculate_expanded_team_stats(season_match_data, league_matches_df)
+            expanded_stats_df = calculate_expanded_team_stats(season_match_data, league_matches_df, season_id=selected_season_id)
             combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
         except Exception as e:
             st.warning(f"Could not calculate expanded match stats: {e}")
@@ -3335,7 +3339,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # Calculate and merge set piece metrics
         try:
-            set_piece_df = calculate_set_piece_metrics(league_events_df)
+            set_piece_df = calculate_set_piece_metrics(league_events_df, season_id=selected_season_id)
             combined_stats_df = pd.merge(combined_stats_df, set_piece_df, left_index=True, right_index=True, how='outer').fillna(0)
         except Exception as e:
             st.warning(f"Could not calculate set piece metrics: {e}")
@@ -3494,10 +3498,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         try:
             with st.spinner("Calculating player statistics (this may take a moment on first load)..."):
-                player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df)
+                player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df, season_id=selected_season_id)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
@@ -3588,7 +3592,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --------------------------------------------------
 
         # --- 3. Get Player's Match Log ---
-        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df)
+        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df, season_id=selected_season_id)
 
         # --- 4. Display Player Bio ---
         current_team = player_per_90_stats.get('teamName', 'N/A')
@@ -4055,9 +4059,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 1. Load Data ---
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df)
+                player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -4176,9 +4180,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 1. Load Data ---
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df)
+                player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
