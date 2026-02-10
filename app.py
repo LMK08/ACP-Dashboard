@@ -1093,8 +1093,10 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     events_df = add_custom_dribble_success(events_df)
     # ---------------------------------------
 
-    base_df = _player_minutes_df.copy().set_index('playerId')
-    
+    base_df = _player_minutes_df.copy()
+    base_df['totalMinutes'] = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
+    base_df = base_df.set_index('playerId')
+
     # Ensure player.id is int for all merging
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
     events_df = events_df.dropna(subset=['player.id'])
