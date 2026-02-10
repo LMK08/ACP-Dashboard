@@ -210,6 +210,86 @@ def get_season_player_minutes(player_minutes_data, season_id):
         }).reset_index()
     return player_minutes_data.get(season_id, pd.DataFrame())
 
+def get_minutes_from_match_data(all_match_data, matches_summary_df, season_id=None):
+    """Extract actual player minutes from all_match_data lineup data.
+    Cross-references with events for player IDs and positions."""
+    if season_id is not None:
+        season_match_ids = set(matches_summary_df[matches_summary_df['seasonId'] == season_id]['matchId'].unique())
+    else:
+        season_match_ids = set(matches_summary_df['matchId'].unique())
+
+    # Build match -> team name lookup
+    match_teams = matches_summary_df.set_index('matchId')[['homeTeamName', 'awayTeamName']].to_dict('index')
+
+    player_records = []
+    for mid, data in all_match_data.items():
+        if mid not in season_match_ids:
+            continue
+        ps = data.get('player_stats', {})
+        teams_info = match_teams.get(mid, {})
+        side_team_map = {'home': teams_info.get('homeTeamName', 'Unknown'),
+                         'away': teams_info.get('awayTeamName', 'Unknown')}
+        for side in ['home', 'away']:
+            df = ps.get(side)
+            if df is None or not isinstance(df, pd.DataFrame) or 'Minutes' not in df.columns:
+                continue
+            team_name = side_team_map[side]
+            for player_name, row in df.iterrows():
+                mins_str = str(row['Minutes']).replace("'", '').strip()
+                try:
+                    mins = int(mins_str)
+                except (ValueError, TypeError):
+                    mins = 0
+                if mins > 0:
+                    player_records.append({
+                        'playerName': player_name,
+                        'teamName': team_name,
+                        'totalMinutes': mins,
+                    })
+
+    if not player_records:
+        return pd.DataFrame(columns=['playerName', 'teamName', 'totalMinutes'])
+
+    result = pd.DataFrame(player_records)
+    # Aggregate across matches — take the team where they played most minutes
+    agg = result.groupby('playerName').agg(
+        teamName=('teamName', lambda x: x.mode().iloc[0] if not x.mode().empty else 'Unknown'),
+        totalMinutes=('totalMinutes', 'sum'),
+    ).reset_index()
+    return agg
+
+def estimate_minutes_from_events(events_df):
+    """Estimate player minutes from events for players not found in API or lineup data.
+    Uses per-match event time spans as a last-resort fallback."""
+    ev = events_df.dropna(subset=['player.id']).copy()
+    ev['player.id'] = pd.to_numeric(ev['player.id'], errors='coerce').dropna().astype(int)
+    ev['minute'] = pd.to_numeric(ev['minute'], errors='coerce').fillna(0)
+
+    match_max = ev.groupby('matchId')['minute'].max().rename('match_max_minute')
+    player_match = ev.groupby(['matchId', 'player.id']).agg(
+        first_min=('minute', 'min'),
+        last_min=('minute', 'max'),
+        player_name=('player.name', 'first'),
+        team_name=('team.name', 'first'),
+        position=('player.position', 'first'),
+    ).reset_index()
+    player_match = player_match.merge(match_max, on='matchId', how='left')
+
+    player_match['est_start'] = player_match['first_min'].where(player_match['first_min'] > 5, 0)
+    player_match['est_end'] = player_match.apply(
+        lambda r: r['match_max_minute'] if r['last_min'] >= r['match_max_minute'] - 5 else r['last_min'], axis=1
+    )
+    player_match['est_minutes'] = (player_match['est_end'] - player_match['est_start']).clip(lower=1)
+
+    result = player_match.groupby('player.id').agg(
+        playerName=('player_name', 'first'),
+        teamName=('team_name', 'first'),
+        primaryPosition=('position', 'first'),
+        totalMinutes=('est_minutes', 'sum'),
+    ).reset_index().rename(columns={'player.id': 'playerId'})
+    result['playerId'] = result['playerId'].astype(int)
+    return result
+
 def get_season_team_stats(season_team_stats, season_id):
     """Get team stats for a season. Returns {team: stats} dict.
     season_team_stats is {season_id: {team: stats}}.
@@ -309,13 +389,20 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, se
     
     # Format the date
     if 'Date' in match_log_df.columns:
-        match_log_df['Date'] = pd.to_datetime(match_log_df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-    
+        match_log_df['Date'] = pd.to_datetime(match_log_df['Date'], errors='coerce')
+
     # Reorder columns to put match info first
     cols_to_front = ['Date', 'Match', 'Score', 'Minutes']
     all_cols = cols_to_front + [col for col in match_log_df.columns if col not in cols_to_front]
-    match_log_df = match_log_df[all_cols].fillna(0)
-    match_log_df = match_log_df.sort_values(by='Date', ascending=False)
+    match_log_df = match_log_df[all_cols]
+
+    # Sort by date first (while still datetime), then convert to string
+    match_log_df = match_log_df.sort_values(by='Date', ascending=False, na_position='last')
+    if 'Date' in match_log_df.columns:
+        match_log_df['Date'] = match_log_df['Date'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A')
+
+    # Fill NaN in numeric columns only (after date is already a string)
+    match_log_df = match_log_df.fillna(0)
     
     return match_log_df
 
@@ -1080,7 +1167,52 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     events_df = add_custom_dribble_success(events_df)
     # ---------------------------------------
 
-    base_df = _player_minutes_df.copy().set_index('playerId') # Use playerId as index
+    # Start with API-based minutes, then fill missing players from lineup data
+    minutes_df = _player_minutes_df.copy()
+    if not minutes_df.empty:
+        existing_names = set(minutes_df['playerName'].unique())
+    else:
+        existing_names = set()
+
+    # Build player name -> (id, position) lookup from events
+    ev_lookup = events_df.dropna(subset=['player.id', 'player.name']).copy()
+    ev_lookup['player.id'] = pd.to_numeric(ev_lookup['player.id'], errors='coerce')
+    ev_lookup = ev_lookup.dropna(subset=['player.id'])
+    ev_lookup['player.id'] = ev_lookup['player.id'].astype(int)
+    name_to_info = ev_lookup.groupby('player.name').agg(
+        playerId=('player.id', 'first'),
+        primaryPosition=('player.position', 'first'),
+    ).to_dict('index')
+
+    # Get actual minutes from match lineup data
+    lineup_minutes = get_minutes_from_match_data(
+        st.session_state.get('_all_match_data', {}),
+        st.session_state.get('_matches_summary_df', pd.DataFrame()),
+        season_id=season_id
+    )
+    if not lineup_minutes.empty:
+        missing = lineup_minutes[~lineup_minutes['playerName'].isin(existing_names)]
+        if not missing.empty:
+            # Add playerId and position from events lookup
+            missing = missing.copy()
+            missing['playerId'] = missing['playerName'].map(lambda n: name_to_info.get(n, {}).get('playerId', 0))
+            missing['primaryPosition'] = missing['playerName'].map(lambda n: name_to_info.get(n, {}).get('primaryPosition', 'Unknown'))
+            # Drop players we couldn't find an ID for (no events = no stats anyway)
+            missing = missing[missing['playerId'] > 0]
+            if not missing.empty:
+                print(f"  Supplementing {len(missing)} players from lineup data (not in API minutes)")
+                minutes_df = pd.concat([minutes_df, missing[['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']]], ignore_index=True)
+
+    # Third fallback: estimate minutes from events for any remaining players
+    existing_ids = set(minutes_df['playerId'].unique()) if not minutes_df.empty else set()
+    estimated = estimate_minutes_from_events(events_df)
+    if not estimated.empty:
+        still_missing = estimated[~estimated['playerId'].isin(existing_ids)]
+        if not still_missing.empty:
+            print(f"  Estimating minutes for {len(still_missing)} remaining players from events")
+            minutes_df = pd.concat([minutes_df, still_missing[['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']]], ignore_index=True)
+
+    base_df = minutes_df.set_index('playerId')
     
     # Ensure player.id is int for all merging
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce')
@@ -2978,6 +3110,9 @@ st.title("Atlético CP Analysis") # You can change this title
 with st.spinner("Loading match data..."):
     raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data = load_data()
 
+# Store in session state so cached functions can access for lineup minute supplementation
+st.session_state['_all_match_data'] = all_match_data
+st.session_state['_matches_summary_df'] = matches_summary_df
 
 # --- Declare player_stats_with_scores_df globally for the app session ---
 # This ensures it's accessible inside the plotting function
