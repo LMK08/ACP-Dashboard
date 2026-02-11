@@ -277,6 +277,92 @@ def _calculate_age(birth_date):
         logger.warning(f"Failed to parse birth date '{birth_date}': {e}")
         return "N/A"
 
+@st.cache_data
+def get_player_minutes_by_position(_events_df, player_id, _player_match_log_df=None):
+    """
+    Calculate estimated minutes spent at each position for a player.
+    Uses proportional allocation of events per position within each match,
+    scaled to match-log totals when available.
+    """
+    player_events = _events_df[_events_df['player.id'] == player_id].copy()
+
+    if player_events.empty or 'player.position' not in player_events.columns:
+        return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
+
+    player_events = player_events.dropna(subset=['player.position'])
+    player_events = player_events[player_events['player.position'].astype(str).str.strip() != '']
+
+    if player_events.empty:
+        return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
+
+    # Count events per (matchId, position)
+    match_pos_counts = player_events.groupby(['matchId', 'player.position']).size().reset_index(name='event_count')
+    match_totals = match_pos_counts.groupby('matchId')['event_count'].sum().reset_index(name='total_events')
+    match_pos_counts = match_pos_counts.merge(match_totals, on='matchId')
+    match_pos_counts['proportion'] = match_pos_counts['event_count'] / match_pos_counts['total_events']
+
+    # Estimate minutes per match from events (last minute - first minute)
+    match_minutes = player_events.groupby('matchId')['minute'].agg(['min', 'max']).reset_index()
+    match_minutes['match_minutes'] = (match_minutes['max'] - match_minutes['min']).clip(lower=1)
+
+    # Scale event-derived minutes to match the match-log total for better accuracy
+    if _player_match_log_df is not None and not _player_match_log_df.empty and 'Minutes' in _player_match_log_df.columns:
+        total_from_log = pd.to_numeric(_player_match_log_df['Minutes'], errors='coerce').sum()
+        total_from_events = match_minutes['match_minutes'].sum()
+        if total_from_events > 0 and total_from_log > 0:
+            match_minutes['match_minutes'] = match_minutes['match_minutes'] * (total_from_log / total_from_events)
+
+    match_pos_counts = match_pos_counts.merge(match_minutes[['matchId', 'match_minutes']], on='matchId')
+    match_pos_counts['position_minutes'] = match_pos_counts['proportion'] * match_pos_counts['match_minutes']
+
+    # Aggregate across all matches
+    position_totals = match_pos_counts.groupby('player.position')['position_minutes'].sum().reset_index()
+    position_totals.columns = ['Position', 'Minutes']
+
+    total = position_totals['Minutes'].sum()
+    position_totals['Percentage'] = (position_totals['Minutes'] / total * 100) if total > 0 else 0
+    position_totals['Minutes'] = position_totals['Minutes'].round(0).astype(int)
+    position_totals['Percentage'] = position_totals['Percentage'].round(1)
+    position_totals = position_totals.sort_values('Minutes', ascending=False).reset_index(drop=True)
+
+    return position_totals
+
+@st.cache_data
+def get_all_players_minutes_by_position(_events_df):
+    """
+    Batch version of get_player_minutes_by_position: computes estimated
+    position-minutes for ALL players at once from event data.
+    Returns a DataFrame with columns: playerId, Position, Minutes.
+    """
+    if _events_df.empty or 'player.position' not in _events_df.columns:
+        return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
+
+    df = _events_df.dropna(subset=['player.id', 'player.position']).copy()
+    df = df[df['player.position'].astype(str).str.strip() != '']
+    if df.empty:
+        return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
+
+    # Count events per (player, match, position)
+    match_pos_counts = df.groupby(['player.id', 'matchId', 'player.position']).size().reset_index(name='event_count')
+    match_totals = match_pos_counts.groupby(['player.id', 'matchId'])['event_count'].sum().reset_index(name='total_events')
+    match_pos_counts = match_pos_counts.merge(match_totals, on=['player.id', 'matchId'])
+    match_pos_counts['proportion'] = match_pos_counts['event_count'] / match_pos_counts['total_events']
+
+    # Estimate minutes per (player, match) from events
+    match_minutes = df.groupby(['player.id', 'matchId'])['minute'].agg(['min', 'max']).reset_index()
+    match_minutes['match_minutes'] = (match_minutes['max'] - match_minutes['min']).clip(lower=1)
+
+    match_pos_counts = match_pos_counts.merge(match_minutes[['player.id', 'matchId', 'match_minutes']], on=['player.id', 'matchId'])
+    match_pos_counts['position_minutes'] = match_pos_counts['proportion'] * match_pos_counts['match_minutes']
+
+    # Aggregate across all matches per player per position
+    result = match_pos_counts.groupby(['player.id', 'player.position'])['position_minutes'].sum().reset_index()
+    result.columns = ['playerId', 'Position', 'Minutes']
+    result['Minutes'] = result['Minutes'].round(0).astype(int)
+    result = result.sort_values(['playerId', 'Minutes'], ascending=[True, False]).reset_index(drop=True)
+
+    return result
+
 @st.cache_data(ttl=3600)
 def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None):
     """
@@ -3644,6 +3730,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create unique display names
         player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
 
+        # --- Show Only Position toggle ---
+        profile_pos_played_filter = st.sidebar.checkbox("Show Only Position", key="profile_pos_played_filter")
+        if profile_pos_played_filter:
+            all_pos_minutes = get_all_players_minutes_by_position(profile_events_df)
+            if not all_pos_minutes.empty:
+                available_positions = sorted(all_pos_minutes['Position'].unique().tolist())
+                selected_pos_played = st.sidebar.selectbox(
+                    "Position:",
+                    available_positions,
+                    key="profile_pos_played_position"
+                )
+                pos_min_for_position = all_pos_minutes[all_pos_minutes['Position'] == selected_pos_played][['playerId', 'Minutes']].rename(columns={'Minutes': 'posMinutes'})
+                player_list_df = player_list_df.merge(pos_min_for_position, on='playerId', how='inner')
+                player_list_df = player_list_df.sort_values(by='posMinutes', ascending=False)
+                player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + player_list_df['posMinutes'].astype(int).astype(str) + " min at " + selected_pos_played + ")"
+
         # If navigating from another section, set the player selectbox value directly
         if st.session_state.selected_player_id is not None:
             sorted_player_ids = player_list_df['playerId'].tolist()
@@ -3766,7 +3868,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # 2. Position Selector (Simple Raw Codes)
         col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
         with col_rad_sel1:
-            st.markdown("##### Played As:")
+            st.markdown("##### Show Radar For:")
         with col_rad_sel2:
             selected_raw_pos = st.selectbox(
                 "Select Position:", 
@@ -3910,6 +4012,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # Career radar section disabled to reduce memory usage
         # TODO: Re-enable when Streamlit Cloud resources are upgraded
+
+        # --- Minutes by Position Breakdown ---
+        minutes_by_pos = get_player_minutes_by_position(profile_events_df, player_id, player_match_log_df)
+        if not minutes_by_pos.empty and len(minutes_by_pos) > 1:
+            st.caption("Minutes by Position")
+            st.dataframe(
+                minutes_by_pos,
+                column_config={
+                    "Position": st.column_config.TextColumn("Position"),
+                    "Minutes": st.column_config.NumberColumn("Minutes", format="%d"),
+                    "Percentage": st.column_config.ProgressColumn(
+                        "% of Minutes",
+                        min_value=0,
+                        max_value=100,
+                        format="%.1f%%",
+                    ),
+                },
+                hide_index=True,
+                use_container_width=False,
+            )
 
         st.divider()
 
@@ -4334,6 +4456,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning(f"No players found with {min_minutes_filter}+ minutes. Try lowering the threshold.")
             st.stop()
 
+        # --- Show Only Position toggle ---
+        analysis_pos_played_filter = st.sidebar.checkbox("Show Only Position", key="analysis_pos_played_filter")
+        analysis_pos_played_active = False
+        analysis_selected_pos_played = None
+        if analysis_pos_played_filter:
+            all_pos_minutes = get_all_players_minutes_by_position(analysis_events_df)
+            if not all_pos_minutes.empty:
+                available_positions = sorted(all_pos_minutes['Position'].unique().tolist())
+                analysis_selected_pos_played = st.sidebar.selectbox(
+                    "Position Played:",
+                    available_positions,
+                    key="analysis_pos_played_position"
+                )
+                pos_min_for_position = all_pos_minutes[all_pos_minutes['Position'] == analysis_selected_pos_played][['playerId', 'Minutes']].rename(columns={'Minutes': 'posMinutes'})
+                filtered_df = filtered_df.merge(pos_min_for_position, on='playerId', how='inner')
+                analysis_pos_played_active = not filtered_df.empty
+                if filtered_df.empty:
+                    st.warning(f"No players found who played at {analysis_selected_pos_played} with current filters.")
+                    st.stop()
+
         # --- 3. Mode-Specific Controls and Display ---
         if analysis_mode == "Position Rating":
             # Position template selector
@@ -4348,9 +4490,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             positions_in_group = POSITION_GROUPS.get(selected_template, [])
 
             # Filter to players who play these positions
-            template_filtered_df = filtered_df[
-                filtered_df['primaryPosition'].isin(positions_in_group)
-            ]
+            if analysis_pos_played_active:
+                # Position-played filter already applied; skip primaryPosition filtering
+                template_filtered_df = filtered_df
+            else:
+                template_filtered_df = filtered_df[
+                    filtered_df['primaryPosition'].isin(positions_in_group)
+                ]
 
             if template_filtered_df.empty:
                 st.warning(f"No players found for {selected_template} template with current filters.")
@@ -4384,9 +4530,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             display_df['Rating'] = display_df['Rating'].round(1)
             display_df['Minutes'] = display_df['Minutes'].astype(int)
 
+            # Add Pos. Minutes column when position-played filter is active
+            if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
+                display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
+
             # Round numeric columns
             for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating']:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating', 'Pos. Minutes']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
@@ -4502,9 +4652,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             })
             display_df['Minutes'] = display_df['Minutes'].astype(int)
 
+            # Add Pos. Minutes column when position-played filter is active
+            if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
+                display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
+
             # Round numeric columns
             for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col != 'Minutes':
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
