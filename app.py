@@ -3730,22 +3730,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create unique display names
         player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
 
-        # --- Show Only Position toggle ---
-        profile_pos_played_filter = st.sidebar.checkbox("Show Only Position", key="profile_pos_played_filter")
-        if profile_pos_played_filter:
-            all_pos_minutes = get_all_players_minutes_by_position(profile_events_df)
-            if not all_pos_minutes.empty:
-                available_positions = sorted(all_pos_minutes['Position'].unique().tolist())
-                selected_pos_played = st.sidebar.selectbox(
-                    "Position:",
-                    available_positions,
-                    key="profile_pos_played_position"
-                )
-                pos_min_for_position = all_pos_minutes[all_pos_minutes['Position'] == selected_pos_played][['playerId', 'Minutes']].rename(columns={'Minutes': 'posMinutes'})
-                player_list_df = player_list_df.merge(pos_min_for_position, on='playerId', how='inner')
-                player_list_df = player_list_df.sort_values(by='posMinutes', ascending=False)
-                player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + player_list_df['posMinutes'].astype(int).astype(str) + " min at " + selected_pos_played + ")"
-
         # If navigating from another section, set the player selectbox value directly
         if st.session_state.selected_player_id is not None:
             sorted_player_ids = player_list_df['playerId'].tolist()
@@ -3871,11 +3855,47 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.markdown("##### Show Radar For:")
         with col_rad_sel2:
             selected_raw_pos = st.selectbox(
-                "Select Position:", 
-                raw_positions, 
+                "Select Position:",
+                raw_positions,
                 label_visibility="collapsed",
                 key="radar_pos_selector"
             )
+
+        # --- Show Only Position toggle ---
+        # When active, recompute stats using only events at the selected position
+        profile_pos_filter = st.checkbox(
+            "Show Only Position",
+            key="profile_pos_played_filter",
+            help=f"When checked, the radar uses only events where the player played as **{selected_raw_pos}** (selected above), instead of all events."
+        )
+        radar_stats_df = player_stats_with_scores_df
+        radar_player_data_row = player_data_row
+        if profile_pos_filter and 'player.position' in profile_events_df.columns:
+            pos_filtered_events = profile_events_df[
+                profile_events_df['player.position'] == selected_raw_pos
+            ]
+            if not pos_filtered_events.empty:
+                # Build position-adjusted minutes: replace totalMinutes with minutes at this position
+                all_pos_minutes = get_all_players_minutes_by_position(profile_events_df)
+                pos_minutes = all_pos_minutes[all_pos_minutes['Position'] == selected_raw_pos][['playerId', 'Minutes']]
+                pos_player_minutes_df = profile_player_minutes_df.copy()
+                pos_player_minutes_df = pos_player_minutes_df.merge(pos_minutes, on='playerId', how='inner')
+                pos_player_minutes_df['totalMinutes'] = pos_player_minutes_df['Minutes']
+                pos_player_minutes_df = pos_player_minutes_df.drop(columns=['Minutes'])
+
+                # Use a distinct season_id so the cache differentiates from unfiltered stats
+                pos_cache_key = f"{selected_season_id}_pos_{selected_raw_pos}"
+                pos_filtered_stats = calculate_all_player_stats(
+                    pos_filtered_events, pos_player_minutes_df, season_id=pos_cache_key
+                )
+                pos_filtered_scores = calculate_player_percentiles_and_scores(
+                    pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=0, season_id=pos_cache_key
+                )
+                if not pos_filtered_scores.empty:
+                    radar_stats_df = pos_filtered_scores
+                    pos_player_row = pos_filtered_scores[pos_filtered_scores['playerId'] == player_id]
+                    if not pos_player_row.empty:
+                        radar_player_data_row = pos_player_row
 
         # 3. Find the "Best Fit" Template for this Raw Position
         # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
@@ -3901,18 +3921,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 
                 # Define Population for this role (for percentile calculation)
                 role_codes = POSITION_GROUPS[role]
-                population = player_stats_with_scores_df[
-                    player_stats_with_scores_df['primaryPosition'].isin(role_codes)
+                population = radar_stats_df[
+                    radar_stats_df['primaryPosition'].isin(role_codes)
                 ]
-                if len(population) < 5: population = player_stats_with_scores_df # Fallback
-                
+                if len(population) < 5: population = radar_stats_df # Fallback
+
                 # Calculate Score
                 role_score = 0
                 total_weight = 0
-                
+
                 for metric, weight in role_weights.items():
-                    if metric in player_data_row.columns and metric in population.columns:
-                        val = player_data_row[metric].values[0]
+                    if metric in radar_player_data_row.columns and metric in population.columns:
+                        val = radar_player_data_row[metric].values[0]
                         pop_vals = population[metric].fillna(0)
                         
                         # Percentile
@@ -3936,39 +3956,39 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
             # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
-            metrics_to_plot = [m for m in metrics_to_plot if m in player_data_row.columns]
-            
+            metrics_to_plot = [m for m in metrics_to_plot if m in radar_player_data_row.columns]
+
             # Get Population for distribution
-            final_population = player_stats_with_scores_df[
-                player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
+            final_population = radar_stats_df[
+                radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
             ]
-            if len(final_population) < 5: final_population = player_stats_with_scores_df
+            if len(final_population) < 5: final_population = radar_stats_df
 
             # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
             # This ensures that if the user selects a raw position that maps to multiple templates 
             # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated 
             # based on the new comparison group.
-            player_data_row = player_data_row.copy()
-            
+            radar_player_data_row = radar_player_data_row.copy()
+
             for role in eligible_roles:
                 # 1. Get Population for this specific role
-                role_population = player_stats_with_scores_df[
-                    player_stats_with_scores_df['primaryPosition'].isin(POSITION_GROUPS[role])
+                role_population = radar_stats_df[
+                    radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[role])
                 ]
-                if len(role_population) < 5: role_population = player_stats_with_scores_df
-                
+                if len(role_population) < 5: role_population = radar_stats_df
+
                 # 2. Get metrics and weights for this role
                 role_weights = WEIGHTS.get(role, {})
                 new_total_score = 0
                 total_weight = 0
-                
+
                 # 3. Recalculate percentiles for all metrics used in this role
                 for metric, weight in role_weights.items():
                     # Get population values for this metric
                     pop_values = role_population[metric].dropna()
-                    
-                    if metric in player_data_row.columns:
-                        player_val = player_data_row[metric].values[0]
+
+                    if metric in radar_player_data_row.columns:
+                        player_val = radar_player_data_row[metric].values[0]
                         
                         if not pop_values.empty:
                             # Calculate percentile (0-100)
@@ -3983,8 +4003,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             # the last one wins. This is generally acceptable as they are usually 
                             # compared against similar populations if they share a raw position.
                             # Ideally, we'd plot based on the 'best_role' metrics specifically.
-                            player_data_row[metric + '_percentile'] = pct_score / 100.0
-                            
+                            radar_player_data_row[metric + '_percentile'] = pct_score / 100.0
+
                             # Add to weighted score
                             new_total_score += ((pct_score / 100.0) * weight)
                             total_weight += weight
@@ -3992,21 +4012,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # 4. Update the Role Score column
                 if total_weight > 0:
                     final_new_score = (new_total_score / total_weight) * 100
-                    player_data_row[role + '_Score'] = final_new_score
-            
+                    radar_player_data_row[role + '_Score'] = final_new_score
+
             # --- NEW: Update Position Label for Chart ---
             # This ensures the chart displays "CF" if we selected "CF", even if their bio says "RW"
-            player_data_row['primaryPosition'] = selected_raw_pos
+            radar_player_data_row['primaryPosition'] = selected_raw_pos
             # -----------------------------------------------------------------------
 
             # Plot
             fig_radar = create_radar_with_distributions(
-                player_data_row, 
-                metrics_to_plot, 
-                best_role, 
-                eligible_roles, # Pass list of options just in case function needs it
-                all_position_data=final_population, 
-                full_df_for_ranking=player_stats_with_scores_df 
+                radar_player_data_row,
+                metrics_to_plot,
+                best_role,
+                eligible_roles,
+                all_position_data=final_population,
+                full_df_for_ranking=radar_stats_df
             )
             st.pyplot(fig_radar, use_container_width=True)
 
@@ -4456,25 +4476,52 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning(f"No players found with {min_minutes_filter}+ minutes. Try lowering the threshold.")
             st.stop()
 
+        # --- Age filter ---
+        analysis_player_details_df = load_player_details()
+        if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
+            _ages_series = analysis_player_details_df['birthDate'].apply(_calculate_age)
+            _numeric_ages = pd.to_numeric(_ages_series, errors='coerce').dropna()
+            if not _numeric_ages.empty:
+                min_age_available = int(_numeric_ages.min())
+                max_age_available = int(_numeric_ages.max()) + 1
+                age_range = st.sidebar.slider(
+                    "Age Range:",
+                    min_value=min_age_available,
+                    max_value=max_age_available,
+                    value=(min_age_available, max_age_available),
+                    key="player_analysis_age_range"
+                )
+                if age_range != (min_age_available, max_age_available):
+                    valid_ids = _numeric_ages[
+                        (_numeric_ages >= age_range[0]) & (_numeric_ages <= age_range[1])
+                    ].index.tolist()
+                    filtered_df = filtered_df[filtered_df['playerId'].isin(valid_ids)]
+                    if filtered_df.empty:
+                        st.warning(f"No players found in age range {age_range[0]}-{age_range[1]}.")
+                        st.stop()
+
         # --- Show Only Position toggle ---
         analysis_pos_played_filter = st.sidebar.checkbox("Show Only Position", key="analysis_pos_played_filter")
         analysis_pos_played_active = False
-        analysis_selected_pos_played = None
+        analysis_selected_positions = []
         if analysis_pos_played_filter:
             all_pos_minutes = get_all_players_minutes_by_position(analysis_events_df)
             if not all_pos_minutes.empty:
                 available_positions = sorted(all_pos_minutes['Position'].unique().tolist())
-                analysis_selected_pos_played = st.sidebar.selectbox(
-                    "Position Played:",
+                analysis_selected_positions = st.sidebar.multiselect(
+                    "Position(s):",
                     available_positions,
+                    default=available_positions[:1],
                     key="analysis_pos_played_position"
                 )
-                pos_min_for_position = all_pos_minutes[all_pos_minutes['Position'] == analysis_selected_pos_played][['playerId', 'Minutes']].rename(columns={'Minutes': 'posMinutes'})
-                filtered_df = filtered_df.merge(pos_min_for_position, on='playerId', how='inner')
-                analysis_pos_played_active = not filtered_df.empty
-                if filtered_df.empty:
-                    st.warning(f"No players found who played at {analysis_selected_pos_played} with current filters.")
-                    st.stop()
+                if analysis_selected_positions:
+                    pos_min_for_positions = all_pos_minutes[all_pos_minutes['Position'].isin(analysis_selected_positions)].groupby('playerId')['Minutes'].sum().reset_index().rename(columns={'Minutes': 'posMinutes'})
+                    filtered_df = filtered_df.merge(pos_min_for_positions, on='playerId', how='inner')
+                    analysis_pos_played_active = not filtered_df.empty
+                    if filtered_df.empty:
+                        pos_label = "/".join(analysis_selected_positions)
+                        st.warning(f"No players found who played at {pos_label} with current filters.")
+                        st.stop()
 
         # --- 3. Mode-Specific Controls and Display ---
         if analysis_mode == "Position Rating":
@@ -4534,9 +4581,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
                 display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
 
+            # Add Age column
+            if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
+                age_col_pos = display_df.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display_df.columns else display_df.columns.get_loc('Minutes') + 1
+                display_df.insert(age_col_pos, 'Age', sorted_df['playerId'].map(
+                    lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
+                ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
+
             # Round numeric columns
             for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating', 'Pos. Minutes']:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating', 'Pos. Minutes', 'Age']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
@@ -4656,9 +4710,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
                 display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
 
+            # Add Age column
+            if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
+                age_col_pos = display_df.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display_df.columns else display_df.columns.get_loc('Minutes') + 1
+                display_df.insert(age_col_pos, 'Age', sorted_df['playerId'].map(
+                    lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
+                ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
+
             # Round numeric columns
             for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes']:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
