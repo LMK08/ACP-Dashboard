@@ -838,13 +838,11 @@ FORMATION_COORDS = {
 
 # Shadow Team tag categories with hex colors
 SHADOW_TAG_CATEGORIES = {
-    'Current Starter': '#2ecc71',
-    'Transfer Target': '#3498db',
-    'Academy Prospect': '#f1c40f',
-    'Loan Target': '#e74c3c',
-    'Free Agent': '#9b59b6',
-    'Returning Loanee': '#e67e22',
-    'Backup Option': '#95a5a6',
+    'A - No Brainer': '#2ecc71',
+    'B - Possible Starter': '#3498db',
+    'C - Quality Depth Squad': '#f1c40f',
+    'D - Quality but Injury Prone': '#e74c3c',
+    'E - Depth from Lisbon': '#9b59b6',
 }
 
 # Maps each formation slot to relevant role names whose _Score columns to display
