@@ -1016,11 +1016,12 @@ def create_shadow_team_graphic(formation_key, player_assignments, tag_assignment
         sy = max(2, min(98, sy))
         spread_coords.append((sx, sy))
 
-    # Build a quick lookup for team/minutes
+    # Build a quick lookup for team/minutes keyed by display_key "Name (Team)"
     player_info_map = {}
     if player_stats_df is not None and not player_stats_df.empty:
         for _, row in player_stats_df[['playerName', 'teamName', 'totalMinutes']].iterrows():
-            player_info_map[row['playerName']] = (row['teamName'], int(row['totalMinutes']))
+            dk = f"{row['playerName']} ({row['teamName']})"
+            player_info_map[dk] = (row['playerName'], row['teamName'], int(row['totalMinutes']))
 
     for slot, coords in zip(formation_data['positions'], spread_coords):
         x, y = coords
@@ -1034,20 +1035,28 @@ def create_shadow_team_graphic(formation_key, player_assignments, tag_assignment
         if players:
             # Stack player info below the circle
             y_offset = 2.8
-            for p_name in players:
-                p_tag_info = tag_assignments.get(slot, {}).get(p_name, {})
+            for p_display_key in players:
+                p_tag_info = tag_assignments.get(slot, {}).get(p_display_key, {})
                 p_category = p_tag_info.get('category', 'Current Starter')
                 p_label = p_tag_info.get('label', '')
                 p_color = SHADOW_TAG_CATEGORIES.get(p_category, '#ffffff')
                 used_tags.add(p_category)
 
+                # Extract real name and team from lookup (display_key -> (name, team, mins))
+                info = player_info_map.get(p_display_key)
+                if info:
+                    real_name, team_name, mins = info
+                else:
+                    # Fallback: strip " (Team)" suffix
+                    real_name = p_display_key.rsplit(' (', 1)[0] if ' (' in p_display_key else p_display_key
+                    team_name, mins = '', 0
+
                 # Player name
-                ax.text(x, y - y_offset, p_name, ha='center', va='top', fontsize=8.5,
+                ax.text(x, y - y_offset, real_name, ha='center', va='top', fontsize=8.5,
                         fontweight='bold', color=p_color, zorder=6)
                 y_offset += 1.2
 
                 # Team & minutes underneath in smaller italic
-                team_name, mins = player_info_map.get(p_name, ('', 0))
                 if team_name:
                     detail_text = f"{team_name} | {mins:,}'"
                     ax.text(x, y - y_offset, detail_text, ha='center', va='top', fontsize=7,
@@ -5151,11 +5160,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning("No players found with sufficient minutes for analysis.")
             st.stop()
 
-        # Build player options sorted by minutes desc
-        player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].copy()
+        # Build player options sorted by minutes desc, using "Name (Team)" for uniqueness
+        player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].copy()
         player_list_df = player_list_df.sort_values('totalMinutes', ascending=False)
-        player_display_names = player_list_df['playerName'].tolist()
-        player_options = ['-- Empty --'] + player_display_names
+        player_list_df['display_key'] = player_list_df['playerName'] + ' (' + player_list_df['teamName'] + ')'
+        player_display_names = player_list_df['display_key'].tolist()
+        # Map display_key -> index in stats df for exact lookups
+        display_key_to_idx = {}
+        for idx, row in player_list_df.iterrows():
+            display_key_to_idx[row['display_key']] = idx
 
         # --- Sidebar Controls ---
         st.sidebar.subheader("Formation")
@@ -5281,19 +5294,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if not slot_players:
                 continue
 
-            for p_name in slot_players:
-                # Find player row in stats
-                match = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == p_name]
-                if match.empty:
+            for p_display_key in slot_players:
+                # Find player row via display_key index lookup
+                row_idx = display_key_to_idx.get(p_display_key)
+                if row_idx is None:
                     continue
-                player_row = match.iloc[0]
+                player_row = player_stats_with_scores_df.loc[row_idx]
                 player_id = player_row.get('playerId', None)
+                p_name = player_row.get('playerName', p_display_key)
                 team = player_row.get('teamName', 'N/A')
                 minutes = player_row.get('totalMinutes', 0)
                 primary_pos = player_row.get('primaryPosition', 'N/A')
 
                 # Get tag info for display
-                p_tag_info = tag_assignments.get(slot, {}).get(p_name, {})
+                p_tag_info = tag_assignments.get(slot, {}).get(p_display_key, {})
                 p_tag = p_tag_info.get('category', '')
                 p_tag_color = SHADOW_TAG_CATEGORIES.get(p_tag, '#ffffff')
 
