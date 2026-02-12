@@ -836,6 +836,44 @@ FORMATION_COORDS = {
     },
 }
 
+# Shadow Team tag categories with hex colors
+SHADOW_TAG_CATEGORIES = {
+    'Current Starter': '#2ecc71',
+    'Transfer Target': '#3498db',
+    'Academy Prospect': '#f1c40f',
+    'Loan Target': '#e74c3c',
+    'Free Agent': '#9b59b6',
+    'Returning Loanee': '#e67e22',
+    'Backup Option': '#95a5a6',
+}
+
+# Maps each formation slot to relevant role names whose _Score columns to display
+POSITION_SLOT_TO_ROLES = {
+    'GK': ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK'],
+    'LB': ['Full Back', 'Inverted Full Back', 'Wingback'],
+    'RB': ['Full Back', 'Inverted Full Back', 'Wingback'],
+    'LCB': ['Ball-Playing Centerback', 'Stopper', 'Athletic Centerback'],
+    'RCB': ['Ball-Playing Centerback', 'Stopper', 'Athletic Centerback'],
+    'CB': ['Ball-Playing Centerback', 'Stopper', 'Athletic Centerback'],
+    'LWB': ['Wingback', 'Full Back', 'Wide Winger'],
+    'RWB': ['Wingback', 'Full Back', 'Wide Winger'],
+    'CDM': ['Holding Mid', 'Ball-Winning Mid', 'Deep-lying Playmaker'],
+    'LDM': ['Holding Mid', 'Ball-Winning Mid', 'Deep-lying Playmaker'],
+    'RDM': ['Holding Mid', 'Ball-Winning Mid', 'Deep-lying Playmaker'],
+    'LCM': ['Box-to-Box', 'Ball-Winning Mid', 'Deep-lying Playmaker', 'Advanced Playmaker'],
+    'RCM': ['Box-to-Box', 'Ball-Winning Mid', 'Deep-lying Playmaker', 'Advanced Playmaker'],
+    'LM': ['Wide Winger', 'Creative Winger', 'Inside Forward'],
+    'RM': ['Wide Winger', 'Creative Winger', 'Inside Forward'],
+    'LAM': ['Advanced Playmaker', 'Creative Winger', 'Inside Forward'],
+    'RAM': ['Advanced Playmaker', 'Creative Winger', 'Inside Forward'],
+    'CAM': ['Advanced Playmaker', 'Shadow Striker', 'Creative Winger'],
+    'LW': ['Wide Winger', 'Creative Winger', 'Inside Forward'],
+    'RW': ['Wide Winger', 'Creative Winger', 'Inside Forward'],
+    'CF': ['Mobile Striker', 'Target Man', 'Poacher', 'Pressing Forward', 'Shadow Striker'],
+    'LST': ['Mobile Striker', 'Target Man', 'Poacher', 'Pressing Forward', 'Shadow Striker'],
+    'RST': ['Mobile Striker', 'Target Man', 'Poacher', 'Pressing Forward', 'Shadow Striker'],
+}
+
 
 # ==============================================================================
 # 4. HELPER & PLOTTING FUNCTIONS
@@ -949,6 +987,117 @@ def create_formation_graphic(formation, starting_xi, team_name):
     fig.patch.set_facecolor('#1a472a')
 
     return fig
+
+# --- Helper Functions for Shadow Team ---
+def create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, shadow_team_name, player_stats_df=None):
+    """Create a pitch graphic for the shadow team.
+
+    player_assignments: {slot: [player_name, ...]} — list of players per slot
+    tag_assignments: {slot: {player_name: {category, label}}} — per-player tags
+    player_stats_df: DataFrame with playerName, teamName, totalMinutes columns
+    """
+    from mplsoccer import VerticalPitch
+
+    pitch = VerticalPitch(pitch_type='opta', pitch_color='#1a472a', line_color='white',
+                          linewidth=1, goal_type='box')
+    fig, ax = pitch.draw(figsize=(8, 11))
+
+    formation_data = FORMATION_COORDS.get(formation_key, FORMATION_COORDS['4-4-2'])
+    used_tags = set()
+
+    # Spread coords outward from center and shift up the pitch
+    cx, cy = 50, 50  # pitch center in opta coords
+    spread = 1.15     # 15% further from center
+    y_shift = 12      # shift everything up the pitch
+    spread_coords = []
+    for (ox, oy) in formation_data['coords']:
+        sx = cx + (ox - cx) * spread
+        sy = cy + (oy - cy) * spread + y_shift
+        # Clamp to pitch bounds
+        sx = max(2, min(98, sx))
+        sy = max(2, min(98, sy))
+        spread_coords.append((sx, sy))
+
+    # Build a quick lookup for team/minutes
+    player_info_map = {}
+    if player_stats_df is not None and not player_stats_df.empty:
+        for _, row in player_stats_df[['playerName', 'teamName', 'totalMinutes']].iterrows():
+            player_info_map[row['playerName']] = (row['teamName'], int(row['totalMinutes']))
+
+    for slot, coords in zip(formation_data['positions'], spread_coords):
+        x, y = coords
+        players = player_assignments.get(slot, [])
+
+        # Always draw a white outline circle with the position label inside
+        ax.scatter(x, y, s=900, c='none', edgecolors='white', linewidth=2, zorder=5)
+        ax.text(x, y, slot, ha='center', va='center', fontsize=9,
+                fontweight='bold', color='white', zorder=6)
+
+        if players:
+            # Stack player info below the circle
+            y_offset = 2.8
+            for p_name in players:
+                p_tag_info = tag_assignments.get(slot, {}).get(p_name, {})
+                p_category = p_tag_info.get('category', 'Current Starter')
+                p_label = p_tag_info.get('label', '')
+                # Default to white; only color when a non-default tag is chosen
+                default_tag = list(SHADOW_TAG_CATEGORIES.keys())[0]
+                if p_category != default_tag:
+                    p_color = SHADOW_TAG_CATEGORIES.get(p_category, '#ffffff')
+                    used_tags.add(p_category)
+                else:
+                    p_color = '#ffffff'
+
+                # Player name
+                ax.text(x, y - y_offset, p_name, ha='center', va='top', fontsize=8.5,
+                        fontweight='bold', color=p_color, zorder=6)
+                y_offset += 1.2
+
+                # Team & minutes underneath in smaller italic
+                team_name, mins = player_info_map.get(p_name, ('', 0))
+                if team_name:
+                    detail_text = f"{team_name} | {mins:,}'"
+                    ax.text(x, y - y_offset, detail_text, ha='center', va='top', fontsize=7,
+                            fontstyle='italic', color='#cccccc', zorder=6)
+                    y_offset += 1.8
+
+                # Custom label
+                if p_label:
+                    ax.text(x, y - y_offset, p_label, ha='center', va='top', fontsize=6.5,
+                            fontstyle='italic', color='#aaaaaa', zorder=6)
+                    y_offset += 1.6
+
+    # Legend for used tag categories
+    if used_tags:
+        legend_handles = []
+        for tag in sorted(used_tags):
+            color = SHADOW_TAG_CATEGORIES[tag]
+            legend_handles.append(Line2D([0], [0], marker='o', color='none', markerfacecolor=color,
+                                         markeredgecolor='white', markersize=8, label=tag))
+        ax.legend(handles=legend_handles, loc='lower center', bbox_to_anchor=(0.5, -0.05),
+                  ncol=min(len(legend_handles), 4), fontsize=7, facecolor='#1a472a',
+                  edgecolor='white', labelcolor='white', framealpha=0.9)
+
+    title = shadow_team_name if shadow_team_name else "Shadow Team"
+    ax.set_title(f'{title}\n{formation_key}', fontsize=12, fontweight='bold',
+                 color='white', pad=10)
+    fig.patch.set_facecolor('#1a472a')
+
+    return fig
+
+
+def get_player_role_scores(player_row, slot_name):
+    """Get relevant role scores for a player based on their formation slot."""
+    roles = POSITION_SLOT_TO_ROLES.get(slot_name, [])
+    scores = {}
+    for role in roles:
+        col = f'{role}_Score'
+        if col in player_row.index:
+            val = player_row[col]
+            if pd.notna(val):
+                scores[role] = round(float(val), 1)
+    return dict(sorted(scores.items(), key=lambda x: x[1], reverse=True))
+
 
 # --- Helper Function for League Table ---
 def calculate_league_table(matches_df, team_list):
@@ -3187,6 +3336,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.current_page = 'Match Analysis'
     if 'radio_key_version' not in st.session_state:
         st.session_state.radio_key_version = 0
+    if 'shadow_teams' not in st.session_state:
+        st.session_state.shadow_teams = {}
 
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
@@ -3197,7 +3348,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.radio_key_version += 1
         st.session_state.nav_to_profile = False
 
-    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor')
+    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team')
 
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type",
@@ -4977,6 +5128,214 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 home_matches = home_cum['matches']
                 away_matches = away_cum['matches']
                 st.caption(f"Based on {home_matches} matches for {home_team} and {away_matches} matches for {away_team}")
+
+    # ==========================================================================
+    # SHADOW TEAM BUILDER
+    # ==========================================================================
+    elif analysis_type == 'Shadow Team':
+        st.header("Shadow Team Builder")
+
+        # --- Season Selector ---
+        selected_season_id = season_selector("shadow_team", include_all_seasons=True)
+        shadow_events_df = get_season_events(raw_events_df, selected_season_id)
+        shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+
+        # --- Load Data ---
+        player_details_df = load_player_details()
+
+        try:
+            with st.spinner("Loading player statistics..."):
+                player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
+                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
+                )
+        except Exception as e:
+            st.error(f"An error occurred calculating player stats: {e}")
+            logger.exception("Error in Shadow Team stats calculation")
+            st.stop()
+
+        if player_stats_with_scores_df.empty:
+            st.warning("No players found with sufficient minutes for analysis.")
+            st.stop()
+
+        # Build player options sorted by minutes desc
+        player_list_df = player_stats_with_scores_df[['playerName', 'teamName', 'totalMinutes']].copy()
+        player_list_df = player_list_df.sort_values('totalMinutes', ascending=False)
+        player_display_names = player_list_df['playerName'].tolist()
+        player_options = ['-- Empty --'] + player_display_names
+
+        # --- Sidebar Controls ---
+        st.sidebar.subheader("Formation")
+        formation_key = st.sidebar.selectbox("Select Formation", list(FORMATION_COORDS.keys()), key="shadow_formation")
+        formation_data = FORMATION_COORDS[formation_key]
+
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Save / Load")
+        team_name_input = st.sidebar.text_input("Team Name", value="My Shadow Team", key="shadow_team_name_input")
+
+        if st.sidebar.button("Save Team", key="shadow_save_btn"):
+            players = {}
+            tags = {}
+            for slot in formation_data['positions']:
+                p_key = f"shadow_players_{slot}"
+                selected = st.session_state.get(p_key, [])
+                players[slot] = selected
+                slot_tags = {}
+                for p_name in selected:
+                    t_key = f"shadow_tag_{slot}_{p_name}"
+                    l_key = f"shadow_label_{slot}_{p_name}"
+                    slot_tags[p_name] = {
+                        'category': st.session_state.get(t_key, 'Current Starter'),
+                        'label': st.session_state.get(l_key, ''),
+                    }
+                tags[slot] = slot_tags
+            st.session_state.shadow_teams[team_name_input] = {
+                'formation': formation_key,
+                'players': players,
+                'tags': tags,
+            }
+            st.sidebar.success(f"Saved '{team_name_input}'!")
+
+        saved_names = list(st.session_state.shadow_teams.keys())
+        if saved_names:
+            load_name = st.sidebar.selectbox("Load Saved Team", saved_names, key="shadow_load_select")
+            if st.sidebar.button("Load Team", key="shadow_load_btn"):
+                saved = st.session_state.shadow_teams[load_name]
+                st.session_state['shadow_formation'] = saved['formation']
+                for slot, player_list in saved['players'].items():
+                    st.session_state[f"shadow_players_{slot}"] = player_list
+                for slot, slot_tags in saved['tags'].items():
+                    for p_name, tag_info in slot_tags.items():
+                        st.session_state[f"shadow_tag_{slot}_{p_name}"] = tag_info.get('category', 'Current Starter')
+                        st.session_state[f"shadow_label_{slot}_{p_name}"] = tag_info.get('label', '')
+                st.rerun()
+
+        # --- Tag Legend (sidebar) ---
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Tag Legend")
+        for tag_name, tag_color in SHADOW_TAG_CATEGORIES.items():
+            st.sidebar.markdown(
+                f'<span style="display:inline-block;width:12px;height:12px;'
+                f'background-color:{tag_color};border-radius:50%;margin-right:6px;'
+                f'vertical-align:middle;"></span>'
+                f'<span style="vertical-align:middle;">{tag_name}</span>',
+                unsafe_allow_html=True
+            )
+
+        # --- Main Content: Two Columns ---
+        left_col, right_col = st.columns([3, 2])
+
+        # Gather current assignments from widget state
+        player_assignments = {}  # {slot: [player_name, ...]}
+        tag_assignments = {}     # {slot: {player_name: {category, label}}}
+        tag_categories_list = list(SHADOW_TAG_CATEGORIES.keys())
+
+        with right_col:
+            st.subheader("Assign Players")
+            for slot in formation_data['positions']:
+                with st.expander(f"{slot}", expanded=False):
+                    selected_players = st.multiselect(
+                        "Players", player_display_names,
+                        key=f"shadow_players_{slot}"
+                    )
+                    player_assignments[slot] = selected_players
+                    slot_tags = {}
+                    for p_name in selected_players:
+                        st.markdown(f"**{p_name}**")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            selected_tag = st.selectbox(
+                                "Tag", tag_categories_list,
+                                key=f"shadow_tag_{slot}_{p_name}"
+                            )
+                        with c2:
+                            custom_label = st.text_input(
+                                "Label", value="",
+                                key=f"shadow_label_{slot}_{p_name}"
+                            )
+                        slot_tags[p_name] = {
+                            'category': selected_tag,
+                            'label': custom_label,
+                        }
+                    tag_assignments[slot] = slot_tags
+
+        with left_col:
+            st.subheader("Formation View")
+            fig = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
+            st.pyplot(fig)
+            plt.close(fig)
+
+            # Export PNG
+            buf = io.BytesIO()
+            fig_export = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
+            fig_export.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor='#1a472a')
+            plt.close(fig_export)
+            buf.seek(0)
+            st.download_button(
+                label="Download PNG",
+                data=buf,
+                file_name=f"shadow_team_{team_name_input.replace(' ', '_')}.png",
+                mime="image/png",
+                key="shadow_download_png"
+            )
+
+        # --- Player Details Panel ---
+        st.markdown("---")
+        st.subheader("Player Details")
+
+        for slot in formation_data['positions']:
+            slot_players = player_assignments.get(slot, [])
+            if not slot_players:
+                continue
+
+            for p_name in slot_players:
+                # Find player row in stats
+                match = player_stats_with_scores_df[player_stats_with_scores_df['playerName'] == p_name]
+                if match.empty:
+                    continue
+                player_row = match.iloc[0]
+                player_id = player_row.get('playerId', None)
+                team = player_row.get('teamName', 'N/A')
+                minutes = player_row.get('totalMinutes', 0)
+                primary_pos = player_row.get('primaryPosition', 'N/A')
+
+                # Get tag info for display
+                p_tag_info = tag_assignments.get(slot, {}).get(p_name, {})
+                p_tag = p_tag_info.get('category', '')
+                p_tag_color = SHADOW_TAG_CATEGORIES.get(p_tag, '#ffffff')
+
+                # Get age from player_details
+                age_str = "N/A"
+                if player_id is not None and not player_details_df.empty:
+                    pid = int(player_id) if pd.notna(player_id) else None
+                    if pid is not None and pid in player_details_df.index:
+                        birth_date = player_details_df.loc[pid].get('birthDate', None)
+                        age_val = _calculate_age(birth_date)
+                        if age_val != "N/A":
+                            age_str = f"{age_val:.1f}"
+
+                with st.expander(f"{slot}: {p_name} ({team})", expanded=False):
+                    # Tag badge
+                    if p_tag:
+                        st.markdown(
+                            f'<span style="background-color:{p_tag_color};color:#fff;'
+                            f'padding:2px 8px;border-radius:10px;font-size:0.8em;">'
+                            f'{p_tag}</span>',
+                            unsafe_allow_html=True
+                        )
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Team", team)
+                    m2.metric("Age", age_str)
+                    m3.metric("Minutes", f"{int(minutes):,}")
+                    m4.metric("Position", primary_pos)
+
+                    # Role scores table
+                    role_scores = get_player_role_scores(player_row, slot)
+                    if role_scores:
+                        scores_df = pd.DataFrame(list(role_scores.items()), columns=['Role', 'Score'])
+                        st.dataframe(scores_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No role scores available for this slot.")
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")

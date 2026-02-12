@@ -19,7 +19,7 @@ position_groups:
   Creative Winger: ['LW', 'RW', 'LWF', 'RWF', 'RAMF', 'LAMF']
   Inside Forward: ['LW', 'RW', 'LWF', 'RWF', 'RAMF', 'LAMF']
   Full Back: ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB']
-  Wingback: ['LWB', 'RWB', 'LB5', 'RB5']
+  Wingback: ['LWB', 'RWB', 'LB5', 'RB5', 'LB', 'RB']
   Inverted Full Back: ['LB', 'RB', 'LWB', 'RWB', 'LB5', 'RB5']
   Ball-Playing Centerback: ['LCB', 'RCB', 'CB', 'LCB3', 'RCB3']
   Stopper: ['LCB', 'RCB', 'CB', 'LCB3', 'RCB3']
