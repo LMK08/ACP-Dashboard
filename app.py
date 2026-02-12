@@ -1038,13 +1038,8 @@ def create_shadow_team_graphic(formation_key, player_assignments, tag_assignment
                 p_tag_info = tag_assignments.get(slot, {}).get(p_name, {})
                 p_category = p_tag_info.get('category', 'Current Starter')
                 p_label = p_tag_info.get('label', '')
-                # Default to white; only color when a non-default tag is chosen
-                default_tag = list(SHADOW_TAG_CATEGORIES.keys())[0]
-                if p_category != default_tag:
-                    p_color = SHADOW_TAG_CATEGORIES.get(p_category, '#ffffff')
-                    used_tags.add(p_category)
-                else:
-                    p_color = '#ffffff'
+                p_color = SHADOW_TAG_CATEGORIES.get(p_category, '#ffffff')
+                used_tags.add(p_category)
 
                 # Player name
                 ax.text(x, y - y_offset, p_name, ha='center', va='top', fontsize=8.5,
