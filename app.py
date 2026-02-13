@@ -3642,6 +3642,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             fig_shots_against = create_season_shots_against_shotmap(team_events_df, team_matches_df, selected_team_t)
             st.pyplot(fig_shots_against, use_container_width=True)
 
+        # --- Match-by-Match xG History ---
+        with st.expander("Match-by-Match xG (Last 365 Days)", expanded=False):
+            try:
+                hist_events_df, hist_matches_df = load_historical_data()
+
+                if hist_events_df is not None and hist_matches_df is not None:
+                    rolling_xg_data_for_plot = calculate_xg_history_data(hist_events_df, hist_matches_df)
+
+                    if not rolling_xg_data_for_plot.empty:
+                        fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
+                        st.pyplot(fig_rolling_xg, use_container_width=True)
+                    else:
+                        st.warning("No data available to calculate xG history.")
+                else:
+                    st.warning("Historical data files not available.")
+            except Exception as e:
+                st.error(f"Error loading xG history: {e}")
+
         st.subheader("Corner Kick Analysis")
         col_c1, col_c2 = st.columns(2)
         with col_c1:
