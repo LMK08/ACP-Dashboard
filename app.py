@@ -3024,17 +3024,17 @@ def plot_match_xg_history(all_matches_df, selected_team):
             season_slice = team_df[season_mask]
             if len(season_slice) < 2:
                 continue
-            # First stage is the roundId used in the team's first match of the season
-            first_stage_round = season_slice.iloc[0]['roundId']
-            # Find where roundId changes (entering second stage)
+            # Determine first-stage roundId from FULL dataset (most matches = first stage)
+            season_all = all_matches_df[all_matches_df['seasonId'] == sid]
+            round_counts = season_all.groupby('roundId').size()
+            first_stage_round = round_counts.idxmax()
+            # Find where the team's matches switch away from the first stage
             stage_change = season_slice[season_slice['roundId'] != first_stage_round]
             if stage_change.empty:
                 continue
             stage_idx = stage_change.index[0]
             second_round_id = stage_change.iloc[0]['roundId']
-            # Determine label: count total matches in this roundId across all teams
-            # Fewer matches = promotion group (fewer teams), more = maintenance
-            round_counts = all_matches_df[all_matches_df['seasonId'] == sid].groupby('roundId').size()
+            # Determine label: fewer matches = promotion group, more = maintenance
             second_stage_rounds = round_counts.drop(first_stage_round, errors='ignore')
             if len(second_stage_rounds) > 0:
                 min_round = second_stage_rounds.idxmin()
