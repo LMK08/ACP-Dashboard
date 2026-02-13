@@ -601,7 +601,7 @@ def load_historical_data():
     try:
         # 1. Define only the columns we absolutely need
         events_cols = ['type.primary', 'shot.xg', 'matchId', 'team.name']
-        matches_cols = ['matchId', 'dateutc', 'gameweek', 'homeTeamName', 'awayTeamName', 'seasonId']
+        matches_cols = ['matchId', 'dateutc', 'gameweek', 'label', 'seasonId']
 
         # 2. Check files exist before loading
         if not os.path.exists('historical_events.parquet'):
@@ -614,6 +614,11 @@ def load_historical_data():
         # 3. Load *only* those columns
         hist_events_df = pd.read_parquet('historical_events.parquet', columns=events_cols)
         hist_matches_df = pd.read_parquet('historical_matches.parquet', columns=matches_cols)
+
+        # 4. Parse homeTeamName / awayTeamName from label ("Home - Away, 0-0")
+        teams_parsed = hist_matches_df['label'].str.rsplit(', ', n=1).str[0].str.split(' - ', n=1)
+        hist_matches_df['homeTeamName'] = teams_parsed.str[0]
+        hist_matches_df['awayTeamName'] = teams_parsed.str[1]
 
         logger.info(f"Loaded {len(hist_events_df)} historical events, {len(hist_matches_df)} historical matches")
         return hist_events_df, hist_matches_df
