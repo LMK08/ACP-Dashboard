@@ -23,6 +23,14 @@ FIRST_STAGE_GROUPS = {
               'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
 }
 
+# Head-to-head tiebreaker overrides for first-stage positions.
+# calculate_league_table uses GD, but FPF rules use head-to-head first.
+# Format: {team: correct_position} — only needed for teams where h2h differs from GD order.
+FIRST_STAGE_POSITION_OVERRIDES = {
+    'Atlético CP': 5,          # h2h winner vs Lusitano (both 22 pts)
+    'Lusitano Évora 1911': 6,
+}
+
 
 # ── Replicated helpers from app.py ────────────────────────────────────────────
 
@@ -270,6 +278,17 @@ def main():
 
     north_table = calculate_league_table(first_stage_matches, all_north)
     south_table = calculate_league_table(first_stage_matches, all_south)
+
+    # Apply head-to-head tiebreaker overrides
+    for table in [north_table, south_table]:
+        overridden = table['Team'].map(FIRST_STAGE_POSITION_OVERRIDES)
+        if overridden.notna().any():
+            for idx in table.index:
+                team = table.loc[idx, 'Team']
+                if team in FIRST_STAGE_POSITION_OVERRIDES:
+                    table.loc[idx, 'Pos'] = FIRST_STAGE_POSITION_OVERRIDES[team]
+            table.sort_values('Pos', inplace=True)
+            table.reset_index(drop=True, inplace=True)
 
     print(f"\n  North first-stage standings ({len(north_table)} teams):")
     for _, r in north_table.iterrows():
