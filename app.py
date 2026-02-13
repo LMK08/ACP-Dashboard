@@ -5093,6 +5093,111 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     ])
                     st.dataframe(ratings_df, use_container_width=True, hide_index=True)
 
+            # Season Simulation - Promotion/Relegation Probabilities
+            @st.cache_data
+            def load_simulation_data():
+                try:
+                    with open('season_simulation.pkl', 'rb') as f:
+                        return pickle.load(f)
+                except FileNotFoundError:
+                    return None
+
+            sim_data = load_simulation_data()
+            if sim_data is None:
+                st.info("Season simulation not yet available. Run simulate_season.py to generate probabilities.")
+            else:
+                st.subheader("Promotion & Relegation Probabilities")
+                sim_ts = sim_data.get('timestamp', '')
+                n_sims = sim_data.get('n_simulations', 0)
+                st.caption(f"Based on {n_sims:,} Monte Carlo simulations | Updated: {sim_ts[:16].replace('T', ' ')}")
+
+                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False):
+                    """Render a color-coded probability table for a second-stage group."""
+                    n_teams = len(prob_df)
+                    pos_cols = [str(i+1) for i in range(n_teams)]
+                    has_bonus = bonus_points and any(v > 0 for v in bonus_points.values())
+
+                    with st.expander(f"{group_name} ({matches_remaining} matches remaining)", expanded=expanded):
+                        # Build HTML table
+                        html = '<table style="width:100%;border-collapse:collapse;font-size:0.85em;text-align:center;">'
+
+                        # Header row
+                        html += '<tr style="border-bottom:2px solid #444;">'
+                        html += '<th style="text-align:left;padding:6px 10px;">Team</th>'
+                        if has_bonus:
+                            html += '<th style="padding:6px 8px;">Bonus</th>'
+                        for p in pos_cols:
+                            html += f'<th style="padding:6px 8px;">{p}</th>'
+
+                        # Summary column header
+                        if group_name == 'Promotion':
+                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
+                            html += '<th style="padding:6px 8px;">Playoff %</th>'
+                        else:
+                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
+                        html += '</tr>'
+
+                        # Data rows
+                        for team in prob_df.index:
+                            html += '<tr style="border-bottom:1px solid #ddd;">'
+                            html += f'<td style="text-align:left;padding:6px 10px;font-weight:bold;white-space:nowrap;">{team}</td>'
+                            if has_bonus:
+                                bp = bonus_points.get(team, 0)
+                                html += f'<td style="padding:6px 8px;color:#888;">+{bp}</td>'
+
+                            for p in pos_cols:
+                                val = prob_df.loc[team, p]
+                                pos_num = int(p)
+
+                                # Determine cell color
+                                bg = ''
+                                if group_name == 'Promotion':
+                                    if pos_num <= 2:
+                                        # Green for promotion positions
+                                        intensity = min(val * 1.2, 1.0)
+                                        bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
+                                    elif pos_num == 3:
+                                        # Yellow for playoff position
+                                        intensity = min(val * 1.2, 1.0)
+                                        bg = f'background-color:rgba(241,196,15,{intensity:.2f});'
+                                else:
+                                    if pos_num >= n_teams - 1:
+                                        # Red for relegation positions (last 2)
+                                        intensity = min(val * 1.2, 1.0)
+                                        bg = f'background-color:rgba(231,76,60,{intensity:.2f});'
+
+                                cell_text = f'{val:.1%}' if val >= 0.005 else ''
+                                html += f'<td style="padding:6px 8px;{bg}">{cell_text}</td>'
+
+                            # Summary columns
+                            if group_name == 'Promotion':
+                                promo_pct = prob_df.loc[team, '1'] + prob_df.loc[team, '2']
+                                playoff_pct = prob_df.loc[team, '3']
+                                promo_bg = f'background-color:rgba(46,204,113,{min(promo_pct * 1.2, 1.0):.2f});'
+                                playoff_bg = f'background-color:rgba(241,196,15,{min(playoff_pct * 1.2, 1.0):.2f});'
+                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{promo_bg}">{promo_pct:.1%}</td>'
+                                html += f'<td style="padding:6px 8px;font-weight:bold;{playoff_bg}">{playoff_pct:.1%}</td>'
+                            else:
+                                releg_pct = prob_df.loc[team, str(n_teams - 1)] + prob_df.loc[team, str(n_teams)]
+                                releg_bg = f'background-color:rgba(231,76,60,{min(releg_pct * 1.2, 1.0):.2f});'
+                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{releg_bg}">{releg_pct:.1%}</td>'
+
+                            html += '</tr>'
+
+                        html += '</table>'
+                        st.markdown(html, unsafe_allow_html=True)
+
+                sim_groups = sim_data.get('groups', {})
+                if 'Promotion' in sim_groups:
+                    g = sim_groups['Promotion']
+                    render_probability_table('Promotion', g['position_probabilities'], g['matches_remaining'], expanded=True)
+                if 'North Maintenance' in sim_groups:
+                    g = sim_groups['North Maintenance']
+                    render_probability_table('North Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'))
+                if 'South Maintenance' in sim_groups:
+                    g = sim_groups['South Maintenance']
+                    render_probability_table('South Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'))
+
             # Team selection
             all_teams = sorted(team_stats.keys())
 

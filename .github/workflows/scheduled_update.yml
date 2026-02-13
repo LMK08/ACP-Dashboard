@@ -56,6 +56,9 @@ jobs:
       - name: Update prediction model
         run: python update_model.py
 
+      - name: Simulate season probabilities
+        run: python simulate_season.py
+
       - name: Commit and push new data to GitHub
         run: |
           git config --global user.name 'GitHub Actions Bot'
