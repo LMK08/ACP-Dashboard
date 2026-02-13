@@ -601,7 +601,7 @@ def load_historical_data():
     try:
         # 1. Define only the columns we absolutely need
         events_cols = ['type.primary', 'shot.xg', 'matchId', 'team.name']
-        matches_cols = ['matchId', 'dateutc', 'gameweek', 'label', 'seasonId']
+        matches_cols = ['matchId', 'dateutc', 'gameweek', 'label', 'seasonId', 'roundId']
 
         # 2. Check files exist before loading
         if not os.path.exists('historical_events.parquet'):
@@ -2877,30 +2877,33 @@ def calculate_xg_history_data(_raw_events_df, _matches_summary_df):
         matchId = match.get('matchId')
         date = match.get('dateutc')
         season_marker = f"GW {match.get('gameweek', '1')}" 
-        season_id = match.get('seasonId') 
+        season_id = match.get('seasonId')
+        round_id = match.get('roundId')
         home_team = match.get('homeTeamName')
         away_team = match.get('awayTeamName')
-        
-        if not all([matchId, date, home_team, away_team, season_id]): 
-            continue 
-            
+
+        if not all([matchId, date, home_team, away_team, season_id]):
+            continue
+
         home_xg_for = xg_by_match_team.get((matchId, home_team), 0)
         away_xg_for = xg_by_match_team.get((matchId, away_team), 0)
-        
+
         all_team_matches.append({
-            'date': date, 
-            'season_marker': season_marker, 
+            'date': date,
+            'season_marker': season_marker,
             'seasonId': season_id,
-            'teamName': home_team, 
-            'xG_For': home_xg_for, 
+            'roundId': round_id,
+            'teamName': home_team,
+            'xG_For': home_xg_for,
             'xG_Against': away_xg_for
         })
         all_team_matches.append({
-            'date': date, 
-            'season_marker': season_marker, 
+            'date': date,
+            'season_marker': season_marker,
             'seasonId': season_id,
-            'teamName': away_team, 
-            'xG_For': away_xg_for, 
+            'roundId': round_id,
+            'teamName': away_team,
+            'xG_For': away_xg_for,
             'xG_Against': home_xg_for
         })
     
@@ -3013,6 +3016,34 @@ def plot_match_xg_history(all_matches_df, selected_team):
             # We place it at idx - 0.5
             ax.axvline(idx - 0.5, color='gray', linestyle=':', lw=1.5, zorder=0)
             ax.text(idx - 0.5, ylim_top, ' New Season', ha='left', va='top', color='gray', rotation=90, fontsize=10)
+
+    # Add Vertical Separator for Second Stage (Promotion / Maintenance)
+    if 'roundId' in team_df.columns and 'seasonId' in team_df.columns:
+        for sid in team_df['seasonId'].unique():
+            season_mask = team_df['seasonId'] == sid
+            season_slice = team_df[season_mask]
+            if len(season_slice) < 2:
+                continue
+            # First stage is the roundId used in the team's first match of the season
+            first_stage_round = season_slice.iloc[0]['roundId']
+            # Find where roundId changes (entering second stage)
+            stage_change = season_slice[season_slice['roundId'] != first_stage_round]
+            if stage_change.empty:
+                continue
+            stage_idx = stage_change.index[0]
+            second_round_id = stage_change.iloc[0]['roundId']
+            # Determine label: count total matches in this roundId across all teams
+            # Fewer matches = promotion group (fewer teams), more = maintenance
+            round_counts = all_matches_df[all_matches_df['seasonId'] == sid].groupby('roundId').size()
+            second_stage_rounds = round_counts.drop(first_stage_round, errors='ignore')
+            if len(second_stage_rounds) > 0:
+                min_round = second_stage_rounds.idxmin()
+                stage_label = 'Promotion Stage' if second_round_id == min_round else 'Maintenance Stage'
+            else:
+                stage_label = 'Second Stage'
+            ylim_top = ax.get_ylim()[1]
+            ax.axvline(stage_idx - 0.5, color='#6a0dad', linestyle='--', lw=1.5, zorder=0)
+            ax.text(stage_idx - 0.5, ylim_top, f' {stage_label}', ha='left', va='top', color='#6a0dad', rotation=90, fontsize=10)
 
     ax.set_title(f"{selected_team} - Match-by-Match xG History", fontsize=16, weight='bold')
     ax.set_ylabel('Expected Goals (xG)')
