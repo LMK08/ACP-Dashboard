@@ -1426,13 +1426,34 @@ def main():
     ]
     # Define which season is the "current" one for the main dashboard
     CURRENT_SEASON_ID = 191782
+    HISTORICAL_SEASON_IDS = [sid for sid in ALL_SEASON_IDS_TO_FETCH if sid != CURRENT_SEASON_ID]
 
     print(f"Starting data pipeline for {len(ALL_SEASON_IDS_TO_FETCH)} total seasons.")
     print(f"Current season set to: {CURRENT_SEASON_ID}")
+    print(f"Historical seasons (cached): {HISTORICAL_SEASON_IDS}")
 
-    # --- 2. FETCH ALL MATCH SCHEDULES ---
+    # --- 2. FETCH MATCH SCHEDULES (INCREMENTAL) ---
+    cached_schedule_df = None
+    if os.path.exists('matches_summary.parquet'):
+        print("📂 Loading cached schedule from matches_summary.parquet...")
+        cached_schedule_df = pd.read_parquet('matches_summary.parquet')
+        print(f"   Cached schedule has {len(cached_schedule_df)} matches.")
+
     all_schedules_list = []
-    for season_id in ALL_SEASON_IDS_TO_FETCH:
+    if cached_schedule_df is not None:
+        # Keep historical season rows from cache (they never change)
+        historical_cached = cached_schedule_df[cached_schedule_df['seasonId'].isin(HISTORICAL_SEASON_IDS)]
+        if not historical_cached.empty:
+            all_schedules_list.append(historical_cached)
+            print(f"   ✅ Reusing {len(historical_cached)} cached historical matches.")
+
+        # Fetch only current season schedule from API
+        seasons_to_fetch = [CURRENT_SEASON_ID]
+    else:
+        # No cache — fetch all seasons (first run)
+        seasons_to_fetch = ALL_SEASON_IDS_TO_FETCH
+
+    for season_id in seasons_to_fetch:
         print(f"\n--- Fetching Schedule for Season ID: {season_id} ---")
         season_schedule_df = fetch_match_schedule(wyscout_user, wyscout_pass, competition_id, season_id)
         if not season_schedule_df.empty:
@@ -1444,27 +1465,49 @@ def main():
         print("❌ No match schedules found for any season. Exiting.")
         return
 
-    # Combine all schedules into one big DataFrame
+    # Combine all schedules, deduplicate by matchId
     all_matches_summary_df = pd.concat(all_schedules_list, ignore_index=True)
+    all_matches_summary_df.drop_duplicates(subset='matchId', keep='last', inplace=True)
     all_matches_summary_df['dateutc'] = pd.to_datetime(all_matches_summary_df['dateutc'], errors='coerce')
     all_matches_summary_df.sort_values(by='dateutc', inplace=True, na_position='last')
     all_matches_summary_df.reset_index(drop=True, inplace=True)
-    
-    print(f"\n✅ Combined schedule for {len(all_schedules_list)} seasons, {len(all_matches_summary_df)} total matches.")
+
+    print(f"\n✅ Combined schedule: {len(all_matches_summary_df)} total matches ({len(seasons_to_fetch)} season(s) fetched from API).")
 
     # --- 3. SAVE UNIFIED MATCH SCHEDULE (ALL SEASONS) ---
     all_matches_summary_df.to_parquet('matches_summary.parquet', index=False)
     print(f"✅ Unified match schedule (all seasons) saved to 'matches_summary.parquet'")
 
-    # --- 4. FETCH ALL EVENT DATA ---
-    all_match_ids_to_fetch = all_matches_summary_df['matchId'].dropna().unique().tolist()
-    if not all_match_ids_to_fetch:
-        print("No valid match IDs found. Exiting.")
-        return
+    # --- 4. FETCH EVENT DATA (INCREMENTAL) ---
+    cached_events_df = None
+    cached_match_ids = set()
+    if os.path.exists('raw_events.parquet'):
+        print("📂 Loading cached events from raw_events.parquet...")
+        cached_events_df = pd.read_parquet('raw_events.parquet')
+        cached_match_ids = set(cached_events_df['matchId'].dropna().unique())
+        print(f"   Cached events cover {len(cached_match_ids)} matches.")
 
-    all_raw_events_df = fetch_events(wyscout_user, wyscout_pass, all_match_ids_to_fetch)
-    if all_raw_events_df.empty:
-        print("No event data fetched. Exiting.")
+    # Only fetch events for "Played" matches not already in cache
+    played_matches = all_matches_summary_df[all_matches_summary_df['status'] == 'Played']
+    new_match_ids = [mid for mid in played_matches['matchId'].dropna().unique() if mid not in cached_match_ids]
+    print(f"   {len(new_match_ids)} new played matches need event fetching.")
+
+    if new_match_ids:
+        new_events_df = fetch_events(wyscout_user, wyscout_pass, new_match_ids)
+    else:
+        new_events_df = pd.DataFrame()
+
+    # Combine cached + new events
+    if cached_events_df is not None and not cached_events_df.empty:
+        if not new_events_df.empty:
+            all_raw_events_df = pd.concat([cached_events_df, new_events_df], ignore_index=True)
+            all_raw_events_df.drop_duplicates(subset=['id'], keep='last', inplace=True)
+        else:
+            all_raw_events_df = cached_events_df
+    elif not new_events_df.empty:
+        all_raw_events_df = new_events_df
+    else:
+        print("No event data found (cached or new). Exiting.")
         return
 
     # --- 5. ADD SEASONID TO EVENTS & SAVE ---
@@ -1497,12 +1540,20 @@ def main():
     all_raw_events_df.to_parquet('raw_events.parquet', index=False)
     print(f"✅ Unified event data (all seasons) saved to 'raw_events.parquet'")
 
-    # --- 7. PROCESS ALL PER-MATCH DATA (ALL SEASONS) ---
+    # --- 7. PROCESS PER-MATCH DATA (INCREMENTAL) ---
     all_match_data = {}
-    required_cols = ['matchId', 'homeTeamName', 'awayTeamName']
+    if os.path.exists('all_match_data.pkl'):
+        print("📂 Loading cached per-match data from all_match_data.pkl...")
+        with open('all_match_data.pkl', 'rb') as f:
+            all_match_data = pickle.load(f)
+        print(f"   Cached data for {len(all_match_data)} matches.")
 
-    # Iterate over ALL matches across all seasons (matchIds are globally unique)
-    for index, match_summary in tqdm(all_matches_summary_df.iterrows(), total=all_matches_summary_df.shape[0], desc="Processing All Matches"):
+    # Only process matches not already in cache
+    cached_match_data_ids = set(all_match_data.keys())
+    matches_to_process = all_matches_summary_df[~all_matches_summary_df['matchId'].isin(cached_match_data_ids)]
+    print(f"   {len(matches_to_process)} new matches to process.")
+
+    for index, match_summary in tqdm(matches_to_process.iterrows(), total=len(matches_to_process), desc="Processing New Matches"):
         match_id = match_summary['matchId']
         home_team = match_summary['homeTeamName']
         away_team = match_summary['awayTeamName']
@@ -1523,9 +1574,22 @@ def main():
     with open('all_match_data.pkl', 'wb') as f: pickle.dump(all_match_data, f)
     print("✅ All detailed match data (all seasons) saved to 'all_match_data.pkl'")
 
-    # --- 8. PROCESS SEASON-LONG STATS (PER SEASON) ---
-    season_team_stats = {}  # {season_id: {team: stats}}
-    for season_id in ALL_SEASON_IDS_TO_FETCH:
+    # --- 8. PROCESS SEASON-LONG STATS (INCREMENTAL) ---
+    season_team_stats = {}
+    if os.path.exists('season_team_stats.pkl'):
+        print("📂 Loading cached season team stats from season_team_stats.pkl...")
+        with open('season_team_stats.pkl', 'rb') as f:
+            season_team_stats = pickle.load(f)
+        print(f"   Cached stats for {len(season_team_stats)} seasons.")
+
+    # Determine which seasons need (re)computing
+    seasons_to_compute = [CURRENT_SEASON_ID]  # Always recompute current season
+    for sid in HISTORICAL_SEASON_IDS:
+        if sid not in season_team_stats:
+            seasons_to_compute.append(sid)  # First run: also compute missing historical
+    print(f"   Recomputing team stats for {len(seasons_to_compute)} season(s): {seasons_to_compute}")
+
+    for season_id in seasons_to_compute:
         season_events = all_raw_events_df[all_raw_events_df['seasonId'] == season_id].copy()
         season_matches = all_matches_summary_df[all_matches_summary_df['seasonId'] == season_id].copy()
         all_teams = pd.concat([season_matches['homeTeamName'], season_matches['awayTeamName']]).dropna().unique()
@@ -1539,13 +1603,24 @@ def main():
     print("✅ Per-season team stats saved to 'season_team_stats.pkl'")
 
     
-    # --- 9. FETCH OFFICIAL PLAYER MINUTES (PER SEASON) ---
-    print("\nStarting official player minute retrieval (all seasons)...")
+    # --- 9. FETCH OFFICIAL PLAYER MINUTES (INCREMENTAL) ---
+    print("\nStarting official player minute retrieval (incremental)...")
 
-    player_minutes_by_season = {}  # {season_id: DataFrame}
-    all_season_minutes_list = []
+    player_minutes_by_season = {}
+    if os.path.exists('player_minutes_and_positions.pkl'):
+        print("📂 Loading cached player minutes from player_minutes_and_positions.pkl...")
+        with open('player_minutes_and_positions.pkl', 'rb') as f:
+            player_minutes_by_season = pickle.load(f)
+        print(f"   Cached player minutes for {len(player_minutes_by_season)} seasons.")
 
-    for season_id in ALL_SEASON_IDS_TO_FETCH:
+    # Determine which seasons need fetching
+    seasons_to_fetch_minutes = [CURRENT_SEASON_ID]  # Always re-fetch current (totals change)
+    for sid in HISTORICAL_SEASON_IDS:
+        if sid not in player_minutes_by_season:
+            seasons_to_fetch_minutes.append(sid)  # First run: also fetch missing historical
+    print(f"   Fetching player minutes for {len(seasons_to_fetch_minutes)} season(s): {seasons_to_fetch_minutes}")
+
+    for season_id in seasons_to_fetch_minutes:
         season_matches_df = all_matches_summary_df[all_matches_summary_df['seasonId'] == season_id]
         season_match_ids = season_matches_df['matchId'].dropna().unique().tolist()
         season_events = all_raw_events_df[all_raw_events_df['seasonId'] == season_id].copy()
@@ -1562,7 +1637,6 @@ def main():
 
         if not season_minutes_df.empty:
             player_minutes_by_season[season_id] = season_minutes_df
-            all_season_minutes_list.append(season_minutes_df)
             print(f"✅ Season {season_id}: {len(season_minutes_df)} player records.")
         else:
             print(f"⚠️ Season {season_id}: No player minutes data.")
@@ -1573,6 +1647,7 @@ def main():
     print("✅ Per-season player minutes saved to 'player_minutes_and_positions.pkl'")
 
     # Build all-time player minutes (aggregate across all seasons)
+    all_season_minutes_list = [df for df in player_minutes_by_season.values() if not df.empty]
     if all_season_minutes_list:
         combined_df = pd.concat(all_season_minutes_list)
         all_time_df = combined_df.groupby('playerId').agg({
