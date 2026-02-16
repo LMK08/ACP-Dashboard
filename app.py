@@ -3376,6 +3376,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.radio_key_version = 0
     if 'shadow_teams' not in st.session_state:
         st.session_state.shadow_teams = {}
+    if 'player_profile_current_id' not in st.session_state:
+        st.session_state.player_profile_current_id = None
+    if 'player_profile_last_season' not in st.session_state:
+        st.session_state.player_profile_last_season = None
 
     # --- Sidebar for Navigation ---
     st.sidebar.title("Dashboard Controls")
@@ -3383,7 +3387,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # Check if we should navigate to Player Profile
     if st.session_state.nav_to_profile:
         st.session_state.current_page = 'Player Profile'
-        st.session_state.radio_key_version += 1
+        # Set radio value directly on the existing key instead of creating a new one
+        current_radio_key = f"analysis_type_radio_{st.session_state.radio_key_version}"
+        st.session_state[current_radio_key] = 'Player Profile'
         st.session_state.nav_to_profile = False
 
     ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team')
@@ -3903,6 +3909,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- Season Selector ---
         selected_season_id = season_selector("player_profile", include_all_seasons=True)
+        profile_season_changed = (selected_season_id != st.session_state.player_profile_last_season)
+        st.session_state.player_profile_last_season = selected_season_id
         profile_events_df = get_season_events(raw_events_df, selected_season_id)
         profile_matches_df = get_season_matches(matches_summary_df, selected_season_id)
         profile_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
@@ -3944,8 +3952,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             for i, pid in enumerate(sorted_player_ids):
                 if int(pid) == int(target_id):
                     st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
+                    st.session_state.player_profile_current_id = int(target_id)
                     break
             st.session_state.selected_player_id = None
+        # Persist player selection across season changes (only when season actually changed)
+        elif profile_season_changed and st.session_state.player_profile_current_id is not None:
+            target_id = st.session_state.player_profile_current_id
+            sorted_player_ids = player_list_df['playerId'].tolist()
+            for i, pid in enumerate(sorted_player_ids):
+                if int(pid) == int(target_id):
+                    st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
+                    break
 
         selected_player_display = st.sidebar.selectbox(
             "Select Player:",
@@ -3957,7 +3974,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # FIX: Get the UNIQUE ID corresponding to the selected display name
             # (We use .values[0] to grab the actual integer ID)
             selected_player_id = player_list_df[player_list_df['display_name'] == selected_player_display]['playerId'].values[0]
-            
+            st.session_state.player_profile_current_id = int(selected_player_id)
+
             # FIX: Filter the main dataframe by ID, not by Name
             # This ensures we get the exact Miguel Lopes the user clicked on
             player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_id]
@@ -5115,7 +5133,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     """Render a color-coded probability table for a second-stage group."""
                     n_teams = len(prob_df)
                     pos_cols = [str(i+1) for i in range(n_teams)]
-                    has_bonus = bonus_points and any(v > 0 for v in bonus_points.values())
 
                     # Build lookup for points and matches played from current standings
                     standings_lookup = {}
@@ -5132,8 +5149,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         html += '<th style="text-align:left;padding:6px 10px;">Team</th>'
                         html += '<th style="padding:6px 8px;">P</th>'
                         html += '<th style="padding:6px 8px;">Pts</th>'
-                        if has_bonus:
-                            html += '<th style="padding:6px 8px;">Bonus</th>'
                         for p in pos_cols:
                             html += f'<th style="padding:6px 8px;">{p}</th>'
 
@@ -5151,10 +5166,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             html += f'<td style="text-align:left;padding:6px 10px;font-weight:bold;white-space:nowrap;">{team}</td>'
                             team_info = standings_lookup.get(team, {'P': 0, 'Pts': 0})
                             html += f'<td style="padding:6px 8px;color:#888;">{team_info["P"]}</td>'
-                            html += f'<td style="padding:6px 8px;font-weight:bold;">{team_info["Pts"]}</td>'
-                            if has_bonus:
-                                bp = bonus_points.get(team, 0)
-                                html += f'<td style="padding:6px 8px;color:#888;">+{bp}</td>'
+                            total_pts = team_info["Pts"] + (bonus_points.get(team, 0) if bonus_points else 0)
+                            html += f'<td style="padding:6px 8px;font-weight:bold;">{total_pts}</td>'
 
                             for p in pos_cols:
                                 val = prob_df.loc[team, p]
