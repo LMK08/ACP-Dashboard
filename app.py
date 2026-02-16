@@ -5111,11 +5111,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 n_sims = sim_data.get('n_simulations', 0)
                 st.caption(f"Based on {n_sims:,} Monte Carlo simulations | Updated: {sim_ts[:16].replace('T', ' ')}")
 
-                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False):
+                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None):
                     """Render a color-coded probability table for a second-stage group."""
                     n_teams = len(prob_df)
                     pos_cols = [str(i+1) for i in range(n_teams)]
                     has_bonus = bonus_points and any(v > 0 for v in bonus_points.values())
+
+                    # Build lookup for points and matches played from current standings
+                    standings_lookup = {}
+                    if current_standings is not None:
+                        for _, row in current_standings.iterrows():
+                            standings_lookup[row['Team']] = {'P': row['P'], 'Pts': row['Pts']}
 
                     with st.expander(f"{group_name} ({matches_remaining} matches remaining)", expanded=expanded):
                         # Build HTML table
@@ -5124,6 +5130,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         # Header row
                         html += '<tr style="border-bottom:2px solid #444;">'
                         html += '<th style="text-align:left;padding:6px 10px;">Team</th>'
+                        html += '<th style="padding:6px 8px;">P</th>'
+                        html += '<th style="padding:6px 8px;">Pts</th>'
                         if has_bonus:
                             html += '<th style="padding:6px 8px;">Bonus</th>'
                         for p in pos_cols:
@@ -5141,6 +5149,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         for team in prob_df.index:
                             html += '<tr style="border-bottom:1px solid #ddd;">'
                             html += f'<td style="text-align:left;padding:6px 10px;font-weight:bold;white-space:nowrap;">{team}</td>'
+                            team_info = standings_lookup.get(team, {'P': 0, 'Pts': 0})
+                            html += f'<td style="padding:6px 8px;color:#888;">{team_info["P"]}</td>'
+                            html += f'<td style="padding:6px 8px;font-weight:bold;">{team_info["Pts"]}</td>'
                             if has_bonus:
                                 bp = bonus_points.get(team, 0)
                                 html += f'<td style="padding:6px 8px;color:#888;">+{bp}</td>'
@@ -5190,13 +5201,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 sim_groups = sim_data.get('groups', {})
                 if 'Promotion' in sim_groups:
                     g = sim_groups['Promotion']
-                    render_probability_table('Promotion', g['position_probabilities'], g['matches_remaining'], expanded=True)
+                    render_probability_table('Promotion', g['position_probabilities'], g['matches_remaining'], expanded=True, current_standings=g.get('current_standings'))
                 if 'North Maintenance' in sim_groups:
                     g = sim_groups['North Maintenance']
-                    render_probability_table('North Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'))
+                    render_probability_table('North Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'), current_standings=g.get('current_standings'))
                 if 'South Maintenance' in sim_groups:
                     g = sim_groups['South Maintenance']
-                    render_probability_table('South Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'))
+                    render_probability_table('South Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'), current_standings=g.get('current_standings'))
 
             # Team selection
             all_teams = sorted(team_stats.keys())
