@@ -53,6 +53,11 @@ DEFENSIVE_METRICS_TEAM = [
     'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %',
     'Interceptions', 'Fouls', 'PPDA',
 ]
+SET_PIECE_METRICS_RADAR = [
+    'Corners', 'xG per Corner', 'Goals per Corner', 'Short Corner %',
+    'Long Throws', 'Long Throw %', 'xG per Long Throw',
+    'First Contact %', 'xG per FK Delivery', 'Penalties', 'Non-Pen SP Goals',
+]
 
 
 # ---------------------------------------------------------------------------
@@ -685,11 +690,24 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         season_events_df, season_matches_df, season_id=selected_season_id,
     )
 
+    # Compute set piece radar data
+    sp_df_raw = None
+    sp_df_pct = None
+    try:
+        sp_df_raw = app.calculate_set_piece_metrics(season_events_df, season_id=selected_season_id)
+        if sp_df_raw is not None and not sp_df_raw.empty:
+            sp_df_pct = sp_df_raw.copy()
+            for col in sp_df_pct.columns:
+                sp_df_pct[col] = sp_df_pct[col].rank(pct=True) * 100
+    except Exception:
+        pass
+
     if selected_opponent in stats_df_pct.index:
         team_raw = stats_df_raw.loc[selected_opponent]
         team_pct = stats_df_pct.loc[selected_opponent]
 
-        col1, col2, col3 = st.columns(3)
+        # Row 1: Offensive + Distribution
+        col1, col2 = st.columns(2)
 
         # Offensive
         off_m = [m for m in OFFENSIVE_METRICS if m in team_pct.index]
@@ -700,7 +718,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 selected_opponent, "Offensive", '#e63946',
             )
             with col1:
-                st.pyplot(fig)
+                st.pyplot(fig, use_container_width=True)
             pdf_figures['radar_offensive'] = _fig_to_png_bytes(fig)
             plt.close(fig)
 
@@ -713,9 +731,12 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 selected_opponent, "Distribution", '#0077b6',
             )
             with col2:
-                st.pyplot(fig)
+                st.pyplot(fig, use_container_width=True)
             pdf_figures['radar_distribution'] = _fig_to_png_bytes(fig)
             plt.close(fig)
+
+        # Row 2: Defensive + Set Piece
+        col3, col4 = st.columns(2)
 
         # Defensive
         def_m = [m for m in DEFENSIVE_METRICS_TEAM if m in team_pct.index]
@@ -726,9 +747,32 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 selected_opponent, "Defensive", '#2a9d8f',
             )
             with col3:
-                st.pyplot(fig)
+                st.pyplot(fig, use_container_width=True)
             pdf_figures['radar_defensive'] = _fig_to_png_bytes(fig)
             plt.close(fig)
+
+        # Set Piece
+        if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
+            sp_team_raw = sp_df_raw.loc[selected_opponent]
+            sp_team_pct = sp_df_pct.loc[selected_opponent]
+            sp_m = [m for m in SET_PIECE_METRICS_RADAR if m in sp_team_raw.index]
+            if sp_m:
+                raw_sp_values = [sp_team_raw[m] for m in sp_m]
+                for _pct_name in ['Short Corner %', 'Long Throw %', 'First Contact %']:
+                    try:
+                        _idx = sp_m.index(_pct_name)
+                        raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
+                    except ValueError:
+                        pass
+                fig = app.plot_radar_chart(
+                    sp_m, raw_sp_values,
+                    [sp_team_pct[m] for m in sp_m],
+                    selected_opponent, "Set Piece Radar", '#ff8c00',
+                )
+                with col4:
+                    st.pyplot(fig, use_container_width=True)
+                pdf_figures['radar_set_piece'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
     else:
         st.warning(f"No radar data available for {selected_opponent}.")
 

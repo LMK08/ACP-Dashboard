@@ -215,19 +215,25 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
     pdf.add_page()
     pdf.add_section_title(f"{opponent_name} - Team Overview")
 
-    radar_keys = ['radar_offensive', 'radar_distribution', 'radar_defensive']
-    radar_present = [k for k in radar_keys if k in figures]
-    if radar_present:
-        n = len(radar_present)
-        w = (pdf.w - 20) / n
-        x = 10
+    radar_row1 = [k for k in ['radar_offensive', 'radar_distribution'] if k in figures]
+    radar_row2 = [k for k in ['radar_defensive', 'radar_set_piece'] if k in figures]
+    w_half = (pdf.w - 20) / 2
+    if radar_row1:
         y = pdf.get_y()
-        for key in radar_present:
-            tmp = pdf.add_figure(figures[key], w=w - 2, x=x, y=y)
+        x = 10
+        for key in radar_row1:
+            tmp = pdf.add_figure(figures[key], w=w_half - 2, x=x, y=y)
             tmp_files.append(tmp)
-            x += w
-        # Radars are square-ish (10x10 figsize) so height ~ width
-        pdf.set_y(y + (w - 2) * 0.75)
+            x += w_half
+        pdf.set_y(y + (w_half - 2) * 0.75)
+    if radar_row2:
+        y = pdf.get_y()
+        x = 10
+        for key in radar_row2:
+            tmp = pdf.add_figure(figures[key], w=w_half - 2, x=x, y=y)
+            tmp_files.append(tmp)
+            x += w_half
+        pdf.set_y(y + (w_half - 2) * 0.75)
 
     # ==================================================================
     # Page 2: Projected Lineup + Subs
