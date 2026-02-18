@@ -2507,29 +2507,31 @@ def create_match_shotmap(match_events_df, match_info, team_to_analyze):
 
     team_shots_df = match_events_df[(match_events_df.get('team.name') == team_to_analyze) & (match_events_df.get('type.primary').isin(['shot', 'penalty']))].copy().reset_index(drop=True)
     if team_shots_df.empty:
-        fig, ax = plt.subplots(figsize=(12, 12)); fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.text(0.5, 0.5, 'No shots found for this team in this match.', ha='center', va='center', fontsize=12); ax.axis('off'); return fig
-    
+        fig, ax = plt.subplots(figsize=(12, 8)); fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.text(0.5, 0.5, 'No shots found for this team in this match.', ha='center', va='center', fontsize=12); ax.axis('off'); return fig
+
     home_team = match_info.get('homeTeamName', '?'); away_team = match_info.get('awayTeamName', '?'); opponent = away_team if team_to_analyze == home_team else home_team
-    fig = plt.figure(figsize=(12, 12)); fig.set_facecolor('#f5f1e9'); pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True); ax_pitch = fig.add_subplot(); pitch.draw(ax=ax_pitch)
-    
-    # Your original colormap
+    fig = plt.figure(figsize=(12, 8)); fig.set_facecolor('#f5f1e9')
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True)
+    ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
+    pitch.draw(ax=ax_pitch)
+
     XG_MAX = 0.8; colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]; nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
-    
+
     for index, shot in team_shots_df.iterrows():
         x = shot.get('location.x'); y = shot.get('location.y'); xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
         if pd.isna(x) or pd.isna(y) or pd.isna(xg): continue
         is_goal = shot.get('shot.isGoal') == True; is_on_target = shot.get('shot.onTarget') == True
-        
+
         color = cmap(min(xg / XG_MAX, 1.0)); edge_color = 'gray'; line_width = 1.5
-        
+
         if is_goal: edge_color = 'green'; line_width = 2.5
         elif is_on_target: edge_color = 'black'; line_width = 2.5
-            
+
         pitch.scatter(x, y, s=400, facecolor=color, edgecolor=edge_color, linewidth=line_width, ax=ax_pitch, zorder=3)
         pitch.text(x, y, str(index + 1), ax=ax_pitch, ha='center', va='center', fontsize=9, color='white', zorder=4)
-        
-    subtitle = f"vs. {opponent} | Score: {match_info.get('score', '?-?')} | xG: {pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').sum():.2f}"; 
-    ax_pitch.set_title(f"{team_to_analyze} Shot Map\n{subtitle}", fontsize=18, weight='bold')
+
+    subtitle = f"vs. {opponent} | Score: {match_info.get('score', '?-?')} | xG: {pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').sum():.2f}"
+    ax_pitch.set_title(f"{team_to_analyze} Shot Map\n{subtitle}", fontsize=14, weight='bold')
     return fig
 
 # --- (ORIGINAL MATPLOTLIB FUNCTION 2) ---
@@ -2537,43 +2539,50 @@ def create_season_shotmap(season_events_df, team_to_analyze):
 
     team_shots_df = season_events_df[(season_events_df.get('team.name') == team_to_analyze) & (season_events_df.get('type.primary') == 'shot')].copy().reset_index(drop=True)
     if team_shots_df.empty:
-        fig, ax = plt.subplots(figsize=(12, 12)); fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.text(0.5, 0.5, 'No shots found for this team this season.', ha='center', va='center', fontsize=12); ax.axis('off'); return fig
+        fig, ax = plt.subplots(figsize=(12, 8)); fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.text(0.5, 0.5, 'No shots found for this team this season.', ha='center', va='center', fontsize=12); ax.axis('off'); return fig
     
-    fig = plt.figure(figsize=(12, 12)); fig.set_facecolor('#f5f1e9'); pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True); ax_pitch = fig.add_subplot(); pitch.draw(ax=ax_pitch)
-    
+    fig = plt.figure(figsize=(12, 8)); fig.set_facecolor('#f5f1e9')
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True)
+    ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
+    pitch.draw(ax=ax_pitch)
+
     XG_MAX = 0.8; colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]; nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
-    
+
     for index, shot in team_shots_df.iterrows():
         x = shot.get('location.x'); y = shot.get('location.y'); xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
         if pd.isna(x) or pd.isna(y) or pd.isna(xg): continue
         is_goal = shot.get('shot.isGoal') == True; color = cmap(min(xg / XG_MAX, 1.0)); edge_color = 'green' if is_goal else 'black'
         pitch.scatter(x, y, s=150, facecolor=color, edgecolor=edge_color, linewidth=1.5, ax=ax_pitch, zorder=3, alpha=0.7)
-        
-    total_xg = pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').sum(); goals = team_shots_df['shot.isGoal'].sum(); subtitle = f"Liga 3 Portugal, 2025/26 | Total xG: {total_xg:.2f} | Goals: {goals}"; 
-    ax_pitch.set_title(f"{team_to_analyze} Season Shot Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
+
+    total_xg = pd.to_numeric(team_shots_df['shot.xg'], errors='coerce').sum(); goals = team_shots_df['shot.isGoal'].sum()
+    subtitle = f"Total xG: {total_xg:.2f} | Goals: {goals}"
+    ax_pitch.set_title(f"{team_to_analyze} — Shots For (Non-Pen)\n{subtitle}", fontsize=14, weight='bold')
     return fig
 
 # --- (ORIGINAL MATPLOTLIB FUNCTION 3) ---
 def create_season_shots_against_shotmap(season_events_df, matches_summary_df, team_to_analyze):
-    
+
     team_match_ids = matches_summary_df[(matches_summary_df.get('homeTeamName') == team_to_analyze) | (matches_summary_df.get('awayTeamName') == team_to_analyze)]['matchId'].unique()
     relevant_events = season_events_df[season_events_df['matchId'].isin(team_match_ids)]
     opponent_shots_df = relevant_events[(relevant_events.get('type.primary') == 'shot') & (relevant_events.get('team.name') != team_to_analyze)].copy().reset_index(drop=True)
     if opponent_shots_df.empty:
-        fig, ax = plt.subplots(figsize=(12, 12)); fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.text(0.5, 0.5, 'No shots against found for this team.', ha='center', va='center', fontsize=12); ax.axis('off'); return fig
-    
-    fig = plt.figure(figsize=(12, 12)); fig.set_facecolor('#f5f1e9'); pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True); ax_pitch = fig.add_subplot(); pitch.draw(ax=ax_pitch)
-    
+        fig, ax = plt.subplots(figsize=(12, 8)); fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.text(0.5, 0.5, 'No shots against found for this team.', ha='center', va='center', fontsize=12); ax.axis('off'); return fig
+
+    fig = plt.figure(figsize=(12, 8)); fig.set_facecolor('#f5f1e9')
+    pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True)
+    ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
+    pitch.draw(ax=ax_pitch)
+
     XG_MAX = 0.8; colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]; nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
-    
+
     for index, shot in opponent_shots_df.iterrows():
         x = shot.get('location.x'); y = shot.get('location.y'); xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce'); is_goal = shot.get('shot.isGoal') == True
         if pd.isna(x) or pd.isna(y) or pd.isna(xg): continue
         color = cmap(min(xg / XG_MAX, 1.0)); edge_color = 'green' if is_goal else 'black'; pitch.scatter(x, y, s=150, facecolor=color, edgecolor=edge_color, linewidth=1.5, ax=ax_pitch, zorder=3, alpha=0.7)
-        
-    total_shots_against = len(opponent_shots_df); total_xg_against = round(pd.to_numeric(opponent_shots_df.get('shot.xg'), errors='coerce').sum(), 2); goals_against = opponent_shots_df[opponent_shots_df.get('shot.isGoal') == True].shape[0]
-    subtitle = f"Liga 3 Portugal, 2025/26 | Total xGA: {total_xg_against} | Goals Against: {goals_against}"; 
-    ax_pitch.set_title(f"{team_to_analyze} Shots CONCEDED Map (Non-Penalty)\n{subtitle}", fontsize=18, weight='bold')
+
+    total_xg_against = round(pd.to_numeric(opponent_shots_df.get('shot.xg'), errors='coerce').sum(), 2); goals_against = opponent_shots_df[opponent_shots_df.get('shot.isGoal') == True].shape[0]
+    subtitle = f"Total xGA: {total_xg_against} | Goals Against: {goals_against}"
+    ax_pitch.set_title(f"{team_to_analyze} — Shots Conceded (Non-Pen)\n{subtitle}", fontsize=14, weight='bold')
     return fig
 
 def create_player_shotmap(player_shots_df, player_name):
@@ -2582,17 +2591,17 @@ def create_player_shotmap(player_shots_df, player_name):
     Includes shot numbering and an xG color scale.
     """
     if player_shots_df.empty:
-        fig, ax = plt.subplots(figsize=(10, 8))
+        fig, ax = plt.subplots(figsize=(12, 8))
         fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9')
         ax.text(0.5, 0.5, 'No shots recorded for this player.', ha='center', va='center', fontsize=12)
         ax.axis('off')
         return fig
-    
+
     # Setup Pitch
-    fig = plt.figure(figsize=(12, 12))
+    fig = plt.figure(figsize=(12, 8))
     fig.set_facecolor('#f5f1e9')
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2, half=True)
-    ax_pitch = fig.add_subplot()
+    ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
     pitch.draw(ax=ax_pitch)
     
     # Colormap for xG
