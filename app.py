@@ -3602,11 +3602,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
 
             with col1:
-                # --- (REVERTED) ---
-                st.pyplot(create_match_shotmap(match_events_df, selected_match_info, selected_match_info['homeTeamName']), use_container_width=True)
+                fig_sm_h = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['homeTeamName'])
+                st.pyplot(fig_sm_h, use_container_width=True)
+                plt.close(fig_sm_h)
             with col2:
-                # --- (REVERTED) ---
-                st.pyplot(create_match_shotmap(match_events_df, selected_match_info, selected_match_info['awayTeamName']), use_container_width=True)
+                fig_sm_a = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['awayTeamName'])
+                st.pyplot(fig_sm_a, use_container_width=True)
+                plt.close(fig_sm_a)
 
             # --- NEW: Shot Details Tables ---
             st.markdown("---") # Add a separator
@@ -3959,13 +3961,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         col1_shot, col2_shot = st.columns(2)
         with col1_shot:
             st.markdown(f"**Shots FOR {selected_team_t}**")
-            # --- (REVERTED) ---
             fig_shots_for = create_season_shotmap(team_events_df, selected_team_t)
             st.pyplot(fig_shots_for, use_container_width=True)
+            plt.close(fig_shots_for)
         with col2_shot:
             st.markdown(f"**Shots AGAINST {selected_team_t}**")
             fig_shots_against = create_season_shots_against_shotmap(team_events_df, team_matches_df, selected_team_t)
             st.pyplot(fig_shots_against, use_container_width=True)
+            plt.close(fig_shots_against)
 
         # --- Match-by-Match xG History ---
         with st.expander("Match-by-Match xG (Last 365 Days)", expanded=False):
@@ -4779,6 +4782,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # Pass the fully processed shot_log which has 'Shot Number'
                 fig_player_shots = create_player_shotmap(shot_log, selected_player_name)
                 st.pyplot(fig_player_shots, use_container_width=True)
+                plt.close(fig_player_shots)
                 
             with col_shot_table:
                 st.markdown("**Shot Log**")
