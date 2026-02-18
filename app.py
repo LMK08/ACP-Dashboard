@@ -2446,7 +2446,7 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, co
     fig.set_facecolor('#f5f1e9'); ax.set_facecolor('#f5f1e9'); ax.set_xticks(angles[:-1]); ax.set_ylim(0, 100)
     ax.grid(color='gray', linestyle='--', linewidth=0.5); ax.spines['polar'].set_color('gray'); ax.set_yticks([25, 50, 75])
     ax.set_yticklabels(["25th", "50th", "75th"], color="grey", size=10); ax.set_rlabel_position(angles[0] * 180/np.pi + 10); ax.set_thetagrids([], [])
-    LABEL_DISTANCES = {"xG per Shot": 106, "Crosses": 107, "Directness": 106, "Avg Out-of-Possession Action Height": 108, "Avg In-Possession Action Height": 122, "Final 1/3 Entries": 117, "Shots Against": 106, "xG per Shot Against": 108, "PPDA": 110, "Quick Recoveries": 110, "DEFAULT": 115}
+    LABEL_DISTANCES = {"xG per Shot": 106, "Crosses": 107, "Directness": 106, "Avg Out-of-Possession Action Height": 108, "Avg In-Possession Action Height": 122, "Final 1/3 Entries": 117, "Shots Against": 106, "xG per Shot Against": 108, "PPDA": 110, "Quick Recoveries": 110, "Goals per Corner": 108, "xG per Corner": 108, "Short Corner %": 108, "Long Throw %": 108, "xG per Long Throw": 110, "xG per FK Delivery": 110, "Penalties": 107, "Non-Pen SP Goals": 112, "Corners": 107, "Long Throws": 108, "First Contact %": 108, "DEFAULT": 115}
     for angle, param, percentile in zip(angles[:-1], params, values_pct):
         percentile_val = int(round(percentile, 0)); label_text = f"{param}\n({percentile_val}th %-tile)"; distance = LABEL_DISTANCES.get(param, LABEL_DISTANCES["DEFAULT"])
         ha_align = 'left' if (np.degrees(angle) > 100 and np.degrees(angle) < 260) else 'right'; ha_align = 'center' if (abs(np.degrees(angle) - 90) < 10 or abs(np.degrees(angle) - 270) < 10) else ha_align
@@ -3318,8 +3318,9 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
 def calculate_set_piece_metrics(_events_df, season_id=None):
     """Calculate set piece xG and goals metrics for all teams.
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
+    _SP_CACHE_VERSION = 'v4'
     if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{_SP_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
             print(f"Loading cached set piece metrics for season {season_id}")
             return pd.read_parquet(cache_path)
@@ -3327,20 +3328,25 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
     events_df = _events_df.copy()
     events_df['total_seconds'] = events_df['minute'] * 60 + events_df['second']
 
-    # Attacking third threshold (Opta: 0-100, attacking third > 66.67)
     ATTACKING_THIRD = 66.67
     LONG_THROW_THRESHOLD = 25  # meters
+    SHORT_CORNER_THRESHOLD = 20  # meters
+    NEAR_BOX_X = 82  # Wyscout x-coord: penalty area starts ~84, this is "into or nearly into"
+    AERIAL_DELIVERY_THRESHOLD = 20  # meters — passes shorter than this are "short" (ground play)
+    PITCH_LENGTH_M, PITCH_WIDTH_M = 105.0, 68.0
 
     results = {}
     teams = events_df['team.name'].dropna().unique()
 
     for team in teams:
         results[team] = {
-            'xG from Corners': 0, 'Goals from Corners': 0, 'Corners': 0,
+            'xG from Corners': 0, 'Goals from Corners': 0, 'Corners': 0, 'Short Corners': 0,
             'xG from Att Throw-ins': 0, 'Goals from Att Throw-ins': 0, 'Att Throw-ins': 0,
             'xG from Free Kicks': 0, 'Goals from Free Kicks': 0, 'Free Kicks Att Third': 0,
             'xG from Set Pieces': 0, 'Goals from Set Pieces': 0, 'Set Pieces Att Third': 0,
-            'Long Throws': 0,
+            'Long Throws': 0, 'xG from Long Throws': 0, 'Goals from Long Throws': 0,
+            'Penalties': 0, 'Penalty Goals': 0,
+            'First Contact Wins': 0, 'First Contact Deliveries': 0,
             'xG Conceded Corners': 0, 'Goals Conceded Corners': 0, 'Corners Against': 0,
             'xG Conceded Att Throw-ins': 0, 'Goals Conceded Att Throw-ins': 0,
             'xG Conceded Free Kicks': 0, 'Goals Conceded Free Kicks': 0,
@@ -3349,18 +3355,45 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
 
     # Process by match
     for match_id in events_df['matchId'].unique():
-        match_events = events_df[events_df['matchId'] == match_id].sort_values('total_seconds')
+        match_events = events_df[events_df['matchId'] == match_id].sort_values('total_seconds').reset_index(drop=True)
         match_teams = match_events['team.name'].dropna().unique()
         shots = match_events[match_events['type.primary'] == 'shot'].copy()
+        # Pre-extract team names array for fast first-contact lookups
+        _me_teams = match_events['team.name'].values
+
+        # Helper: check if delivering team wins first contact (next event with a team belongs to them)
+        def _first_contact_won(event_idx, delivering_team):
+            for j in range(event_idx + 1, min(event_idx + 6, len(match_events))):
+                next_team = _me_teams[j]
+                if pd.notna(next_team):
+                    return next_team == delivering_team
+            return False
 
         # Corners
         corners = match_events[match_events['type.primary'] == 'corner']
-        for _, corner in corners.iterrows():
+        for idx, corner in corners.iterrows():
             team = corner['team.name']
             if pd.isna(team) or team not in results:
                 continue
             corner_time = corner['total_seconds']
             results[team]['Corners'] += 1
+
+            # Detect short corners by pass distance
+            pass_len = corner.get('pass.length', np.nan)
+            if pd.isna(pass_len):
+                sx, sy = corner.get('location.x', np.nan), corner.get('location.y', np.nan)
+                ex, ey = corner.get('pass.endLocation.x', np.nan), corner.get('pass.endLocation.y', np.nan)
+                if pd.notna(sx) and pd.notna(ex):
+                    pass_len = np.sqrt(((ex - sx) * PITCH_LENGTH_M / 100.0)**2 + ((ey - sy) * PITCH_WIDTH_M / 100.0)**2)
+            is_short = pd.notna(pass_len) and pass_len <= SHORT_CORNER_THRESHOLD
+            if is_short:
+                results[team]['Short Corners'] += 1
+
+            # First contact tracking — only for aerial deliveries (not short corners)
+            if not is_short:
+                results[team]['First Contact Deliveries'] += 1
+                if _first_contact_won(idx, team):
+                    results[team]['First Contact Wins'] += 1
 
             team_shots = shots[(shots['team.name'] == team) &
                               (shots['total_seconds'] >= corner_time) &
@@ -3413,24 +3446,46 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
                     results[opp_team]['xG Conceded Set Pieces'] += xg
                     results[opp_team]['Goals Conceded Set Pieces'] += goals
 
-        # Long throws (pass.length >= 25m on throw-in events)
-        long_throws = throw_ins[throw_ins['pass.length'] >= LONG_THROW_THRESHOLD]
-        for _, throw in long_throws.iterrows():
+        # Long throws: pass.length >= 25m AND landing into/near the penalty box
+        long_throw_mask = (throw_ins['pass.length'] >= LONG_THROW_THRESHOLD)
+        if 'pass.endLocation.x' in throw_ins.columns:
+            long_throw_mask = long_throw_mask & (throw_ins['pass.endLocation.x'] >= NEAR_BOX_X)
+        long_throws = throw_ins[long_throw_mask]
+        for idx, throw in long_throws.iterrows():
             team = throw['team.name']
             if pd.isna(team) or team not in results:
                 continue
             results[team]['Long Throws'] += 1
+            # First contact tracking for long throws (always aerial)
+            results[team]['First Contact Deliveries'] += 1
+            if _first_contact_won(idx, team):
+                results[team]['First Contact Wins'] += 1
+            throw_time = throw['total_seconds']
+            team_shots = shots[(shots['team.name'] == team) &
+                              (shots['total_seconds'] >= throw_time) &
+                              (shots['total_seconds'] <= throw_time + 15)]
+            xg = team_shots['shot.xg'].sum() if not team_shots.empty else 0
+            goals = int(team_shots['shot.isGoal'].sum()) if not team_shots.empty else 0
+            results[team]['xG from Long Throws'] += xg
+            results[team]['Goals from Long Throws'] += goals
 
         # Free kicks in attacking third
         free_kicks = match_events[match_events['type.primary'] == 'free_kick']
         att_free_kicks = free_kicks[free_kicks['location.x'] >= ATTACKING_THIRD]
-        for _, fk in att_free_kicks.iterrows():
+        for idx, fk in att_free_kicks.iterrows():
             team = fk['team.name']
             if pd.isna(team) or team not in results:
                 continue
             fk_time = fk['total_seconds']
             results[team]['Free Kicks Att Third'] += 1
             results[team]['Set Pieces Att Third'] += 1
+
+            # First contact tracking — only for aerial FK deliveries (pass.length > threshold)
+            fk_pass_len = fk.get('pass.length', np.nan)
+            if pd.notna(fk_pass_len) and fk_pass_len > AERIAL_DELIVERY_THRESHOLD:
+                results[team]['First Contact Deliveries'] += 1
+                if _first_contact_won(idx, team):
+                    results[team]['First Contact Wins'] += 1
 
             team_shots = shots[(shots['team.name'] == team) &
                               (shots['total_seconds'] >= fk_time) &
@@ -3451,13 +3506,36 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
                     results[opp_team]['xG Conceded Set Pieces'] += xg
                     results[opp_team]['Goals Conceded Set Pieces'] += goals
 
-    # Calculate per-event metrics
+        # Penalties
+        _sec_col = match_events.get('type.secondary')
+        def _has_penalty_tag(s):
+            if isinstance(s, (list, np.ndarray)):
+                return 'penalty' in s
+            return False
+        penalty_shots = shots[shots['type.secondary'].apply(_has_penalty_tag)] if _sec_col is not None else pd.DataFrame()
+        if penalty_shots.empty:
+            penalty_shots = match_events[(match_events['type.primary'] == 'penalty')]
+        for _, pen in penalty_shots.iterrows():
+            team = pen['team.name']
+            if pd.isna(team) or team not in results:
+                continue
+            results[team]['Penalties'] += 1
+            if pen.get('shot.isGoal', False):
+                results[team]['Penalty Goals'] += 1
+
+    # Calculate per-event / rate metrics
     for team in results:
         r = results[team]
         r['xG per Corner'] = round(r['xG from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
+        r['Goals per Corner'] = round(r['Goals from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
+        r['Short Corner %'] = round(r['Short Corners'] / r['Corners'] * 100, 1) if r['Corners'] > 0 else 0
+        r['Long Throw %'] = round(r['Long Throws'] / r['Att Throw-ins'] * 100, 1) if r['Att Throw-ins'] > 0 else 0
+        r['xG per Long Throw'] = round(r['xG from Long Throws'] / r['Long Throws'], 3) if r['Long Throws'] > 0 else 0
+        r['xG per FK Delivery'] = round(r['xG from Free Kicks'] / r['Free Kicks Att Third'], 3) if r['Free Kicks Att Third'] > 0 else 0
+        r['Non-Pen SP Goals'] = r['Goals from Set Pieces']  # corners + throw-ins + FKs, excluding pens
+        r['First Contact %'] = round(r['First Contact Wins'] / r['First Contact Deliveries'] * 100, 1) if r['First Contact Deliveries'] > 0 else 0
         r['xG per Att Set Piece'] = round(r['xG from Set Pieces'] / r['Set Pieces Att Third'], 3) if r['Set Pieces Att Third'] > 0 else 0
         r['xG Conceded per Corner'] = round(r['xG Conceded Corners'] / r['Corners Against'], 3) if r['Corners Against'] > 0 else 0
-        r['Goals per Corner'] = round(r['Goals from Corners'] / r['Corners'], 3) if r['Corners'] > 0 else 0
         r['Goals Conceded per Corner'] = round(r['Goals Conceded Corners'] / r['Corners Against'], 3) if r['Corners Against'] > 0 else 0
 
     result_df = pd.DataFrame.from_dict(results, orient='index')
@@ -3465,7 +3543,7 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
         try:
-            result_df.to_parquet(os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{season_id}.parquet'))
+            result_df.to_parquet(os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{_SP_CACHE_VERSION}_{season_id}.parquet'))
         except Exception:
             pass
     return result_df
@@ -3845,22 +3923,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df, season_id=selected_season_id)
 
+        # Compute set piece radar data (all rate metrics — higher = better, no inversions)
+        sp_df_raw = None
+        sp_df_pct = None
+        try:
+            sp_df_raw = calculate_set_piece_metrics(team_events_df, season_id=selected_season_id)
+            if sp_df_raw is not None and not sp_df_raw.empty:
+                sp_df_pct = sp_df_raw.copy()
+                for col in sp_df_pct.columns:
+                    sp_df_pct[col] = sp_df_pct[col].rank(pct=True) * 100
+        except Exception:
+            pass
+
         st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
-            col_r1, col_r2, col_r3 = st.columns(3)
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
             distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Losses']
             defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA']
+            set_piece_params = [
+                'Corners', 'xG per Corner', 'Goals per Corner', 'Short Corner %',  # corner cluster
+                'Long Throws', 'Long Throw %', 'xG per Long Throw',  # throw-in cluster
+                'First Contact %', 'xG per FK Delivery', 'Penalties', 'Non-Pen SP Goals',  # general
+            ]
             team_stats_raw = stats_df_raw.loc[selected_team_t]
             team_stats_pct = stats_df_pct.loc[selected_team_t]
             current_league = "Liga 3 Portugal"; current_season = season_label
-            
+
+            # Row 1: Offensive + Distribution
+            col_r1, col_r2 = st.columns(2)
             with col_r1:
                 st.markdown("**Offensive Radar**")
                 valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
                 if valid_offensive_params:
                      fig_off = plot_radar_chart(valid_offensive_params, team_stats_raw[valid_offensive_params].tolist(), team_stats_pct[valid_offensive_params].tolist(), selected_team_t, "Offensive Radar", '#e60000', league=current_league, season=current_season)
                      st.pyplot(fig_off, use_container_width=True)
+                     plt.close(fig_off)
             with col_r2:
                 st.markdown("**Distribution Radar**")
                 valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
@@ -3870,6 +3967,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      except ValueError: pass
                      fig_dist = plot_radar_chart(valid_distribution_params, raw_dist_values, team_stats_pct[valid_distribution_params].tolist(), selected_team_t, "Distribution Radar", '#0077b6', league=current_league, season=current_season)
                      st.pyplot(fig_dist, use_container_width=True)
+                     plt.close(fig_dist)
+
+            # Row 2: Defensive + Set Piece
+            col_r3, col_r4 = st.columns(2)
             with col_r3:
                 st.markdown("**Defensive Radar**")
                 valid_defensive_params = [p for p in defensive_params if p in team_stats_raw.index]
@@ -3881,6 +3982,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      except ValueError: pass
                      fig_def = plot_radar_chart(valid_defensive_params, raw_def_values, team_stats_pct[valid_defensive_params].tolist(), selected_team_t, "Defensive Radar", '#52A736', league=current_league, season=current_season)
                      st.pyplot(fig_def, use_container_width=True)
+                     plt.close(fig_def)
+            with col_r4:
+                st.markdown("**Set Piece Radar**")
+                if sp_df_raw is not None and not sp_df_raw.empty and selected_team_t in sp_df_raw.index:
+                    sp_team_raw = sp_df_raw.loc[selected_team_t]
+                    sp_team_pct = sp_df_pct.loc[selected_team_t]
+                    valid_sp_params = [p for p in set_piece_params if p in sp_team_raw.index]
+                    if valid_sp_params:
+                        raw_sp_values = sp_team_raw[valid_sp_params].tolist()
+                        # Format percentage params with % suffix
+                        for _pct_name in ['Short Corner %', 'Long Throw %', 'First Contact %']:
+                            try:
+                                _idx = valid_sp_params.index(_pct_name)
+                                raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
+                            except ValueError:
+                                pass
+                        fig_sp = plot_radar_chart(valid_sp_params, raw_sp_values, sp_team_pct[valid_sp_params].tolist(), selected_team_t, "Set Piece Radar", '#ff8c00', league=current_league, season=current_season)
+                        st.pyplot(fig_sp, use_container_width=True)
+                        plt.close(fig_sp)
+                    else:
+                        st.info("Set piece data not available.")
+                else:
+                    st.info("Set piece data not available for this team.")
         else:
             st.warning(f"Could not find calculated radar statistics for {selected_team_t}.")
 
