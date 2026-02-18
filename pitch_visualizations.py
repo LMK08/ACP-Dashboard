@@ -139,6 +139,18 @@ def _make_pitch(figsize=(12, 8)):
     return pitch, fig, ax
 
 
+def _add_attack_direction_arrow(ax):
+    """Draw a small arrow + label showing the attacking direction (left → right)."""
+    ax.annotate('', xy=(30, 104), xytext=(12, 104),
+                xycoords='data', textcoords='data',
+                arrowprops=dict(arrowstyle='->', color='#333333',
+                                lw=2.0, mutation_scale=15),
+                annotation_clip=False, zorder=10)
+    ax.text(21, 107, 'Direction of Attack', ha='center', va='bottom',
+            fontsize=8, color='#333333', fontstyle='italic',
+            clip_on=False, zorder=10)
+
+
 def _short_name(full_name):
     """Shorten to last name."""
     if pd.isna(full_name):
@@ -951,6 +963,7 @@ def plot_recovery_map(events_df, team_name, title=None):
                       s=25, color='#2d6a4f', edgecolors='white', linewidth=0.5,
                       zorder=3, ax=ax, alpha=0.7)
 
+    _add_attack_direction_arrow(ax)
     ax.set_title(title or f'{team_name} — Ball Recoveries ({len(recoveries)})',
                  fontsize=13, fontweight='bold', pad=8)
     fig.tight_layout()
@@ -980,6 +993,7 @@ def plot_loss_map(events_df, team_name, title=None):
                       s=25, color='#9d0208', edgecolors='white', linewidth=0.5,
                       zorder=3, ax=ax, alpha=0.7)
 
+    _add_attack_direction_arrow(ax)
     ax.set_title(title or f'{team_name} — Ball Losses ({len(losses)})',
                  fontsize=13, fontweight='bold', pad=8)
     fig.tight_layout()
@@ -1017,6 +1031,7 @@ def plot_defensive_duels_map(events_df, team_name, title=None):
                       s=50, color='#2a9d8f', edgecolors='white', linewidth=0.5,
                       zorder=4, ax=ax, alpha=0.7, label=f'Won ({len(won)})')
 
+    _add_attack_direction_arrow(ax)
     ax.legend(loc='upper left', fontsize=9)
     ax.set_title(title or f'{team_name} — Defensive Duels',
                  fontsize=13, fontweight='bold', pad=8)
