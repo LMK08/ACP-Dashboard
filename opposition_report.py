@@ -1158,7 +1158,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             fig = app.create_season_shotmap(
                 season_events_df, selected_opponent,
             )
-            st.pyplot(fig)
+            st.pyplot(fig, use_container_width=True)
             pdf_figures['shotmap_for'] = _fig_to_png_bytes(fig)
             plt.close(fig)
         except Exception as e:
@@ -1170,7 +1170,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             fig = app.create_season_shots_against_shotmap(
                 season_events_df, season_matches_df, selected_opponent,
             )
-            st.pyplot(fig)
+            st.pyplot(fig, use_container_width=True)
             pdf_figures['shotmap_against'] = _fig_to_png_bytes(fig)
             plt.close(fig)
         except Exception as e:
