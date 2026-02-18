@@ -199,6 +199,7 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
     session.mount("https://", adapter)
 
     unique_player_ids = set()
+    match_lineups = {}  # {match_id: {team_name: {lineup, bench, substitutions, formation}}}
 
     print(f"\n🔍 Collecting player IDs from {len(match_ids)} matches...")
 
@@ -210,10 +211,23 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
             match_data = r.json()
 
             teams_data = match_data.get('teamsData', {})
+            match_lineups[match_id] = {}
             for team_id, team_info in teams_data.items():
                 formation = team_info.get('formation')
                 if not formation:
                     continue
+
+                # Resolve team name from lineup player IDs via id_map
+                team_name = team_info.get('name')  # v3 API may not have this
+                if not team_name or team_name.startswith('team_'):
+                    # Look up from id_map using any lineup player
+                    for player in formation.get('lineup', []):
+                        pid = player.get('playerId')
+                        if pid and pid in id_map:
+                            team_name = id_map[pid]['team']
+                            break
+                if not team_name or team_name.startswith('team_'):
+                    team_name = f'team_{team_id}'
 
                 # Collect all player IDs from lineup and bench
                 for player in formation.get('lineup', []):
@@ -226,10 +240,18 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
                     if pid:
                         unique_player_ids.add(pid)
 
+                # Store lineup, bench, and substitution data for this team
+                match_lineups[match_id][team_name] = {
+                    'lineup': formation.get('lineup', []),
+                    'bench': formation.get('bench', []),
+                    'substitutions': formation.get('substitutions', []),
+                }
+
         except Exception as e:
             print(f"  -> ⚠️ Error scanning match {match_id}: {e}")
 
     print(f"✅ Found {len(unique_player_ids)} unique players.")
+    print(f"✅ Captured lineup/substitution data for {len(match_lineups)} matches.")
 
     # --- STEP 3: Fetch minutes from Player Advanced Stats endpoint ---
     print(f"\n🚀 Fetching player stats from Advanced Stats endpoint...")
@@ -285,7 +307,7 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
 
     print(f"✅ Retrieved direct minutes for {len(total_minutes_df)} players.")
 
-    return total_minutes_df
+    return total_minutes_df, match_lineups
 
 # ==============================================================================
 # SECTION 3: DATA PROCESSING FUNCTIONS
@@ -1607,11 +1629,17 @@ def main():
     print("\nStarting official player minute retrieval (incremental)...")
 
     player_minutes_by_season = {}
+    all_match_lineups = {}  # Accumulate lineup/substitution data across seasons
     if os.path.exists('player_minutes_and_positions.pkl'):
         print("📂 Loading cached player minutes from player_minutes_and_positions.pkl...")
         with open('player_minutes_and_positions.pkl', 'rb') as f:
             player_minutes_by_season = pickle.load(f)
         print(f"   Cached player minutes for {len(player_minutes_by_season)} seasons.")
+    if os.path.exists('match_lineups.pkl'):
+        print("📂 Loading cached match lineups from match_lineups.pkl...")
+        with open('match_lineups.pkl', 'rb') as f:
+            all_match_lineups = pickle.load(f)
+        print(f"   Cached lineups for {len(all_match_lineups)} matches.")
 
     # Determine which seasons need fetching
     seasons_to_fetch_minutes = [CURRENT_SEASON_ID]  # Always re-fetch current (totals change)
@@ -1626,7 +1654,7 @@ def main():
         season_events = all_raw_events_df[all_raw_events_df['seasonId'] == season_id].copy()
 
         print(f"\n--- Fetching player minutes for season {season_id} ({len(season_match_ids)} matches) ---")
-        season_minutes_df = fetch_official_player_minutes(
+        season_minutes_df, season_lineups = fetch_official_player_minutes(
             wyscout_user,
             wyscout_pass,
             season_match_ids,
@@ -1640,6 +1668,14 @@ def main():
             print(f"✅ Season {season_id}: {len(season_minutes_df)} player records.")
         else:
             print(f"⚠️ Season {season_id}: No player minutes data.")
+
+        # Merge lineup data
+        all_match_lineups.update(season_lineups)
+
+    # Save match lineups (lineup, bench, substitutions per match per team)
+    with open('match_lineups.pkl', 'wb') as f:
+        pickle.dump(all_match_lineups, f)
+    print(f"✅ Match lineups/substitutions saved to 'match_lineups.pkl' ({len(all_match_lineups)} matches)")
 
     # Save per-season dict
     with open('player_minutes_and_positions.pkl', 'wb') as f:

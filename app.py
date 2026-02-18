@@ -33,6 +33,23 @@ import datetime # For Radar dates
 import matplotlib.gridspec as gridspec # For Corner plots
 import scipy.stats # For Radar stats percentile rank
 import os # For checking logo file paths
+import json
+
+_TRANSFERRED_PLAYERS_PATH = os.path.join(os.path.dirname(__file__), 'transferred_players.json')
+
+def load_transferred_players():
+    """Load the list of players who transferred out of Liga 3."""
+    try:
+        with open(_TRANSFERRED_PLAYERS_PATH, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def save_transferred_players(players):
+    """Persist the transferred players list to disk."""
+    with open(_TRANSFERRED_PLAYERS_PATH, 'w') as f:
+        json.dump(players, f, indent=2)
+
 from PIL import Image # For scatter plot logos
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox # For scatter plot logos
 from adjustText import adjust_text # For scatter plot logos
@@ -46,6 +63,7 @@ import plotly.graph_objects as go
 import io # For saving the in-memory image
 # ... after your other imports ...
 import base64
+import pitch_visualizations as pv
 
 
 # Metrics that need 3 decimal places (thousandths) instead of the default 2
@@ -95,7 +113,7 @@ def load_data():
     missing_files = [f for f in required_files if not os.path.exists(f)]
     if missing_files:
         st.error(f"❌ Error: Missing data files: {', '.join(missing_files)}. Please run `process_data.py` first.")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     try:
         logger.info("Loading data files...")
@@ -143,21 +161,28 @@ def load_data():
         if season_team_stats and isinstance(next(iter(season_team_stats.keys())), str):
             season_team_stats = {CURRENT_SEASON_ID: season_team_stats}
 
+        # Load match lineups (lineup, bench, substitution data from Wyscout API)
+        match_lineups = {}
+        if os.path.exists('match_lineups.pkl'):
+            with open('match_lineups.pkl', 'rb') as f:
+                match_lineups = pickle.load(f)
+            logger.info(f"Loaded lineup/substitution data for {len(match_lineups)} matches")
+
         logger.info(f"Loaded {len(raw_events_df)} events, {len(matches_summary_df)} matches")
-        return raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data
+        return raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups
 
     except FileNotFoundError as e:
         st.error(f"❌ Error: A data file was not found. Please run `process_data.py` first. Missing file: {e.filename}")
         logger.error(f"FileNotFoundError: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     except (pickle.UnpicklingError, pd.errors.ParserError) as e:
         st.error(f"❌ Error: Data file is corrupted. Please regenerate with `process_data.py`. Details: {e}")
         logger.error(f"Data corruption error: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     except Exception as e:
         st.error(f"An unexpected error occurred loading data: {e}")
         logger.exception("Unexpected error in load_data")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
 @st.cache_data(ttl=3600)
 def load_player_details():
@@ -839,6 +864,61 @@ FORMATION_COORDS = {
         'coords': [(50, 7), (90, 28), (72, 22), (50, 22), (28, 22), (10, 28),
                    (82, 52), (62, 52), (38, 52), (18, 52), (50, 78)]
     },
+    '3-4-1-2': {
+        'positions': ['GK', 'LCB', 'CB', 'RCB', 'LM', 'LCM', 'RCM', 'RM', 'CAM', 'LST', 'RST'],
+        'coords': [(50, 7), (75, 25), (50, 25), (25, 25), (85, 50),
+                   (62, 50), (38, 50), (15, 50), (50, 65), (62, 78), (38, 78)]
+    },
+    '4-4-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LM', 'LCM', 'RCM', 'RM', 'CF', 'CF'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (85, 50), (62, 50), (38, 50), (15, 50), (50, 75), (50, 75)]
+    },
+    '3-4-2-1': {
+        'positions': ['GK', 'LCB', 'CB', 'RCB', 'LM', 'LCM', 'RCM', 'RM', 'LAM', 'RAM', 'CF'],
+        'coords': [(50, 7), (75, 25), (50, 25), (25, 25), (85, 48),
+                   (62, 48), (38, 48), (15, 48), (70, 65), (30, 65), (50, 80)]
+    },
+    '4-1-3-2': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'CDM', 'LAM', 'CAM', 'RAM', 'LST', 'RST'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (50, 40), (75, 58), (50, 58), (25, 58), (62, 78), (38, 78)]
+    },
+    '4-2-1-3': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LDM', 'RDM', 'CAM', 'LW', 'CF', 'RW'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (65, 42), (35, 42), (50, 58), (82, 72), (50, 80), (18, 72)]
+    },
+    '5-3-1': {
+        'positions': ['GK', 'LWB', 'LCB', 'CB', 'RCB', 'RWB', 'LCM', 'CDM', 'RCM', 'CF', 'CF'],
+        'coords': [(50, 7), (90, 28), (72, 22), (50, 22), (28, 22), (10, 28),
+                   (70, 50), (50, 45), (30, 50), (50, 75), (50, 75)]
+    },
+    '4-3-2-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LCM', 'CDM', 'RCM', 'LAM', 'RAM', 'CF'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (70, 45), (50, 42), (30, 45), (70, 62), (30, 62), (50, 80)]
+    },
+    '4-5-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LM', 'LCM', 'CDM', 'RCM', 'RM', 'CF'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (85, 50), (65, 48), (50, 42), (35, 48), (15, 50), (50, 78)]
+    },
+    '3-5-1': {
+        'positions': ['GK', 'LCB', 'CB', 'RCB', 'LWB', 'LCM', 'CDM', 'RCM', 'RWB', 'CF', 'CF'],
+        'coords': [(50, 7), (75, 25), (50, 25), (25, 25), (90, 50),
+                   (65, 50), (50, 42), (35, 50), (10, 50), (50, 75), (50, 75)]
+    },
+    '4-3-1': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LCM', 'CDM', 'RCM', 'CF', 'CF', 'CF'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (70, 50), (50, 45), (30, 50), (50, 75), (50, 75), (50, 75)]
+    },
+    '4-3-2': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LCM', 'CDM', 'RCM', 'LST', 'RST', 'RST'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (70, 50), (50, 45), (30, 50), (62, 75), (38, 75), (38, 75)]
+    },
 }
 
 # Shadow Team tag categories with hex colors
@@ -947,8 +1027,44 @@ def map_players_to_formation(starting_xi, formation_slots):
                 mapping[slot] = starting_xi[pos]
                 used_players.add(starting_xi[pos]['name'])
                 break
-        if slot not in mapping:
-            mapping[slot] = {'name': slot, 'id': None}  # Show position name if no player found
+
+    # Second pass: assign remaining unmatched players to unfilled slots
+    unfilled = [s for s in formation_slots if s not in mapping]
+    remaining = [(pos, info) for pos, info in starting_xi.items()
+                 if info['name'] not in used_players]
+
+    # Coarse position tiers for proximity matching
+    _tier = {
+        'GK': 0,
+        'LB': 1, 'RB': 1, 'LB5': 1, 'RB5': 1, 'LCB': 1, 'RCB': 1,
+        'CB': 1, 'LCB3': 1, 'RCB3': 1, 'LWB': 1.5, 'RWB': 1.5,
+        'LDMF': 2, 'RDMF': 2, 'DMF': 2,
+        'LCMF': 2.5, 'RCMF': 2.5, 'LCMF3': 2.5, 'RCMF3': 2.5,
+        'CMF': 2.5, 'AMF': 3, 'LAMF': 3, 'RAMF': 3,
+        'LW': 3.5, 'RW': 3.5, 'LWF': 3.5, 'RWF': 3.5,
+        'CF': 4, 'LCF': 4, 'RCF': 4, 'SS': 4,
+    }
+    _slot_tier = {
+        'GK': 0,
+        'LB': 1, 'RB': 1, 'LCB': 1, 'RCB': 1, 'CB': 1,
+        'LWB': 1.5, 'RWB': 1.5,
+        'LDM': 2, 'RDM': 2, 'CDM': 2,
+        'LCM': 2.5, 'RCM': 2.5,
+        'LM': 3, 'RM': 3, 'LAM': 3, 'RAM': 3, 'CAM': 3,
+        'LW': 3.5, 'RW': 3.5,
+        'CF': 4, 'LST': 4, 'RST': 4,
+    }
+
+    for slot in unfilled:
+        st = _slot_tier.get(slot, 2.5)
+        # Sort remaining by proximity to this slot's tier
+        remaining.sort(key=lambda r: abs(_tier.get(r[0], 2.5) - st))
+        if remaining:
+            pos, info = remaining.pop(0)
+            mapping[slot] = info
+            used_players.add(info['name'])
+        else:
+            mapping[slot] = {'name': slot, 'id': None}
 
     return mapping
 
@@ -3352,7 +3468,7 @@ st.title("Atlético CP Analysis") # You can change this title
 
 # --- Load Data ---
 with st.spinner("Loading match data..."):
-    raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data = load_data()
+    raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups = load_data()
 
 # --- Declare player_stats_with_scores_df globally for the app session ---
 # This ensures it's accessible inside the plotting function
@@ -3392,7 +3508,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state[current_radio_key] = 'Player Profile'
         st.session_state.nav_to_profile = False
 
-    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team')
+    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team', 'Opposition Report')
 
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type",
@@ -3401,6 +3517,44 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         key=f"analysis_type_radio_{st.session_state.radio_key_version}"
     )
     st.session_state.current_page = analysis_type
+
+    # --- Transferred Players Manager ---
+    with st.sidebar.expander("Transferred Out Players"):
+        if 'transferred_players' not in st.session_state:
+            st.session_state.transferred_players = load_transferred_players()
+
+        # Build a list of all player names across all seasons for autocomplete
+        _all_names = set()
+        if player_minutes_data:
+            for _sid, _pm in player_minutes_data.items():
+                if isinstance(_pm, pd.DataFrame) and 'playerName' in _pm.columns:
+                    _all_names.update(_pm['playerName'].dropna().unique())
+        all_player_names = sorted(_all_names)
+
+        new_player = st.selectbox(
+            "Add player",
+            options=[""] + [n for n in all_player_names
+                            if n not in st.session_state.transferred_players],
+            key="transfer_add_select",
+        )
+        if st.button("Add", key="transfer_add_btn") and new_player:
+            if new_player not in st.session_state.transferred_players:
+                st.session_state.transferred_players.append(new_player)
+                save_transferred_players(st.session_state.transferred_players)
+                st.rerun()
+
+        if st.session_state.transferred_players:
+            st.caption("Current list:")
+            for pname in list(st.session_state.transferred_players):
+                col_name, col_btn = st.columns([3, 1])
+                col_name.write(pname)
+                if col_btn.button("X", key=f"transfer_rm_{pname}"):
+                    st.session_state.transferred_players.remove(pname)
+                    save_transferred_players(st.session_state.transferred_players)
+                    st.rerun()
+        else:
+            st.caption("No players added yet.")
+
     if analysis_type == 'Match Analysis':
         st.header("Match Analysis")
 
@@ -3527,6 +3681,135 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if isinstance(match_data['player_stats']['away'], pd.DataFrame): st.dataframe(match_data['player_stats']['away'])
                 else: st.warning("Away player stats data not a DataFrame.")
             else: st.warning("Player stats data not found.")
+
+            # =============================================================
+            # Tactical Analysis (Wyscout-style pitch visualizations)
+            # =============================================================
+            st.subheader("Tactical Analysis")
+            home_team = selected_match_info['homeTeamName']
+            away_team = selected_match_info['awayTeamName']
+
+            # Get lineup/substitution data for this match (if available)
+            match_lineup_data = match_lineups.get(selected_match_id, {}) if match_lineups else {}
+            home_lineup = match_lineup_data.get(home_team)
+            away_lineup = match_lineup_data.get(away_team)
+
+            # 1. Average Player Positions
+            st.markdown("**Average Player Positions**")
+            col_ap1, col_ap2 = st.columns(2)
+            with col_ap1:
+                try:
+                    fig_ap_h = pv.plot_average_positions(match_events_df, home_team,
+                                                         match_lineup=home_lineup)
+                    st.pyplot(fig_ap_h, use_container_width=True)
+                    plt.close(fig_ap_h)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_ap2:
+                try:
+                    fig_ap_a = pv.plot_average_positions(match_events_df, away_team,
+                                                         match_lineup=away_lineup)
+                    st.pyplot(fig_ap_a, use_container_width=True)
+                    plt.close(fig_ap_a)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 2. Average Positions by Substitution Phase
+            st.markdown(f"**{home_team} — Avg Positions by Phase**")
+            try:
+                fig_sp_h = pv.plot_avg_positions_by_subs(match_events_df, home_team,
+                                                          match_lineup=home_lineup)
+                st.pyplot(fig_sp_h, use_container_width=True)
+                plt.close(fig_sp_h)
+            except Exception as e:
+                st.caption(f"Could not render: {e}")
+
+            st.markdown(f"**{away_team} — Avg Positions by Phase**")
+            try:
+                fig_sp_a = pv.plot_avg_positions_by_subs(match_events_df, away_team,
+                                                          match_lineup=away_lineup)
+                st.pyplot(fig_sp_a, use_container_width=True)
+                plt.close(fig_sp_a)
+            except Exception as e:
+                st.caption(f"Could not render: {e}")
+
+            # 3. Passing Network
+            st.markdown("**Passing Network**")
+            col_pn1, col_pn2 = st.columns(2)
+            with col_pn1:
+                try:
+                    fig_pn_h = pv.plot_passing_network(match_events_df, home_team)
+                    st.pyplot(fig_pn_h, use_container_width=True)
+                    plt.close(fig_pn_h)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_pn2:
+                try:
+                    fig_pn_a = pv.plot_passing_network(match_events_df, away_team)
+                    st.pyplot(fig_pn_a, use_container_width=True)
+                    plt.close(fig_pn_a)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 4. Ball Recoveries & Losses
+            st.markdown("**Ball Recoveries & Losses**")
+            tac_team = st.selectbox(
+                "Select team for recovery/loss maps",
+                [home_team, away_team],
+                key="tac_recovery_team",
+            )
+            col_rl1, col_rl2 = st.columns(2)
+            with col_rl1:
+                try:
+                    fig_rec = pv.plot_recovery_map(match_events_df, tac_team)
+                    st.pyplot(fig_rec, use_container_width=True)
+                    plt.close(fig_rec)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_rl2:
+                try:
+                    fig_loss = pv.plot_loss_map(match_events_df, tac_team)
+                    st.pyplot(fig_loss, use_container_width=True)
+                    plt.close(fig_loss)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 5. Defensive Duels
+            st.markdown("**Defensive Duels**")
+            col_dd1, col_dd2 = st.columns(2)
+            with col_dd1:
+                try:
+                    fig_dd_h = pv.plot_defensive_duels_map(match_events_df, home_team)
+                    st.pyplot(fig_dd_h, use_container_width=True)
+                    plt.close(fig_dd_h)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_dd2:
+                try:
+                    fig_dd_a = pv.plot_defensive_duels_map(match_events_df, away_team)
+                    st.pyplot(fig_dd_a, use_container_width=True)
+                    plt.close(fig_dd_a)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 6. Shot Assists + Dribbles in Final Third
+            st.markdown("**Shot Assists & Dribbles in Final Third**")
+            col_sa1, col_sa2 = st.columns(2)
+            with col_sa1:
+                try:
+                    fig_sa_h = pv.plot_shot_assists_and_dribbles(match_events_df, home_team)
+                    st.pyplot(fig_sa_h, use_container_width=True)
+                    plt.close(fig_sa_h)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_sa2:
+                try:
+                    fig_sa_a = pv.plot_shot_assists_and_dribbles(match_events_df, away_team)
+                    st.pyplot(fig_sa_a, use_container_width=True)
+                    plt.close(fig_sa_a)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
         else:
              st.warning(f"No detailed match data found for Match ID {selected_match_id}.")
 
@@ -3719,7 +4002,44 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.dataframe(team_season_stats[selected_team_t]['corners'])
         else:
             st.write("No season-long stats available for this team.")
-            
+
+        # =============================================================
+        # Tactical Zone Analysis (Wyscout-style)
+        # =============================================================
+        st.subheader("Tactical Zone Analysis")
+
+        # 1. Ball Recovery Zones (vs league average)
+        st.markdown("**Ball Recovery Zones** (vs League Average)")
+        try:
+            fig_rec_z = pv.plot_zone_heatmap(
+                team_events_df, selected_team_t, 'recovery',
+                league_events_df=team_events_df,
+            )
+            st.pyplot(fig_rec_z, use_container_width=True)
+            plt.close(fig_rec_z)
+        except Exception as e:
+            st.caption(f"Could not render recovery zones: {e}")
+
+        # 2. Ball Loss Zones (vs league average)
+        st.markdown("**Ball Loss Zones** (vs League Average)")
+        try:
+            fig_loss_z = pv.plot_zone_heatmap(
+                team_events_df, selected_team_t, 'loss',
+                league_events_df=team_events_df,
+            )
+            st.pyplot(fig_loss_z, use_container_width=True)
+            plt.close(fig_loss_z)
+        except Exception as e:
+            st.caption(f"Could not render loss zones: {e}")
+
+        # 3. Passing Network (Season)
+        st.markdown("**Passing Network (Season)**")
+        try:
+            fig_pn = pv.plot_passing_network(team_events_df, selected_team_t)
+            st.pyplot(fig_pn, use_container_width=True)
+            plt.close(fig_pn)
+        except Exception as e:
+            st.caption(f"Could not render passing network: {e}")
 
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
@@ -4500,7 +4820,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         else:
             st.info("No shots recorded for this player.")
-        
+
+        st.divider()
+
+        # --- 7b. Shot Assists & Dribbles in Final Third ---
+        st.subheader("Shot Assists & Dribbles in Final Third")
+        try:
+            fig_sa_player = pv.plot_shot_assists_and_dribbles(
+                profile_events_df, current_team,
+                player_name=selected_player_name,
+            )
+            st.pyplot(fig_sa_player, use_container_width=True)
+            plt.close(fig_sa_player)
+        except Exception as e:
+            st.caption(f"Could not render shot assists & dribbles: {e}")
+
         st.divider()
 
         # --- 8. Display Individual Match Stats (Unchanged) ---
@@ -5526,6 +5860,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.dataframe(scores_df, use_container_width=True, hide_index=True)
                     else:
                         st.caption("No role scores available for this slot.")
+
+    elif analysis_type == 'Opposition Report':
+        from opposition_report import render_opposition_report
+        render_opposition_report(
+            raw_events_df, matches_summary_df, all_match_data,
+            season_team_stats, player_minutes_data,
+            CURRENT_SEASON_ID, SEASON_ID_MAP,
+        )
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")

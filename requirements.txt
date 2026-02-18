@@ -26,3 +26,4 @@ urllib3==2.5.0
 plotly
 pyyaml
 scikit-learn
+fpdf2
