@@ -24,9 +24,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Remove .gitignore before upload so that LFS data files
-          # (*.parquet, *.pkl) are not skipped by upload_folder
-          rm -f .gitignore
+          # Remove .gitignore so data files aren't skipped, and
+          # .gitattributes so files upload as regular files not LFS pointers
+          rm -f .gitignore .gitattributes
           pip install huggingface-hub
           python - <<'PYEOF'
           import os
