@@ -1561,7 +1561,25 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     
     base_df = count_and_merge(base_df, duel_events, 'Aerial duels', check_secondary_list('aerial_duel'))
     base_df = count_and_merge(base_df, duel_events, 'Aerial duels successful', check_secondary_list('aerial_duel') & (duel_events.get('aerialDuel.firstTouch') == True))
-    
+
+    # Aerial duels in defensive penalty box
+    def_box = (check_secondary_list('aerial_duel') &
+               (duel_events.get('location.x', 0) < 16) &
+               (duel_events.get('location.y', 0) > 20) &
+               (duel_events.get('location.y', 0) < 80))
+    base_df = count_and_merge(base_df, duel_events, 'Aerial duels def box', def_box)
+    base_df = count_and_merge(base_df, duel_events, 'Aerial duels def box successful',
+                              def_box & (duel_events.get('aerialDuel.firstTouch') == True))
+
+    # Aerial duels in attacking penalty box
+    att_box = (check_secondary_list('aerial_duel') &
+               (duel_events.get('location.x', 0) > 84) &
+               (duel_events.get('location.y', 0) > 20) &
+               (duel_events.get('location.y', 0) < 80))
+    base_df = count_and_merge(base_df, duel_events, 'Aerial duels att box', att_box)
+    base_df = count_and_merge(base_df, duel_events, 'Aerial duels att box successful',
+                              att_box & (duel_events.get('aerialDuel.firstTouch') == True))
+
     base_df = count_and_merge(base_df, duel_events, 'Defensive duels', check_secondary_list('defensive_duel'))
     # --- FIX: Added stoppedProgress ---
     base_df = count_and_merge(base_df, duel_events, 'Defensive duels successful', 
@@ -1576,6 +1594,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df = count_and_merge(base_df, duel_events, 'Sliding tackles successful', 
                               check_secondary_list('sliding_tackle') & 
                               ((duel_events.get('groundDuel.recoveredPossession') == True) | (duel_events.get('groundDuel.stoppedProgress') == True)))
+
+    # Average height of defensive actions (in metres)
+    _def_primary = events_df['type.primary'].isin(['interception', 'clearance'])
+    _def_secondary = (check_secondary_list('defensive_duel') |
+                      check_secondary_list('sliding_tackle') |
+                      check_secondary_list('aerial_duel'))
+    def_actions = events_df[(_def_primary | _def_secondary) & events_df['location.x'].notna()]
+    avg_def_height = (def_actions.groupby('player.id')['location.x'].mean() * 1.05)
+    avg_def_height.name = 'Avg defensive action height'
+    base_df = base_df.merge(avg_def_height, left_index=True, right_index=True, how='left')
 
     # -- Dribbles (Custom Logic) --
     # Attempt: is_dribble_attempt == True
@@ -1695,6 +1723,8 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df['Offensive duels successful %'] = safe_divide_perc('Offensive duels successful', 'Offensive duels')
     base_df['Defensive duels successful %'] = safe_divide_perc('Defensive duels successful', 'Defensive duels')
     base_df['Sliding tackles successful %'] = safe_divide_perc('Sliding tackles successful', 'Sliding tackles')
+    base_df['Aerial duels def box successful %'] = safe_divide_perc('Aerial duels def box successful', 'Aerial duels def box')
+    base_df['Aerial duels att box successful %'] = safe_divide_perc('Aerial duels att box successful', 'Aerial duels att box')
     successful_attacking_actions = base_df['Shots on target'] + base_df['Crosses successful'] + base_df['Dribbles successful']
     base_df['Loss index'] = (base_df['Losses'] / successful_attacking_actions).replace([np.inf, -np.inf], 0).fillna(0)
     
@@ -1715,7 +1745,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     minutes_gt_0 = total_minutes > 0
     
     # Define cols that should NOT be normalized
-    rate_cols = [col for col in base_df.columns if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col]
+    rate_cols = [col for col in base_df.columns if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col or 'Avg' in col]
     info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y']
     dont_normalize = rate_cols + info_cols
 
@@ -2719,6 +2749,299 @@ def calculate_team_strength(season_events_df, matches_summary_df, season_id=None
             pass
 
     return stats_df
+
+
+# --- NEW FUNCTION: Rolling Per-Match Team Strength (No Data Leakage) ---
+@st.cache_data
+def calculate_rolling_team_strength(season_events_df, matches_summary_df, season_id=None):
+    """Per-match rolling team strength with no data leakage.
+    Returns DataFrame: matchId, team, matchDate, match_number,
+                       att_strength, def_strength, cum_gf, cum_ga, cum_xgf, cum_xga, cum_matches
+    """
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'rolling_strength_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            return pd.read_parquet(cache_path)
+
+    # Pre-compute per-match-team shot aggregates (vectorized)
+    shots = season_events_df[season_events_df['type.primary'] == 'shot'].copy()
+    shots['shot.xg'] = pd.to_numeric(shots['shot.xg'], errors='coerce').fillna(0)
+    shots['shot.isGoal'] = shots['shot.isGoal'] == True
+    match_team_xg = shots.groupby(['matchId', 'team.name']).agg(
+        goals=('shot.isGoal', 'sum'), xg=('shot.xg', 'sum')
+    ).reset_index()
+
+    # Get match info with dates and scores
+    match_info = matches_summary_df[['matchId', 'dateutc', 'homeTeamName', 'awayTeamName', 'score']].copy()
+    match_info = match_info.sort_values('dateutc')
+
+    # Accumulators per team
+    team_accum = {}  # {team: {gf, ga, xgf, xga, matches}}
+    rows = []
+
+    for _, match in match_info.iterrows():
+        mid = match['matchId']
+        home = match['homeTeamName']
+        away = match['awayTeamName']
+        match_date = match['dateutc']
+
+        # Parse score
+        score = match.get('score', '')
+        if pd.isna(score) or '-' not in str(score):
+            continue
+        try:
+            home_goals, away_goals = map(int, str(score).split('-'))
+        except (ValueError, TypeError):
+            continue
+
+        # Get xG from pre-computed groupby
+        home_xg_row = match_team_xg[(match_team_xg['matchId'] == mid) & (match_team_xg['team.name'] == home)]
+        away_xg_row = match_team_xg[(match_team_xg['matchId'] == mid) & (match_team_xg['team.name'] == away)]
+        home_xg = float(home_xg_row['xg'].iloc[0]) if len(home_xg_row) > 0 else 0.0
+        away_xg = float(away_xg_row['xg'].iloc[0]) if len(away_xg_row) > 0 else 0.0
+
+        # Record PRE-MATCH strength for both teams
+        for team in [home, away]:
+            if team not in team_accum:
+                team_accum[team] = {'gf': 0, 'ga': 0, 'xgf': 0.0, 'xga': 0.0, 'matches': 0}
+            acc = team_accum[team]
+            m = acc['matches']
+            rows.append({
+                'matchId': mid, 'team': team, 'matchDate': match_date,
+                'match_number': m,
+                'att_strength': (0.3 * (acc['gf'] / m) + 0.7 * (acc['xgf'] / m)) if m > 0 else np.nan,
+                'def_strength': (0.3 * (acc['ga'] / m) + 0.7 * (acc['xga'] / m)) if m > 0 else np.nan,
+                'cum_gf': acc['gf'], 'cum_ga': acc['ga'],
+                'cum_xgf': acc['xgf'], 'cum_xga': acc['xga'], 'cum_matches': m,
+            })
+
+        # Update accumulators AFTER recording pre-match strength
+        team_accum[home]['gf'] += home_goals
+        team_accum[home]['ga'] += away_goals
+        team_accum[home]['xgf'] += home_xg
+        team_accum[home]['xga'] += away_xg
+        team_accum[home]['matches'] += 1
+
+        team_accum[away]['gf'] += away_goals
+        team_accum[away]['ga'] += home_goals
+        team_accum[away]['xgf'] += away_xg
+        team_accum[away]['xga'] += home_xg
+        team_accum[away]['matches'] += 1
+
+    result_df = pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    if season_id is not None and not result_df.empty:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        try:
+            result_df.to_parquet(os.path.join(STATS_CACHE_DIR, f'rolling_strength_{season_id}.parquet'))
+        except Exception:
+            pass
+
+    return result_df
+
+
+# --- NEW FUNCTION: SOS-Adjusted Team Strength ---
+@st.cache_data
+def calculate_sos_adjusted_strength(rolling_strength_df, team_strength_df, season_id=None):
+    """SOS-adjust team strength ratings.
+    Returns DataFrame (index=team): raw_att, raw_def, avg_opp_att, avg_opp_def,
+                                     sos_att, sos_def, sos_factor
+    """
+    if season_id is not None:
+        cache_path = os.path.join(STATS_CACHE_DIR, f'sos_strength_{season_id}.parquet')
+        if os.path.exists(cache_path):
+            return pd.read_parquet(cache_path)
+
+    if rolling_strength_df.empty or team_strength_df.empty:
+        return pd.DataFrame()
+
+    # League averages from end-of-season team strength
+    league_avg_att = max(team_strength_df['Attacking Strength'].mean(), 0.01)
+    league_avg_def = max(team_strength_df['Defending Strength'].mean(), 0.01)
+
+    # For each match, find opponent's pre-match strength
+    # rolling_strength_df has one row per (matchId, team) — merge to find opponent
+    match_teams = rolling_strength_df[['matchId', 'team', 'att_strength', 'def_strength']].copy()
+    # Self-join: for each (matchId, team), find the other team in the same match
+    opp = match_teams.merge(match_teams, on='matchId', suffixes=('', '_opp'))
+    opp = opp[opp['team'] != opp['team_opp']]
+
+    # Average opponent strength faced by each team (only where opponent had prior data)
+    opp_valid = opp.dropna(subset=['att_strength_opp', 'def_strength_opp'])
+    avg_opp = opp_valid.groupby('team').agg(
+        avg_opp_att=('att_strength_opp', 'mean'),
+        avg_opp_def=('def_strength_opp', 'mean'),
+        matches_with_opp_data=('att_strength_opp', 'count')
+    )
+
+    # Build result
+    result = team_strength_df[['Attacking Strength', 'Defending Strength']].copy()
+    result.columns = ['raw_att', 'raw_def']
+    result = result.join(avg_opp, how='left')
+
+    # SOS adjustment — teams with < 3 matches with opponent data fall back to raw
+    result['sos_att_factor'] = result['avg_opp_def'] / league_avg_def
+    result['sos_def_factor'] = result['avg_opp_att'] / league_avg_att
+
+    has_enough = result['matches_with_opp_data'].fillna(0) >= 3
+    result['sos_att'] = np.where(has_enough, result['raw_att'] * result['sos_att_factor'], result['raw_att'])
+    result['sos_def'] = np.where(has_enough, result['raw_def'] * result['sos_def_factor'], result['raw_def'])
+    result['sos_factor'] = np.where(has_enough, (result['sos_att_factor'] + result['sos_def_factor']) / 2, np.nan)
+
+    if season_id is not None:
+        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+        try:
+            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'sos_strength_{season_id}.parquet'))
+        except Exception:
+            pass
+
+    return result
+
+
+# --- NEW FUNCTION: Build Season Cumulative Stats ---
+@st.cache_data
+def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
+    """Build end-of-season cumulative stats for all teams in a season.
+    Returns: {team_name: {matches, wins, draws, losses, points, goals_for, goals_against,
+              xG_for, xG_against, shots_for, sot_for, home_matches, home_wins, home_goals,
+              away_matches, away_wins, away_goals, clean_sheets, last_5_results, last_5_xG,
+              prior_stats}}
+    """
+    cache_path = os.path.join(STATS_CACHE_DIR, f'season_cum_stats_{season_id}.pkl')
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+
+    # Filter to this season
+    season_events = raw_events_df[raw_events_df['seasonId'] == season_id] if 'seasonId' in raw_events_df.columns else raw_events_df
+    season_matches = matches_summary_df[matches_summary_df['seasonId'] == season_id] if 'seasonId' in matches_summary_df.columns else matches_summary_df
+
+    # Pre-compute per-match xG and shots (vectorized)
+    shots = season_events[season_events['type.primary'] == 'shot'].copy()
+    shots['shot.xg'] = pd.to_numeric(shots['shot.xg'], errors='coerce').fillna(0)
+    shots['shot.isGoal'] = shots['shot.isGoal'] == True
+    match_team_xg = shots.groupby(['matchId', 'team.name']).agg(
+        xg=('shot.xg', 'sum'), total_shots=('shot.isGoal', 'count'), goals=('shot.isGoal', 'sum')
+    ).reset_index()
+
+    # Sort matches chronologically
+    matches = season_matches.sort_values('dateutc' if 'dateutc' in season_matches.columns else 'matchId').copy()
+
+    def _init_stats():
+        return {
+            'matches': 0, 'wins': 0, 'draws': 0, 'losses': 0, 'points': 0,
+            'goals_for': 0, 'goals_against': 0, 'xG_for': 0.0, 'xG_against': 0.0,
+            'shots_for': 0, 'sot_for': 0, 'home_matches': 0, 'home_wins': 0,
+            'home_goals': 0, 'away_matches': 0, 'away_wins': 0, 'away_goals': 0,
+            'clean_sheets': 0, 'last_5_results': [], 'last_5_xG': []
+        }
+
+    team_stats = defaultdict(_init_stats)
+
+    for _, match in matches.iterrows():
+        mid = match['matchId']
+        home = match['homeTeamName']
+        away = match['awayTeamName']
+
+        score = match.get('score', '')
+        if pd.isna(score) or '-' not in str(score):
+            continue
+        try:
+            home_goals, away_goals = map(int, str(score).split('-'))
+        except (ValueError, TypeError):
+            continue
+
+        # Update match/goal stats
+        team_stats[home]['matches'] += 1
+        team_stats[home]['home_matches'] += 1
+        team_stats[home]['goals_for'] += home_goals
+        team_stats[home]['goals_against'] += away_goals
+        team_stats[home]['home_goals'] += home_goals
+
+        team_stats[away]['matches'] += 1
+        team_stats[away]['away_matches'] += 1
+        team_stats[away]['goals_for'] += away_goals
+        team_stats[away]['goals_against'] += home_goals
+        team_stats[away]['away_goals'] += away_goals
+
+        # Results
+        if home_goals > away_goals:
+            team_stats[home]['wins'] += 1
+            team_stats[home]['home_wins'] += 1
+            team_stats[home]['points'] += 3
+            team_stats[home]['last_5_results'].append(3)
+            team_stats[away]['losses'] += 1
+            team_stats[away]['last_5_results'].append(0)
+        elif away_goals > home_goals:
+            team_stats[away]['wins'] += 1
+            team_stats[away]['away_wins'] += 1
+            team_stats[away]['points'] += 3
+            team_stats[away]['last_5_results'].append(3)
+            team_stats[home]['losses'] += 1
+            team_stats[home]['last_5_results'].append(0)
+        else:
+            team_stats[home]['draws'] += 1
+            team_stats[home]['points'] += 1
+            team_stats[home]['last_5_results'].append(1)
+            team_stats[away]['draws'] += 1
+            team_stats[away]['points'] += 1
+            team_stats[away]['last_5_results'].append(1)
+
+        # Clean sheets
+        if away_goals == 0:
+            team_stats[home]['clean_sheets'] += 1
+        if home_goals == 0:
+            team_stats[away]['clean_sheets'] += 1
+
+        # xG and shots from pre-computed groupby
+        home_xg_row = match_team_xg[(match_team_xg['matchId'] == mid) & (match_team_xg['team.name'] == home)]
+        away_xg_row = match_team_xg[(match_team_xg['matchId'] == mid) & (match_team_xg['team.name'] == away)]
+
+        home_xg = float(home_xg_row['xg'].iloc[0]) if len(home_xg_row) > 0 else 0.0
+        away_xg = float(away_xg_row['xg'].iloc[0]) if len(away_xg_row) > 0 else 0.0
+        home_shots = int(home_xg_row['total_shots'].iloc[0]) if len(home_xg_row) > 0 else 0
+        away_shots = int(away_xg_row['total_shots'].iloc[0]) if len(away_xg_row) > 0 else 0
+        home_shot_goals = int(home_xg_row['goals'].iloc[0]) if len(home_xg_row) > 0 else 0
+        away_shot_goals = int(away_xg_row['goals'].iloc[0]) if len(away_xg_row) > 0 else 0
+
+        team_stats[home]['xG_for'] += home_xg
+        team_stats[home]['xG_against'] += away_xg
+        team_stats[home]['last_5_xG'].append(home_xg)
+        team_stats[away]['xG_for'] += away_xg
+        team_stats[away]['xG_against'] += home_xg
+        team_stats[away]['last_5_xG'].append(away_xg)
+
+        team_stats[home]['shots_for'] += home_shots
+        team_stats[home]['sot_for'] += min(home_shots, int(home_shot_goals + 0.3 * (home_shots - home_shot_goals)))
+        team_stats[away]['shots_for'] += away_shots
+        team_stats[away]['sot_for'] += min(away_shots, int(away_shot_goals + 0.3 * (away_shots - away_shot_goals)))
+
+    team_stats = dict(team_stats)
+
+    # Attach prior_stats from previous season
+    sorted_sids = sorted(SEASON_ID_MAP.keys())
+    sid_idx = sorted_sids.index(season_id) if season_id in sorted_sids else -1
+    if sid_idx > 0:
+        prior_sid = sorted_sids[sid_idx - 1]
+        prior_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, prior_sid)
+        for team in team_stats:
+            team_stats[team]['prior_stats'] = prior_cum.get(team)
+    else:
+        for team in team_stats:
+            team_stats[team]['prior_stats'] = None
+
+    # Cache
+    os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+    try:
+        with open(cache_path, 'wb') as f:
+            pickle.dump(team_stats, f)
+    except Exception:
+        pass
+
+    return team_stats
 
 
 # --- NEW FUNCTION: Plot Team Strength Scatter ---
@@ -4316,14 +4639,46 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 5. All Teams Strength Chart ---
         st.subheader("Team Strength Scatterplot (All Teams)")
-        if not team_strength_df.empty:
-            valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
-            fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
-            st.pyplot(fig_all_strength, use_container_width=True)
-            with st.expander("View All Teams Raw Strength Data"):
-                 st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
+
+        # Multi-season comparison option
+        scatter_seasons = st.multiselect(
+            "Compare seasons", list(SEASON_ID_MAP.values()),
+            default=[SEASON_ID_MAP.get(selected_season_id, SEASON_ID_MAP[CURRENT_SEASON_ID])],
+            key="scatter_seasons"
+        )
+        season_name_to_id_scatter = {v: k for k, v in SEASON_ID_MAP.items()}
+
+        if len(scatter_seasons) > 1:
+            # Multi-season: combine team_strength_df from each season
+            combined_strength_frames = []
+            for sname in scatter_seasons:
+                sid = season_name_to_id_scatter[sname]
+                s_events = get_season_events(raw_events_df, sid)
+                s_matches = get_season_matches(matches_summary_df, sid)
+                s_df = calculate_team_strength(s_events, s_matches, season_id=sid).copy()
+                if not s_df.empty:
+                    s_df.index = [f"{t} ({sname})" for t in s_df.index]
+                    s_df['Season'] = sname
+                    combined_strength_frames.append(s_df)
+            if combined_strength_frames:
+                multi_strength_df = pd.concat(combined_strength_frames)
+                # Plot with text labels (no logos since same team appears multiple times)
+                fig_multi = plot_team_strength(multi_strength_df, season="Multi-Season")
+                st.pyplot(fig_multi, use_container_width=True)
+                with st.expander("View Multi-Season Raw Strength Data"):
+                    st.dataframe(multi_strength_df[['Attacking Strength', 'Defending Strength', 'Season']].round(2))
+            else:
+                st.warning("No team strength data for selected seasons.")
         else:
-            st.warning("Could not calculate team strength data.")
+            # Single season (original behavior)
+            if not team_strength_df.empty:
+                valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
+                fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
+                st.pyplot(fig_all_strength, use_container_width=True)
+                with st.expander("View All Teams Raw Strength Data"):
+                     st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
+            else:
+                st.warning("Could not calculate team strength data.")
 
         # --- 6. All Teams Custom Scatterplot ---
         st.subheader("All Teams Custom Scatterplot")
@@ -5573,24 +5928,60 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             league_avg_stats = model_data.get('league_avg_stats', {'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0, 'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35})
             team_ratings = model_data.get('team_ratings', {})
 
-            # Display Team Strength Ratings
-            if team_ratings:
-                with st.expander("Team Strength Ratings", expanded=False):
-                    sorted_ratings = sorted(team_ratings.items(), key=lambda x: x[1]['overall'], reverse=True)
-
-                    ratings_df = pd.DataFrame([
-                        {
-                            'Rank': i+1,
+            # Display Team Strength Ratings (Multi-Season with SOS)
+            with st.expander("Team Strength Ratings", expanded=False):
+                rating_seasons = st.multiselect(
+                    "Seasons", list(SEASON_ID_MAP.values()),
+                    default=[SEASON_ID_MAP[CURRENT_SEASON_ID]],
+                    key="rating_seasons"
+                )
+                # Reverse-lookup season IDs from display names
+                season_name_to_id = {v: k for k, v in SEASON_ID_MAP.items()}
+                rating_rows = []
+                for season_name in rating_seasons:
+                    sid = season_name_to_id[season_name]
+                    s_events = get_season_events(raw_events_df, sid)
+                    s_matches = get_season_matches(matches_summary_df, sid)
+                    ts_df = calculate_team_strength(s_events, s_matches, season_id=sid)
+                    if ts_df.empty:
+                        continue
+                    rolling_df = calculate_rolling_team_strength(s_events, s_matches, season_id=sid)
+                    sos_df = calculate_sos_adjusted_strength(rolling_df, ts_df, season_id=sid)
+                    for team in ts_df.index:
+                        raw_att = ts_df.loc[team, 'Attacking Strength']
+                        raw_def = ts_df.loc[team, 'Defending Strength']
+                        sos_att = sos_df.loc[team, 'sos_att'] if team in sos_df.index else raw_att
+                        sos_def = sos_df.loc[team, 'sos_def'] if team in sos_df.index else raw_def
+                        sos_factor = sos_df.loc[team, 'sos_factor'] if team in sos_df.index else np.nan
+                        # Count matches from rolling data
+                        team_rolling = rolling_df[rolling_df['team'] == team] if not rolling_df.empty else pd.DataFrame()
+                        n_matches = int(team_rolling['match_number'].max()) + 1 if not team_rolling.empty else 0
+                        rating_rows.append({
+                            'Rank': 0,
                             'Team': team,
-                            'Overall': f"{r['overall']:.1f}",
-                            'Home': f"{r['home_strength']:.0f}",
-                            'Away': f"{r['away_strength']:.0f}",
-                            'Attack (xG)': f"{r['attack']:.2f}",
-                            'Defense (xGA)': f"{r['defense']:.2f}"
-                        }
-                        for i, (team, r) in enumerate(sorted_ratings)
-                    ])
-                    st.dataframe(ratings_df, use_container_width=True, hide_index=True)
+                            'Season': season_name,
+                            'Att Strength': round(raw_att, 3),
+                            'Def Strength': round(raw_def, 3),
+                            'SOS Att': round(float(sos_att), 3),
+                            'SOS Def': round(float(sos_def), 3),
+                            'SOS Factor': round(float(sos_factor), 3) if not np.isnan(float(sos_factor)) else None,
+                            'Matches': n_matches,
+                        })
+                if rating_rows:
+                    ratings_combined = pd.DataFrame(rating_rows)
+                    # Overall = att - def, rescaled to 0-100
+                    raw_overall = ratings_combined['SOS Att'] - ratings_combined['SOS Def']
+                    ov_min = raw_overall.min()
+                    ov_max = raw_overall.max()
+                    if ov_max > ov_min:
+                        ratings_combined['Overall'] = round(((raw_overall - ov_min) / (ov_max - ov_min)) * 100, 1)
+                    else:
+                        ratings_combined['Overall'] = 50.0
+                    ratings_combined = ratings_combined.sort_values('Overall', ascending=False).reset_index(drop=True)
+                    ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
+                    st.dataframe(ratings_combined, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No team strength data available for selected seasons.")
 
             # Season Simulation - Promotion/Relegation Probabilities
             @st.cache_data
@@ -5703,23 +6094,31 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     g = sim_groups['South Maintenance']
                     render_probability_table('South Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'), current_standings=g.get('current_standings'))
 
-            # Team selection
-            all_teams = sorted(team_stats.keys())
+            # Team selection — cross-season team-season combos
+            all_season_options = {}  # {"Team (Season)": (team_name, season_id)}
+            for sid in sorted(SEASON_ID_MAP.keys(), reverse=True):
+                season_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, sid)
+                for team_name, stats in season_cum.items():
+                    if stats['matches'] >= 3:
+                        label = f"{team_name} ({SEASON_ID_MAP[sid]})"
+                        all_season_options[label] = (team_name, sid)
 
+            sorted_options = sorted(all_season_options.keys())
             col1, col2 = st.columns(2)
             with col1:
-                home_team = st.selectbox("Home Team", all_teams, key="pred_home")
+                home_label = st.selectbox("Home Team", sorted_options, key="pred_home")
             with col2:
-                away_options = [t for t in all_teams if t != home_team]
-                away_team = st.selectbox("Away Team", away_options, key="pred_away")
+                away_options = [t for t in sorted_options if t != home_label]
+                away_label = st.selectbox("Away Team", away_options, key="pred_away")
 
             if st.button("Predict Match Outcome", type="primary"):
-                home_cum = team_stats.get(home_team)
-                away_cum = team_stats.get(away_team)
+                home_team_name, home_sid = all_season_options[home_label]
+                away_team_name, away_sid = all_season_options[away_label]
+                home_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, home_sid)[home_team_name]
+                away_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, away_sid)[away_team_name]
 
-                # Get prior stats (from model or from prior_season_stats)
-                home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home_team)
-                away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away_team)
+                home_prior = home_cum.get('prior_stats')
+                away_prior = away_cum.get('prior_stats')
 
                 # Calculate features with decay priors
                 home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
@@ -5747,18 +6146,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 pred = model.predict(X)[0]
 
                 # Display results
-                st.subheader(f"{home_team} vs {away_team}")
+                st.subheader(f"{home_label} vs {away_label}")
 
                 # Show team strength ratings
                 if team_ratings:
-                    home_rating = team_ratings.get(home_team, {})
-                    away_rating = team_ratings.get(away_team, {})
+                    home_rating = team_ratings.get(home_team_name, {})
+                    away_rating = team_ratings.get(away_team_name, {})
                     if home_rating and away_rating:
                         rcol1, rcol2 = st.columns(2)
                         with rcol1:
-                            st.caption(f"**{home_team}** Rating: {home_rating['overall']:.1f}")
+                            st.caption(f"**{home_label}** Rating: {home_rating['overall']:.1f}")
                         with rcol2:
-                            st.caption(f"**{away_team}** Rating: {away_rating['overall']:.1f}")
+                            st.caption(f"**{away_label}** Rating: {away_rating['overall']:.1f}")
 
                 # Probability bars
                 col1, col2, col3 = st.columns(3)
@@ -5774,9 +6173,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
                 # Prediction
                 if pred == 1:
-                    st.success(f"**Predicted Outcome: {home_team} Win**")
+                    st.success(f"**Predicted Outcome: {home_label} Win**")
                 elif pred == 2:
-                    st.success(f"**Predicted Outcome: {away_team} Win**")
+                    st.success(f"**Predicted Outcome: {away_label} Win**")
                 else:
                     st.info(f"**Predicted Outcome: Draw**")
 
@@ -5784,8 +6183,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.subheader("Team Comparison (Season Stats with Priors)")
                 comparison_data = {
                     'Metric': ['Points/Game', 'Goals/Game', 'xG/Game', 'xG Against/Game', 'Win Rate', 'Form (Last 5)', 'Clean Sheet Rate'],
-                    home_team: [f"{home_feats['ppg']:.2f}", f"{home_feats['gpg']:.2f}", f"{home_feats['xgpg']:.2f}", f"{home_feats['xgapg']:.2f}", f"{home_feats['win_rate']:.1%}", f"{home_feats['form']:.2f}", f"{home_feats['cs_rate']:.1%}"],
-                    away_team: [f"{away_feats['ppg']:.2f}", f"{away_feats['gpg']:.2f}", f"{away_feats['xgpg']:.2f}", f"{away_feats['xgapg']:.2f}", f"{away_feats['win_rate']:.1%}", f"{away_feats['form']:.2f}", f"{away_feats['cs_rate']:.1%}"]
+                    home_label: [f"{home_feats['ppg']:.2f}", f"{home_feats['gpg']:.2f}", f"{home_feats['xgpg']:.2f}", f"{home_feats['xgapg']:.2f}", f"{home_feats['win_rate']:.1%}", f"{home_feats['form']:.2f}", f"{home_feats['cs_rate']:.1%}"],
+                    away_label: [f"{away_feats['ppg']:.2f}", f"{away_feats['gpg']:.2f}", f"{away_feats['xgpg']:.2f}", f"{away_feats['xgapg']:.2f}", f"{away_feats['win_rate']:.1%}", f"{away_feats['form']:.2f}", f"{away_feats['cs_rate']:.1%}"]
                 }
                 comparison_df = pd.DataFrame(comparison_data)
                 st.dataframe(comparison_df, use_container_width=True, hide_index=True)
@@ -5793,7 +6192,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # Show matches played
                 home_matches = home_cum['matches']
                 away_matches = away_cum['matches']
-                st.caption(f"Based on {home_matches} matches for {home_team} and {away_matches} matches for {away_team}")
+                st.caption(f"Based on {home_matches} matches for {home_label} and {away_matches} matches for {away_label}")
 
     # ==========================================================================
     # SHADOW TEAM BUILDER

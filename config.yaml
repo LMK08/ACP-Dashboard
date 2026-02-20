@@ -63,11 +63,14 @@ weights:
     Progressive runs: 6
     Aerial duels: 2
     Aerial duels successful %: 6
+    Aerial duels def box successful %: 0
+    Aerial duels att box successful %: 0
     Defensive duels: 2
     Defensive duels successful %: 8
     Interceptions: 6
     Recoveries: 6
     Clearances: 2
+    Avg defensive action height: 0
   Stopper:
     npxG: 3.0
     xAOP: 1.0
@@ -78,11 +81,14 @@ weights:
     Progressive runs: 1.0
     Aerial duels: 8
     Aerial duels successful %: 10
+    Aerial duels def box successful %: 0
+    Aerial duels att box successful %: 0
     Defensive duels: 8
     Defensive duels successful %: 10
     Interceptions: 8
     Recoveries: 8
     Clearances: 6
+    Avg defensive action height: 0
   Athletic Centerback:
     npxG: 3.0
     xAOP: 1.0
@@ -93,11 +99,14 @@ weights:
     Progressive runs: 6
     Aerial duels: 6
     Aerial duels successful %: 10
+    Aerial duels def box successful %: 0
+    Aerial duels att box successful %: 0
     Defensive duels: 8
     Defensive duels successful %: 10
     Interceptions: 10
     Recoveries: 10
     Clearances: 6
+    Avg defensive action height: 0
   Box-to-Box:
     Passes: 4
     Passes successful %: 3
@@ -190,6 +199,7 @@ weights:
     Interceptions: 8
     Recoveries: 8
     Clearances: 2
+    Avg defensive action height: 0
   Wingback:
     Goals: 2
     npxG: 4
@@ -210,6 +220,7 @@ weights:
     Interceptions: 4
     Recoveries: 4
     Clearances: 1.0
+    Avg defensive action height: 0
   Inverted Full Back:
     npxG: 1.0
     xAOP: 1.0
@@ -225,6 +236,7 @@ weights:
     Interceptions: 6
     Recoveries: 4
     Clearances: 1.0
+    Avg defensive action height: 0
   Wide Winger:
     Goals: 4
     npxG: 8
@@ -447,6 +459,13 @@ metric_categories:
     - Defensive duels successful
     - Defensive duels successful %
     - Clearances
+    - Aerial duels def box
+    - Aerial duels def box successful
+    - Aerial duels def box successful %
+    - Aerial duels att box
+    - Aerial duels att box successful
+    - Aerial duels att box successful %
+    - Avg defensive action height
     - Fouls
     - Yellow cards
     - Red cards
@@ -476,15 +495,15 @@ distribution_metrics_by_position:
   Shot Stopper: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
   Cross Claimer: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
   Ball-playing GK: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'recoveries_gk', 'passes_gk', 'Passes successful %', 'longPassesSuccessful_gk']
-  Ball-Playing Centerback: ['xT', 'Passes', 'Passes successful %', 'Progressive Passes', 'Progressive runs']
-  Stopper: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances']
-  Athletic Centerback: ['npxG', 'Progressive runs', 'Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances']
+  Ball-Playing Centerback: ['xT', 'Passes', 'Passes successful %', 'Progressive Passes', 'Progressive runs', 'Avg defensive action height']
+  Stopper: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels def box successful %', 'Avg defensive action height']
+  Athletic Centerback: ['npxG', 'Progressive runs', 'Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels def box successful %', 'Avg defensive action height']
   Box-to-Box: ['Progressive Passes', 'npxG', 'Shots', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
   Holding Mid: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
   Ball-Winning Mid: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Recoveries Opp Half']
   Deep-lying Playmaker: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'xAOP', 'Progressive runs']
   Advanced Playmaker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful']
-  Full Back: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances']
+  Full Back: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Avg defensive action height']
   Wingback: ['Assists', 'xAOP', 'xT', 'Passes', 'Crosses successful', 'Progressive runs', 'Interceptions', 'Recoveries']
   Inverted Full Back: ['Progressive Passes', 'xT', 'Progressive runs', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries']
   Wide Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Crosses successful', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
