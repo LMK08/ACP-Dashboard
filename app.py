@@ -4177,6 +4177,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         except Exception as e:
             st.caption(f"Could not render passing network: {e}")
 
+        # 4. Defensive Structure
+        st.markdown("**Defensive Structure**")
+        try:
+            fig_ds = pv.plot_defensive_structure(team_events_df, selected_team_t,
+                                                   league_events_df=team_events_df)
+            st.pyplot(fig_ds, use_container_width=True)
+            plt.close(fig_ds)
+        except Exception as e:
+            st.caption(f"Could not render defensive structure: {e}")
+
     elif analysis_type == 'League Analysis':
         st.header("League Analysis")
 

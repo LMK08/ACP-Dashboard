@@ -1335,3 +1335,197 @@ def plot_shot_assists_and_dribbles(events_df, team_name, player_name=None,
 
     fig.tight_layout()
     return fig
+
+
+# =========================================================================
+# Defensive Structure
+# =========================================================================
+ALL_DEF_POSITIONS = {
+    'LB', 'LB5', 'LWB', 'RB', 'RB5', 'RWB',
+    'CB', 'LCB', 'RCB', 'LCB3', 'RCB3',
+}
+
+# Wyscout codes that are specific to a 3-CB / 5-at-back system
+_3ATB_CODES = {'LCB3', 'RCB3', 'CB', 'LWB', 'RWB', 'LB5', 'RB5'}
+
+# Slot mappings: every raw Wyscout code → target display label
+_SLOT_MAP_5 = {                       # 3 CBs + 2 WBs
+    'LWB': 'LWB', 'LB': 'LWB', 'LB5': 'LWB',
+    'RWB': 'RWB', 'RB': 'RWB', 'RB5': 'RWB',
+    'LCB': 'LCB', 'LCB3': 'LCB',
+    'RCB': 'RCB', 'RCB3': 'RCB',
+    'CB': 'CB',
+}
+_SLOT_MAP_4 = {                       # 2 CBs + 2 FBs
+    'LB': 'LB', 'LB5': 'LB', 'LWB': 'LB',
+    'RB': 'RB', 'RB5': 'RB', 'RWB': 'RB',
+    'LCB': 'LCB', 'LCB3': 'LCB',
+    'RCB': 'RCB', 'RCB3': 'RCB',
+    'CB': 'CB',                       # handled after aggregation
+}
+
+
+def plot_defensive_structure(events_df, team_name, league_events_df=None,
+                            title=None):
+    """Vertical pitch showing average defensive line height with defender positions."""
+    te = events_df[events_df['team.name'] == team_name].copy()
+
+    te['location.x'] = pd.to_numeric(te['location.x'], errors='coerce')
+    te['location.y'] = pd.to_numeric(te['location.y'], errors='coerce')
+    te = te.dropna(subset=['player.name', 'location.x', 'location.y'])
+
+    # Keep only defenders
+    if 'player.position' not in te.columns:
+        raise ValueError("No player.position column in data")
+    te = te[te['player.position'].isin(ALL_DEF_POSITIONS)].copy()
+    if te.empty:
+        raise ValueError("No defender events found")
+
+    # Filter to defensive actions
+    is_primary_def = te['type.primary'].isin(['interception', 'clearance'])
+    secondary_col = te.get('type.secondary', pd.Series(dtype='object'))
+    is_def_duel = _check_secondary(secondary_col, 'defensive_duel')
+    is_sliding = _check_secondary(secondary_col, 'sliding_tackle')
+    is_aerial = _check_secondary(secondary_col, 'aerial_duel')
+    te = te[is_primary_def | is_def_duel | is_sliding | is_aerial].copy()
+    if te.empty:
+        raise ValueError("No defensive actions found for defenders")
+
+    # --- Detect shape from RAW Wyscout position codes ---
+    raw_counts = te['player.position'].value_counts()
+    three_atb_n = sum(raw_counts.get(c, 0) for c in _3ATB_CODES)
+    four_atb_n = sum(raw_counts.get(c, 0)
+                     for c in ('LCB', 'RCB', 'LB', 'RB'))
+
+    shape = 5 if three_atb_n > four_atb_n else 4
+    slot_map = _SLOT_MAP_5 if shape == 5 else _SLOT_MAP_4
+
+    # Map every event to its target slot in one step
+    te['_slot'] = te['player.position'].map(slot_map)
+
+    # --- Aggregate by slot ---
+    slot_agg = te.groupby('_slot').agg(
+        x=('location.x', 'mean'),
+        y=('location.y', 'mean'),
+        count=('location.x', 'size'),
+    ).reset_index().rename(columns={'_slot': 'label'})
+
+    # Back-4 only: fold CB into LCB / RCB
+    if shape == 4 and 'CB' in slot_agg['label'].values:
+        cb = slot_agg[slot_agg['label'] == 'CB'].iloc[0]
+        has_l = 'LCB' in slot_agg['label'].values
+        has_r = 'RCB' in slot_agg['label'].values
+        if has_l and has_r:
+            # Distribute CB events evenly into LCB and RCB
+            for side in ['LCB', 'RCB']:
+                idx = slot_agg.index[slot_agg['label'] == side][0]
+                sc = slot_agg.loc[idx, 'count']
+                half_cb = cb['count'] / 2
+                total = sc + half_cb
+                slot_agg.loc[idx, 'x'] = (slot_agg.loc[idx, 'x'] * sc
+                                           + cb['x'] * half_cb) / total
+                slot_agg.loc[idx, 'y'] = (slot_agg.loc[idx, 'y'] * sc
+                                           + cb['y'] * half_cb) / total
+                slot_agg.loc[idx, 'count'] = total
+        elif has_l:
+            slot_agg.loc[slot_agg['label'] == 'CB', 'label'] = 'RCB'
+        elif has_r:
+            slot_agg.loc[slot_agg['label'] == 'CB', 'label'] = 'LCB'
+        else:
+            # Only CB — split by median y
+            cb_evts = te[te['_slot'] == 'CB']
+            med_y = cb_evts['location.y'].median()
+            left = cb_evts[cb_evts['location.y'] <= med_y]
+            right = cb_evts[cb_evts['location.y'] > med_y]
+            rows = []
+            if not left.empty:
+                rows.append({'label': 'LCB', 'x': left['location.x'].mean(),
+                             'y': left['location.y'].mean(),
+                             'count': float(len(left))})
+            if not right.empty:
+                rows.append({'label': 'RCB', 'x': right['location.x'].mean(),
+                             'y': right['location.y'].mean(),
+                             'count': float(len(right))})
+            if rows:
+                slot_agg = pd.concat([slot_agg, pd.DataFrame(rows)],
+                                     ignore_index=True)
+        slot_agg = slot_agg[slot_agg['label'] != 'CB']
+
+    # Sort by y for display order (left → right on pitch)
+    top = slot_agg.sort_values('y').reset_index(drop=True)
+
+    # Average defensive line height (in metres, pitch is 105m)
+    avg_x = te['location.x'].mean()
+    avg_x_metres = avg_x * 1.05  # Wyscout 0-100 → metres
+
+    # Draw vertical pitch
+    pitch = VerticalPitch(pitch_type='wyscout', pitch_color=PITCH_COLOR,
+                          line_color=LINE_COLOR)
+    fig, ax = pitch.draw(figsize=(6, 10))
+
+    # Plot defender circles
+    pitch.scatter(top['x'].values, top['y'].values,
+                  s=800, color='#DEB887', edgecolors='#8B7355',
+                  linewidth=2, zorder=5, ax=ax)
+
+    # Place position labels inside circles
+    # VerticalPitch swaps: ax x-axis = pitch y, ax y-axis = pitch x
+    for _, row in top.iterrows():
+        ax.text(row['y'], row['x'], row['label'],
+                ha='center', va='center', fontsize=10,
+                fontweight='bold', color='#4a3728', zorder=6)
+
+    # Dashed horizontal line at average defensive height
+    ax.plot([0, 100], [avg_x, avg_x], color='#333333',
+            linestyle='--', linewidth=2, zorder=4)
+
+    # --- Compute percentile across league (using defensive actions only) ---
+    pct_text = ''
+    src = league_events_df if league_events_df is not None else events_df
+    league_teams = src['team.name'].dropna().unique()
+    if len(league_teams) > 1:
+        # Pre-filter league data to defender defensive actions (same criteria)
+        ldef = src[src['player.position'].isin(ALL_DEF_POSITIONS)].copy()
+        ldef['location.x'] = pd.to_numeric(ldef['location.x'], errors='coerce')
+        ldef_sec = ldef.get('type.secondary', pd.Series(dtype='object'))
+        ldef = ldef[
+            ldef['type.primary'].isin(['interception', 'clearance'])
+            | _check_secondary(ldef_sec, 'defensive_duel')
+            | _check_secondary(ldef_sec, 'sliding_tackle')
+            | _check_secondary(ldef_sec, 'aerial_duel')
+        ]
+        team_heights = (ldef.dropna(subset=['location.x'])
+                        .groupby('team.name')['location.x'].mean())
+        if len(team_heights) > 1:
+            from scipy.stats import percentileofscore
+            pct = percentileofscore(team_heights.values, avg_x, kind='rank')
+            p = int(round(pct))
+            suffix = 'th' if 11 <= p % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(p % 10, 'th')
+            pct_text = f'  ({p}{suffix} %-tile)'
+
+    # Height label on left side
+    ax.text(-3, avg_x, f'{avg_x_metres:.1f}m',
+            ha='right', va='bottom',
+            fontsize=9, fontweight='bold', color='#333333',
+            clip_on=False)
+    if pct_text:
+        ax.text(-3, avg_x, pct_text.strip(),
+                ha='right', va='top',
+                fontsize=8, fontweight='normal', color='#555555',
+                clip_on=False)
+
+    # Direction-of-attack arrow on right margin (bottom → top)
+    ax.annotate('', xy=(106, 80), xytext=(106, 20),
+                arrowprops=dict(arrowstyle='->', color='#333333',
+                                lw=2.0, mutation_scale=15),
+                annotation_clip=False, zorder=10)
+    ax.text(106, 50, 'Direction\nof Attack', ha='center', va='center',
+            fontsize=8, color='#555555', rotation=270,
+            clip_on=False)
+
+    # Subtitle only
+    ax.set_title("Average height of defensive actions",
+                 fontsize=10, color='#666666', pad=8)
+
+    fig.tight_layout()
+    return fig

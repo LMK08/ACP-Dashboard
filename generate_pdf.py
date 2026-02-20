@@ -420,8 +420,8 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
     # ==================================================================
     # Tactical Zone Analysis
     # ==================================================================
-    tac_keys = ['avg_positions', 'zone_recovery', 'zone_loss',
-                'shot_assists_dribbles']
+    tac_keys = ['avg_positions', 'defensive_structure', 'zone_recovery',
+                'zone_loss', 'shot_assists_dribbles']
     if any(k in figures for k in tac_keys):
         # Page 1: Average Positions
         if 'avg_positions' in figures:
@@ -429,6 +429,15 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
             pdf.add_section_title(f"{opponent_name} - Tactical Zone Analysis")
             # avg_positions is ~12:8 ratio; w=200 → h≈133mm, fits after title
             tmp = pdf.add_figure(figures['avg_positions'], w=200)
+            tmp_files.append(tmp)
+
+        # Defensive Structure (tall vertical pitch, give it its own page)
+        if 'defensive_structure' in figures:
+            pdf.add_page()
+            pdf.add_section_title(
+                f"{opponent_name} - Defensive Structure")
+            # Vertical pitch figure (6:10 ratio); w=140 → h≈233, so cap width
+            tmp = pdf.add_figure(figures['defensive_structure'], w=140)
             tmp_files.append(tmp)
 
         # Page 2: Recovery / Loss zones + shot assists

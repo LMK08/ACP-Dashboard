@@ -1240,6 +1240,17 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     except Exception as e:
         st.caption(f"Could not render average positions: {e}")
 
+    # Defensive Structure
+    st.markdown("**Defensive Structure**")
+    try:
+        fig = pv.plot_defensive_structure(season_events_df, selected_opponent,
+                                          league_events_df=season_events_df)
+        st.pyplot(fig, use_container_width=True)
+        pdf_figures['defensive_structure'] = _fig_to_png_bytes(fig)
+        plt.close(fig)
+    except Exception as e:
+        st.caption(f"Could not render defensive structure: {e}")
+
     # Recovery / Loss zone heatmaps side by side
     col_rz, col_lz = st.columns(2)
     with col_rz:
