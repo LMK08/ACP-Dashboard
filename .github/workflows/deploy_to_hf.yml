@@ -24,19 +24,20 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Remove .gitignore so data files aren't skipped, and
-          # .gitattributes so files upload as regular files not LFS pointers
-          rm -f .gitignore .gitattributes
-          pip install huggingface-hub
-          python - <<'PYEOF'
-          import os
-          from huggingface_hub import HfApi
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          api.upload_folder(
-              folder_path=".",
-              repo_id="LMK08/ACP-Dashboard",
-              repo_type="space",
-              ignore_patterns=[".*", "venv/**", "__pycache__/**"],
-          )
-          print("Successfully synced to Hugging Face Space")
-          PYEOF
+          # Build a clean single-commit repo with LFS for large files,
+          # then force-push to HF. This avoids LFS version accumulation
+          # (only one commit = only one copy of each file).
+          DEPLOY_DIR=$(mktemp -d)
+          rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
+                   --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
+                   . "$DEPLOY_DIR/"
+          cd "$DEPLOY_DIR"
+          git init
+          git lfs install
+          git lfs track "*.parquet" "*.pkl"
+          git add -A
+          git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
+              commit -m "Deploy from $(git -C $GITHUB_WORKSPACE rev-parse --short HEAD)"
+          git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/LMK08/ACP-Dashboard
+          git push hf main --force
+          echo "Successfully deployed to Hugging Face Space"
