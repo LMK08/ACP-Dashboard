@@ -12,3 +12,4 @@ plotly
 pyyaml
 scikit-learn
 fpdf2
+tqdm
