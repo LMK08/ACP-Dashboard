@@ -1559,7 +1559,7 @@ def main():
     print("Applying custom dribble success logic...")
     all_raw_events_df = add_custom_dribble_success(all_raw_events_df)
 
-    all_raw_events_df.to_parquet('raw_events.parquet', index=False)
+    all_raw_events_df.to_parquet('raw_events.parquet', index=False, compression='zstd')
     print(f"✅ Unified event data (all seasons) saved to 'raw_events.parquet'")
 
     # --- 7. PROCESS PER-MATCH DATA (INCREMENTAL) ---

@@ -1,2 +1,0 @@
-historical_events.parquet filter=lfs diff=lfs merge=lfs -text
-raw_events.parquet filter=lfs diff=lfs merge=lfs -text

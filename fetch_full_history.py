@@ -104,7 +104,7 @@ def main():
         # We process in chunks if memory is an issue, but for <100k events standard df is fine
         print("   🔨 Flattening event data...")
         df_events = pd.json_normalize(all_historical_events)
-        df_events.to_parquet('historical_events.parquet')
+        df_events.to_parquet('historical_events.parquet', compression='zstd')
         print("   -> saved 'historical_events.parquet'")
     
     print("\n✅ Full 5-Year History Downloaded Successfully!")
