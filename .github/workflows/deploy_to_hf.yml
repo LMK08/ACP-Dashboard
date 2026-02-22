@@ -24,17 +24,14 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Build a clean single-commit repo with LFS for large files,
-          # then force-push to HF. This avoids LFS version accumulation
-          # (only one commit = only one copy of each file).
+          # Build a clean single-commit repo and force-push to HF.
+          # Only one commit = only one copy of each file.
           DEPLOY_DIR=$(mktemp -d)
           rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
                    --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
                    . "$DEPLOY_DIR/"
           cd "$DEPLOY_DIR"
           git init -b main
-          git lfs install
-          git lfs track "*.parquet" "*.pkl"
           git add -A
           git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
               commit -m "Deploy from $(git -C $GITHUB_WORKSPACE rev-parse --short HEAD)"
