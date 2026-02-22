@@ -48,6 +48,9 @@ jobs:
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
         run: python get_player_details.py
 
+      - name: Precompute complete player minutes
+        run: python precompute_minutes.py
+
       - name: Fetch team advanced stats
         env:
           WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
