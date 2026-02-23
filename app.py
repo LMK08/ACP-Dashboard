@@ -133,6 +133,9 @@ def load_data():
             'team.formation'
         ]
         raw_events_df = pd.read_parquet('raw_events.parquet', columns=events_columns)
+        # Normalize direct free kick shots so all shot filters include them
+        fk_shot_mask = (raw_events_df['type.primary'] == 'free_kick') & (raw_events_df['shot.xg'].notna())
+        raw_events_df.loc[fk_shot_mask, 'type.primary'] = 'shot'
         matches_summary_df = pd.read_parquet('matches_summary.parquet')
 
         with open('all_match_data.pkl', 'rb') as f:

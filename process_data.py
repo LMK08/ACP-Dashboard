@@ -1559,6 +1559,15 @@ def main():
     print("Applying custom dribble success logic...")
     all_raw_events_df = add_custom_dribble_success(all_raw_events_df)
 
+    # --- NORMALIZE DIRECT FREE KICK SHOTS ---
+    # Direct free kick shots have type.primary='free_kick' but carry shot.xg data.
+    # Reclassify them as 'shot' so all downstream shot filters include them.
+    fk_shot_mask = (all_raw_events_df['type.primary'] == 'free_kick') & (all_raw_events_df['shot.xg'].notna())
+    fk_count = fk_shot_mask.sum()
+    if fk_count > 0:
+        all_raw_events_df.loc[fk_shot_mask, 'type.primary'] = 'shot'
+        print(f"Reclassified {fk_count} direct free kick shots as type.primary='shot'")
+
     all_raw_events_df.to_parquet('raw_events.parquet', index=False, compression='zstd')
     print(f"✅ Unified event data (all seasons) saved to 'raw_events.parquet'")
 
