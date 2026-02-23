@@ -1697,6 +1697,11 @@ def main():
     else:
         print("❌ Failed to fetch player minutes for any season.")
 
+    # --- 10. PRECOMPUTE COMPLETE PLAYER MINUTES (3-source merge) ---
+    print("\nPrecomputing complete player minutes (API + lineup + event sources)...")
+    from precompute_minutes import main as precompute_minutes_main
+    precompute_minutes_main()
+
     print("\n🎉 Data processing pipeline complete!")
 
 
