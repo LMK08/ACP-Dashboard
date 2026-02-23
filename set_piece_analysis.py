@@ -27,13 +27,13 @@ try:
         'location.x', 'location.y', 'matchTimestamp',
         'shot.xg', 'shot.isGoal'
     ]
-    events_df = pd.read_parquet('historical_events.parquet', columns=event_cols)
+    events_df = pd.read_parquet('raw_events.parquet', columns=event_cols)
     events_df['player.id'] = pd.to_numeric(events_df['player.id'], errors='coerce').fillna(0).astype(int)
     events_df['matchTimestamp'] = pd.to_datetime(events_df['matchTimestamp'], errors='coerce')
     events_df = events_df.dropna(subset=['matchTimestamp']) # Critical for time-based analysis
     print(f"✅ Successfully loaded {len(events_df)} events.")
 except FileNotFoundError:
-    print("❌ Error: historical_events.parquet not found. Run process_data.py first.")
+    print("❌ Error: raw_events.parquet not found. Run process_data.py first.")
     exit()
 
 # --- 2. Merge Player Footedness with Events ---

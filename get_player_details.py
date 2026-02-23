@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 pd.options.mode.chained_assignment = None
 
 # --- Configuration ---
-EVENTS_FILE = 'historical_events.parquet'
+EVENTS_FILE = 'raw_events.parquet'
 OUTPUT_FILE = 'player_details.pkl'
 
 def setup_session():
