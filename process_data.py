@@ -1570,10 +1570,16 @@ def main():
             all_match_data = pickle.load(f)
         print(f"   Cached data for {len(all_match_data)} matches.")
 
-    # Only process matches not already in cache
-    cached_match_data_ids = set(all_match_data.keys())
-    matches_to_process = all_matches_summary_df[~all_matches_summary_df['matchId'].isin(cached_match_data_ids)]
-    print(f"   {len(matches_to_process)} new matches to process.")
+    # Only process played matches (unplayed ones have no events)
+    played_matches_for_data = all_matches_summary_df[all_matches_summary_df['status'] == 'Played']
+
+    # Always reprocess current season (new matches may have been played since last run)
+    current_season_match_ids = set(
+        played_matches_for_data[played_matches_for_data['seasonId'] == CURRENT_SEASON_ID]['matchId']
+    )
+    cached_match_data_ids = set(all_match_data.keys()) - current_season_match_ids
+    matches_to_process = played_matches_for_data[~played_matches_for_data['matchId'].isin(cached_match_data_ids)]
+    print(f"   {len(matches_to_process)} matches to process (current season always refreshed).")
 
     for index, match_summary in tqdm(matches_to_process.iterrows(), total=len(matches_to_process), desc="Processing New Matches"):
         match_id = match_summary['matchId']
