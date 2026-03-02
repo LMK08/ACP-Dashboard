@@ -79,4 +79,23 @@ jobs:
             echo "No data changes to commit."
           fi
 
-      # HF deploy is handled by deploy_to_hf.yml, which triggers on push to main
+      - name: Deploy to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          DEPLOY_DIR=$(mktemp -d)
+          rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
+                   --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
+                   . "$DEPLOY_DIR/"
+          cd "$DEPLOY_DIR"
+          git init -b main
+          git lfs install
+          git lfs track "*.parquet"
+          git lfs track "*.pkl"
+          git add .gitattributes
+          git add -A
+          git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
+              commit -m "Deploy from $(git -C $GITHUB_WORKSPACE rev-parse --short HEAD)"
+          git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/LMK08/ACP-Dashboard
+          git push hf main --force
+          echo "Successfully deployed to Hugging Face Space"
