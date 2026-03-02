@@ -69,6 +69,7 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             echo "New data found. Committing and pushing..."
             git commit -m "chore: Automated data refresh"
+            git pull --rebase
             git push
           else
             echo "No data changes to commit."
