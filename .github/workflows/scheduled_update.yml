@@ -12,6 +12,10 @@ on:
   # This line allows you to run the update manually from the GitHub "Actions" tab
   workflow_dispatch:
 
+concurrency:
+  group: scheduled-update
+  cancel-in-progress: true
+
 jobs:
   update-data:
     runs-on: ubuntu-latest
