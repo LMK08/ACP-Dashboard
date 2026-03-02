@@ -30,6 +30,10 @@ jobs:
                    . "$DEPLOY_DIR/"
           cd "$DEPLOY_DIR"
           git init -b main
+          git lfs install
+          git lfs track "*.parquet"
+          git lfs track "all_match_data.pkl"
+          git add .gitattributes
           git add -A
           git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
               commit -m "Deploy from $(git -C $GITHUB_WORKSPACE rev-parse --short HEAD)"

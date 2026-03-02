@@ -79,20 +79,4 @@ jobs:
             echo "No data changes to commit."
           fi
 
-      - name: Push updated data to Hugging Face Space
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install huggingface-hub
-          python - <<'PYEOF'
-          import os
-          from huggingface_hub import HfApi
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          api.upload_folder(
-              folder_path=".",
-              repo_id="LMK08/ACP-Dashboard",
-              repo_type="space",
-              ignore_patterns=[".*", "venv/**", "__pycache__/**"],
-          )
-          print("Successfully synced to Hugging Face Space")
-          PYEOF
+      # HF deploy is handled by deploy_to_hf.yml, which triggers on push to main
