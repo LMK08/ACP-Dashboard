@@ -33,6 +33,7 @@ import datetime # For Radar dates
 import matplotlib.gridspec as gridspec # For Corner plots
 import scipy.stats # For Radar stats percentile rank
 import os # For checking logo file paths
+import hashlib
 import json
 
 _TRANSFERRED_PLAYERS_PATH = os.path.join(os.path.dirname(__file__), 'transferred_players.json')
@@ -619,6 +620,65 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
 
     print("--- FINISHED: Streamlined player stats ---")
     return combined_df.fillna(0)
+
+
+@st.cache_data(ttl=600)
+def _compute_peer_density_stack(events_hash, _events_df, position_codes,
+                                _player_minutes_df=None,
+                                include_recoveries=True):
+    """Compute per-90 KDE density grids for all qualifying peers.
+
+    Returns a numpy array of shape ``(100, 100, N_peers)`` sorted along the
+    peer axis so that percentile lookups are fast.
+    """
+    from scipy.stats import gaussian_kde
+
+    def_mask = pv._filter_defensive_actions(_events_df, include_recoveries=include_recoveries)
+    def_events = _events_df[def_mask].copy()
+    def_events['location.x'] = pd.to_numeric(def_events['location.x'], errors='coerce')
+    def_events['location.y'] = pd.to_numeric(def_events['location.y'], errors='coerce')
+    def_events = def_events.dropna(subset=['location.x', 'location.y'])
+    def_events['player.id'] = pd.to_numeric(def_events['player.id'], errors='coerce')
+
+    if 'player.position' in def_events.columns:
+        def_events = def_events[def_events['player.position'].isin(position_codes)]
+
+    # Build minutes lookup
+    mins_lookup = {}
+    if _player_minutes_df is not None and not _player_minutes_df.empty:
+        for _, row in _player_minutes_df.iterrows():
+            try:
+                mins_lookup[int(row['playerId'])] = float(row['totalMinutes'])
+            except (ValueError, TypeError):
+                continue
+
+    grid_x, grid_y = np.mgrid[0:100:100j, 0:100:100j]
+    positions = np.vstack([grid_x.ravel(), grid_y.ravel()])
+
+    grids = []
+    for pid, grp in def_events.groupby('player.id'):
+        n = len(grp)
+        if n < 3:
+            continue
+        total_mins = mins_lookup.get(int(pid), 0)
+        if total_mins < 300:
+            continue
+        p90_scale = 90.0 / total_mins
+
+        values = np.vstack([grp['location.x'].values, grp['location.y'].values])
+        try:
+            kernel = gaussian_kde(values, bw_method='scott')
+            density = np.reshape(kernel(positions), grid_x.shape) * p90_scale * n
+            grids.append(density)
+        except np.linalg.LinAlgError:
+            continue
+
+    if not grids:
+        return np.zeros((100, 100, 0))
+
+    stack = np.stack(grids, axis=-1)  # (100, 100, N_peers)
+    stack.sort(axis=-1)
+    return stack
 
 
 @st.cache_data(ttl=3600)
@@ -4878,6 +4938,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
                 # 3. Recalculate percentiles for all metrics used in this role
                 for metric, weight in role_weights.items():
+                    if metric not in role_population.columns:
+                        continue
                     # Get population values for this metric
                     pop_values = role_population[metric].dropna()
 
@@ -5184,6 +5246,53 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             plt.close(fig_sa_player)
         except Exception as e:
             st.caption(f"Could not render shot assists & dribbles: {e}")
+
+        st.divider()
+
+        # --- 7c. Defensive Action Heatmap ---
+        st.subheader("Defensive Action Heatmap")
+        try:
+            # Resolve positional peer group for defensive heatmap
+            _DEFENSIVE_PEER_GROUPS = {
+                'GK': ['GK'],
+                'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
+                'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
+                'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3'],
+                'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW', 'LWF', 'RWF'],
+                'ST': ['CF', 'SS'],
+            }
+            _heatmap_pos_codes = [current_pos]
+            _heatmap_peer_label = current_pos
+            for _grp_name, _grp_codes in _DEFENSIVE_PEER_GROUPS.items():
+                if current_pos in _grp_codes:
+                    _heatmap_pos_codes = _grp_codes
+                    _heatmap_peer_label = _grp_name
+                    break
+
+            # Compute peer density stack (cached)
+            _events_hash = hashlib.md5(
+                f"{len(profile_events_df)}_{tuple(sorted(_heatmap_pos_codes))}".encode()
+            ).hexdigest()
+
+            _peer_stack = _compute_peer_density_stack(
+                _events_hash, profile_events_df,
+                tuple(sorted(_heatmap_pos_codes)),
+                _player_minutes_df=profile_player_minutes_df,
+                include_recoveries=True,
+            )
+
+            fig_def_heatmap = pv.plot_defensive_action_heatmap(
+                profile_events_df, player_id, selected_player_name,
+                position_codes=_heatmap_pos_codes,
+                player_minutes_df=profile_player_minutes_df,
+                peer_density_stack=_peer_stack,
+                include_recoveries=True,
+            )
+            st.pyplot(fig_def_heatmap, use_container_width=True)
+            plt.close(fig_def_heatmap)
+            st.caption(f"Colour intensity normalised across **{_heatmap_peer_label}** peers.")
+        except Exception as e:
+            st.caption(f"Could not render defensive action heatmap: {e}")
 
         st.divider()
 

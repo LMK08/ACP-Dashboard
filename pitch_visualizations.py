@@ -151,6 +151,23 @@ def _add_attack_direction_arrow(ax):
             clip_on=False, zorder=10)
 
 
+def _filter_defensive_actions(df, include_recoveries=True):
+    """Boolean mask for defensive action events."""
+    secondary_col = df.get('type.secondary', pd.Series(dtype='object'))
+    # Include aerial duels only when they are also defensive
+    is_defensive_aerial = (_check_secondary(secondary_col, 'aerial_duel')
+                           & _check_secondary(secondary_col, 'defensive_duel'))
+    mask = (
+        df['type.primary'].isin(['interception', 'clearance'])
+        | _check_secondary(secondary_col, 'defensive_duel')
+        | _check_secondary(secondary_col, 'sliding_tackle')
+        | is_defensive_aerial
+    )
+    if include_recoveries:
+        mask = mask | _check_secondary(secondary_col, 'recovery')
+    return mask
+
+
 def _short_name(full_name):
     """Shorten to last name."""
     if pd.isna(full_name):
@@ -1382,12 +1399,7 @@ def plot_defensive_structure(events_df, team_name, league_events_df=None,
         raise ValueError("No defender events found")
 
     # Filter to defensive actions
-    is_primary_def = te['type.primary'].isin(['interception', 'clearance'])
-    secondary_col = te.get('type.secondary', pd.Series(dtype='object'))
-    is_def_duel = _check_secondary(secondary_col, 'defensive_duel')
-    is_sliding = _check_secondary(secondary_col, 'sliding_tackle')
-    is_aerial = _check_secondary(secondary_col, 'aerial_duel')
-    te = te[is_primary_def | is_def_duel | is_sliding | is_aerial].copy()
+    te = te[_filter_defensive_actions(te, include_recoveries=False)].copy()
     if te.empty:
         raise ValueError("No defensive actions found for defenders")
 
@@ -1487,13 +1499,7 @@ def plot_defensive_structure(events_df, team_name, league_events_df=None,
         # Pre-filter league data to defender defensive actions (same criteria)
         ldef = src[src['player.position'].isin(ALL_DEF_POSITIONS)].copy()
         ldef['location.x'] = pd.to_numeric(ldef['location.x'], errors='coerce')
-        ldef_sec = ldef.get('type.secondary', pd.Series(dtype='object'))
-        ldef = ldef[
-            ldef['type.primary'].isin(['interception', 'clearance'])
-            | _check_secondary(ldef_sec, 'defensive_duel')
-            | _check_secondary(ldef_sec, 'sliding_tackle')
-            | _check_secondary(ldef_sec, 'aerial_duel')
-        ]
+        ldef = ldef[_filter_defensive_actions(ldef, include_recoveries=False)]
         team_heights = (ldef.dropna(subset=['location.x'])
                         .groupby('team.name')['location.x'].mean())
         if len(team_heights) > 1:
@@ -1527,5 +1533,147 @@ def plot_defensive_structure(events_df, team_name, league_events_df=None,
     ax.set_title("Average height of defensive actions",
                  fontsize=10, color='#666666', pad=8)
 
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Defensive Action Heatmap (percentile-based, per-90)
+# ---------------------------------------------------------------------------
+def plot_defensive_action_heatmap(events_df, player_id, player_name,
+                                  position_codes, player_minutes_df=None,
+                                  peer_density_stack=None, title=None,
+                                  include_recoveries=True):
+    """Per-90 KDE heatmap coloured by percentile rank among positional peers.
+
+    At every grid cell the player's per-90 density is converted to a
+    percentile (0-100) relative to all qualifying peers.  The colourmap
+    therefore always spans the full blue→red range regardless of absolute
+    density values.
+
+    Parameters
+    ----------
+    events_df : DataFrame
+        Full event data (all players).
+    player_id : int/str
+        Target player's Wyscout ID.
+    player_name : str
+        Display name for the title.
+    position_codes : list[str]
+        Position codes for the peer group.
+    player_minutes_df : DataFrame, optional
+        Must contain ``playerId`` and ``totalMinutes`` columns.
+    peer_density_stack : numpy.ndarray, optional
+        Shape ``(100, 100, N_peers)`` sorted along axis-2.  Returned by
+        ``_compute_peer_density_stack`` in app.py.
+    title : str, optional
+        Custom figure title.
+    include_recoveries : bool
+        Whether to include recovery events.
+    """
+    from scipy.stats import gaussian_kde
+
+    # --- Filter to defensive actions ---
+    def_mask = _filter_defensive_actions(events_df, include_recoveries=include_recoveries)
+    def_events = events_df[def_mask].copy()
+
+    def_events['location.x'] = pd.to_numeric(def_events['location.x'], errors='coerce')
+    def_events['location.y'] = pd.to_numeric(def_events['location.y'], errors='coerce')
+    def_events = def_events.dropna(subset=['location.x', 'location.y'])
+
+    # Coerce player.id to int for reliable matching
+    def_events['player.id'] = pd.to_numeric(def_events['player.id'], errors='coerce')
+    pid = int(player_id)
+
+    # Target player's actions
+    player_def = def_events[def_events['player.id'] == pid]
+    px = player_def['location.x'].values
+    py = player_def['location.y'].values
+
+    pitch, fig, ax = _make_pitch(figsize=(12, 8))
+    n_actions = len(px)
+
+    # Empty state
+    if n_actions == 0:
+        ax.text(50, 50, 'No defensive actions recorded',
+                ha='center', va='center', fontsize=14, color='#888888')
+        _add_attack_direction_arrow(ax)
+        fig.tight_layout()
+        return fig
+
+    # Per-90 scale factor
+    p90_scale = 1.0
+    if player_minutes_df is not None and not player_minutes_df.empty:
+        mins_row = player_minutes_df[
+            player_minutes_df['playerId'].astype(int) == pid
+        ]
+        if not mins_row.empty:
+            total_mins = float(mins_row['totalMinutes'].values[0])
+            if total_mins > 0:
+                p90_scale = 90.0 / total_mins
+
+    # KDE — need at least 3 points to avoid LinAlgError
+    if n_actions >= 3:
+        grid_x, grid_y = np.mgrid[0:100:100j, 0:100:100j]
+        positions = np.vstack([grid_x.ravel(), grid_y.ravel()])
+        values = np.vstack([px, py])
+
+        try:
+            kernel = gaussian_kde(values, bw_method='scott')
+            density = np.reshape(kernel(positions), grid_x.shape)
+        except np.linalg.LinAlgError:
+            density = None
+
+        if density is not None:
+            # Scale to per-90
+            density = density * p90_scale * n_actions
+
+            # Convert to percentile if peer stack is available
+            n_peers = (peer_density_stack.shape[-1]
+                       if peer_density_stack is not None else 0)
+            if n_peers > 0:
+                # searchsorted on sorted axis gives rank
+                ranks = np.zeros_like(density)
+                for i in range(density.shape[0]):
+                    for j in range(density.shape[1]):
+                        ranks[i, j] = np.searchsorted(
+                            peer_density_stack[i, j, :], density[i, j],
+                            side='right',
+                        )
+                plot_grid = (ranks / n_peers) * 100.0
+                vmin, vmax = 0.0, 100.0
+                cbar_label = 'Percentile vs positional peers'
+            else:
+                # Fallback: raw density
+                plot_grid = density
+                vmin, vmax = 0.0, density.max() if density.max() > 0 else 1.0
+                cbar_label = 'Density (per 90 min)'
+
+            levels = np.linspace(vmin, vmax, 50)
+            _heatmap_cmap = mcolors.LinearSegmentedColormap.from_list(
+                'def_heatmap',
+                ['#00008B', '#0033CC', '#1966FF', '#3399FF', '#66CCFF',
+                 '#66FFCC', '#33FF99', '#99FF66', '#CCFF33',
+                 '#FFFF00', '#FFCC00', '#FF9900', '#FF5500', '#CC0000', '#8B0000'],
+            )
+            cf = ax.contourf(grid_x, grid_y, plot_grid, levels=levels,
+                             cmap=_heatmap_cmap, alpha=0.85, zorder=2,
+                             extend='max')
+            cbar = fig.colorbar(cf, ax=ax, fraction=0.03, pad=0.02)
+            cbar.set_label(cbar_label, fontsize=9)
+            cbar.set_ticks([])
+
+    # Title
+    action_label = 'Defensive Actions p90'
+    if include_recoveries:
+        action_label += ' (incl. recoveries)'
+    p90_count = n_actions * p90_scale
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=12)
+    else:
+        ax.set_title(f'{player_name} — {action_label}: {p90_count:.1f}',
+                     fontsize=14, fontweight='bold', pad=12)
+
+    _add_attack_direction_arrow(ax)
     fig.tight_layout()
     return fig
