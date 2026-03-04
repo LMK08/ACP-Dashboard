@@ -80,9 +80,289 @@ def fmt_val(metric, value):
 # 1. PAGE CONFIGURATION
 # ==============================================================================
 st.set_page_config(
-    page_title="Soccer Match & Season Dashboard",
-    layout="wide"
+    page_title="Atlético CP Analytics",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# ==============================================================================
+# DARK THEME CSS INJECTION
+# ==============================================================================
+st.markdown("""
+<style>
+/* ============================================================================
+   ATLÉTICO CP ANALYTICS — CREAM / TAN / BLACK THEME
+   Accents: red, blue, yellow (used sparingly)
+   ============================================================================ */
+
+:root {
+    --bg: #F8F5F0;
+    --bg-warm: #F0ECE4;
+    --card: #FFFFFF;
+    --sidebar: #1a1a1a;
+    --ink: #1a1a1a;
+    --ink-2: #5c5650;
+    --ink-3: #9a948d;
+    --border: #DDD8D0;
+    --border-light: #EBE7E1;
+    --shadow-xs: 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-sm: 0 2px 6px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* === BASE === */
+html, body, .stApp { background: var(--bg); color: var(--ink); font-family: var(--font); }
+footer, footer::before { display: none !important; }
+
+/* === SIDEBAR (dark) === */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div > div:first-child,
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+    background: var(--sidebar);
+}
+[data-testid="stSidebar"] { border-right: none; }
+[data-testid="stSidebar"] * { color: rgba(255,255,255,0.85) !important; }
+
+/* Sidebar inputs & dropdowns */
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[role="combobox"],
+[data-testid="stSidebar"] [data-testid="stMultiSelect"] div[role="combobox"] {
+    background: rgba(255,255,255,0.08) !important;
+    border-color: rgba(255,255,255,0.12) !important;
+}
+[data-testid="stSidebar"] input[type="text"],
+[data-testid="stSidebar"] textarea {
+    background: rgba(255,255,255,0.08) !important;
+    border-color: rgba(255,255,255,0.12) !important;
+    color: #fff !important;
+}
+[data-testid="stSidebar"] button {
+    background: rgba(255,255,255,0.12) !important;
+    color: #fff !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+}
+[data-testid="stSidebar"] button:hover {
+    background: rgba(255,255,255,0.2) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background: rgba(255,255,255,0.04) !important;
+    border-color: rgba(255,255,255,0.08) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] details,
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    background: transparent !important;
+    color: rgba(255,255,255,0.85) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    background: rgba(255,255,255,0.06) !important;
+}
+[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {
+    color: rgba(255,255,255,0.5) !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    color: rgba(255,255,255,0.85) !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stMetricValue"] { color: #fff !important; }
+[data-testid="stSidebar"]::-webkit-scrollbar { width: 6px; }
+[data-testid="stSidebar"]::-webkit-scrollbar-track { background: var(--sidebar); }
+[data-testid="stSidebar"]::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+/* === MAIN === */
+[data-testid="stMainBlockContainer"] { background: var(--bg); padding-top: 2rem; }
+.main { background: var(--bg); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #c5bfb6; }
+
+/* === TYPOGRAPHY === */
+h1, h2, h3, h4, h5, h6 { color: var(--ink); font-weight: 600; letter-spacing: -0.3px; }
+h1 { font-size: 2.2rem; font-weight: 700; }
+h2 { font-size: 1.55rem; border-bottom: 1.5px solid var(--ink); padding-bottom: 0.4rem; margin-bottom: 1rem; }
+h3 { font-size: 1.15rem; }
+p { color: var(--ink-2); line-height: 1.65; }
+
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3 { color: var(--ink); }
+
+/* === METRICS === */
+[data-testid="stMetric"] {
+    background: var(--card);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 1.4rem;
+    box-shadow: var(--shadow-xs);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+[data-testid="stMetric"]:hover {
+    border-color: var(--border);
+    box-shadow: var(--shadow-sm);
+}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: var(--ink);
+    font-weight: 700;
+    font-size: 1.7rem;
+}
+[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+    color: var(--ink-3);
+    font-weight: 500;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+/* === TABLES === */
+[data-testid="stDataFrame"] {
+    background: var(--card) !important;
+    border: 1px solid var(--border-light) !important;
+    border-radius: 8px !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+[data-testid="stDataFrame"] table { background: var(--card) !important; color: var(--ink) !important; }
+[data-testid="stDataFrame"] thead { background: var(--card) !important; border-bottom: 1.5px solid var(--ink) !important; }
+[data-testid="stDataFrame"] thead th {
+    color: var(--ink) !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    font-size: 0.82rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.3px !important;
+}
+[data-testid="stDataFrame"] tbody tr { background: var(--card) !important; border-bottom: 1px solid var(--border-light) !important; }
+[data-testid="stDataFrame"] tbody tr:hover { background: #FDFBF8 !important; }
+[data-testid="stDataFrame"] tbody td { color: var(--ink) !important; padding: 0.7rem !important; text-align: center !important; }
+
+/* === BUTTONS === */
+button {
+    background: var(--ink) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+    padding: 0.55rem 1.2rem !important;
+    cursor: pointer !important;
+    transition: opacity 0.2s, box-shadow 0.2s !important;
+}
+button:hover { opacity: 0.85 !important; box-shadow: var(--shadow-sm) !important; }
+button:active { opacity: 1 !important; }
+
+[data-testid="stDownloadButton"] button { background: var(--ink) !important; }
+
+/* === INPUTS === */
+[data-testid="stSelectbox"] div[role="combobox"],
+[data-testid="stMultiSelect"] div[role="combobox"] {
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    color: var(--ink) !important;
+}
+[data-testid="stSelectbox"] div[role="combobox"]:hover,
+[data-testid="stMultiSelect"] div[role="combobox"]:hover {
+    border-color: var(--ink-2) !important;
+}
+
+input[type="text"], input[type="number"], input[type="date"], textarea {
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    color: var(--ink) !important;
+    padding: 0.55rem !important;
+    font-family: var(--font) !important;
+}
+input:focus, textarea:focus {
+    border-color: var(--ink) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 2px rgba(26,26,26,0.06) !important;
+}
+input::placeholder, textarea::placeholder { color: var(--ink-3) !important; }
+
+/* === RADIO / CHECKBOX === */
+[data-testid="stRadio"] { padding: 0.4rem; }
+[data-testid="stRadio"] label,
+[data-testid="stCheckbox"] label { color: var(--ink) !important; font-weight: 500; }
+[data-testid="stRadio"] input[type="radio"],
+[data-testid="stCheckbox"] input[type="checkbox"] { accent-color: var(--ink) !important; cursor: pointer !important; }
+
+/* === EXPANDERS === */
+[data-testid="stExpander"] {
+    background: var(--card) !important;
+    border: 1px solid var(--border-light) !important;
+    border-radius: 8px !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+[data-testid="stExpander"] details { background: var(--card) !important; }
+[data-testid="stExpander"] summary {
+    color: var(--ink) !important;
+    font-weight: 600 !important;
+    padding: 0.9rem 1rem !important;
+    background: var(--card) !important;
+    border-radius: 6px !important;
+}
+[data-testid="stExpander"] summary:hover { background: #FDFBF8 !important; }
+[data-testid="stExpander"] > div > div:nth-child(2) { padding: 1rem !important; }
+
+/* === TABS === */
+[role="tablist"] { border-bottom: 1px solid var(--border) !important; background: transparent !important; }
+[role="tab"] {
+    color: var(--ink-3) !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0.7rem 1.4rem !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    border-bottom: 2px solid transparent !important;
+    transition: color 0.2s !important;
+}
+[role="tab"]:hover { color: var(--ink) !important; }
+[role="tab"][aria-selected="true"] { color: var(--ink) !important; border-bottom-color: var(--ink) !important; }
+
+/* === DIVIDERS === */
+[data-testid="stHorizontalBlock"] hr { border: none !important; border-top: 1px solid var(--border-light) !important; margin: 1.5rem 0 !important; }
+
+/* === COLUMNS === */
+[data-testid="stColumn"] { background: transparent !important; }
+[data-testid="stHorizontalBlock"] { gap: 1.2rem !important; }
+
+/* === SPINNER === */
+[data-testid="stSpinner"] > div > div { border-color: var(--ink) !important; border-top-color: transparent !important; }
+
+/* === ALERTS === */
+[data-testid="stAlert"] {
+    background: var(--card) !important;
+    border: 1px solid var(--border-light) !important;
+    border-left: 3px solid var(--ink-2) !important;
+    border-radius: 6px !important;
+    padding: 0.9rem 1rem !important;
+}
+[role="alert"],
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"] { color: var(--ink) !important; }
+
+/* === PLOTS === */
+[data-testid="stPlotlyContainer"],
+[data-testid="stPlotlyContainer"] > div,
+canvas, .stPlotlyContainer svg { background: transparent !important; }
+
+/* === LINKS === */
+a { color: var(--ink) !important; text-decoration: none !important; font-weight: 500 !important; }
+a:hover { text-decoration: underline !important; }
+
+/* === CODE === */
+code { background: var(--bg-warm) !important; color: var(--ink) !important; border-radius: 4px !important; padding: 0.2rem 0.5rem !important; font-family: 'Monaco','Courier New',monospace !important; }
+pre { background: var(--bg-warm) !important; border: 1px solid var(--border-light) !important; border-radius: 8px !important; padding: 1rem !important; overflow-x: auto !important; }
+pre code { background: transparent !important; padding: 0 !important; }
+
+/* === MISC === */
+::selection { background: var(--ink); color: #fff; }
+[data-testid="stMarkdownContainer"] { color: var(--ink) !important; }
+[role="dialog"] { background: var(--card) !important; border: 1px solid var(--border) !important; }
+.stApp > header { background: var(--bg) !important; }
+
+</style>
+""", unsafe_allow_html=True)
 
 # ==============================================================================
 # 1B. SEASON CONSTANTS
@@ -96,6 +376,7 @@ SEASON_ID_MAP = {
 }
 CURRENT_SEASON_ID = 191782
 STATS_CACHE_DIR = 'stats_cache'
+STATS_CACHE_VERSION = 'v2'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -762,7 +1043,7 @@ WEIGHTS = {
 }
 INVERT_METRICS = ['Loss index', 'goalsConceded']
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'Second assists', 'Shots', 'xG per Shot']
-PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions']
+PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance']
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
@@ -1442,14 +1723,19 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     # Disk cache: load pre-computed results if available
+    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance'}
     if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
-            print(f"Loading cached player stats for season {season_id}")
             cached = pd.read_parquet(cache_path)
-            if cached.index.name == 'playerId':
-                cached = cached.reset_index()
-            return cached
+            if _REQUIRED_STAT_COLS.issubset(cached.columns):
+                print(f"Loading cached player stats for season {season_id}")
+                if cached.index.name == 'playerId':
+                    cached = cached.reset_index()
+                return cached
+            else:
+                print(f"Cache outdated (missing columns), recomputing stats for season {season_id}")
+                os.remove(cache_path)
 
     print("--- STARTING: New All-Player-Stats Calculation ---")
     
@@ -1607,6 +1893,55 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df = count_and_merge(base_df, events_df, 'Recoveries Opp Half', check_secondary_list('recovery') & (events_df.get('location.x', 0) >= 50))
     base_df = count_and_merge(base_df, events_df, 'Counterpressing Recoveries', check_secondary_list('counterpressing_recovery'))
 
+    # -- Throw-In Metrics --
+    try:
+        throwin_events = events_df[events_df['type.primary'] == 'throw_in'].copy()
+        print(f"  Throw-in events found: {len(throwin_events)}")
+        if not throwin_events.empty:
+            base_df = count_and_merge(base_df, throwin_events, 'Throw-ins', pd.Series(True, index=throwin_events.index))
+            # Avg of top 10 longest throw-in distances per player (raw length, not per-90)
+            if 'pass.length' in throwin_events.columns:
+                ti_top10_avg = throwin_events.groupby('player.id')['pass.length'].apply(
+                    lambda x: x.nlargest(min(10, len(x))).mean()
+                )
+                ti_top10_avg.name = 'Avg max throw-in distance'
+                base_df = base_df.merge(ti_top10_avg, left_index=True, right_index=True, how='left')
+            else:
+                print("  WARNING: 'pass.length' column not found in throw-in events")
+                base_df['Avg max throw-in distance'] = 0.0
+            # Throw-ins into attacking penalty box (end x >= 84, 20 <= end y <= 80)
+            if 'pass.endLocation.x' in throwin_events.columns and 'pass.endLocation.y' in throwin_events.columns:
+                ti_into_box = throwin_events[
+                    (throwin_events['pass.endLocation.x'] >= 84) &
+                    (throwin_events['pass.endLocation.y'] >= 20) &
+                    (throwin_events['pass.endLocation.y'] <= 80)
+                ]
+                base_df = count_and_merge(base_df, ti_into_box, 'Throw-ins into box', pd.Series(True, index=ti_into_box.index))
+                if not ti_into_box.empty:
+                    ti_box_top10_avg = ti_into_box.groupby('player.id')['pass.length'].apply(
+                        lambda x: x.nlargest(min(10, len(x))).mean() if len(x) > 0 else 0.0
+                    )
+                    ti_box_top10_avg.name = 'Avg max throw-in into box distance'
+                    base_df = base_df.merge(ti_box_top10_avg, left_index=True, right_index=True, how='left')
+                else:
+                    base_df['Avg max throw-in into box distance'] = 0.0
+            else:
+                base_df['Throw-ins into box'] = 0.0
+                base_df['Avg max throw-in into box distance'] = 0.0
+        else:
+            print("  WARNING: No throw-in events found in data")
+            base_df['Throw-ins'] = 0.0
+            base_df['Avg max throw-in distance'] = 0.0
+            base_df['Throw-ins into box'] = 0.0
+            base_df['Avg max throw-in into box distance'] = 0.0
+    except Exception as e:
+        print(f"  ERROR computing throw-in metrics: {e}")
+        import traceback; traceback.print_exc()
+        base_df['Throw-ins'] = 0.0
+        base_df['Avg max throw-in distance'] = 0.0
+        base_df['Throw-ins into box'] = 0.0
+        base_df['Avg max throw-in into box distance'] = 0.0
+
     # --- Step 2: Calculate xG, xA, xT, and special passing ---
     print("Step 2: Calculating xG, xA, xT...")
     
@@ -1761,7 +2096,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     # Save to disk cache for fast loading on restart
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
         try:
             result.to_parquet(cache_path)
             print(f"  Cached player stats to {cache_path}")
@@ -1801,14 +2136,19 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     """Calculates percentiles and scores for all players based on position.
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance'}
     if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
-            print(f"Loading cached player percentiles for season {season_id}")
             cached = pd.read_parquet(cache_path)
-            if cached.index.name == 'playerId':
-                cached = cached.reset_index()
-            return cached
+            if _REQUIRED_PCT_COLS.issubset(cached.columns):
+                print(f"Loading cached player percentiles for season {season_id}")
+                if cached.index.name == 'playerId':
+                    cached = cached.reset_index()
+                return cached
+            else:
+                print(f"Percentiles cache outdated (missing columns), recomputing for season {season_id}")
+                os.remove(cache_path)
 
     print("Calculating player percentiles and scores...")
     data = _player_data_df.copy()
@@ -1865,7 +2205,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     # Save to disk cache for fast loading on restart
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
         try:
             result.to_parquet(cache_path)
             print(f"  Cached player percentiles to {cache_path}")
@@ -3787,7 +4127,7 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
 # ==============================================================================
 # 5. STREAMLIT APP UI
 # ==============================================================================
-st.title("Atlético CP Analysis") # You can change this title
+st.markdown('<h1 style="text-align: center; color: #1a1a1a; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 0;">Atlético CP Analytics</h1>', unsafe_allow_html=True)
 
 # --- Load Data ---
 with st.spinner("Loading match data..."):
@@ -3821,7 +4161,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.player_profile_last_season = None
 
     # --- Sidebar for Navigation ---
-    st.sidebar.title("Dashboard Controls")
+    st.sidebar.markdown('<div style="text-align: center; padding: 1rem 0 0.5rem 0;"><h2 style="color: #ffffff; font-size: 1.3rem; font-weight: 600; margin: 0;">Navigation</h2></div>', unsafe_allow_html=True)
 
     # Check if we should navigate to Player Profile
     if st.session_state.nav_to_profile:
@@ -3841,46 +4181,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     )
     st.session_state.current_page = analysis_type
 
-    # --- Transferred Players Manager ---
-    with st.sidebar.expander("Transferred Out Players"):
-        if 'transferred_players' not in st.session_state:
-            st.session_state.transferred_players = load_transferred_players()
-
-        # Build a list of all player names across all seasons for autocomplete
-        _all_names = set()
-        if player_minutes_data:
-            for _sid, _pm in player_minutes_data.items():
-                if isinstance(_pm, pd.DataFrame) and 'playerName' in _pm.columns:
-                    _all_names.update(_pm['playerName'].dropna().unique())
-        all_player_names = sorted(_all_names)
-
-        new_player = st.selectbox(
-            "Add player",
-            options=[""] + [n for n in all_player_names
-                            if n not in st.session_state.transferred_players],
-            key="transfer_add_select",
-        )
-        if st.button("Add", key="transfer_add_btn") and new_player:
-            if new_player not in st.session_state.transferred_players:
-                st.session_state.transferred_players.append(new_player)
-                save_transferred_players(st.session_state.transferred_players)
-                st.rerun()
-
-        if st.session_state.transferred_players:
-            st.caption("Current list:")
-            for pname in list(st.session_state.transferred_players):
-                col_name, col_btn = st.columns([3, 1])
-                col_name.write(pname)
-                if col_btn.button("X", key=f"transfer_rm_{pname}"):
-                    st.session_state.transferred_players.remove(pname)
-                    save_transferred_players(st.session_state.transferred_players)
-                    st.rerun()
-        else:
-            st.caption("No players added yet.")
-
     if analysis_type == 'Match Analysis':
-        st.header("Match Analysis")
-
         # --- Season Selector ---
         selected_season_id = season_selector("match_analysis")
         season_matches_df = get_season_matches(matches_summary_df, selected_season_id).copy()
@@ -3893,8 +4194,34 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create a display-ready gameweek column
         season_matches_df['gw_display'] = "GW " + season_matches_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
 
+        # --- Determine stage labels for Liga 3 (Promotion League vs Maintenance Stage) ---
+        if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
+            # Group matches by roundId to find the first stage (most matches)
+            round_counts = season_matches_df.groupby('roundId').size()
+            first_stage_round = round_counts.idxmax()
+
+            # Determine second stage rounds and their labels
+            second_stage_rounds = round_counts.drop(first_stage_round, errors='ignore')
+
+            def get_stage_label(row):
+                if row['roundId'] == first_stage_round:
+                    return row['gw_display']  # Regular season: no prefix
+                else:
+                    # Second stage: determine if Promotion or Maintenance
+                    if len(second_stage_rounds) > 0:
+                        min_round = second_stage_rounds.idxmin()
+                        is_maintenance = row['roundId'] == min_round
+                        prefix = "[M] " if is_maintenance else "[P] "
+                    else:
+                        prefix = "[S2] "
+                    return prefix + row['gw_display']
+
+            season_matches_df['gw_display_with_stage'] = season_matches_df.apply(get_stage_label, axis=1)
+        else:
+            season_matches_df['gw_display_with_stage'] = season_matches_df['gw_display']
+
         # Build the full display name using the new columns (GW: Teams (Score) - Date)
-        season_matches_df['display_name'] = season_matches_df['gw_display'] + ": " + \
+        season_matches_df['display_name'] = season_matches_df['gw_display_with_stage'] + ": " + \
                                              season_matches_df.get('homeTeamName', '?').fillna('?') + " vs " + \
                                              season_matches_df.get('awayTeamName', '?').fillna('?') + \
                                              " (" + season_matches_df.get('score', '?-?').fillna('?-?') + ") - " + \
@@ -3911,7 +4238,44 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.stop()
         selected_match_info = matching_matches.iloc[0]
         selected_match_id = selected_match_info['matchId']
-        
+
+        # --- Display stage badge for the selected match ---
+        if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
+            round_counts = season_matches_df.groupby('roundId').size()
+            first_stage_round = round_counts.idxmax()
+            second_stage_rounds = round_counts.drop(first_stage_round, errors='ignore')
+
+            current_round_id = selected_match_info.get('roundId')
+            if current_round_id == first_stage_round:
+                badge_text = "Regular Season"
+                badge_bg = "rgba(255,255,255,0.08)"
+                badge_fg = "rgba(255,255,255,0.45)"
+                badge_border = "rgba(255,255,255,0.12)"
+            else:
+                if len(second_stage_rounds) > 0:
+                    min_round = second_stage_rounds.idxmin()
+                    is_maintenance = current_round_id == min_round
+                    if is_maintenance:
+                        badge_text = "Maintenance Stage"
+                        badge_bg = "rgba(255,255,255,0.08)"
+                        badge_fg = "#fff"
+                        badge_border = "rgba(255,255,255,0.2)"
+                    else:
+                        badge_text = "Promotion League"
+                        badge_bg = "rgba(255,255,255,0.12)"
+                        badge_fg = "#fff"
+                        badge_border = "rgba(255,255,255,0.25)"
+                else:
+                    badge_text = "Second Stage"
+                    badge_bg = "rgba(255,255,255,0.08)"
+                    badge_fg = "rgba(255,255,255,0.45)"
+                    badge_border = "rgba(255,255,255,0.12)"
+
+            st.sidebar.markdown(
+                f'<div style="background:{badge_bg}; color:{badge_fg}; border:1px solid {badge_border}; padding:7px 12px; border-radius:6px; text-align:center; font-weight:600; font-size:0.8rem; margin-top:8px; letter-spacing:0.3px;">{badge_text}</div>',
+                unsafe_allow_html=True
+            )
+
         st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
         
     
@@ -4140,7 +4504,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
 
     elif analysis_type == 'Team Analysis':
-        st.header("Team Analysis")
 
         # --- Season Selector ---
         selected_season_id = season_selector("team_analysis")
@@ -4419,7 +4782,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.caption(f"Could not render defensive structure: {e}")
 
     elif analysis_type == 'League Analysis':
-        st.header("League Analysis")
 
         # --- Season Selector ---
         selected_season_id = season_selector("league_analysis")
@@ -4621,7 +4983,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     
     # --- UPDATED: Renamed to Player Profile ---
     elif analysis_type == 'Player Profile':
-        st.header("Player Profile")
 
         # If navigating from another section, set the season selector to match
         if st.session_state.get('nav_has_season', False):
@@ -5296,6 +5657,49 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
 
+        # --- 7a. Throw-In Analysis ---
+        st.subheader("Throw-In Analysis")
+
+        try:
+            player_throwin_df = profile_events_df[
+                (profile_events_df['player.id'] == player_id) &
+                (profile_events_df['type.primary'] == 'throw_in')
+            ].copy()
+
+            if not player_throwin_df.empty and 'pass.length' in player_throwin_df.columns:
+                total_throwins = len(player_throwin_df)
+
+                # Avg of top 10 longest throw-ins (overall distance)
+                top_10_all = player_throwin_df.nlargest(min(10, total_throwins), 'pass.length')
+                avg_top10_length = top_10_all['pass.length'].mean()
+
+                # Throw-ins into the attacking penalty box (end x >= 84, 20 <= end y <= 80)
+                into_box = player_throwin_df[
+                    (player_throwin_df['pass.endLocation.x'] >= 84) &
+                    (player_throwin_df['pass.endLocation.y'] >= 20) &
+                    (player_throwin_df['pass.endLocation.y'] <= 80)
+                ]
+                if not into_box.empty:
+                    top_10_box = into_box.nlargest(min(10, len(into_box)), 'pass.length')
+                    avg_top10_into_box = top_10_box['pass.length'].mean()
+                else:
+                    avg_top10_into_box = 0.0
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Throw-Ins", int(total_throwins))
+                with col2:
+                    st.metric("Avg Max Distance", f"{avg_top10_length:.1f}m")
+                with col3:
+                    st.metric("Avg Max Into Box", f"{avg_top10_into_box:.1f}m")
+            else:
+                st.info(f"{selected_player_name} has no throw-ins in the selected period.")
+
+        except Exception as e:
+            st.caption(f"Could not render throw-in analysis: {e}")
+
+        st.divider()
+
         # --- 8. Display Individual Match Stats (Unchanged) ---
         st.subheader("Individual Match Log")
         
@@ -5310,7 +5714,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
 # --- NEW: Player Comparison Section ---
     elif analysis_type == 'Player Comparison':
-        st.header("Player Comparison")
 
         # --- Season Selector ---
         selected_season_id = season_selector("player_comparison", include_all_seasons=True)
@@ -5431,7 +5834,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
-        st.header("Player Analysis")
 
         # --- Season Selector ---
         selected_season_id = season_selector("player_analysis", include_all_seasons=True)
@@ -5768,7 +6170,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.rerun()
 
     elif analysis_type == 'Match Predictor':
-        st.header("Match Outcome Predictor")
         st.markdown("Predict the outcome of upcoming matches based on team performance data with season-specific priors.")
 
         # Load prediction model
@@ -6155,7 +6556,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # SHADOW TEAM BUILDER
     # ==========================================================================
     elif analysis_type == 'Shadow Team':
-        st.header("Shadow Team Builder")
 
         # --- Season Selector ---
         selected_season_id = season_selector("shadow_team", include_all_seasons=True)
@@ -6371,6 +6771,44 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             season_team_stats, player_minutes_data,
             CURRENT_SEASON_ID, SEASON_ID_MAP,
         )
+
+    # --- Transferred Players Manager (Bottom of Sidebar) ---
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("Transferred Out Players"):
+        if 'transferred_players' not in st.session_state:
+            st.session_state.transferred_players = load_transferred_players()
+
+        # Build a list of all player names across all seasons for autocomplete
+        _all_names = set()
+        if player_minutes_data:
+            for _sid, _pm in player_minutes_data.items():
+                if isinstance(_pm, pd.DataFrame) and 'playerName' in _pm.columns:
+                    _all_names.update(_pm['playerName'].dropna().unique())
+        all_player_names = sorted(_all_names)
+
+        new_player = st.selectbox(
+            "Add player",
+            options=[""] + [n for n in all_player_names
+                            if n not in st.session_state.transferred_players],
+            key="transfer_add_select",
+        )
+        if st.button("Add", key="transfer_add_btn") and new_player:
+            if new_player not in st.session_state.transferred_players:
+                st.session_state.transferred_players.append(new_player)
+                save_transferred_players(st.session_state.transferred_players)
+                st.rerun()
+
+        if st.session_state.transferred_players:
+            st.caption("Current list:")
+            for pname in list(st.session_state.transferred_players):
+                col_name, col_btn = st.columns([3, 1])
+                col_name.write(pname)
+                if col_btn.button("X", key=f"transfer_rm_{pname}"):
+                    st.session_state.transferred_players.remove(pname)
+                    save_transferred_players(st.session_state.transferred_players)
+                    st.rerun()
+        else:
+            st.caption("No players added yet.")
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")

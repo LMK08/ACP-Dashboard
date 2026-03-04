@@ -444,6 +444,10 @@ metric_categories:
     - Passes to penalty area
     - Passes to penalty area successful
     - Deep Completions
+    - Throw-ins
+    - Avg max throw-in distance
+    - Throw-ins into box
+    - Avg max throw-in into box distance
   defensive:
     - Interceptions
     - Aerial duels
