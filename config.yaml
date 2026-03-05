@@ -63,8 +63,7 @@ weights:
     Progressive runs: 6
     Aerial duels: 2
     Aerial duels successful %: 6
-    Aerial duels def box successful %: 0
-    Aerial duels att box successful %: 0
+    Aerial duels att box successful: 0
     Defensive duels: 2
     Defensive duels successful %: 8
     Interceptions: 6
@@ -81,8 +80,7 @@ weights:
     Progressive runs: 1.0
     Aerial duels: 8
     Aerial duels successful %: 10
-    Aerial duels def box successful %: 0
-    Aerial duels att box successful %: 0
+    Aerial duels att box successful: 0
     Defensive duels: 8
     Defensive duels successful %: 10
     Interceptions: 8
@@ -99,8 +97,7 @@ weights:
     Progressive runs: 6
     Aerial duels: 6
     Aerial duels successful %: 10
-    Aerial duels def box successful %: 0
-    Aerial duels att box successful %: 0
+    Aerial duels att box successful: 0
     Defensive duels: 8
     Defensive duels successful %: 10
     Interceptions: 10
@@ -448,6 +445,7 @@ metric_categories:
     - Avg max throw-in distance
     - Throw-ins into box
     - Avg max throw-in into box distance
+    - Avg max throw-in into box aerial distance
   defensive:
     - Interceptions
     - Aerial duels
@@ -500,8 +498,8 @@ distribution_metrics_by_position:
   Cross Claimer: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
   Ball-playing GK: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'recoveries_gk', 'passes_gk', 'Passes successful %', 'longPassesSuccessful_gk']
   Ball-Playing Centerback: ['xT', 'Passes', 'Passes successful %', 'Progressive Passes', 'Progressive runs', 'Avg defensive action height']
-  Stopper: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels def box successful %', 'Avg defensive action height']
-  Athletic Centerback: ['npxG', 'Progressive runs', 'Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels def box successful %', 'Avg defensive action height']
+  Stopper: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels att box successful', 'Avg defensive action height']
+  Athletic Centerback: ['npxG', 'Progressive runs', 'Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels att box successful', 'Avg defensive action height']
   Box-to-Box: ['Progressive Passes', 'npxG', 'Shots', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
   Holding Mid: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
   Ball-Winning Mid: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Recoveries Opp Half']

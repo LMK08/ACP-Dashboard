@@ -265,6 +265,29 @@ button:active { opacity: 1 !important; }
     border-color: var(--ink-2) !important;
 }
 
+/* Dropdown options / listbox popover */
+[role="listbox"] {
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+}
+[role="option"] {
+    color: var(--ink) !important;
+    background: var(--card) !important;
+}
+[role="option"]:hover,
+[role="option"][aria-selected="true"] {
+    background: var(--bg-warm) !important;
+    color: var(--ink) !important;
+}
+/* Ensure selectbox/multiselect text is always dark in main area */
+[data-testid="stSelectbox"] span,
+[data-testid="stMultiSelect"] span,
+[data-testid="stSelectbox"] input,
+[data-testid="stMultiSelect"] input {
+    color: var(--ink) !important;
+}
+
 input[type="text"], input[type="number"], input[type="date"], textarea {
     background: var(--card) !important;
     border: 1px solid var(--border) !important;
@@ -376,7 +399,7 @@ SEASON_ID_MAP = {
 }
 CURRENT_SEASON_ID = 191782
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v2'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v4'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -1043,7 +1066,7 @@ WEIGHTS = {
 }
 INVERT_METRICS = ['Loss index', 'goalsConceded']
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'Second assists', 'Shots', 'xG per Shot']
-PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance']
+PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
@@ -1716,14 +1739,14 @@ def add_custom_dribble_success(events_df):
     return df
 
 @st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
-def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None):
+def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None, cache_version=STATS_CACHE_VERSION):
     """
     A new, streamlined, and correct function to calculate all player stats
     for the player profile page (Per 90 and Totals).
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     # Disk cache: load pre-computed results if available
-    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance'}
+    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
@@ -1923,17 +1946,59 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
                     )
                     ti_box_top10_avg.name = 'Avg max throw-in into box distance'
                     base_df = base_df.merge(ti_box_top10_avg, left_index=True, right_index=True, how='left')
+
+                    # Throw-ins into box where the next action is an aerial duel
+                    sorted_events = events_df.sort_values(by=['matchId', 'minute', 'second']).reset_index(drop=True)
+                    ti_box_aerial_indices = []
+                    for idx in ti_into_box.index:
+                        # Find this event's position in the sorted timeline
+                        match_id = ti_into_box.loc[idx, 'matchId'] if 'matchId' in ti_into_box.columns else None
+                        if match_id is None:
+                            continue
+                        match_events = sorted_events[sorted_events['matchId'] == match_id]
+                        evt_minute = ti_into_box.loc[idx, 'minute']
+                        evt_second = ti_into_box.loc[idx, 'second']
+                        # Find the throw-in in the sorted match events
+                        pos_mask = (match_events['minute'] == evt_minute) & (match_events['second'] == evt_second) & (match_events['type.primary'] == 'throw_in')
+                        positions = match_events[pos_mask].index
+                        if len(positions) == 0:
+                            continue
+                        pos = positions[0]
+                        # Get the next event in the match
+                        next_pos = pos + 1
+                        if next_pos in match_events.index:
+                            next_event = match_events.loc[next_pos]
+                            next_secondary = next_event.get('type.secondary', '')
+                            if isinstance(next_secondary, (list, set)):
+                                is_aerial = 'aerial_duel' in next_secondary
+                            else:
+                                is_aerial = 'aerial_duel' in str(next_secondary)
+                            if is_aerial:
+                                ti_box_aerial_indices.append(idx)
+
+                    ti_box_aerial = ti_into_box.loc[ti_into_box.index.isin(ti_box_aerial_indices)]
+                    if not ti_box_aerial.empty and 'pass.length' in ti_box_aerial.columns:
+                        ti_box_aerial_avg = ti_box_aerial.groupby('player.id')['pass.length'].apply(
+                            lambda x: x.nlargest(min(10, len(x))).mean() if len(x) > 0 else 0.0
+                        )
+                        ti_box_aerial_avg.name = 'Avg max throw-in into box aerial distance'
+                        base_df = base_df.merge(ti_box_aerial_avg, left_index=True, right_index=True, how='left')
+                    else:
+                        base_df['Avg max throw-in into box aerial distance'] = 0.0
                 else:
                     base_df['Avg max throw-in into box distance'] = 0.0
+                    base_df['Avg max throw-in into box aerial distance'] = 0.0
             else:
                 base_df['Throw-ins into box'] = 0.0
                 base_df['Avg max throw-in into box distance'] = 0.0
+                base_df['Avg max throw-in into box aerial distance'] = 0.0
         else:
             print("  WARNING: No throw-in events found in data")
             base_df['Throw-ins'] = 0.0
             base_df['Avg max throw-in distance'] = 0.0
             base_df['Throw-ins into box'] = 0.0
             base_df['Avg max throw-in into box distance'] = 0.0
+            base_df['Avg max throw-in into box aerial distance'] = 0.0
     except Exception as e:
         print(f"  ERROR computing throw-in metrics: {e}")
         import traceback; traceback.print_exc()
@@ -1941,6 +2006,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         base_df['Avg max throw-in distance'] = 0.0
         base_df['Throw-ins into box'] = 0.0
         base_df['Avg max throw-in into box distance'] = 0.0
+        base_df['Avg max throw-in into box aerial distance'] = 0.0
 
     # --- Step 2: Calculate xG, xA, xT, and special passing ---
     print("Step 2: Calculating xG, xA, xT...")
@@ -2132,11 +2198,11 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     return career_stats
 
 @st.cache_data
-def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90, season_id=None):
+def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90, season_id=None, cache_version=STATS_CACHE_VERSION):
     """Calculates percentiles and scores for all players based on position.
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
-    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance'}
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
@@ -4210,8 +4276,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     # Second stage: determine if Promotion or Maintenance
                     if len(second_stage_rounds) > 0:
                         min_round = second_stage_rounds.idxmin()
-                        is_maintenance = row['roundId'] == min_round
-                        prefix = "[M] " if is_maintenance else "[P] "
+                        is_promotion = row['roundId'] == min_round
+                        prefix = "[P] " if is_promotion else "[M] "
                     else:
                         prefix = "[S2] "
                     return prefix + row['gw_display']
@@ -4254,15 +4320,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 if len(second_stage_rounds) > 0:
                     min_round = second_stage_rounds.idxmin()
-                    is_maintenance = current_round_id == min_round
-                    if is_maintenance:
-                        badge_text = "Maintenance Stage"
-                        badge_bg = "rgba(255,255,255,0.08)"
+                    is_promotion = current_round_id == min_round
+                    if is_promotion:
+                        badge_text = "Promotion League"
+                        badge_bg = "rgba(255,255,255,0.12)"
                         badge_fg = "#fff"
                         badge_border = "rgba(255,255,255,0.2)"
                     else:
-                        badge_text = "Promotion League"
-                        badge_bg = "rgba(255,255,255,0.12)"
+                        badge_text = "Maintenance Stage"
+                        badge_bg = "rgba(255,255,255,0.08)"
                         badge_fg = "#fff"
                         badge_border = "rgba(255,255,255,0.25)"
                 else:
@@ -5685,13 +5751,43 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 else:
                     avg_top10_into_box = 0.0
 
-                col1, col2, col3 = st.columns(3)
+                # Throw-ins into box where next action is an aerial duel
+                avg_top10_into_box_aerial = 0.0
+                if not into_box.empty:
+                    sorted_match_events = profile_events_df.sort_values(by=['matchId', 'minute', 'second']).reset_index(drop=True)
+                    aerial_box_throws = []
+                    for _, ti_row in into_box.iterrows():
+                        m_id = ti_row.get('matchId')
+                        if m_id is None:
+                            continue
+                        m_events = sorted_match_events[sorted_match_events['matchId'] == m_id]
+                        pos_mask = (m_events['minute'] == ti_row['minute']) & (m_events['second'] == ti_row['second']) & (m_events['type.primary'] == 'throw_in')
+                        positions = m_events[pos_mask].index
+                        if len(positions) == 0:
+                            continue
+                        next_pos = positions[0] + 1
+                        if next_pos in m_events.index:
+                            next_sec = m_events.loc[next_pos].get('type.secondary', '')
+                            if isinstance(next_sec, (list, set)):
+                                is_aerial = 'aerial_duel' in next_sec
+                            else:
+                                is_aerial = 'aerial_duel' in str(next_sec)
+                            if is_aerial:
+                                aerial_box_throws.append(ti_row)
+                    if aerial_box_throws:
+                        aerial_df = pd.DataFrame(aerial_box_throws)
+                        top_10_aerial = aerial_df.nlargest(min(10, len(aerial_df)), 'pass.length')
+                        avg_top10_into_box_aerial = top_10_aerial['pass.length'].mean()
+
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total Throw-Ins", int(total_throwins))
                 with col2:
                     st.metric("Avg Max Distance", f"{avg_top10_length:.1f}m")
                 with col3:
                     st.metric("Avg Max Into Box", f"{avg_top10_into_box:.1f}m")
+                with col4:
+                    st.metric("Avg Max Into Box → Aerial", f"{avg_top10_into_box_aerial:.1f}m")
             else:
                 st.info(f"{selected_player_name} has no throw-ins in the selected period.")
 
@@ -6060,7 +6156,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Get available metrics for this category (that exist in dataframe)
             available_metrics = [m for m in metric_categories[selected_category]
                                if m in filtered_df.columns]
-
             if not available_metrics:
                 st.warning(f"No metrics available for {selected_category} category.")
                 st.stop()
@@ -6069,7 +6164,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             selected_metric = st.sidebar.selectbox(
                 "Select Metric:",
                 available_metrics,
-                key="player_analysis_metric"
+                key="player_analysis_metric_v2"
             )
 
             # Optional: Position filter for metric view
