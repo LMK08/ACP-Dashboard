@@ -127,8 +127,8 @@ footer, footer::before { display: none !important; }
 /* Sidebar inputs & dropdowns */
 [data-testid="stSidebar"] [data-testid="stSelectbox"] div[role="combobox"],
 [data-testid="stSidebar"] [data-testid="stMultiSelect"] div[role="combobox"] {
-    background: rgba(255,255,255,0.08) !important;
-    border-color: rgba(255,255,255,0.12) !important;
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
 }
 [data-testid="stSidebar"] input[type="text"],
 [data-testid="stSidebar"] textarea {
@@ -265,6 +265,22 @@ button:active { opacity: 1 !important; }
     border-color: var(--ink-2) !important;
 }
 
+/* Force selected-value text dark in ALL selectboxes (baseweb select component) */
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
+[data-testid="stSelectbox"] div[data-baseweb="select"] input,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div *,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] input,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] input,
+[data-testid="stSidebar"] [data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-testid="stMultiSelect"] div[data-baseweb="select"] > div *,
+[data-testid="stSidebar"] [data-testid="stMultiSelect"] div[data-baseweb="select"] input {
+    color: var(--ink) !important;
+}
+
 /* Dropdown options / listbox popover */
 [role="listbox"] {
     background: var(--card) !important;
@@ -278,13 +294,6 @@ button:active { opacity: 1 !important; }
 [role="option"]:hover,
 [role="option"][aria-selected="true"] {
     background: var(--bg-warm) !important;
-    color: var(--ink) !important;
-}
-/* Ensure selectbox/multiselect text is always dark in main area */
-[data-testid="stSelectbox"] span,
-[data-testid="stMultiSelect"] span,
-[data-testid="stSelectbox"] input,
-[data-testid="stMultiSelect"] input {
     color: var(--ink) !important;
 }
 
