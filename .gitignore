@@ -7,8 +7,26 @@ __pycache__/
 *.pkl
 *.csv
 
-# Exception: these data files are needed at runtime
+# Exceptions: these data files are needed at runtime
+!raw_events.parquet
+!matches_summary.parquet
+!historical_events.parquet
+!historical_matches.parquet
+!team_advanced_stats.parquet
+!all_match_data.pkl
+!all_match_stats.pkl
+!all_team_corner_stats.pkl
+!all_time_player_minutes.pkl
+!season_team_stats.pkl
+!complete_player_minutes.pkl
+!player_minutes_and_positions.pkl
 !match_lineups.pkl
+!player_details.pkl
+!history_player_minutes.pkl
+!match_predictor_model.pkl
+!season_simulation.pkl
+!transferred_players.json
+!match_ids_for_season_191782.csv
 
 # System files
 .DS_Store

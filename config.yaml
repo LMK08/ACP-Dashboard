@@ -56,23 +56,27 @@ weights:
   Ball-Playing Centerback:
     npxG: 1.0
     xAOP: 1.0
-    xT: 5.0
+    xT: 20
     Passes: 20
-    Passes successful %: 10
+    Passes successful %: 6
     Progressive Passes: 20
     Progressive runs: 6
     Aerial duels: 2
     Aerial duels successful %: 6
-    Aerial duels att box successful: 0
+    Aerial duels att box successful: 1
     Defensive duels: 2
     Defensive duels successful %: 8
     Interceptions: 6
     Recoveries: 6
     Clearances: 2
-    Avg defensive action height: 0
+    Avg defensive action height: 1
+    Defensive Area: 1
+    Territorial Dominance: 2
+    Opp xT into Def Area: 1
+    Opp xT from Def Area: 1
   Stopper:
     npxG: 3.0
-    xAOP: 1.0
+    xAOP: 0
     xT: 1.0
     Passes: 1.0
     Passes successful %: 1.0
@@ -80,16 +84,20 @@ weights:
     Progressive runs: 1.0
     Aerial duels: 8
     Aerial duels successful %: 10
-    Aerial duels att box successful: 0
+    Aerial duels att box successful: 2
     Defensive duels: 8
     Defensive duels successful %: 10
     Interceptions: 8
     Recoveries: 8
     Clearances: 6
     Avg defensive action height: 0
+    Defensive Area: 2
+    Territorial Dominance: 4
+    Opp xT into Def Area: 1
+    Opp xT from Def Area: 2
   Athletic Centerback:
-    npxG: 3.0
-    xAOP: 1.0
+    npxG: 4.0
+    xAOP: 0
     xT: 1.0
     Passes: 1.0
     Passes successful %: 1.0
@@ -97,13 +105,17 @@ weights:
     Progressive runs: 6
     Aerial duels: 6
     Aerial duels successful %: 10
-    Aerial duels att box successful: 0
+    Aerial duels att box successful: 6
     Defensive duels: 8
     Defensive duels successful %: 10
     Interceptions: 10
-    Recoveries: 10
-    Clearances: 6
-    Avg defensive action height: 0
+    Recoveries: 8
+    Clearances: 4
+    Avg defensive action height: 1
+    Defensive Area: 8
+    Territorial Dominance: 8
+    Opp xT into Def Area: 2
+    Opp xT from Def Area: 2
   Box-to-Box:
     Passes: 4
     Passes successful %: 3
@@ -405,6 +417,10 @@ weights:
 invert_metrics:
   - Loss index
   - goalsConceded
+  - Opp xT into Def Area
+  - Opp xT from Def Area
+  - Opp Pass Success % into Def Area
+  - Territorial Dominance
 
 metric_categories:
   output:
@@ -471,6 +487,11 @@ metric_categories:
     - Fouls
     - Yellow cards
     - Red cards
+    - Defensive Area
+    - Opp xT into Def Area
+    - Opp Pass Success % into Def Area
+    - Opp xT from Def Area
+    - Territorial Dominance
   dribbling:
     - Dribbles
     - Dribbles successful

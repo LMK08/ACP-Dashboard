@@ -69,9 +69,12 @@ import pitch_visualizations as pv
 
 # Metrics that need 3 decimal places (thousandths) instead of the default 2
 THOUSANDTHS_METRICS = {'goalsPreventedPerSOT'}
+WHOLE_NUMBER_METRICS = {'Defensive Area'}
 
 def fmt_val(metric, value):
-    """Format a stat value: 3 decimals for THOUSANDTHS_METRICS, 2 otherwise."""
+    """Format a stat value: 0 decimals for WHOLE_NUMBER_METRICS, 3 for THOUSANDTHS, 2 otherwise."""
+    if metric in WHOLE_NUMBER_METRICS:
+        return f"{value:.0f}"
     if metric in THOUSANDTHS_METRICS:
         return f"{value:.3f}"
     return f"{value:.2f}"
@@ -408,7 +411,7 @@ SEASON_ID_MAP = {
 }
 CURRENT_SEASON_ID = 191782
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v4'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v8'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -1079,6 +1082,7 @@ PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long p
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
+OFF_BALL_DEFENDING_METRICS = ['Defensive Area', 'Territorial Dominance', 'Opp xT into Def Area', 'Opp xT from Def Area', 'Opp Pass Success % into Def Area']
 DISTRIBUTION_METRICS_BY_POSITION = {
     'Shot Stopper': ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk'],
     'Cross Claimer': ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk'],
@@ -1755,7 +1759,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     # Disk cache: load pre-computed results if available
-    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance'}
+    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
@@ -2017,6 +2021,216 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         base_df['Avg max throw-in into box distance'] = 0.0
         base_df['Avg max throw-in into box aerial distance'] = 0.0
 
+    # --- Step 1b: Defensive Area Metrics ---
+    print("Step 1b: Calculating Defensive Area metrics...")
+    try:
+        from scipy.stats import chi2 as _chi2_dist
+        CHI2_68_2DF = _chi2_dist(2).ppf(0.68)  # ~2.2788
+        MIN_DEF_ACTIONS = 5
+
+        # -- Open-play filter: set-piece = delivery + next 5 actions in possession --
+        # possession.types tags ALL events in a SP possession, so we use eventIndex to limit
+        _set_piece_tags = {'corner', 'free_kick', 'goal_kick', 'throw_in', 'penalty'}
+        _poss_types_col = events_df.get('possession.types', pd.Series(dtype='object'))
+        _in_sp_possession = _poss_types_col.apply(
+            lambda x: bool(set(x) & _set_piece_tags) if isinstance(x, (list, np.ndarray, set)) else False
+        )
+        _event_idx = events_df.get('possession.eventIndex', pd.Series(dtype='float64')).fillna(99)
+        _is_set_piece = _in_sp_possession & (_event_idx <= 5)
+        _is_open_play = ~_is_set_piece
+
+        # -- Open-play defensive actions per player --
+        _def_mask_full = (
+            events_df['type.primary'].isin(['interception', 'clearance'])
+            | check_secondary_list('defensive_duel')
+            | check_secondary_list('sliding_tackle')
+            | check_secondary_list('aerial_duel')
+            | check_secondary_list('recovery')
+        )
+        _open_def = events_df[
+            _def_mask_full & _is_open_play
+            & events_df['location.x'].notna()
+            & events_df['location.y'].notna()
+        ][['player.id', 'matchId', 'team.name', 'player.position', 'location.x', 'location.y']].copy()
+        _open_def['x_m'] = _open_def['location.x'] * 1.05
+        _open_def['y_m'] = _open_def['location.y'] * 0.68
+
+        # -- Per-player ellipse parameters (filtered to primary position) --
+        _ellipse_params = {}  # {player_id: (mean, cov_inv, area_sq_m)}
+        for _pid, _grp in _open_def.groupby('player.id'):
+            # Filter to primary position to avoid inflated areas for multi-position players
+            _pos_counts = _grp['player.position'].dropna().value_counts()
+            if not _pos_counts.empty:
+                _primary_pos = _pos_counts.index[0]
+                _grp = _grp[_grp['player.position'] == _primary_pos]
+            if len(_grp) < MIN_DEF_ACTIONS:
+                continue
+            _coords = _grp[['x_m', 'y_m']].values
+            _mean = _coords.mean(axis=0)
+            _cov = np.cov(_coords.T)
+            _det = np.linalg.det(_cov)
+            if _det <= 1e-10:
+                continue
+            _area = np.pi * np.sqrt(_det) * CHI2_68_2DF
+            _cov_inv = np.linalg.inv(_cov)
+            _ellipse_params[_pid] = (_mean, _cov_inv, _area)
+
+        # Merge Defensive Area
+        _area_series = pd.Series(
+            {pid: params[2] for pid, params in _ellipse_params.items()},
+            name='Defensive Area'
+        )
+        base_df = base_df.merge(_area_series, left_index=True, right_index=True, how='left')
+
+        # -- Build opposition xT dataset (open-play passes/touches/accelerations) --
+        _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
+        _xt_grid = np.array(_xt_data)
+        _xt_rows, _xt_cols = _xt_grid.shape
+
+        _opp_moves = events_df[
+            events_df['type.primary'].isin(['pass', 'touch', 'acceleration']) & _is_open_play
+        ].copy()
+        _opp_pass_mask = (_opp_moves['type.primary'] == 'pass') & (_opp_moves.get('pass.accurate') == True)
+        _opp_other = _opp_moves['type.primary'].isin(['touch', 'acceleration'])
+        _opp_moves_successful = _opp_moves[_opp_pass_mask | _opp_other].copy()
+
+        _opp_moves_successful['start_x'] = _opp_moves_successful['location.x']
+        _opp_moves_successful['start_y'] = _opp_moves_successful['location.y']
+        _opp_moves_successful['end_x'] = np.where(
+            _opp_moves_successful['type.primary'] == 'pass',
+            _opp_moves_successful.get('pass.endLocation.x'),
+            _opp_moves_successful.get('carry.endLocation.x')
+        )
+        _opp_moves_successful['end_y'] = np.where(
+            _opp_moves_successful['type.primary'] == 'pass',
+            _opp_moves_successful.get('pass.endLocation.y'),
+            _opp_moves_successful.get('carry.endLocation.y')
+        )
+        _opp_moves_successful = _opp_moves_successful.dropna(subset=['end_x', 'end_y'])
+
+        # Compute xT for each action
+        _opp_moves_successful['s_col'] = np.clip((_opp_moves_successful['start_x'] / 100 * _xt_cols).astype(float).fillna(0).astype(int), 0, _xt_cols - 1)
+        _opp_moves_successful['s_row'] = np.clip((_opp_moves_successful['start_y'] / 100 * _xt_rows).astype(float).fillna(0).astype(int), 0, _xt_rows - 1)
+        _opp_moves_successful['e_col'] = np.clip((_opp_moves_successful['end_x'] / 100 * _xt_cols).astype(float).fillna(0).astype(int), 0, _xt_cols - 1)
+        _opp_moves_successful['e_row'] = np.clip((_opp_moves_successful['end_y'] / 100 * _xt_rows).astype(float).fillna(0).astype(int), 0, _xt_rows - 1)
+        _opp_moves_successful['xT_val'] = _xt_grid[_opp_moves_successful['e_row'].values, _opp_moves_successful['e_col'].values] - _xt_grid[_opp_moves_successful['s_row'].values, _opp_moves_successful['s_col'].values]
+
+        # Convert locations to meters — FLIP opposition coords to defending team's frame.
+        # Wyscout uses team-relative coords (each team attacks toward x=100).
+        # The same physical spot is x for defender vs (100-x) for opponent.
+        _opp_moves_successful['start_x_m'] = (100 - _opp_moves_successful['start_x']) * 1.05
+        _opp_moves_successful['start_y_m'] = (100 - _opp_moves_successful['start_y']) * 0.68
+        _opp_moves_successful['end_x_m'] = (100 - _opp_moves_successful['end_x']) * 1.05
+        _opp_moves_successful['end_y_m'] = (100 - _opp_moves_successful['end_y']) * 0.68
+
+        # Also build ALL opposition passes (including inaccurate) for pass success %
+        _opp_all_passes = events_df[
+            (events_df['type.primary'] == 'pass') & _is_open_play
+        ][['matchId', 'team.name', 'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y']].copy()
+        _opp_all_passes = _opp_all_passes.dropna(subset=['pass.endLocation.x', 'pass.endLocation.y'])
+        # Flip opposition pass end coords to defending team's frame
+        _opp_all_passes['end_x_m'] = (100 - _opp_all_passes['pass.endLocation.x']) * 1.05
+        _opp_all_passes['end_y_m'] = (100 - _opp_all_passes['pass.endLocation.y']) * 0.68
+
+        # -- Match-based opposition matching (fast: iterate by match, not by player) --
+        # Build player -> team mapping
+        _player_teams = events_df.groupby('player.id')['team.name'].agg(
+            lambda x: x.mode().iloc[0] if not x.mode().empty else None
+        ).to_dict()
+
+        # Build match -> set of player_ids with ellipses, keyed by team
+        _match_players = {}  # {matchId: {team_name: [player_ids]}}
+        for _pid in _ellipse_params:
+            _p_team = _player_teams.get(_pid)
+            if not _p_team:
+                continue
+            for _mid in _open_def[_open_def['player.id'] == _pid]['matchId'].unique():
+                if _mid not in _match_players:
+                    _match_players[_mid] = {}
+                _match_players[_mid].setdefault(_p_team, []).append(_pid)
+
+        # Pre-group by matchId using numpy arrays for speed
+        _moves_grp = _opp_moves_successful.groupby('matchId')
+        _passes_grp = _opp_all_passes.groupby('matchId')
+
+        # Accumulators (defaultdict for fast summing)
+        from collections import defaultdict
+        _opp_xt_into = defaultdict(float)
+        _opp_xt_from = defaultdict(float)
+        _opp_pass_into_total = defaultdict(int)
+        _opp_pass_into_succ = defaultdict(int)
+
+        for _mid, _team_players in _match_players.items():
+            # Get teams in this match
+            _teams = list(_team_players.keys())
+
+            # Process xT-carrying moves for this match
+            try:
+                _m_moves = _moves_grp.get_group(_mid)
+            except KeyError:
+                _m_moves = None
+
+            # Process all passes for this match
+            try:
+                _m_passes = _passes_grp.get_group(_mid)
+            except KeyError:
+                _m_passes = None
+
+            for _def_team in _teams:
+                # Opposition events = events from teams != _def_team
+                if _m_moves is not None:
+                    _opp_m = _m_moves[_m_moves['team.name'] != _def_team]
+                    if not _opp_m.empty:
+                        _end_xy = _opp_m[['end_x_m', 'end_y_m']].values
+                        _start_xy = _opp_m[['start_x_m', 'start_y_m']].values
+                        _xt_vals = _opp_m['xT_val'].values
+
+                        for _pid in _team_players[_def_team]:
+                            _mean, _cov_inv, _ = _ellipse_params[_pid]
+                            # Into: end location
+                            _d = _end_xy - _mean
+                            _m_sq = np.sum(_d @ _cov_inv * _d, axis=1)
+                            _in_e = _m_sq < CHI2_68_2DF
+                            _opp_xt_into[_pid] += _xt_vals[_in_e].sum()
+                            # From: start location
+                            _d2 = _start_xy - _mean
+                            _m_sq2 = np.sum(_d2 @ _cov_inv * _d2, axis=1)
+                            _in_s = _m_sq2 < CHI2_68_2DF
+                            _opp_xt_from[_pid] += _xt_vals[_in_s].sum()
+
+                # Pass success % into area
+                if _m_passes is not None:
+                    _opp_p = _m_passes[_m_passes['team.name'] != _def_team]
+                    if not _opp_p.empty:
+                        _p_end = _opp_p[['end_x_m', 'end_y_m']].values
+                        _p_acc = _opp_p['pass.accurate'].values
+
+                        for _pid in _team_players[_def_team]:
+                            _mean, _cov_inv, _ = _ellipse_params[_pid]
+                            _d3 = _p_end - _mean
+                            _m_sq3 = np.sum(_d3 @ _cov_inv * _d3, axis=1)
+                            _in_p = _m_sq3 < CHI2_68_2DF
+                            _opp_pass_into_total[_pid] += int(_in_p.sum())
+                            _opp_pass_into_succ[_pid] += int(_p_acc[_in_p].sum())
+
+        # Merge opposition metrics
+        for _name, _d in [('Opp xT into Def Area', _opp_xt_into), ('Opp xT from Def Area', _opp_xt_from)]:
+            _s = pd.Series(_d, name=_name)
+            base_df = base_df.merge(_s, left_index=True, right_index=True, how='left')
+        # Store pass numerator/denominator for % calc in Step 4
+        base_df = base_df.merge(pd.Series(_opp_pass_into_total, name='_opp_pass_into_total'), left_index=True, right_index=True, how='left')
+        base_df = base_df.merge(pd.Series(_opp_pass_into_succ, name='_opp_pass_into_succ'), left_index=True, right_index=True, how='left')
+
+        print(f"  Defensive Area computed for {len(_ellipse_params)} players")
+    except Exception as e:
+        print(f"  ERROR computing Defensive Area metrics: {e}")
+        import traceback; traceback.print_exc()
+        base_df['Defensive Area'] = 0.0
+        base_df['Opp xT into Def Area'] = 0.0
+        base_df['Opp xT from Def Area'] = 0.0
+        base_df['_opp_pass_into_total'] = 0.0
+        base_df['_opp_pass_into_succ'] = 0.0
+
     # --- Step 2: Calculate xG, xA, xT, and special passing ---
     print("Step 2: Calculating xG, xA, xT...")
     
@@ -2124,6 +2338,9 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df['Sliding tackles successful %'] = safe_divide_perc('Sliding tackles successful', 'Sliding tackles')
     base_df['Aerial duels def box successful %'] = safe_divide_perc('Aerial duels def box successful', 'Aerial duels def box')
     base_df['Aerial duels att box successful %'] = safe_divide_perc('Aerial duels att box successful', 'Aerial duels att box')
+    # Defensive Area: opposition pass success % into area
+    base_df['Opp Pass Success % into Def Area'] = safe_divide_perc('_opp_pass_into_succ', '_opp_pass_into_total')
+    base_df = base_df.drop(columns=['_opp_pass_into_total', '_opp_pass_into_succ'], errors='ignore')
     successful_attacking_actions = base_df['Shots on target'] + base_df['Crosses successful'] + base_df['Dribbles successful']
     base_df['Loss index'] = (base_df['Losses'] / successful_attacking_actions).replace([np.inf, -np.inf], 0).fillna(0)
     
@@ -2145,7 +2362,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     
     # Define cols that should NOT be normalized
     rate_cols = [col for col in base_df.columns if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col or 'Avg' in col]
-    info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y']
+    info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y', 'Defensive Area']
     dont_normalize = rate_cols + info_cols
 
     for col in all_calculated_metrics:
@@ -2156,6 +2373,18 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
                 0
             )
             
+    # Territorial Dominance = (Opp xT into Def Area (per 90) / Defensive Area (sq m)) × 100000
+    # Measures opposition threat density per square meter of defensive coverage (scaled ×100000)
+    print(f"  DEBUG Territorial Dominance inputs:")
+    print(f"    Opp xT into Def Area (after per90): non-zero={( base_df['Opp xT into Def Area'] != 0).sum()}, min={base_df['Opp xT into Def Area'].min():.6f}, max={base_df['Opp xT into Def Area'].max():.6f}, mean={base_df['Opp xT into Def Area'].mean():.6f}")
+    print(f"    Defensive Area: non-zero={(base_df['Defensive Area'] > 0).sum()}, min={base_df['Defensive Area'][base_df['Defensive Area'] > 0].min() if (base_df['Defensive Area'] > 0).any() else 0:.2f}, max={base_df['Defensive Area'].max():.2f}, mean={base_df['Defensive Area'].mean():.2f}")
+    base_df['Territorial Dominance'] = np.where(
+        base_df['Defensive Area'] > 0,
+        (base_df['Opp xT into Def Area'] / base_df['Defensive Area']) * 100000,
+        0
+    )
+    print(f"    Territorial Dominance: non-zero={(base_df['Territorial Dominance'] != 0).sum()}, min={base_df['Territorial Dominance'].min():.6f}, max={base_df['Territorial Dominance'].max():.6f}")
+
     # Clean up and return
     base_df = base_df.reset_index() # 'playerId' is now a column
     # Drop all the junk 'player.id' columns
@@ -2207,11 +2436,13 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     return career_stats
 
 @st.cache_data
-def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=90, season_id=None, cache_version=STATS_CACHE_VERSION):
+def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=300, season_id=None, cache_version=STATS_CACHE_VERSION):
     """Calculates percentiles and scores for all players based on position.
+    Players below min_minutes are kept but ranked against the min_minutes+ population
+    (each low-minute player is temporarily added to the sample for their own percentile).
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
-    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance'}
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
@@ -2227,29 +2458,44 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
 
     print("Calculating player percentiles and scores...")
     data = _player_data_df.copy()
-    
+
     data['totalMinutes'] = pd.to_numeric(data['totalMinutes'], errors='coerce')
-    data = data[data['totalMinutes'] >= min_minutes]
-    if data.empty:
+    # Keep ALL players in the result, but use min_minutes threshold for the ranking population
+    _qualifying_mask = data['totalMinutes'] >= min_minutes
+    if _qualifying_mask.sum() == 0:
         print(f"Warning: No players found with >= {min_minutes} minutes.")
         return pd.DataFrame()
 
-    # Calculate percentiles
+    # Calculate percentiles — use 300+ min population, but include each sub-threshold player individually
     for position, group in _position_groups.items():
         metrics = list(_weights[position].keys())
         position_data_mask = data['primaryPosition'].isin(group)
         position_data_indices = data[position_data_mask].index
-        
+
         if position_data_indices.empty: continue
+
+        # Split into qualifying (300+ min) and sub-threshold players at this position
+        _pos_qualifying = data.loc[position_data_indices][_qualifying_mask.reindex(position_data_indices, fill_value=False)]
+        _pos_sub = data.loc[position_data_indices][~_qualifying_mask.reindex(position_data_indices, fill_value=False)]
 
         for metric in metrics:
             if metric in data.columns:
                 data[metric] = pd.to_numeric(data[metric], errors='coerce').fillna(0)
-                percentiles = data.loc[position_data_indices, metric].rank(pct=True)
-                if metric in _invert_metrics:
-                    percentiles = 1 - (percentiles.fillna(0.5))
-                
-                data.loc[position_data_indices, metric + '_percentile'] = percentiles
+                # Percentiles for qualifying players — ranked among themselves
+                if not _pos_qualifying.empty:
+                    percentiles_q = data.loc[_pos_qualifying.index, metric].rank(pct=True)
+                    if metric in _invert_metrics:
+                        percentiles_q = 1 - percentiles_q.fillna(0.5)
+                    data.loc[_pos_qualifying.index, metric + '_percentile'] = percentiles_q
+
+                # Percentiles for sub-threshold players — each ranked against qualifying + themselves
+                for _sub_idx in _pos_sub.index:
+                    _sub_val = data.loc[_sub_idx, metric]
+                    _pool = pd.concat([data.loc[_pos_qualifying.index, metric], pd.Series([_sub_val], index=[_sub_idx])])
+                    _pct = _pool.rank(pct=True).loc[_sub_idx]
+                    if metric in _invert_metrics:
+                        _pct = 1 - _pct
+                    data.loc[_sub_idx, metric + '_percentile'] = _pct
             
     # Calculate Scores
     for position, group in _position_groups.items():
@@ -2290,7 +2536,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     return result
 
 
-def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None):
+def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None, season_label=None):
     """Helper function to create the base radar chart."""
     
     num_metrics = len(metrics)
@@ -2323,7 +2569,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
     plt.ylim(0, 100)
 
-    category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
+    category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan', 'off_ball_defending': '#7ECE2B'}
 
     # Plot raw values
     for i, metric in enumerate(metrics):
@@ -2334,7 +2580,8 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     # Plot metric names
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
-        if metric in OUTPUT_METRICS: color = category_colors['output']
+        if metric in OFF_BALL_DEFENDING_METRICS: color = category_colors['off_ball_defending']
+        elif metric in OUTPUT_METRICS: color = category_colors['output']
         elif metric in PASSING_METRICS: color = category_colors['passing']
         elif metric in DEFENSIVE_METRICS: color = category_colors['defensive']
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
@@ -2343,21 +2590,27 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
     ax.set_rlabel_position(0)
-    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7)  
-    plt.ylim(0, 100)  
+    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7)
+    plt.ylim(0, 100)
 
     player_name = player_data['playerName'].values[0]
     player_position = player_data['primaryPosition'].values[0]
     player_minutes = player_data['totalMinutes'].values[0]
     player_team = player_data['teamName'].values[0]
-    
+
     ax.text(-0.1, 1.15, f"{player_name} | {player_team}", size=15, color='black', ha='left', va='top', transform=ax.transAxes, weight='bold')
     ax.text(-0.1, 1.11, f"{player_position} | {player_minutes:.0f} minutes played", horizontalalignment='left', verticalalignment='top', transform=ax.transAxes, color='black', size=12)
 
     today = datetime.date.today()
-    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n25-26 \nLiga 3 \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
+    _season_str = season_label if season_label else SEASON_ID_MAP.get(CURRENT_SEASON_ID, '25-26')
+    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n{_season_str} \nLiga 3 \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
+    # Build legend dynamically based on which categories are present in the metrics
+    _has_off_ball = any(m in OFF_BALL_DEFENDING_METRICS for m in metrics)
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
+    if _has_off_ball:
+        legend_labels.append('Off-ball Defending Metrics')
+        legend_colors.append(category_colors['off_ball_defending'])
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
     ax.legend(patches, legend_labels, loc='lower right', bbox_to_anchor=(1.7, 1), frameon=False)
 
@@ -2393,7 +2646,7 @@ def get_percentile_suffix(value):
     else: suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(value % 10, 'th')
     return suffix
 
-def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None):
+def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None, season_label=None):
     """Creates the combined figure with radar and distribution plots."""
     
     player_name = player_data['playerName'].values[0]
@@ -2418,7 +2671,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
     
-    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking)
+    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking, season_label=season_label)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
                   horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
@@ -2507,13 +2760,14 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     ax.fill(angles, values_b, color_b, alpha=0.2, zorder=2)
 
     # --- Plot Metric Names and Values (Radius-based) ---
-    category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan'}
-    
+    category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan', 'off_ball_defending': '#7ECE2B'}
+
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
-        
+
         # Metric Names (Farthest out)
-        if metric in OUTPUT_METRICS: color = category_colors['output']
+        if metric in OFF_BALL_DEFENDING_METRICS: color = category_colors['off_ball_defending']
+        elif metric in OUTPUT_METRICS: color = category_colors['output']
         elif metric in PASSING_METRICS: color = category_colors['passing']
         elif metric in DEFENSIVE_METRICS: color = category_colors['defensive']
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
@@ -2615,11 +2869,15 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
                                       transform=fig.transFigure, zorder=-1)])
     
     # --- Metric Legend (Top-Right) ---
+    _has_off_ball = any(m in OFF_BALL_DEFENDING_METRICS for m in metrics)
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
     legend_colors = [category_colors['output'], category_colors['passing'], category_colors['defensive'], category_colors['dribbling'], category_colors['goalkeeping']]
+    if _has_off_ball:
+        legend_labels.append('Off-ball Defending Metrics')
+        legend_colors.append(category_colors['off_ball_defending'])
     patches = [plt.Line2D([0], [0], color=color, lw=4) for color in legend_colors]
-    
-    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98), 
+
+    fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98),
                frameon=False)
     
     # --- General Info (Bottom-Left) ---
@@ -5088,7 +5346,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df, season_id=selected_season_id)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
@@ -5412,13 +5670,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # -----------------------------------------------------------------------
 
             # Plot
+            _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
             fig_radar = create_radar_with_distributions(
                 radar_player_data_row,
                 metrics_to_plot,
                 best_role,
                 eligible_roles,
                 all_position_data=final_population,
-                full_df_for_ranking=radar_stats_df
+                full_df_for_ranking=radar_stats_df,
+                season_label=_radar_season_label
             )
             st.pyplot(fig_radar, use_container_width=True)
 
@@ -5830,7 +6090,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -5950,7 +6210,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -6195,8 +6455,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.warning("No players found with current filters.")
                 st.stop()
 
-            # Sort by selected metric
-            sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=False).head(num_players)
+            # Sort by selected metric (ascending for inverted metrics where lower is better)
+            _sort_ascending = selected_metric in INVERT_METRICS
+            sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
 
             # Display header
             st.subheader(f"Top Players by {selected_metric} (per 90)")
@@ -6673,7 +6934,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=90, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
