@@ -25,7 +25,7 @@ COMPETITIONS = {
         "env_pass": "WYSCOUT_PASS_NEW",
         "seasons": {
             191779: "2025/26",
-            190962: "2024/25",
+            190230: "2023/24",
         },
         "current_season": 191779,
     },
