@@ -1518,12 +1518,17 @@ def main():
     print(f"✅ Unified match schedule (all seasons) saved to 'matches_summary.parquet'")
 
     # --- 4. FETCH EVENT DATA (INCREMENTAL) ---
-    cached_events_df = None
+    # Memory-efficient approach: read only matchId column to determine cache,
+    # fetch new events, clean & save them, then load full dataset only once.
+    import pyarrow.parquet as pq
+
     cached_match_ids = set()
-    if os.path.exists('raw_events.parquet'):
-        print("📂 Loading cached events from raw_events.parquet...")
-        cached_events_df = pd.read_parquet('raw_events.parquet')
-        cached_match_ids = set(cached_events_df['matchId'].dropna().unique())
+    has_cache = os.path.exists('raw_events.parquet')
+    if has_cache:
+        print("📂 Checking cached events in raw_events.parquet...")
+        cached_match_col = pq.read_table('raw_events.parquet', columns=['matchId']).to_pandas()['matchId']
+        cached_match_ids = set(cached_match_col.dropna().unique())
+        del cached_match_col
         print(f"   Cached events cover {len(cached_match_ids)} matches.")
 
     # Only fetch events for "Played" matches not already in cache
@@ -1552,65 +1557,82 @@ def main():
             if not comp_events.empty:
                 new_events_list.append(comp_events)
 
-        new_events_df = pd.concat(new_events_list, ignore_index=True) if new_events_list else pd.DataFrame()
-    else:
-        new_events_df = pd.DataFrame()
+        if new_events_list:
+            new_events_df = pd.concat(new_events_list, ignore_index=True)
+            del new_events_list  # Free memory
 
-    # Combine cached + new events
-    if cached_events_df is not None and not cached_events_df.empty:
-        if not new_events_df.empty:
-            all_raw_events_df = pd.concat([cached_events_df, new_events_df], ignore_index=True)
-            all_raw_events_df.drop_duplicates(subset=['id'], keep='last', inplace=True)
+            # Clean new events before saving
+            match_id_to_season_map = all_matches_summary_df.set_index('matchId')['seasonId']
+            match_id_to_comp_map = all_matches_summary_df.set_index('matchId')['competitionId']
+            new_events_df['seasonId'] = new_events_df['matchId'].map(match_id_to_season_map)
+            new_events_df['competitionId'] = new_events_df['matchId'].map(match_id_to_comp_map)
+
+            # Apply type conversions to new events
+            numeric_cols = ['shot.xg', 'location.x', 'location.y', 'minute', 'second', 'pass.length',
+                            'pass.endLocation.x', 'pass.endLocation.y', 'possession.duration_sec']
+            bool_cols = ['shot.isGoal', 'shot.onTarget', 'pass.accurate', 'groundDuel.keptPossession',
+                         'groundDuel.recoveredPossession', 'groundDuel.stoppedProgress', 'aerialDuel.firstTouch',
+                         'groundDuel.takeOn', 'groundDuel.progressedWithBall', 'infraction.yellowCard', 'infraction.redCard']
+            for col in numeric_cols:
+                if col in new_events_df.columns:
+                    new_events_df[col] = pd.to_numeric(new_events_df[col], errors='coerce')
+            for col in bool_cols:
+                if col in new_events_df.columns:
+                    new_events_df[col] = new_events_df[col].replace({'true': True, 'false': False, 1: True, 0: False})
+                    try: new_events_df[col] = new_events_df[col].astype('boolean')
+                    except Exception: new_events_df[col] = new_events_df[col].apply(lambda x: True if x == True else (False if x == False else pd.NA))
+
+            new_events_df = add_custom_dribble_success(new_events_df)
+            fk_shot_mask = (new_events_df['type.primary'] == 'free_kick') & (new_events_df['shot.xg'].notna())
+            if fk_shot_mask.sum() > 0:
+                new_events_df.loc[fk_shot_mask, 'type.primary'] = 'shot'
+
+            # Save new events to a temp file, then merge parquet files without loading both into memory
+            new_events_df.to_parquet('_new_events_tmp.parquet', index=False, compression='zstd')
+            print(f"   New events saved ({len(new_events_df)} rows)")
+            del new_events_df  # Free memory
+
+            if has_cache:
+                # Merge parquet files using pyarrow — never load both into pandas
+                # New events are for match IDs NOT in cache, so no dedup needed.
+                print("Merging cached + new events via pyarrow (append-only)...")
+                import pyarrow as pa
+                cached_table = pq.read_table('raw_events.parquet')
+                new_table = pq.read_table('_new_events_tmp.parquet')
+                # Align schemas (new data may have extra/missing columns)
+                unified_schema = pa.unify_schemas([cached_table.schema, new_table.schema])
+                cached_table = cached_table.cast(unified_schema)
+                new_table = new_table.cast(unified_schema)
+                merged = pa.concat_tables([cached_table, new_table])
+                del cached_table, new_table  # Free before writing
+                pq.write_table(merged, 'raw_events.parquet', compression='zstd')
+                print(f"   Merged: {merged.num_rows:,} total rows")
+                del merged
+            else:
+                os.rename('_new_events_tmp.parquet', 'raw_events.parquet')
+
+            if os.path.exists('_new_events_tmp.parquet'):
+                os.remove('_new_events_tmp.parquet')
+            print(f"✅ Unified event data saved to 'raw_events.parquet'")
         else:
-            all_raw_events_df = cached_events_df
-    elif not new_events_df.empty:
-        all_raw_events_df = new_events_df
+            print("No new events fetched.")
     else:
-        print("No event data found (cached or new). Exiting.")
+        print("No new matches to fetch.")
+
+    # --- 5. LOAD FULL EVENTS FOR DOWNSTREAM PROCESSING ---
+    # Now load the complete parquet for match processing / season stats
+    if not os.path.exists('raw_events.parquet'):
+        print("No event data found. Exiting.")
         return
+    print("📂 Loading full event data for downstream processing...")
+    all_raw_events_df = pd.read_parquet('raw_events.parquet')
 
-    # --- 5. ADD SEASONID TO EVENTS & SAVE ---
-    # Create a map of matchId -> seasonId from our full schedule
+    # Ensure seasonId and competitionId are set (for old cached rows that may lack them)
     match_id_to_season_map = all_matches_summary_df.set_index('matchId')['seasonId']
-    all_raw_events_df['seasonId'] = all_raw_events_df['matchId'].map(match_id_to_season_map)
-    print("✅ Added 'seasonId' to all events.")
-
     match_id_to_comp_map = all_matches_summary_df.set_index('matchId')['competitionId']
+    all_raw_events_df['seasonId'] = all_raw_events_df['matchId'].map(match_id_to_season_map)
     all_raw_events_df['competitionId'] = all_raw_events_df['matchId'].map(match_id_to_comp_map)
-    print("✅ Added 'competitionId' to all events.")
-
-    # --- 6. CLEAN & SAVE UNIFIED EVENTS (ALL SEASONS) ---
-    print("Performing data type conversions for ALL seasons...")
-    numeric_cols = ['shot.xg', 'location.x', 'location.y', 'minute', 'second', 'pass.length',
-                    'pass.endLocation.x', 'pass.endLocation.y', 'possession.duration_sec']
-    bool_cols = ['shot.isGoal', 'shot.onTarget', 'pass.accurate', 'groundDuel.keptPossession',
-                 'groundDuel.recoveredPossession', 'groundDuel.stoppedProgress', 'aerialDuel.firstTouch',
-                 'groundDuel.takeOn', 'groundDuel.progressedWithBall', 'infraction.yellowCard', 'infraction.redCard']
-
-    for col in numeric_cols:
-        if col in all_raw_events_df.columns:
-            all_raw_events_df[col] = pd.to_numeric(all_raw_events_df[col], errors='coerce')
-    for col in bool_cols:
-        if col in all_raw_events_df.columns:
-            all_raw_events_df[col] = all_raw_events_df[col].replace({'true': True, 'false': False, 1: True, 0: False})
-            try: all_raw_events_df[col] = all_raw_events_df[col].astype('boolean')
-            except Exception: all_raw_events_df[col] = all_raw_events_df[col].apply(lambda x: True if x == True else (False if x == False else pd.NA))
-
-    # --- APPLY CUSTOM DRIBBLE LOGIC ---
-    print("Applying custom dribble success logic...")
-    all_raw_events_df = add_custom_dribble_success(all_raw_events_df)
-
-    # --- NORMALIZE DIRECT FREE KICK SHOTS ---
-    # Direct free kick shots have type.primary='free_kick' but carry shot.xg data.
-    # Reclassify them as 'shot' so all downstream shot filters include them.
-    fk_shot_mask = (all_raw_events_df['type.primary'] == 'free_kick') & (all_raw_events_df['shot.xg'].notna())
-    fk_count = fk_shot_mask.sum()
-    if fk_count > 0:
-        all_raw_events_df.loc[fk_shot_mask, 'type.primary'] = 'shot'
-        print(f"Reclassified {fk_count} direct free kick shots as type.primary='shot'")
-
-    all_raw_events_df.to_parquet('raw_events.parquet', index=False, compression='zstd')
-    print(f"✅ Unified event data (all seasons) saved to 'raw_events.parquet'")
+    print(f"   Loaded {len(all_raw_events_df):,} events across {all_raw_events_df['matchId'].nunique()} matches.")
 
     # --- 7. PROCESS PER-MATCH DATA (INCREMENTAL) ---
     all_match_data = {}
