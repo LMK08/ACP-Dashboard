@@ -11,6 +11,11 @@ on:
   
   # This line allows you to run the update manually from the GitHub "Actions" tab
   workflow_dispatch:
+    inputs:
+      test_fetch_limit:
+        description: 'Limit new matches per competition (0 = no limit, 10 = test mode)'
+        required: false
+        default: '0'
 
 concurrency:
   group: scheduled-update
@@ -44,6 +49,7 @@ jobs:
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
           WYSCOUT_USER_NEW: ${{ secrets.WYSCOUT_USER_NEW }}
           WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
+          TEST_FETCH_LIMIT: ${{ github.event.inputs.test_fetch_limit || '0' }}
         run: python process_data.py
 
       - name: Run get_player_details.py

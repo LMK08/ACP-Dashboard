@@ -1536,6 +1536,11 @@ def main():
     new_match_ids = [mid for mid in played_matches['matchId'].dropna().unique() if mid not in cached_match_ids]
     print(f"   {len(new_match_ids)} new played matches need event fetching.")
 
+    # TEST_LIMIT: set env var to cap new matches per competition (e.g. TEST_FETCH_LIMIT=10)
+    test_limit = int(os.environ.get('TEST_FETCH_LIMIT', 0))
+    if test_limit:
+        print(f"   ⚠️ TEST MODE: limiting to {test_limit} new matches per competition")
+
     if new_match_ids:
         # Group new matches by competition to use correct credentials
         match_comp_map = all_matches_summary_df.set_index('matchId')['competitionId'].to_dict()
@@ -1552,6 +1557,8 @@ def main():
                 print(f"⚠️ Skipping {len(mids)} matches for comp {cid} (no credentials)")
                 continue
             comp_name = COMPETITIONS[cid]["name"]
+            if test_limit:
+                mids = mids[:test_limit]
             print(f"\nFetching events for {len(mids)} {comp_name} matches...")
             comp_events = fetch_events(user, password, mids)
             if not comp_events.empty:
