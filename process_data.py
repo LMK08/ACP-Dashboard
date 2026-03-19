@@ -125,31 +125,46 @@ def fetch_match_schedule(username, password, competition_id, season_id):
         return pd.DataFrame()
 
 def fetch_events(username, password, match_ids):
-    """Fetches all event data for a given list of match IDs with retries."""
+    """Fetches all event data for a given list of match IDs with retries.
+    Processes in batches of 200 matches to avoid memory issues on CI runners."""
     base_url_v3 = "https://apirest.wyscout.com/v3"
     auth = HTTPBasicAuth(username, password)
-    all_events = []
     session = requests.Session()
     retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     print(f"\nFetching events for {len(match_ids)} matches...")
-    for match_id in tqdm(match_ids, desc="Fetching Events"):
+
+    BATCH_SIZE = 200
+    batch_dfs = []
+    batch_events = []
+    total_events = 0
+
+    for i, match_id in enumerate(tqdm(match_ids, desc="Fetching Events")):
         url = f"{base_url_v3}/matches/{match_id}/events"
         try:
             r = session.get(url, auth=auth, timeout=30)
             r.raise_for_status()
-            # Add match_id to each event for easier processing later
             events_list = r.json().get('events', [])
             for event in events_list:
-                event['matchId'] = match_id # Ensure matchId is present
-            all_events.extend(events_list)
+                event['matchId'] = match_id
+            batch_events.extend(events_list)
         except requests.exceptions.RequestException as e:
             print(f"  -> ⚠️ Failed to fetch match {match_id} after multiple retries: {e}")
-    if not all_events: return pd.DataFrame()
-    events_df = pd.json_normalize(all_events)
-    print(f"\n✅ Retrieved {len(events_df)} total events.")
+
+        # Flush batch to DataFrame periodically to free memory
+        if len(batch_events) > 0 and ((i + 1) % BATCH_SIZE == 0 or i == len(match_ids) - 1):
+            batch_df = pd.json_normalize(batch_events)
+            batch_dfs.append(batch_df)
+            total_events += len(batch_df)
+            batch_events = []  # Free raw dicts
+
+    if not batch_dfs:
+        return pd.DataFrame()
+    events_df = pd.concat(batch_dfs, ignore_index=True)
+    del batch_dfs  # Free batch list
+    print(f"\n✅ Retrieved {total_events} total events.")
     return events_df
 
 # In process_data.py...
@@ -575,34 +590,8 @@ def fetch_match_ids(username, password, competition_id, season_id):
         print(f"❌ An error occurred: {e}")
         return []
 
-def fetch_events(username, password, match_ids):
-    """Fetches all event data for a given list of match IDs with retries."""
-    base_url_v3 = "https://apirest.wyscout.com/v3"
-    auth = HTTPBasicAuth(username, password)
-    all_events = []
-    session = requests.Session()
-    retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    print(f"\nFetching events for {len(match_ids)} matches...")
-    for match_id in tqdm(match_ids, desc="Fetching Events"):
-        url = f"{base_url_v3}/matches/{match_id}/events"
-        try:
-            r = session.get(url, auth=auth, timeout=30)
-            r.raise_for_status()
-            # Add match_id to each event for easier processing later
-            events_list = r.json().get('events', [])
-            for event in events_list:
-                event['matchId'] = match_id # Ensure matchId is present
-            all_events.extend(events_list)
-        except requests.exceptions.RequestException as e:
-            print(f"  -> ⚠️ Failed to fetch match {match_id} after multiple retries: {e}")
-    if not all_events: return pd.DataFrame()
-    # Use ignore index if duplicate event IDs might cause issues during normalization
-    events_df = pd.json_normalize(all_events)
-    print(f"\n✅ Retrieved {len(events_df)} total events.")
-    return events_df
+# NOTE: fetch_events is defined once at the top of this file (batched version).
+# Do not redefine it here.
 
 # ==============================================================================
 # SECTION 3: DATA PROCESSING FUNCTIONS
