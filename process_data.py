@@ -1597,12 +1597,21 @@ def main():
                 # New events are for match IDs NOT in cache, so no dedup needed.
                 print("Merging cached + new events via pyarrow (append-only)...")
                 import pyarrow as pa
+
                 cached_table = pq.read_table('raw_events.parquet')
                 new_table = pq.read_table('_new_events_tmp.parquet')
-                # Align schemas (new data may have extra/missing columns)
-                unified_schema = pa.unify_schemas([cached_table.schema, new_table.schema])
-                cached_table = cached_table.cast(unified_schema)
-                new_table = new_table.cast(unified_schema)
+
+                # Build a unified schema: start with cached, add any new-only columns
+                target_fields = {f.name: f for f in cached_table.schema}
+                for field in new_table.schema:
+                    if field.name not in target_fields:
+                        target_fields[field.name] = field
+                target_schema = pa.schema(list(target_fields.values()))
+
+                # Cast both tables to the target schema (safe=False to handle
+                # timestamp precision, large_string vs string, etc.)
+                cached_table = cached_table.cast(target_schema, safe=False)
+                new_table = new_table.cast(target_schema, safe=False)
                 merged = pa.concat_tables([cached_table, new_table])
                 del cached_table, new_table  # Free before writing
                 pq.write_table(merged, 'raw_events.parquet', compression='zstd')
