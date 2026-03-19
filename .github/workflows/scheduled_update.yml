@@ -19,7 +19,7 @@ concurrency:
 jobs:
   update-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     
     steps:
       - name: Check out repository
@@ -42,18 +42,24 @@ jobs:
         env:
           WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
+          WYSCOUT_USER_NEW: ${{ secrets.WYSCOUT_USER_NEW }}
+          WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
         run: python process_data.py
 
       - name: Run get_player_details.py
         env:
           WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
+          WYSCOUT_USER_NEW: ${{ secrets.WYSCOUT_USER_NEW }}
+          WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
         run: python get_player_details.py
 
       - name: Fetch team advanced stats
         env:
           WYSCOUT_USER: ${{ secrets.WYSCOUT_USER }}
           WYSCOUT_PASS: ${{ secrets.WYSCOUT_PASS }}
+          WYSCOUT_USER_NEW: ${{ secrets.WYSCOUT_USER_NEW }}
+          WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
         run: python fetch_team_stats.py
 
       - name: Update prediction model

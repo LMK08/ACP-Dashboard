@@ -1429,29 +1429,31 @@ def main():
     """Main function to run the entire data processing pipeline."""
     # --- Credentials ---
     load_dotenv()
-    wyscout_user = os.getenv("WYSCOUT_USER")
-    wyscout_pass = os.getenv("WYSCOUT_PASS")
-    if not wyscout_user or not wyscout_pass:
-        print("❌ Error: Wyscout credentials not found.")
-        return
+    from league_config import COMPETITIONS, get_credentials, competition_for_season
 
-    competition_id = 43324
+    # Validate credentials for all competitions
+    for comp_id, comp_config in COMPETITIONS.items():
+        user, password = get_credentials(comp_id)
+        if not user or not password:
+            print(f"⚠️ Warning: Credentials not found for {comp_config['name']} (comp {comp_id}). Skipping.")
 
-    # --- 1. DEFINE SEASONS ---
-    # Define all seasons you want to fetch for historical context
-    ALL_SEASON_IDS_TO_FETCH = [
-        191782, # 2025/26 Season
-        190090, # 2024/25 Season
-        189147, # 2023/24 Season
-        188222, # 2022/23 Season
-        188221, # 2021/22 Season
-    ]
-    # Define which season is the "current" one for the main dashboard
-    CURRENT_SEASON_ID = 191782
-    HISTORICAL_SEASON_IDS = [sid for sid in ALL_SEASON_IDS_TO_FETCH if sid != CURRENT_SEASON_ID]
+    # Build combined season lists
+    ALL_SEASON_IDS_TO_FETCH = []
+    CURRENT_SEASON_IDS = []
+    for comp_id, comp_config in COMPETITIONS.items():
+        user, password = get_credentials(comp_id)
+        if not user or not password:
+            continue
+        ALL_SEASON_IDS_TO_FETCH.extend(comp_config["seasons"].keys())
+        CURRENT_SEASON_IDS.append(comp_config["current_season"])
 
-    print(f"Starting data pipeline for {len(ALL_SEASON_IDS_TO_FETCH)} total seasons.")
-    print(f"Current season set to: {CURRENT_SEASON_ID}")
+    HISTORICAL_SEASON_IDS = [sid for sid in ALL_SEASON_IDS_TO_FETCH if sid not in CURRENT_SEASON_IDS]
+
+    print(f"Starting data pipeline for {len(ALL_SEASON_IDS_TO_FETCH)} total seasons across {len(COMPETITIONS)} competitions.")
+    for comp_id, comp_config in COMPETITIONS.items():
+        user, _ = get_credentials(comp_id)
+        status = "✅" if user else "❌ (no credentials)"
+        print(f"  {comp_config['name']}: {len(comp_config['seasons'])} seasons, current={comp_config['current_season']} {status}")
     print(f"Historical seasons (cached): {HISTORICAL_SEASON_IDS}")
 
     # --- 2. FETCH MATCH SCHEDULES (INCREMENTAL) ---
@@ -1463,25 +1465,40 @@ def main():
 
     all_schedules_list = []
     if cached_schedule_df is not None:
-        # Keep historical season rows from cache (they never change)
+        # Keep historical season rows from cache
         historical_cached = cached_schedule_df[cached_schedule_df['seasonId'].isin(HISTORICAL_SEASON_IDS)]
         if not historical_cached.empty:
             all_schedules_list.append(historical_cached)
             print(f"   ✅ Reusing {len(historical_cached)} cached historical matches.")
 
-        # Fetch only current season schedule from API
-        seasons_to_fetch = [CURRENT_SEASON_ID]
-    else:
-        # No cache — fetch all seasons (first run)
-        seasons_to_fetch = ALL_SEASON_IDS_TO_FETCH
+    # Determine which seasons to fetch per competition
+    for comp_id, comp_config in COMPETITIONS.items():
+        user, password = get_credentials(comp_id)
+        if not user or not password:
+            continue
+        comp_name = comp_config["name"]
+        comp_seasons = list(comp_config["seasons"].keys())
+        current_sid = comp_config["current_season"]
 
-    for season_id in seasons_to_fetch:
-        print(f"\n--- Fetching Schedule for Season ID: {season_id} ---")
-        season_schedule_df = fetch_match_schedule(wyscout_user, wyscout_pass, competition_id, season_id)
-        if not season_schedule_df.empty:
-            all_schedules_list.append(season_schedule_df)
+        if cached_schedule_df is not None:
+            # Only fetch current season for this competition
+            seasons_to_fetch = [current_sid]
+            # Also fetch any historical seasons not in cache
+            cached_season_ids = set(cached_schedule_df['seasonId'].unique())
+            for sid in comp_seasons:
+                if sid != current_sid and sid not in cached_season_ids:
+                    seasons_to_fetch.append(sid)
         else:
-            print(f"Warning: No match schedule found for season {season_id}.")
+            seasons_to_fetch = comp_seasons
+
+        for season_id in seasons_to_fetch:
+            print(f"\n--- Fetching Schedule for {comp_name}, Season ID: {season_id} ---")
+            season_schedule_df = fetch_match_schedule(user, password, comp_id, season_id)
+            if not season_schedule_df.empty:
+                season_schedule_df['competitionId'] = comp_id
+                all_schedules_list.append(season_schedule_df)
+            else:
+                print(f"Warning: No match schedule found for {comp_name} season {season_id}.")
 
     if not all_schedules_list:
         print("❌ No match schedules found for any season. Exiting.")
@@ -1493,6 +1510,17 @@ def main():
     all_matches_summary_df['dateutc'] = pd.to_datetime(all_matches_summary_df['dateutc'], errors='coerce')
     all_matches_summary_df.sort_values(by='dateutc', inplace=True, na_position='last')
     all_matches_summary_df.reset_index(drop=True, inplace=True)
+
+    # Backfill competitionId for cached rows that don't have it
+    if 'competitionId' not in all_matches_summary_df.columns:
+        all_matches_summary_df['competitionId'] = all_matches_summary_df['seasonId'].map(
+            lambda sid: competition_for_season(sid)
+        )
+    elif all_matches_summary_df['competitionId'].isna().any():
+        mask = all_matches_summary_df['competitionId'].isna()
+        all_matches_summary_df.loc[mask, 'competitionId'] = all_matches_summary_df.loc[mask, 'seasonId'].map(
+            lambda sid: competition_for_season(sid)
+        )
 
     print(f"\n✅ Combined schedule: {len(all_matches_summary_df)} total matches ({len(seasons_to_fetch)} season(s) fetched from API).")
 
@@ -1515,7 +1543,27 @@ def main():
     print(f"   {len(new_match_ids)} new played matches need event fetching.")
 
     if new_match_ids:
-        new_events_df = fetch_events(wyscout_user, wyscout_pass, new_match_ids)
+        # Group new matches by competition to use correct credentials
+        match_comp_map = all_matches_summary_df.set_index('matchId')['competitionId'].to_dict()
+        comp_match_groups = {}
+        for mid in new_match_ids:
+            cid = match_comp_map.get(mid)
+            if cid is not None:
+                comp_match_groups.setdefault(cid, []).append(mid)
+
+        new_events_list = []
+        for cid, mids in comp_match_groups.items():
+            user, password = get_credentials(cid)
+            if not user or not password:
+                print(f"⚠️ Skipping {len(mids)} matches for comp {cid} (no credentials)")
+                continue
+            comp_name = COMPETITIONS[cid]["name"]
+            print(f"\nFetching events for {len(mids)} {comp_name} matches...")
+            comp_events = fetch_events(user, password, mids)
+            if not comp_events.empty:
+                new_events_list.append(comp_events)
+
+        new_events_df = pd.concat(new_events_list, ignore_index=True) if new_events_list else pd.DataFrame()
     else:
         new_events_df = pd.DataFrame()
 
@@ -1537,6 +1585,10 @@ def main():
     match_id_to_season_map = all_matches_summary_df.set_index('matchId')['seasonId']
     all_raw_events_df['seasonId'] = all_raw_events_df['matchId'].map(match_id_to_season_map)
     print("✅ Added 'seasonId' to all events.")
+
+    match_id_to_comp_map = all_matches_summary_df.set_index('matchId')['competitionId']
+    all_raw_events_df['competitionId'] = all_raw_events_df['matchId'].map(match_id_to_comp_map)
+    print("✅ Added 'competitionId' to all events.")
 
     # --- 6. CLEAN & SAVE UNIFIED EVENTS (ALL SEASONS) ---
     print("Performing data type conversions for ALL seasons...")
@@ -1584,7 +1636,7 @@ def main():
 
     # Always reprocess current season (new matches may have been played since last run)
     current_season_match_ids = set(
-        played_matches_for_data[played_matches_for_data['seasonId'] == CURRENT_SEASON_ID]['matchId']
+        played_matches_for_data[played_matches_for_data['seasonId'].isin(CURRENT_SEASON_IDS)]['matchId']
     )
     cached_match_data_ids = set(all_match_data.keys()) - current_season_match_ids
     matches_to_process = played_matches_for_data[~played_matches_for_data['matchId'].isin(cached_match_data_ids)]
@@ -1620,7 +1672,7 @@ def main():
         print(f"   Cached stats for {len(season_team_stats)} seasons.")
 
     # Determine which seasons need (re)computing
-    seasons_to_compute = [CURRENT_SEASON_ID]  # Always recompute current season
+    seasons_to_compute = list(CURRENT_SEASON_IDS)  # Always recompute current seasons
     for sid in HISTORICAL_SEASON_IDS:
         if sid not in season_team_stats:
             seasons_to_compute.append(sid)  # First run: also compute missing historical
@@ -1657,34 +1709,43 @@ def main():
         print(f"   Cached lineups for {len(all_match_lineups)} matches.")
 
     # Determine which seasons need fetching
-    seasons_to_fetch_minutes = [CURRENT_SEASON_ID]  # Always re-fetch current (totals change)
+    seasons_to_fetch_minutes = list(CURRENT_SEASON_IDS)  # Always re-fetch current seasons
     for sid in HISTORICAL_SEASON_IDS:
         if sid not in player_minutes_by_season:
-            seasons_to_fetch_minutes.append(sid)  # First run: also fetch missing historical
+            seasons_to_fetch_minutes.append(sid)
     print(f"   Fetching player minutes for {len(seasons_to_fetch_minutes)} season(s): {seasons_to_fetch_minutes}")
 
     for season_id in seasons_to_fetch_minutes:
+        comp_id = competition_for_season(season_id)
+        if comp_id is None:
+            print(f"⚠️ Unknown competition for season {season_id}, skipping.")
+            continue
+        user, password = get_credentials(comp_id)
+        if not user or not password:
+            print(f"⚠️ No credentials for {COMPETITIONS[comp_id]['name']}, skipping season {season_id}.")
+            continue
+
         season_matches_df = all_matches_summary_df[all_matches_summary_df['seasonId'] == season_id]
         season_match_ids = season_matches_df['matchId'].dropna().unique().tolist()
         season_events = all_raw_events_df[all_raw_events_df['seasonId'] == season_id].copy()
 
-        print(f"\n--- Fetching player minutes for season {season_id} ({len(season_match_ids)} matches) ---")
+        print(f"\n--- Fetching player minutes for {COMPETITIONS[comp_id]['name']} season {season_id} ({len(season_match_ids)} matches) ---")
         season_minutes_df, season_lineups = fetch_official_player_minutes(
-            wyscout_user,
-            wyscout_pass,
+            user,
+            password,
             season_match_ids,
             season_events,
-            competition_id=competition_id,
+            competition_id=comp_id,
             season_id=season_id
         )
 
         if not season_minutes_df.empty:
+            season_minutes_df['competitionId'] = comp_id
             player_minutes_by_season[season_id] = season_minutes_df
             print(f"✅ Season {season_id}: {len(season_minutes_df)} player records.")
         else:
             print(f"⚠️ Season {season_id}: No player minutes data.")
 
-        # Merge lineup data
         all_match_lineups.update(season_lineups)
 
     # Save match lineups (lineup, bench, substitutions per match per team)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Monte Carlo season simulation for Liga 3 second-stage groups.
+Monte Carlo season simulation for Liga 3 and Campeonato de Portugal.
 Produces position probability tables saved to season_simulation.pkl.
 Run after update_model.py in the scheduled pipeline.
 """
@@ -10,10 +10,12 @@ import numpy as np
 import pickle
 from datetime import datetime
 from itertools import product
+from collections import defaultdict
+
+from league_config import COMPETITIONS
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-SEASON_ID = 191782
 N_SIMULATIONS = 10000
 
 FIRST_STAGE_GROUPS = {
@@ -239,32 +241,190 @@ def build_feature_vector(home_feats, away_feats):
     ]
 
 
+# ── Campeonato group detection ───────────────────────────────────────────────
+
+def detect_campeonato_groups(matches_df):
+    """Detect the 4 regional groups in Campeonato de Portugal via opponent adjacency.
+    Returns dict of {group_label: [team_names]}.
+    """
+    opponents = defaultdict(set)
+    for _, m in matches_df.iterrows():
+        home = m.get('homeTeamName')
+        away = m.get('awayTeamName')
+        if pd.isna(home) or pd.isna(away):
+            continue
+        opponents[home].add(away)
+        opponents[away].add(home)
+
+    groups = []
+    assigned = set()
+    for team in sorted(opponents):
+        if team in assigned:
+            continue
+        group = {team} | opponents[team]
+        groups.append(sorted(group))
+        assigned.update(group)
+
+    # Label groups alphabetically (Série A, B, C, D)
+    labels = ['Série A', 'Série B', 'Série C', 'Série D']
+    result = {}
+    for i, g in enumerate(sorted(groups, key=lambda x: x[0])):
+        label = labels[i] if i < len(labels) else f'Group {i+1}'
+        result[label] = g
+
+    return result
+
+
+def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stats, league_avg_stats):
+    """Run Campeonato de Portugal simulation (Phase 1 group standings)."""
+    print("=" * 60)
+    print("Campeonato de Portugal Season Simulation")
+    print("=" * 60)
+
+    played_matches = matches_df[matches_df['status'] == 'Played']
+    groups = detect_campeonato_groups(played_matches)
+    print(f"\nDetected {len(groups)} groups")
+
+    results = {}
+
+    for group_name, group_teams in groups.items():
+        print(f"\n{'─' * 60}")
+        print(f"Processing: {group_name} ({len(group_teams)} teams)")
+
+        current_table = calculate_league_table(played_matches, group_teams)
+        print(f"  Played matches: {current_table['P'].sum() // 2}")
+
+        # Full double round-robin fixtures
+        full_fixtures = [(h, a) for h, a in product(group_teams, group_teams) if h != a]
+
+        played = set()
+        for _, m in played_matches.iterrows():
+            h, a = m['homeTeamName'], m['awayTeamName']
+            if h in group_teams and a in group_teams:
+                played.add((h, a))
+
+        remaining_fixtures = [f for f in full_fixtures if f not in played]
+        print(f"  Total fixtures: {len(full_fixtures)}, Played: {len(played)}, Remaining: {len(remaining_fixtures)}")
+
+        # Pre-compute match probabilities
+        match_probs = {}
+        for home, away in remaining_fixtures:
+            home_cum = team_stats.get(home)
+            away_cum = team_stats.get(away)
+
+            if not home_cum or not away_cum:
+                match_probs[(home, away)] = np.array([0.25, 0.45, 0.30])
+                continue
+
+            home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
+            away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+
+            home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
+            away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
+
+            fv = build_feature_vector(home_feats, away_feats)
+            X = scaler.transform([fv])
+            proba = model.predict_proba(X)[0]
+            match_probs[(home, away)] = proba
+
+        # Monte Carlo
+        print(f"  Running {N_SIMULATIONS:,} simulations...")
+        n_teams = len(group_teams)
+        position_counts = {team: np.zeros(n_teams, dtype=int) for team in group_teams}
+
+        starting_pts = {}
+        starting_gd = {}
+        starting_gf = {}
+        for _, row in current_table.iterrows():
+            team = row['Team']
+            starting_pts[team] = row['Pts']
+            starting_gd[team] = row['GD']
+            starting_gf[team] = row['GF']
+
+        rng = np.random.default_rng(seed=42)
+
+        fixture_list = list(remaining_fixtures)
+        if fixture_list:
+            prob_matrix = np.array([match_probs[f] for f in fixture_list])
+            cumulative_probs = np.cumsum(prob_matrix, axis=1)
+        else:
+            cumulative_probs = np.array([])
+
+        for sim in range(N_SIMULATIONS):
+            pts = dict(starting_pts)
+            gd = dict(starting_gd)
+            gf = dict(starting_gf)
+
+            if len(fixture_list) > 0:
+                rand_vals = rng.random(len(fixture_list))
+                for idx, (home, away) in enumerate(fixture_list):
+                    r = rand_vals[idx]
+                    cp = cumulative_probs[idx]
+
+                    if r < cp[0]:
+                        pts[home] += 1
+                        pts[away] += 1
+                        gf[home] += 1
+                        gf[away] += 1
+                    elif r < cp[1]:
+                        pts[home] += 3
+                        gd[home] += 1
+                        gd[away] -= 1
+                        gf[home] += 2
+                        gf[away] += 1
+                    else:
+                        pts[away] += 3
+                        gd[away] += 1
+                        gd[home] -= 1
+                        gf[away] += 2
+                        gf[home] += 1
+
+            final = sorted(group_teams, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
+            for pos, team in enumerate(final):
+                position_counts[team][pos] += 1
+
+        pos_prob_df = pd.DataFrame(
+            {team: position_counts[team] / N_SIMULATIONS for team in group_teams},
+        ).T
+        pos_prob_df.columns = [f'{i+1}' for i in range(n_teams)]
+        pos_prob_df.index.name = 'Team'
+
+        pos_prob_df['expected_pos'] = sum((i + 1) * pos_prob_df[f'{i+1}'] for i in range(n_teams))
+        pos_prob_df = pos_prob_df.sort_values('expected_pos')
+        pos_prob_df = pos_prob_df.drop(columns='expected_pos')
+
+        print(f"\n  Position probabilities:")
+        print(pos_prob_df.to_string(float_format=lambda x: f'{x:.1%}'))
+
+        results[group_name] = {
+            'teams': group_teams,
+            'position_probabilities': pos_prob_df,
+            'current_standings': current_table,
+            'matches_remaining': len(remaining_fixtures),
+            'bonus_points': {},
+        }
+
+    return results
+
+
 # ── Main simulation pipeline ─────────────────────────────────────────────────
 
-def main():
+def simulate_liga3(matches_df, model, scaler, team_stats, prior_season_stats, league_avg_stats):
+    """Run Liga 3 season simulation (second-stage groups)."""
+    SEASON_ID = COMPETITIONS[43324]["current_season"]
+
     print("=" * 60)
     print("Liga 3 Season Simulation")
     print("=" * 60)
 
-    # 1. Load model and match data
-    print("\nLoading model and match data...")
-    with open('match_predictor_model.pkl', 'rb') as f:
-        model_data = pickle.load(f)
-
-    model = model_data['model']
-    scaler = model_data['scaler']
-    team_stats = model_data['team_stats']
-    prior_season_stats = model_data.get('prior_season_stats', {})
-    league_avg_stats = model_data.get('league_avg_stats', {
-        'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0,
-        'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35,
-    })
-
-    matches_df = pd.read_parquet('matches_summary.parquet')
     season_matches = matches_df[matches_df['seasonId'] == SEASON_ID].copy()
     print(f"  {len(season_matches)} matches in season {SEASON_ID}")
 
-    # 2. Determine first-stage roundId (the one with the most matches)
+    if season_matches.empty:
+        print("  No matches found, skipping Liga 3 simulation.")
+        return {}
+
+    # Determine first-stage roundId (the one with the most matches)
     round_counts = season_matches.groupby('roundId').size()
     first_stage_round_id = round_counts.idxmax()
     print(f"  First-stage roundId: {first_stage_round_id} ({round_counts[first_stage_round_id]} matches)")
@@ -272,7 +432,6 @@ def main():
     first_stage_matches = season_matches[season_matches['roundId'] == first_stage_round_id]
     second_stage_matches = season_matches[season_matches['roundId'] != first_stage_round_id]
 
-    # 3. Calculate first-stage standings to determine group placement
     all_north = FIRST_STAGE_GROUPS['North']
     all_south = FIRST_STAGE_GROUPS['South']
 
@@ -298,12 +457,10 @@ def main():
     for _, r in south_table.iterrows():
         print(f"    {r['Pos']:2}. {r['Team']:25} {r['Pts']:2} pts  GD {r['GD']:+d}")
 
-    # Top 4 from each → Promotion; bottom 6 → Maintenance
     promotion_teams = list(north_table.head(4)['Team']) + list(south_table.head(4)['Team'])
     north_maintenance_teams = list(north_table.tail(6)['Team'])
     south_maintenance_teams = list(south_table.tail(6)['Team'])
 
-    # Calculate maintenance bonuses from first-stage results
     north_bonuses = calculate_maintenance_bonus(north_table)
     south_bonuses = calculate_maintenance_bonus(south_table)
     all_bonuses = {**north_bonuses, **south_bonuses}
@@ -322,21 +479,17 @@ def main():
     for team, bonus in sorted(all_bonuses.items(), key=lambda x: -x[1]):
         print(f"    {team:25} +{bonus} pts")
 
-    # 4. For each group, compute current standings + remaining fixtures + probabilities
     results = {}
 
     for group_name, group_teams in groups.items():
         print(f"\n{'─' * 60}")
         print(f"Processing: {group_name} ({len(group_teams)} teams)")
 
-        # Current second-stage standings from played matches
         current_table = calculate_league_table(second_stage_matches, group_teams)
         print(f"  Played second-stage matches: {current_table['P'].sum() // 2}")
 
-        # Generate full double round-robin fixtures
         full_fixtures = [(h, a) for h, a in product(group_teams, group_teams) if h != a]
 
-        # Identify already-played fixtures
         played = set()
         for _, m in second_stage_matches.iterrows():
             h, a = m['homeTeamName'], m['awayTeamName']
@@ -346,15 +499,13 @@ def main():
         remaining_fixtures = [f for f in full_fixtures if f not in played]
         print(f"  Total fixtures: {len(full_fixtures)}, Played: {len(played)}, Remaining: {len(remaining_fixtures)}")
 
-        # Pre-compute match probabilities for all remaining fixtures
         match_probs = {}
         for home, away in remaining_fixtures:
             home_cum = team_stats.get(home)
             away_cum = team_stats.get(away)
 
             if not home_cum or not away_cum:
-                # Fallback: roughly even probabilities
-                match_probs[(home, away)] = np.array([0.25, 0.45, 0.30])  # draw, home_win, away_win
+                match_probs[(home, away)] = np.array([0.25, 0.45, 0.30])
                 continue
 
             home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
@@ -365,15 +516,13 @@ def main():
 
             fv = build_feature_vector(home_feats, away_feats)
             X = scaler.transform([fv])
-            proba = model.predict_proba(X)[0]  # [P(draw), P(home_win), P(away_win)]
+            proba = model.predict_proba(X)[0]
             match_probs[(home, away)] = proba
 
-        # 5. Run Monte Carlo simulations
         print(f"  Running {N_SIMULATIONS:,} simulations...")
         n_teams = len(group_teams)
         position_counts = {team: np.zeros(n_teams, dtype=int) for team in group_teams}
 
-        # Get current standings as starting point (second-stage matches + bonuses)
         starting_pts = {}
         starting_gd = {}
         starting_gf = {}
@@ -393,59 +542,52 @@ def main():
 
         rng = np.random.default_rng(seed=42)
 
-        # Pre-build arrays for vectorized sampling
         fixture_list = list(remaining_fixtures)
-        prob_matrix = np.array([match_probs[f] for f in fixture_list])  # shape: (n_fixtures, 3)
-        cumulative_probs = np.cumsum(prob_matrix, axis=1)  # for sampling
+        if fixture_list:
+            prob_matrix = np.array([match_probs[f] for f in fixture_list])
+            cumulative_probs = np.cumsum(prob_matrix, axis=1)
+        else:
+            cumulative_probs = np.array([])
 
         for sim in range(N_SIMULATIONS):
-            # Start from current standings
             pts = dict(starting_pts)
             gd = dict(starting_gd)
             gf = dict(starting_gf)
 
-            # Sample all remaining match outcomes at once
-            rand_vals = rng.random(len(fixture_list))
+            if len(fixture_list) > 0:
+                rand_vals = rng.random(len(fixture_list))
+                for idx, (home, away) in enumerate(fixture_list):
+                    r = rand_vals[idx]
+                    cp = cumulative_probs[idx]
 
-            for idx, (home, away) in enumerate(fixture_list):
-                r = rand_vals[idx]
-                cp = cumulative_probs[idx]
+                    if r < cp[0]:
+                        pts[home] += 1
+                        pts[away] += 1
+                        gf[home] += 1
+                        gf[away] += 1
+                    elif r < cp[1]:
+                        pts[home] += 3
+                        gd[home] += 1
+                        gd[away] -= 1
+                        gf[home] += 2
+                        gf[away] += 1
+                    else:
+                        pts[away] += 3
+                        gd[away] += 1
+                        gd[home] -= 1
+                        gf[away] += 2
+                        gf[home] += 1
 
-                if r < cp[0]:
-                    # Draw
-                    pts[home] += 1
-                    pts[away] += 1
-                    gf[home] += 1
-                    gf[away] += 1
-                elif r < cp[1]:
-                    # Home win
-                    pts[home] += 3
-                    gd[home] += 1
-                    gd[away] -= 1
-                    gf[home] += 2
-                    gf[away] += 1
-                else:
-                    # Away win
-                    pts[away] += 3
-                    gd[away] += 1
-                    gd[home] -= 1
-                    gf[away] += 2
-                    gf[home] += 1
-
-            # Sort teams by Pts → GD → GF
             final = sorted(group_teams, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
-
             for pos, team in enumerate(final):
                 position_counts[team][pos] += 1
 
-        # Build position probability DataFrame
         pos_prob_df = pd.DataFrame(
             {team: position_counts[team] / N_SIMULATIONS for team in group_teams},
         ).T
         pos_prob_df.columns = [f'{i+1}' for i in range(n_teams)]
         pos_prob_df.index.name = 'Team'
 
-        # Sort by expected position
         pos_prob_df['expected_pos'] = sum((i + 1) * pos_prob_df[f'{i+1}'] for i in range(n_teams))
         pos_prob_df = pos_prob_df.sort_values('expected_pos')
         pos_prob_df = pos_prob_df.drop(columns='expected_pos')
@@ -453,7 +595,6 @@ def main():
         print(f"\n  Position probabilities:")
         print(pos_prob_df.to_string(float_format=lambda x: f'{x:.1%}'))
 
-        # Verify probabilities sum to ~1.0 per team
         row_sums = pos_prob_df.sum(axis=1)
         assert all(abs(s - 1.0) < 0.01 for s in row_sums), f"Row sums not ~1.0: {row_sums.to_dict()}"
 
@@ -465,19 +606,71 @@ def main():
             'bonus_points': bonus_pts,
         }
 
-    # 6. Save results
+    return results
+
+
+def main():
+    print("\nLoading model and match data...")
+    with open('match_predictor_model.pkl', 'rb') as f:
+        model_data = pickle.load(f)
+
+    model = model_data['model']
+    scaler = model_data['scaler']
+    team_stats = model_data['team_stats']
+    prior_season_stats = model_data.get('prior_season_stats', {})
+    league_avg_stats = model_data.get('league_avg_stats', {
+        'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0,
+        'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35,
+    })
+
+    matches_df = pd.read_parquet('matches_summary.parquet')
+
+    all_results = {}
+
+    # Liga 3 simulation
+    try:
+        liga3_results = simulate_liga3(matches_df, model, scaler, team_stats, prior_season_stats, league_avg_stats)
+        if liga3_results:
+            all_results[43324] = {
+                'competition_name': 'Liga 3',
+                'season_id': COMPETITIONS[43324]["current_season"],
+                'groups': liga3_results,
+            }
+    except Exception as e:
+        print(f"\n⚠️ Liga 3 simulation failed: {e}")
+
+    # Campeonato simulation
+    try:
+        camp_season_id = COMPETITIONS[702]["current_season"]
+        camp_matches = matches_df[matches_df['seasonId'] == camp_season_id]
+        if not camp_matches.empty:
+            camp_results = simulate_campeonato(camp_matches, model, scaler, team_stats, prior_season_stats, league_avg_stats)
+            if camp_results:
+                all_results[702] = {
+                    'competition_name': 'Campeonato',
+                    'season_id': camp_season_id,
+                    'groups': camp_results,
+                }
+        else:
+            print("\n⚠️ No Campeonato matches found, skipping simulation.")
+    except Exception as e:
+        print(f"\n⚠️ Campeonato simulation failed: {e}")
+
+    # Save combined results (backward compatible: also keep 'groups' at top level for Liga 3)
     output = {
         'timestamp': datetime.now().isoformat(),
         'n_simulations': N_SIMULATIONS,
-        'season_id': SEASON_ID,
-        'groups': results,
+        'competitions': all_results,
+        # Backward compat: keep top-level 'groups' and 'season_id' for Liga 3
+        'season_id': COMPETITIONS[43324]["current_season"],
+        'groups': all_results.get(43324, {}).get('groups', {}),
     }
 
     with open('season_simulation.pkl', 'wb') as f:
         pickle.dump(output, f)
 
     print(f"\n{'=' * 60}")
-    print(f"Saved season_simulation.pkl")
+    print(f"Saved season_simulation.pkl ({len(all_results)} competition(s))")
     print(f"Timestamp: {output['timestamp']}")
     print(f"{'=' * 60}")
 

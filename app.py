@@ -39,7 +39,7 @@ import json
 _TRANSFERRED_PLAYERS_PATH = os.path.join(os.path.dirname(__file__), 'transferred_players.json')
 
 def load_transferred_players():
-    """Load the list of players who transferred out of Liga 3."""
+    """Load the list of players who transferred out."""
     try:
         with open(_TRANSFERRED_PLAYERS_PATH, 'r') as f:
             return json.load(f)
@@ -402,14 +402,11 @@ pre code { background: transparent !important; padding: 0 !important; }
 # ==============================================================================
 # 1B. SEASON CONSTANTS
 # ==============================================================================
-SEASON_ID_MAP = {
-    191782: "2025/26",
-    190090: "2024/25",
-    189147: "2023/24",
-    188222: "2022/23",
-    188221: "2021/22",
-}
-CURRENT_SEASON_ID = 191782
+from league_config import COMPETITIONS, competition_for_season, all_season_id_map
+
+# Build flat season map for backward compatibility
+SEASON_ID_MAP = all_season_id_map()
+CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
 STATS_CACHE_VERSION = 'v8'  # Bump this when adding/removing stat columns to invalidate old caches
 
@@ -436,7 +433,7 @@ def load_data():
         logger.info("Loading data files...")
         # Only load columns actually used in the app (reduces memory from 510MB to 250MB)
         events_columns = [
-            'id', 'matchId', 'seasonId', 'minute', 'second', 'matchTimestamp',
+            'id', 'matchId', 'seasonId', 'competitionId', 'minute', 'second', 'matchTimestamp',
             'type.primary', 'type.secondary', 'player.id', 'player.name', 'player.position',
             'team.name', 'opponentTeam.name', 'location.x', 'location.y',
             'pass', 'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
@@ -449,11 +446,21 @@ def load_data():
             'is_dribble_attempt', 'is_custom_dribble_success', 'relatedEventId',
             'team.formation'
         ]
-        raw_events_df = pd.read_parquet('raw_events.parquet', columns=events_columns)
+        # Load parquet, falling back to exclude competitionId if it doesn't exist yet
+        try:
+            raw_events_df = pd.read_parquet('raw_events.parquet', columns=events_columns)
+        except Exception:
+            cols_without_comp = [c for c in events_columns if c != 'competitionId']
+            raw_events_df = pd.read_parquet('raw_events.parquet', columns=cols_without_comp)
         # Normalize direct free kick shots so all shot filters include them
         fk_shot_mask = (raw_events_df['type.primary'] == 'free_kick') & (raw_events_df['shot.xg'].notna())
         raw_events_df.loc[fk_shot_mask, 'type.primary'] = 'shot'
+        # Backfill competitionId if not present (first run after upgrade)
+        if 'competitionId' not in raw_events_df.columns:
+            raw_events_df['competitionId'] = raw_events_df['seasonId'].map(competition_for_season)
         matches_summary_df = pd.read_parquet('matches_summary.parquet')
+        if 'competitionId' not in matches_summary_df.columns:
+            matches_summary_df['competitionId'] = matches_summary_df['seasonId'].map(competition_for_season)
 
         with open('all_match_data.pkl', 'rb') as f:
             all_match_data = pickle.load(f)
@@ -539,21 +546,26 @@ def load_player_details():
 # 2B. SEASON FILTERING HELPERS
 # ==============================================================================
 def get_season_events(raw_events_df, season_id):
-    """Filter events by season_id, or return all if None."""
+    """Filter events by season_id(s), or return all if None."""
     if season_id is None:
         return raw_events_df
+    if isinstance(season_id, list):
+        return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
 
 def get_season_matches(matches_summary_df, season_id):
-    """Filter matches by season_id, or return all if None."""
+    """Filter matches by season_id(s), or return all if None."""
     if season_id is None:
         return matches_summary_df
+    if isinstance(season_id, list):
+        return matches_summary_df[matches_summary_df['seasonId'].isin(season_id)]
     return matches_summary_df[matches_summary_df['seasonId'] == season_id]
 
 def get_season_player_minutes(player_minutes_data, season_id):
     """Get player minutes for a season. Returns DataFrame.
     player_minutes_data is {season_id: DataFrame}.
     If season_id is None, combine all seasons.
+    Accepts a single season_id (int) or a list of season_ids.
     """
     if isinstance(player_minutes_data, pd.DataFrame):
         return player_minutes_data
@@ -563,6 +575,18 @@ def get_season_player_minutes(player_minutes_data, season_id):
         if not all_dfs:
             return pd.DataFrame()
         combined = pd.concat(all_dfs)
+        return combined.groupby('playerId').agg({
+            'playerName': 'first',
+            'teamName': 'first',
+            'primaryPosition': 'first',
+            'totalMinutes': 'sum'
+        }).reset_index()
+    if isinstance(season_id, list):
+        dfs = [player_minutes_data.get(sid, pd.DataFrame()) for sid in season_id]
+        dfs = [df for df in dfs if isinstance(df, pd.DataFrame) and not df.empty]
+        if not dfs:
+            return pd.DataFrame()
+        combined = pd.concat(dfs)
         return combined.groupby('playerId').agg({
             'playerName': 'first',
             'teamName': 'first',
@@ -581,16 +605,104 @@ def get_season_team_stats(season_team_stats, season_id):
         for sid in sorted(season_team_stats.keys()):
             merged.update(season_team_stats.get(sid, {}))
         return merged
+    if isinstance(season_id, list):
+        merged = {}
+        for sid in sorted(season_id):
+            merged.update(season_team_stats.get(sid, {}))
+        return merged
     return season_team_stats.get(season_id, {})
 
-def season_selector(section_key, include_all_seasons=False):
-    """Render a season selector in the sidebar. Returns season_id (int) or None for 'All Seasons'."""
-    options = list(SEASON_ID_MAP.values())
+def league_selector(section_key):
+    """Render a league selector in the sidebar. Returns list of competition IDs."""
+    options = ["Liga 3", "Campeonato", "Both"]
+    selected = st.sidebar.selectbox(
+        "League",
+        options,
+        index=0,
+        key=f"league_select_{section_key}"
+    )
+    if selected == "Both":
+        return list(COMPETITIONS.keys())
+    for comp_id, comp_config in COMPETITIONS.items():
+        if comp_config["name"] == selected:
+            return [comp_id]
+    return list(COMPETITIONS.keys())
+
+
+def get_league_label(comp_ids):
+    """Return a display label for the selected league(s)."""
+    if len(comp_ids) == len(COMPETITIONS):
+        return "Liga 3 + Campeonato"
+    return " + ".join(COMPETITIONS[c]["name"] for c in comp_ids if c in COMPETITIONS)
+
+
+def filter_by_league(df, comp_ids, matches_summary_df=None):
+    """Filter a DataFrame by competition IDs.
+    If df has 'competitionId', filter directly.
+    Otherwise, join via matchId from matches_summary_df.
+    If comp_ids covers all competitions, return unfiltered.
+    """
+    if comp_ids is None or len(comp_ids) == len(COMPETITIONS):
+        return df
+    if 'competitionId' in df.columns:
+        return df[df['competitionId'].isin(comp_ids)]
+    if 'matchId' in df.columns and matches_summary_df is not None:
+        valid_matches = matches_summary_df[
+            matches_summary_df['competitionId'].isin(comp_ids)
+        ]['matchId']
+        return df[df['matchId'].isin(valid_matches)]
+    if 'seasonId' in df.columns:
+        valid_seasons = set()
+        for cid in comp_ids:
+            if cid in COMPETITIONS:
+                valid_seasons.update(COMPETITIONS[cid]["seasons"].keys())
+        return df[df['seasonId'].isin(valid_seasons)]
+    return df
+
+
+def get_season_ids_for_selection(selected_season_id, comp_ids):
+    """Given a selected season_id and comp_ids, return all season IDs that should be included.
+    When 'Both' leagues are selected and they share the same season label (e.g. '2025/26'),
+    return both league's season IDs for that year.
+    """
+    if selected_season_id is None:
+        return None  # All seasons
+    if comp_ids is None or len(comp_ids) <= 1:
+        return selected_season_id
+    # Find the label for the selected season
+    target_label = SEASON_ID_MAP.get(selected_season_id, "")
+    matching_ids = []
+    for cid in comp_ids:
+        if cid in COMPETITIONS:
+            for sid, label in COMPETITIONS[cid]["seasons"].items():
+                if label == target_label:
+                    matching_ids.append(sid)
+    if len(matching_ids) <= 1:
+        return selected_season_id
+    return matching_ids
+
+
+def season_selector(section_key, include_all_seasons=False, comp_ids=None):
+    """Render a season selector in the sidebar. Returns season_id (int) or None for 'All Seasons'.
+    If comp_ids is provided, only shows seasons for those competitions.
+    """
+    if comp_ids is not None:
+        available_seasons = {}
+        for cid in comp_ids:
+            if cid in COMPETITIONS:
+                available_seasons.update(COMPETITIONS[cid]["seasons"])
+    else:
+        available_seasons = SEASON_ID_MAP
+
+    # Deduplicate display names (e.g. both leagues have "2025/26")
+    # Use an ordered dict to preserve season order (newest first)
+    unique_labels = list(dict.fromkeys(available_seasons.values()))
+    options = unique_labels
     if include_all_seasons:
         options = ["All Seasons"] + options
 
     session_key = f"season_select_{section_key}"
-    default_idx = 1 if include_all_seasons else 0  # Default to current season (2025/26)
+    default_idx = 1 if include_all_seasons else 0
 
     selected_label = st.sidebar.selectbox(
         "Season",
@@ -601,11 +713,12 @@ def season_selector(section_key, include_all_seasons=False):
 
     if selected_label == "All Seasons":
         return None
-    # Reverse lookup: label -> season_id
-    for sid, label in SEASON_ID_MAP.items():
+    # Reverse lookup: label -> season_id (return first match from available seasons)
+    for sid, label in available_seasons.items():
         if label == selected_label:
             return sid
-    return CURRENT_SEASON_ID
+    # Fallback
+    return list(available_seasons.keys())[0] if available_seasons else CURRENT_SEASON_ID
 
 def _calculate_age(birth_date):
     """Helper function to calculate age from birth_date string."""
@@ -2603,7 +2716,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
 
     today = datetime.date.today()
     _season_str = season_label if season_label else SEASON_ID_MAP.get(CURRENT_SEASON_ID, '25-26')
-    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n{_season_str} \nLiga 3 \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
+    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n{_season_str} \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
     # Build legend dynamically based on which categories are present in the metrics
     _has_off_ball = any(m in OFF_BALL_DEFENDING_METRICS for m in metrics)
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
@@ -2882,7 +2995,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
     
     # --- General Info (Bottom-Left) ---
     today = datetime.date.today()
-    info_text = f'Stats are per 90 mins\nLiga 3\nData via Wyscout\n@lucaskimball\nDate: {today}'
+    info_text = f'Stats are per 90 mins\nData via Wyscout\n@lucaskimball\nDate: {today}'
     fig.text(0.01, 0.01, info_text, 
              horizontalalignment='left', verticalalignment='bottom', 
              fontsize=10, color='black', transform=fig.transFigure)
@@ -3131,7 +3244,7 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
     return stats_df_raw, stats_df_pct
 
 # --- Radar Plotting Function (Unchanged) ---
-def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league="Liga 3 Portugal", season="2025/26"):
+def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league="Liga 3", season="2025/26"):
     # (This is the full function from the previous step)
     num_params = len(params); angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist(); angles += angles[:1]
     plot_values_pct = values_pct + values_pct[:1]; fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
@@ -3146,12 +3259,12 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, co
     ax.plot(angles, plot_values_pct, color=color, linewidth=2, linestyle='solid'); ax.fill(angles, plot_values_pct, color=color, alpha=0.6)
     for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
          raw_display = f'{value_raw}%' if '%' in str(value_raw) else f'{value_raw}'; ax.text(angle, 95, raw_display, ha='center', va='top', size=9, weight='bold', bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
-    footer_text = "@lucaskimball | Data via Wyscout | Values in parentheses are percentile rank vs. other Liga 3 teams"; fig.text(0.02, 0.02, footer_text, ha='left', va='bottom', fontsize=9, color='gray')
+    footer_text = "@lucaskimball | Data via Wyscout | Values in parentheses are percentile rank vs. other teams in league"; fig.text(0.02, 0.02, footer_text, ha='left', va='bottom', fontsize=9, color='gray')
     report_date = datetime.date.today().strftime("%Y-%m-%d"); full_title = f"{team_name}\n{title_suffix} | {league} {season} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
     return fig
 
 # --- Corner Analysis Plotting Function (Unchanged) ---
-def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3 Portugal", season="2025/26"):
+def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3", season="2025/26"):
     # (This is the full function from the previous step)
     def categorize_corner(row, side):
         end_x = row.get('pass.endLocation.x'); end_y = row.get('pass.endLocation.y'); pass_len = row.get('pass.length')
@@ -3707,7 +3820,7 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
 
 
 # --- NEW FUNCTION: Plot Team Strength Scatter ---
-def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal", season="2025/26", icon_zoom=0.25): # <-- ADDED icon_zoom
+def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season="2025/26", icon_zoom=0.25): # <-- ADDED icon_zoom
     """Generates the Matplotlib figure for the team strength scatter plot."""
 
     if stats_df.empty or 'Attacking Strength' not in stats_df.columns or 'Defending Strength' not in stats_df.columns:
@@ -3772,7 +3885,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3 Portugal"
 # app.py (Add this new function)
 
 # --- NEW FUNCTION: Plot Custom Scatter Plot ---
-def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league="Liga 3 Portugal", season="2025/26"):
+def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league="Liga 3", season="2025/26"):
     """Generates a dynamic Matplotlib scatter plot with logos."""
 
     # Ensure the selected metrics exist in the DataFrame
@@ -4515,9 +4628,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     st.session_state.current_page = analysis_type
 
     if analysis_type == 'Match Analysis':
-        # --- Season Selector ---
-        selected_season_id = season_selector("match_analysis")
-        season_matches_df = get_season_matches(matches_summary_df, selected_season_id).copy()
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("match_analysis")
+        selected_season_id = season_selector("match_analysis", comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+        season_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids).copy()
 
         # --- Match Selection (Using correct column names) ---
         if 'dateutc' in season_matches_df.columns:
@@ -4527,7 +4642,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Create a display-ready gameweek column
         season_matches_df['gw_display'] = "GW " + season_matches_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
 
-        # --- Determine stage labels for Liga 3 (Promotion League vs Maintenance Stage) ---
+        # --- Determine stage labels (Promotion League vs Maintenance Stage) ---
         if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
             # Group matches by roundId to find the first stage (most matches)
             round_counts = season_matches_df.groupby('roundId').size()
@@ -4838,13 +4953,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     elif analysis_type == 'Team Analysis':
 
-        # --- Season Selector ---
-        selected_season_id = season_selector("team_analysis")
-        season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown")
-        team_events_df = get_season_events(raw_events_df, selected_season_id)
-        team_matches_df = get_season_matches(matches_summary_df, selected_season_id)
-        team_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
-        team_season_stats = get_season_team_stats(season_team_stats, selected_season_id)
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("team_analysis")
+        selected_season_id = season_selector("team_analysis", comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+        season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown") if isinstance(selected_season_id, int) else "Unknown"
+        team_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        team_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
+        team_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
+        team_season_stats = get_season_team_stats(season_team_stats, active_season_ids)
 
         all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
         selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
@@ -4867,7 +4984,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         except Exception:
             pass
 
-        st.subheader("Team Style Radars (Percentile Ranks vs Liga 3)")
+        league_label = get_league_label(selected_comp_ids)
+        st.subheader(f"Team Style Radars (Percentile Ranks vs {league_label})")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
             distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Losses']
@@ -4879,7 +4997,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             ]
             team_stats_raw = stats_df_raw.loc[selected_team_t]
             team_stats_pct = stats_df_pct.loc[selected_team_t]
-            current_league = "Liga 3 Portugal"; current_season = season_label
+            current_league = get_league_label(selected_comp_ids); current_season = season_label
 
             # Row 1: Offensive + Distribution
             col_r1, col_r2 = st.columns(2)
@@ -5116,10 +5234,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     elif analysis_type == 'League Analysis':
 
-        # --- Season Selector ---
-        selected_season_id = season_selector("league_analysis")
-        league_events_df = get_season_events(raw_events_df, selected_season_id)
-        league_matches_df = get_season_matches(matches_summary_df, selected_season_id)
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("league_analysis")
+        selected_season_id = season_selector("league_analysis", comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+        league_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        league_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
 
         # --- 1. ALL DATA CALCS ---
         stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df, season_id=selected_season_id)
@@ -5201,7 +5321,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 4. Strength Charts ---
         if has_groups:
-            st.subheader("Team Strength Scatterplot (Liga 3 - Group B)")
+            st.subheader(f"Team Strength Scatterplot ({get_league_label(selected_comp_ids)} - Group B)")
             if not team_strength_df.empty:
                 valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
                 fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
@@ -5330,13 +5450,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.session_state.nav_season_id = None
             st.session_state.nav_has_season = False
 
-        # --- Season Selector ---
-        selected_season_id = season_selector("player_profile", include_all_seasons=True)
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("player_profile")
+        selected_season_id = season_selector("player_profile", include_all_seasons=True, comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
         profile_season_changed = (selected_season_id != st.session_state.player_profile_last_season)
         st.session_state.player_profile_last_season = selected_season_id
-        profile_events_df = get_season_events(raw_events_df, selected_season_id)
-        profile_matches_df = get_season_matches(matches_summary_df, selected_season_id)
-        profile_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+        profile_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        profile_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
+        profile_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
 
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
@@ -6080,10 +6202,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 # --- NEW: Player Comparison Section ---
     elif analysis_type == 'Player Comparison':
 
-        # --- Season Selector ---
-        selected_season_id = season_selector("player_comparison", include_all_seasons=True)
-        comp_events_df = get_season_events(raw_events_df, selected_season_id)
-        comp_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("player_comparison")
+        selected_season_id = season_selector("player_comparison", include_all_seasons=True, comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+        comp_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        comp_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
 
         # --- 1. Load Data ---
         try:
@@ -6200,10 +6324,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
 
-        # --- Season Selector ---
-        selected_season_id = season_selector("player_analysis", include_all_seasons=True)
-        analysis_events_df = get_season_events(raw_events_df, selected_season_id)
-        analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("player_analysis")
+        selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+        analysis_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
 
         # --- 1. Load Data ---
         try:
@@ -6535,6 +6661,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.rerun()
 
     elif analysis_type == 'Match Predictor':
+        selected_comp_ids = league_selector("match_predictor")
         st.markdown("Predict the outcome of upcoming matches based on team performance data with season-specific priors.")
 
         # Load prediction model
@@ -6806,21 +6933,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         html += '</table>'
                         st.markdown(html, unsafe_allow_html=True)
 
-                sim_groups = sim_data.get('groups', {})
-                if 'Promotion' in sim_groups:
-                    g = sim_groups['Promotion']
-                    render_probability_table('Promotion', g['position_probabilities'], g['matches_remaining'], expanded=True, current_standings=g.get('current_standings'))
-                if 'North Maintenance' in sim_groups:
-                    g = sim_groups['North Maintenance']
-                    render_probability_table('North Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'), current_standings=g.get('current_standings'))
-                if 'South Maintenance' in sim_groups:
-                    g = sim_groups['South Maintenance']
-                    render_probability_table('South Maintenance', g['position_probabilities'], g['matches_remaining'], bonus_points=g.get('bonus_points'), current_standings=g.get('current_standings'))
+                # Display simulation results for selected competition(s)
+                competitions_data = sim_data.get('competitions', {})
+                if not competitions_data:
+                    # Backward compat: old format has 'groups' at top level (Liga 3 only)
+                    competitions_data = {43324: {'competition_name': 'Liga 3', 'groups': sim_data.get('groups', {})}}
+
+                for comp_id in selected_comp_ids:
+                    comp_sim = competitions_data.get(comp_id, {})
+                    sim_groups = comp_sim.get('groups', {})
+                    if not sim_groups:
+                        continue
+
+                    comp_name = comp_sim.get('competition_name', COMPETITIONS.get(comp_id, {}).get('name', ''))
+                    if len(selected_comp_ids) > 1:
+                        st.markdown(f"#### {comp_name}")
+
+                    for group_name, g in sim_groups.items():
+                        expanded = group_name == 'Promotion' or (comp_id == 702 and group_name == list(sim_groups.keys())[0])
+                        render_probability_table(
+                            group_name, g['position_probabilities'], g['matches_remaining'],
+                            bonus_points=g.get('bonus_points'), expanded=expanded,
+                            current_standings=g.get('current_standings')
+                        )
 
             # Team selection — cross-season team-season combos
             all_season_options = {}  # {"Team (Season)": (team_name, season_id)}
-            for sid in sorted(SEASON_ID_MAP.keys(), reverse=True):
-                season_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, sid)
+            # Filter seasons by selected league(s)
+            available_sids = set()
+            for cid in selected_comp_ids:
+                if cid in COMPETITIONS:
+                    available_sids.update(COMPETITIONS[cid]["seasons"].keys())
+            pred_events = filter_by_league(raw_events_df, selected_comp_ids)
+            pred_matches = filter_by_league(matches_summary_df, selected_comp_ids)
+            for sid in sorted(available_sids, reverse=True):
+                season_cum = build_season_cumulative_stats(pred_events, pred_matches, sid)
                 for team_name, stats in season_cum.items():
                     if stats['matches'] >= 3:
                         label = f"{team_name} ({SEASON_ID_MAP[sid]})"
@@ -6922,10 +7069,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # ==========================================================================
     elif analysis_type == 'Shadow Team':
 
-        # --- Season Selector ---
-        selected_season_id = season_selector("shadow_team", include_all_seasons=True)
-        shadow_events_df = get_season_events(raw_events_df, selected_season_id)
-        shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, selected_season_id)
+        # --- League & Season Selector ---
+        selected_comp_ids = league_selector("shadow_team")
+        selected_season_id = season_selector("shadow_team", include_all_seasons=True, comp_ids=selected_comp_ids)
+        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+        shadow_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
 
         # --- Load Data ---
         player_details_df = load_player_details()
@@ -7130,11 +7279,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.caption("No role scores available for this slot.")
 
     elif analysis_type == 'Opposition Report':
+        selected_comp_ids = league_selector("opposition_report")
         from opposition_report import render_opposition_report
+        opp_events = filter_by_league(raw_events_df, selected_comp_ids)
+        opp_matches = filter_by_league(matches_summary_df, selected_comp_ids)
+        # Build season map for selected leagues
+        opp_season_map = {}
+        for cid in selected_comp_ids:
+            if cid in COMPETITIONS:
+                opp_season_map.update(COMPETITIONS[cid]["seasons"])
+        opp_current_sid = COMPETITIONS[selected_comp_ids[0]]["current_season"] if selected_comp_ids else CURRENT_SEASON_ID
         render_opposition_report(
-            raw_events_df, matches_summary_df, all_match_data,
+            opp_events, opp_matches, all_match_data,
             season_team_stats, player_minutes_data,
-            CURRENT_SEASON_ID, SEASON_ID_MAP,
+            opp_current_sid, opp_season_map,
         )
 
     # --- Transferred Players Manager (Bottom of Sidebar) ---

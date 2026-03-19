@@ -17,8 +17,8 @@ import time
 
 warnings.filterwarnings('ignore')
 
-COMPETITION_ID = 43324
-ALL_SEASON_IDS = [191782, 190090, 189147, 188222, 188221]
+from league_config import COMPETITIONS, get_credentials, competition_for_season
+
 EVENTS_FILE = 'raw_events.parquet'
 OUTPUT_FILE = 'team_advanced_stats.parquet'
 
@@ -34,34 +34,41 @@ def setup_session():
 
 def main():
     load_dotenv()
-    wyscout_user = os.getenv("WYSCOUT_USER")
-    wyscout_pass = os.getenv("WYSCOUT_PASS")
-
-    if not wyscout_user or not wyscout_pass:
-        print("Error: WYSCOUT_USER and WYSCOUT_PASS must be set.")
-        exit(1)
-
-    # Strip quotes that may come from .env
-    wyscout_user = wyscout_user.strip().strip('"').strip("'")
-    wyscout_pass = wyscout_pass.strip().strip('"').strip("'")
 
     print("Loading team IDs from events data...")
-    events = pd.read_parquet(EVENTS_FILE, columns=['team.id', 'team.name', 'seasonId'])
+    events_cols = ['team.id', 'team.name', 'seasonId']
+    # Load competitionId if available for per-competition credential lookup
+    try:
+        events = pd.read_parquet(EVENTS_FILE, columns=events_cols + ['competitionId'])
+    except Exception:
+        events = pd.read_parquet(EVENTS_FILE, columns=events_cols)
+        # Backfill competitionId from season
+        events['competitionId'] = events['seasonId'].map(competition_for_season)
 
     session = setup_session()
-    auth = HTTPBasicAuth(wyscout_user, wyscout_pass)
     rows = []
 
-    for season_id in ALL_SEASON_IDS:
-        season_events = events[events['seasonId'] == season_id]
-        teams = season_events.drop_duplicates(subset='team.id')[['team.id', 'team.name']].dropna()
-        print(f"\nSeason {season_id}: Found {len(teams)} teams")
+    for comp_id, comp_config in COMPETITIONS.items():
+        user, password = get_credentials(comp_id)
+        if not user or not password:
+            print(f"⚠️ No credentials for {comp_config['name']}, skipping.")
+            continue
+        user = user.strip().strip('"').strip("'")
+        password = password.strip().strip('"').strip("'")
+        auth = HTTPBasicAuth(user, password)
 
-        for _, row in teams.iterrows():
-            team_id = int(row['team.id'])
-            team_name = row['team.name']
-            url = f"https://apirest.wyscout.com/v3/teams/{team_id}/advancedstats"
-            params = {'compId': COMPETITION_ID, 'seasonId': season_id}
+        for season_id in comp_config["seasons"]:
+            season_events = events[events['seasonId'] == season_id]
+            teams = season_events.drop_duplicates(subset='team.id')[['team.id', 'team.name']].dropna()
+            if teams.empty:
+                continue
+            print(f"\n{comp_config['name']} Season {season_id}: Found {len(teams)} teams")
+
+            for _, row in teams.iterrows():
+                team_id = int(row['team.id'])
+                team_name = row['team.name']
+                url = f"https://apirest.wyscout.com/v3/teams/{team_id}/advancedstats"
+                params = {'compId': comp_id, 'seasonId': season_id}
 
             try:
                 r = session.get(url, auth=auth, params=params, timeout=15)

@@ -8,8 +8,9 @@ Saves result to complete_player_minutes.pkl: {season_id: DataFrame}
 """
 import pandas as pd
 import pickle
+from league_config import all_season_ids
 
-ALL_SEASON_IDS = [191782, 190090, 189147, 188222, 188221]
+ALL_SEASON_IDS = all_season_ids()
 
 def get_minutes_from_match_data(all_match_data, matches_summary_df, season_id):
     """Extract actual player minutes from match lineup data."""
