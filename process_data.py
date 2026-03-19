@@ -1608,17 +1608,25 @@ def main():
                 cached_table = pq.read_table('raw_events.parquet')
                 new_table = pq.read_table('_new_events_tmp.parquet')
 
-                # Build a unified schema: start with cached, add any new-only columns
+                # Build a unified schema: start with cached types, add new-only columns
                 target_fields = {f.name: f for f in cached_table.schema}
                 for field in new_table.schema:
                     if field.name not in target_fields:
                         target_fields[field.name] = field
                 target_schema = pa.schema(list(target_fields.values()))
 
-                # Cast both tables to the target schema (safe=False to handle
-                # timestamp precision, large_string vs string, etc.)
-                cached_table = cached_table.cast(target_schema, safe=False)
-                new_table = new_table.cast(target_schema, safe=False)
+                # Add missing columns as null to each table, then cast types
+                for field in target_schema:
+                    if field.name not in cached_table.schema.names:
+                        cached_table = cached_table.append_column(
+                            field, pa.nulls(cached_table.num_rows, type=field.type))
+                    if field.name not in new_table.schema.names:
+                        new_table = new_table.append_column(
+                            field, pa.nulls(new_table.num_rows, type=field.type))
+
+                # Reorder columns to match target schema, then cast types
+                cached_table = cached_table.select(target_schema.names).cast(target_schema, safe=False)
+                new_table = new_table.select(target_schema.names).cast(target_schema, safe=False)
                 merged = pa.concat_tables([cached_table, new_table])
                 del cached_table, new_table  # Free before writing
                 pq.write_table(merged, 'raw_events.parquet', compression='zstd')
