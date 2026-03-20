@@ -3,60 +3,80 @@ name: Deploy to Hugging Face
 on:
   push:
     branches: [main]
-    # Don't trigger on data file changes (those come from scheduled_update which has its own deploy)
+    # Don't trigger on data-only changes (scheduled_update has its own deploy)
     paths-ignore:
-      - '*.pkl'
-      - '*.parquet'
-      - 'matches_summary.parquet'
-      - 'team_advanced_stats.parquet'
-      - 'historical_events.parquet'
-      - 'historical_matches.parquet'
+      - '**.pkl'
+      - '**.parquet'
   workflow_dispatch:
+
+# Prevent concurrent deploys from stomping on each other
+concurrency:
+  group: hf-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out GitHub repository
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          path: github-repo
 
-      - name: Download raw_events.parquet from HF
+      - name: Clone existing HF Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # raw_events.parquet is too large for GitHub (>100MB) so it lives only on HF.
-          # Download it so we can include it in the deploy.
-          # CRITICAL: Fail the workflow if download fails — never deploy without this file.
-          curl -L -f -o raw_events.parquet \
-            -H "Authorization: Bearer ${HF_TOKEN}" \
-            "https://huggingface.co/spaces/LMK08/ACP-Dashboard/resolve/main/raw_events.parquet"
-          echo "✅ Downloaded raw_events.parquet ($(du -h raw_events.parquet | cut -f1))"
+          # Clone the EXISTING HF repo so we preserve all data files (raw_events.parquet, etc.)
+          # This avoids the "wipe and replace" problem of git init + force-push.
+          GIT_LFS_SKIP_SMUDGE=1 git clone \
+            https://LMK08:${HF_TOKEN}@huggingface.co/spaces/LMK08/ACP-Dashboard \
+            hf-repo || {
+              echo "HF repo doesn't exist yet — creating fresh"
+              mkdir -p hf-repo && cd hf-repo && git init -b main
+              git lfs install
+              git lfs track "*.parquet" "*.pkl"
+              git add .gitattributes
+            }
+          echo "✅ HF repo cloned (LFS pointers only, data files preserved on remote)"
+
+      - name: Update code files in HF repo
+        run: |
+          # Copy code + config files from GitHub into the HF clone.
+          # Data files (.pkl, .parquet) are NOT touched — they stay as-is on HF.
+          cd github-repo
+
+          # Copy all Python files, config, and requirements
+          for f in *.py requirements.txt config.yaml league_config.py Dockerfile; do
+            if [ -f "$f" ]; then
+              cp "$f" ../hf-repo/
+            fi
+          done
+
+          # Copy any subdirectories that contain code (not data)
+          for d in .streamlit; do
+            if [ -d "$d" ]; then
+              cp -r "$d" ../hf-repo/
+            fi
+          done
+
+          echo "✅ Code files updated"
 
       - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Build a clean single-commit repo and force-push to HF.
-          # Only one commit = only one copy of each file.
-          DEPLOY_DIR=$(mktemp -d)
-          rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
-                   --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
-                   . "$DEPLOY_DIR/"
-          cd "$DEPLOY_DIR"
-          git init -b main
+          cd hf-repo
           git lfs install
-          git lfs track "*.parquet"
-          git lfs track "*.pkl"
-          git add .gitattributes
           git add -A
-          git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
-              commit -m "Deploy from $(git -C $GITHUB_WORKSPACE rev-parse --short HEAD)"
-          git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/LMK08/ACP-Dashboard
-          git push hf main --force
-          echo "Successfully deployed to Hugging Face Space"
+
+          # Only push if there are actual changes
+          if git diff --cached --quiet; then
+            echo "No changes to deploy"
+          else
+            git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
+                commit -m "Code update from $(git -C $GITHUB_WORKSPACE/github-repo rev-parse --short HEAD)"
+            git push
+            echo "✅ Successfully deployed code update to Hugging Face Space"
+          fi
