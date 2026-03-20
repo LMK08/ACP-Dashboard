@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -78,7 +80,9 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'github-actions-bot@users.noreply.github.com'
+          git lfs install
 
+          git add -f .gitattributes
           git add -f *.parquet
           git add -f *.pkl
 
