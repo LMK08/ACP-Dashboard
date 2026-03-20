@@ -2573,13 +2573,14 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     data = _player_data_df.copy()
 
     data['totalMinutes'] = pd.to_numeric(data['totalMinutes'], errors='coerce')
-    # Keep ALL players in the result, but use min_minutes threshold for the ranking population
+    # Only include qualifying players (>= min_minutes) in percentile calculations
     _qualifying_mask = data['totalMinutes'] >= min_minutes
     if _qualifying_mask.sum() == 0:
         print(f"Warning: No players found with >= {min_minutes} minutes.")
         return pd.DataFrame()
 
-    # Calculate percentiles — use 300+ min population, but include each sub-threshold player individually
+    # Calculate percentiles — ONLY for qualifying players (300+ min)
+    # Sub-threshold players are excluded from rankings entirely
     for position, group in _position_groups.items():
         metrics = list(_weights[position].keys())
         position_data_mask = data['primaryPosition'].isin(group)
@@ -2587,9 +2588,8 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
 
         if position_data_indices.empty: continue
 
-        # Split into qualifying (300+ min) and sub-threshold players at this position
+        # Only qualifying players get percentiles
         _pos_qualifying = data.loc[position_data_indices][_qualifying_mask.reindex(position_data_indices, fill_value=False)]
-        _pos_sub = data.loc[position_data_indices][~_qualifying_mask.reindex(position_data_indices, fill_value=False)]
 
         for metric in metrics:
             if metric in data.columns:
@@ -2600,15 +2600,6 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
                     if metric in _invert_metrics:
                         percentiles_q = 1 - percentiles_q.fillna(0.5)
                     data.loc[_pos_qualifying.index, metric + '_percentile'] = percentiles_q
-
-                # Percentiles for sub-threshold players — each ranked against qualifying + themselves
-                for _sub_idx in _pos_sub.index:
-                    _sub_val = data.loc[_sub_idx, metric]
-                    _pool = pd.concat([data.loc[_pos_qualifying.index, metric], pd.Series([_sub_val], index=[_sub_idx])])
-                    _pct = _pool.rank(pct=True).loc[_sub_idx]
-                    if metric in _invert_metrics:
-                        _pct = 1 - _pct
-                    data.loc[_sub_idx, metric + '_percentile'] = _pct
             
     # Calculate Scores
     for position, group in _position_groups.items():
@@ -2793,6 +2784,9 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     # --- Distribution Plots ---
     primary_pos_group = POSITION_GROUPS.get(eligible_groups[0], [player_data['primaryPosition'].values[0]])
     relevant_players_data = all_position_data[all_position_data['primaryPosition'].isin(primary_pos_group)]
+    # Exclude sub-threshold players from distributions
+    if 'totalMinutes' in relevant_players_data.columns:
+        relevant_players_data = relevant_players_data[pd.to_numeric(relevant_players_data['totalMinutes'], errors='coerce').fillna(0) >= 300]
     
     if relevant_metrics and not relevant_players_data.empty:
         gs_distributions = GridSpec(len(relevant_metrics), 1, left=0.70, right=0.98, top=0.82, bottom=0.07, hspace=0.7, figure=fig)
@@ -5595,7 +5589,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
        # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
-        
+
+        # Gate: 300-minute minimum for radar charts
+        _MIN_RADAR_MINUTES = 300
+        _show_radar = total_minutes >= _MIN_RADAR_MINUTES
+        if not _show_radar:
+            st.info(f"⚠️ **Insufficient sample size** — {player_per_90_stats.get('playerName', 'This player')} has only played **{int(total_minutes)} minutes** this season. A minimum of **{_MIN_RADAR_MINUTES} minutes** is required for radar charts and percentile rankings to be statistically meaningful.")
+
         # 1. Detect Raw Positions (What did they actually play?)
         try:
             player_events = profile_events_df[profile_events_df['player.id'] == player_id]
@@ -5659,7 +5659,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     pos_filtered_events, pos_player_minutes_df, season_id=pos_cache_key
                 )
                 pos_filtered_scores = calculate_player_percentiles_and_scores(
-                    pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=0, season_id=pos_cache_key
+                    pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=pos_cache_key
                 )
                 if not pos_filtered_scores.empty:
                     radar_stats_df = pos_filtered_scores
@@ -5722,8 +5722,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if best_role is None: best_role = eligible_roles[0]
 
             # 4. Generate Chart for the Winner
-            st.caption(f"Best Template Match: **{best_role}**")
-            
+            if not _show_radar:
+                st.caption(f"Best Template Match: **{best_role}** *(radar hidden — {int(total_minutes)} min played, 300 min required)*")
+            else:
+                st.caption(f"Best Template Match: **{best_role}**")
+
             # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
             metrics_to_plot = [m for m in metrics_to_plot if m in radar_player_data_row.columns]
@@ -5735,8 +5738,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if len(final_population) < 5: final_population = radar_stats_df
 
             # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
-            # This ensures that if the user selects a raw position that maps to multiple templates 
-            # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated 
+            # This ensures that if the user selects a raw position that maps to multiple templates
+            # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated
             # based on the new comparison group.
             radar_player_data_row = radar_player_data_row.copy()
 
@@ -5792,17 +5795,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # -----------------------------------------------------------------------
 
             # Plot
-            _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-            fig_radar = create_radar_with_distributions(
-                radar_player_data_row,
-                metrics_to_plot,
-                best_role,
-                eligible_roles,
-                all_position_data=final_population,
-                full_df_for_ranking=radar_stats_df,
-                season_label=_radar_season_label
-            )
-            st.pyplot(fig_radar, use_container_width=True)
+            if _show_radar:
+                _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+                fig_radar = create_radar_with_distributions(
+                    radar_player_data_row,
+                    metrics_to_plot,
+                    best_role,
+                    eligible_roles,
+                    all_position_data=final_population,
+                    full_df_for_ranking=radar_stats_df,
+                    season_label=_radar_season_label
+                )
+                st.pyplot(fig_radar, use_container_width=True)
 
         # Career radar section disabled to reduce memory usage
         # TODO: Re-enable when Streamlit Cloud resources are upgraded
@@ -6302,24 +6306,35 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 4. Plot Radar ---
         st.subheader(f"Comparing: {selected_player_a_name} vs. {selected_player_b_name}")
-        
-        metrics_to_plot = list(WEIGHTS[selected_template].keys())
-        metrics_to_plot = [m for m in metrics_to_plot if m in player_stats_with_scores_df.columns]
-        
-        # --- FIX: Use a square figure to prevent distortion ---
-        fig = plt.figure(figsize=(15, 15))
-        # [left, bottom, width, height] - This centers the radar
-        ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
-        
-        plot_comparison_radar(
-            ax_radar,
-            player_a_data,
-            player_b_data,
-            metrics_to_plot,
-            selected_template
-        )
-        
-        st.pyplot(fig, use_container_width=True)
+
+        _mins_a = pd.to_numeric(player_a_data.iloc[0].get('totalMinutes', 0), errors='coerce') or 0
+        _mins_b = pd.to_numeric(player_b_data.iloc[0].get('totalMinutes', 0), errors='coerce') or 0
+        _below_threshold = []
+        if _mins_a < 300:
+            _below_threshold.append(f"{selected_player_a_name} ({int(_mins_a)} min)")
+        if _mins_b < 300:
+            _below_threshold.append(f"{selected_player_b_name} ({int(_mins_b)} min)")
+
+        if _below_threshold:
+            st.info(f"⚠️ **Insufficient sample size** — {' and '.join(_below_threshold)} has not reached the **300-minute minimum** required for radar charts and percentile rankings to be statistically meaningful.")
+        else:
+            metrics_to_plot = list(WEIGHTS[selected_template].keys())
+            metrics_to_plot = [m for m in metrics_to_plot if m in player_stats_with_scores_df.columns]
+
+            # --- FIX: Use a square figure to prevent distortion ---
+            fig = plt.figure(figsize=(15, 15))
+            # [left, bottom, width, height] - This centers the radar
+            ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
+
+            plot_comparison_radar(
+                ax_radar,
+                player_a_data,
+                player_b_data,
+                metrics_to_plot,
+                selected_template
+            )
+
+            st.pyplot(fig, use_container_width=True)
 
     # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
@@ -6361,9 +6376,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         max_minutes = int(player_stats_with_scores_df['totalMinutes'].max())
         min_minutes_filter = st.sidebar.slider(
             "Minimum Minutes Played:",
-            min_value=0,
-            max_value=max_minutes,
-            value=90,
+            min_value=300,
+            max_value=max(max_minutes, 300),
+            value=300,
             step=45,
             key="player_analysis_min_minutes"
         )
