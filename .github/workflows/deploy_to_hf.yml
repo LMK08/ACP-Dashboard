@@ -3,6 +3,14 @@ name: Deploy to Hugging Face
 on:
   push:
     branches: [main]
+    # Don't trigger on data file changes (those come from scheduled_update which has its own deploy)
+    paths-ignore:
+      - '*.pkl'
+      - '*.parquet'
+      - 'matches_summary.parquet'
+      - 'team_advanced_stats.parquet'
+      - 'historical_events.parquet'
+      - 'historical_matches.parquet'
   workflow_dispatch:
 
 jobs:
@@ -24,11 +32,11 @@ jobs:
         run: |
           # raw_events.parquet is too large for GitHub (>100MB) so it lives only on HF.
           # Download it so we can include it in the deploy.
+          # CRITICAL: Fail the workflow if download fails — never deploy without this file.
           curl -L -f -o raw_events.parquet \
             -H "Authorization: Bearer ${HF_TOKEN}" \
-            "https://huggingface.co/spaces/LMK08/ACP-Dashboard/resolve/main/raw_events.parquet" \
-            && echo "✅ Downloaded raw_events.parquet ($(du -h raw_events.parquet | cut -f1))" \
-            || echo "⚠️ raw_events.parquet not found on HF (first deploy or file missing)"
+            "https://huggingface.co/spaces/LMK08/ACP-Dashboard/resolve/main/raw_events.parquet"
+          echo "✅ Downloaded raw_events.parquet ($(du -h raw_events.parquet | cut -f1))"
 
       - name: Push to Hugging Face Space
         env:
