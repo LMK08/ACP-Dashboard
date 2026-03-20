@@ -83,8 +83,7 @@ def estimate_minutes_from_events(events_df):
 
 
 def main():
-    print("Loading data files...")
-    events = pd.read_parquet('raw_events.parquet')
+    print("Loading data files (memory-efficient)...")
     matches = pd.read_parquet('matches_summary.parquet')
     with open('all_match_data.pkl', 'rb') as f:
         all_match_data = pickle.load(f)
@@ -95,7 +94,9 @@ def main():
 
     for sid in ALL_SEASON_IDS:
         print(f"\n--- Season {sid} ---")
-        season_events = events[events['seasonId'] == sid]
+        # Load only this season's events (avoids loading full 4+ GB into memory)
+        season_events = pd.read_parquet('raw_events.parquet',
+            filters=[('seasonId', '==', sid)])
 
         # Source 1: API minutes
         minutes_df = api_minutes.get(sid, pd.DataFrame()).copy()
