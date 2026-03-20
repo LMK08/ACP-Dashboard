@@ -1726,7 +1726,11 @@ def main():
     with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
     print("✅ Per-season team stats saved to 'season_team_stats.pkl'")
 
-    
+    # Free large DataFrames no longer needed — critical for CI memory
+    del all_raw_events_df, all_match_data
+    import gc; gc.collect()
+    print("🧹 Freed events & match data from memory for player minutes step.")
+
     # --- 9. FETCH OFFICIAL PLAYER MINUTES (INCREMENTAL) ---
     print("\nStarting official player minute retrieval (incremental)...")
 
@@ -1762,7 +1766,9 @@ def main():
 
         season_matches_df = all_matches_summary_df[all_matches_summary_df['seasonId'] == season_id]
         season_match_ids = season_matches_df['matchId'].dropna().unique().tolist()
-        season_events = all_raw_events_df[all_raw_events_df['seasonId'] == season_id].copy()
+        # Load only this season's events from parquet (memory-efficient row filtering)
+        season_events = pd.read_parquet('raw_events.parquet',
+            filters=[('seasonId', '==', season_id)])
 
         print(f"\n--- Fetching player minutes for {COMPETITIONS[comp_id]['name']} season {season_id} ({len(season_match_ids)} matches) ---")
         season_minutes_df, season_lineups = fetch_official_player_minutes(
