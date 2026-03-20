@@ -30,4 +30,4 @@ __pycache__/
 
 # System files
 .DS_Store
-.env
+.envraw_events.parquet

@@ -29,8 +29,18 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
+
+      - name: Download cached events from HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Download raw_events.parquet from HF Space (our single source of truth for this large file)
+          # This avoids storing the 178MB+ file on GitHub (100MB limit)
+          curl -L -f -o raw_events.parquet \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            "https://huggingface.co/spaces/LMK08/ACP-Dashboard/resolve/main/raw_events.parquet" \
+            && echo "✅ Downloaded cached raw_events.parquet ($(du -h raw_events.parquet | cut -f1))" \
+            || echo "⚠️ No cached raw_events.parquet found on HF — will fetch all events from scratch"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -80,10 +90,9 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'github-actions-bot@users.noreply.github.com'
-          git lfs install
 
-          git add -f .gitattributes
-          git add -f *.parquet
+          # Add all data files EXCEPT raw_events.parquet (too large for GitHub, lives on HF only)
+          git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet
           git add -f *.pkl
 
           if [ -n "$(git status --porcelain)" ]; then
