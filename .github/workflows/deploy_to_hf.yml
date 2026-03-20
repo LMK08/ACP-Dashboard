@@ -18,6 +18,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Download raw_events.parquet from HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # raw_events.parquet is too large for GitHub (>100MB) so it lives only on HF.
+          # Download it so we can include it in the deploy.
+          curl -L -f -o raw_events.parquet \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            "https://huggingface.co/spaces/LMK08/ACP-Dashboard/resolve/main/raw_events.parquet" \
+            && echo "✅ Downloaded raw_events.parquet ($(du -h raw_events.parquet | cut -f1))" \
+            || echo "⚠️ raw_events.parquet not found on HF (first deploy or file missing)"
+
       - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
