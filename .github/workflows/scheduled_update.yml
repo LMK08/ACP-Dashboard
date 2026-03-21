@@ -5,9 +5,10 @@ permissions:
 
 on:
   schedule:
-    # Runs at 05:00 UTC on Sunday and Monday,
-    # which is 12:00 AM EST (midnight) on Sat/Sun night.
+    # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
     - cron: '0 5 * * 0,1'
+    # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
+    - cron: '0 6 * * 3,4'
 
   # This line allows you to run the update manually from the GitHub "Actions" tab
   workflow_dispatch:
