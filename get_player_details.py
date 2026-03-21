@@ -8,6 +8,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 import warnings
+from league_config import COMPETITIONS, get_credentials, competition_for_season
 
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -84,10 +85,18 @@ def main():
     """Main function to load events, find players, and fetch details."""
     # --- 1. Load Credentials ---
     load_dotenv()
-    wyscout_user = os.getenv("WYSCOUT_USER")
-    wyscout_pass = os.getenv("WYSCOUT_PASS")
-    if not wyscout_user or not wyscout_pass:
-        print("❌ Error: Wyscout credentials not found in .env file.")
+
+    # Validate that at least one credential set is available
+    creds_available = {}
+    for comp_id, comp in COMPETITIONS.items():
+        user, pw = get_credentials(comp_id)
+        if user and pw:
+            creds_available[comp_id] = (user, pw)
+        else:
+            print(f"Warning: No credentials for {comp['name']} (competition {comp_id}), skipping.")
+
+    if not creds_available:
+        print("Error: No Wyscout credentials found in .env file.")
         return
 
     # --- 2. Load Existing Player Details (if any) ---
@@ -104,36 +113,79 @@ def main():
             existing_data = []
             existing_ids = set()
 
-    # --- 3. Find All Player IDs from Event Data ---
+    # --- 3. Find All Player IDs from Event Data, grouped by competition ---
     try:
-        events_df = pd.read_parquet(EVENTS_FILE, columns=['player.id'])
+        events_df = pd.read_parquet(EVENTS_FILE, columns=['player.id', 'competitionId'])
     except FileNotFoundError:
-        print(f"❌ Error: {EVENTS_FILE} not found. Run process_data.py first.")
+        print(f"Error: {EVENTS_FILE} not found. Run process_data.py first.")
         return
     except Exception as e:
-        print(f"❌ Error loading {EVENTS_FILE}: {e}")
+        print(f"Error loading {EVENTS_FILE}: {e}")
         return
-        
-    all_player_ids = events_df['player.id'].dropna().unique()
-    all_player_ids = {int(pid) for pid in all_player_ids if pid != 0}
+
+    events_df = events_df.dropna(subset=['player.id'])
+    events_df = events_df[events_df['player.id'] != 0]
+    events_df['player.id'] = events_df['player.id'].astype(int)
+    events_df['competitionId'] = events_df['competitionId'].astype(int)
+
+    all_player_ids = set(events_df['player.id'].unique())
     print(f"Found {len(all_player_ids)} unique player IDs in event data.")
 
+    # Group player IDs by their competition
+    players_by_comp = {}
+    for comp_id in events_df['competitionId'].unique():
+        comp_players = set(events_df.loc[events_df['competitionId'] == comp_id, 'player.id'].unique())
+        players_by_comp[int(comp_id)] = comp_players
+
     # --- 4. Determine Which New Players to Fetch ---
-    new_player_ids_to_fetch = list(all_player_ids - existing_ids)
-    
-    if not new_player_ids_to_fetch:
-        print("✅ All player details are already up-to-date.")
-        combined_data = existing_data 
+    new_player_ids = all_player_ids - existing_ids
+
+    if not new_player_ids:
+        print("All player details are already up-to-date.")
+        combined_data = existing_data
     else:
-        # --- 5. Fetch New Data ---
+        # --- 5. Fetch New Data per competition ---
         session = setup_session()
-        new_player_data = fetch_player_details(new_player_ids_to_fetch, wyscout_user, wyscout_pass, session)
-        
+        new_player_data = []
+        fetched_ids = set()
+
+        # Process each competition's players with the matching credentials
+        for comp_id, comp_player_ids in players_by_comp.items():
+            if comp_id not in creds_available:
+                print(f"Skipping competition {comp_id} (no credentials).")
+                continue
+
+            # Only fetch players that are new AND not yet fetched by another competition
+            ids_to_fetch = list(comp_player_ids & new_player_ids - fetched_ids)
+            if not ids_to_fetch:
+                continue
+
+            user, pw = creds_available[comp_id]
+            comp_name = COMPETITIONS[comp_id]["name"]
+            print(f"\nFetching {len(ids_to_fetch)} players for {comp_name} (competition {comp_id})...")
+            results = fetch_player_details(ids_to_fetch, user, pw, session)
+            new_player_data.extend(results)
+            fetched_ids.update(r['playerId'] for r in results)
+
+        # Handle players that appear in both leagues but weren't found yet
+        # (e.g. player in Campeonato events but only fetchable with Liga 3 creds)
+        still_missing = new_player_ids - fetched_ids - existing_ids
+        if still_missing:
+            for comp_id, (user, pw) in creds_available.items():
+                remaining = list(still_missing - fetched_ids)
+                if not remaining:
+                    break
+                comp_name = COMPETITIONS[comp_id]["name"]
+                print(f"\nRetrying {len(remaining)} missing players with {comp_name} credentials...")
+                results = fetch_player_details(remaining, user, pw, session)
+                new_player_data.extend(results)
+                fetched_ids.update(r['playerId'] for r in results)
+
         # --- 6. Combine and Save ---
         combined_data = existing_data + new_player_data
         with open(OUTPUT_FILE, 'wb') as f:
             pickle.dump(combined_data, f)
-        print(f"✅ Successfully saved {len(combined_data)} total player records to {OUTPUT_FILE}.")
+        print(f"\nSuccessfully saved {len(combined_data)} total player records to {OUTPUT_FILE}.")
 
     # --- 7. Load and Show Results ---
     print("\n--- Player Details Summary ---")

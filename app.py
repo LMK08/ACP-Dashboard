@@ -561,17 +561,31 @@ def get_season_matches(matches_summary_df, season_id):
         return matches_summary_df[matches_summary_df['seasonId'].isin(season_id)]
     return matches_summary_df[matches_summary_df['seasonId'] == season_id]
 
-def get_season_player_minutes(player_minutes_data, season_id):
+def _season_ids_for_comps(comp_ids):
+    """Return set of season IDs belonging to the given competition IDs."""
+    sids = set()
+    if comp_ids is not None:
+        for cid in comp_ids:
+            if cid in COMPETITIONS:
+                sids.update(COMPETITIONS[cid]["seasons"].keys())
+    return sids
+
+def get_season_player_minutes(player_minutes_data, season_id, comp_ids=None):
     """Get player minutes for a season. Returns DataFrame.
     player_minutes_data is {season_id: DataFrame}.
-    If season_id is None, combine all seasons.
+    If season_id is None, combine all seasons (filtered by comp_ids if provided).
     Accepts a single season_id (int) or a list of season_ids.
     """
     if isinstance(player_minutes_data, pd.DataFrame):
         return player_minutes_data
     if season_id is None:
-        # Combine all seasons
-        all_dfs = [df for df in player_minutes_data.values() if isinstance(df, pd.DataFrame) and not df.empty]
+        # Combine all seasons, but only those belonging to selected leagues
+        valid_sids = _season_ids_for_comps(comp_ids) if comp_ids and len(comp_ids) < len(COMPETITIONS) else None
+        all_dfs = []
+        for sid, df in player_minutes_data.items():
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                if valid_sids is None or sid in valid_sids:
+                    all_dfs.append(df)
         if not all_dfs:
             return pd.DataFrame()
         combined = pd.concat(all_dfs)
@@ -595,15 +609,17 @@ def get_season_player_minutes(player_minutes_data, season_id):
         }).reset_index()
     return player_minutes_data.get(season_id, pd.DataFrame())
 
-def get_season_team_stats(season_team_stats, season_id):
+def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
     """Get team stats for a season. Returns {team: stats} dict.
     season_team_stats is {season_id: {team: stats}}.
+    If season_id is None, merges all seasons (filtered by comp_ids if provided).
     """
     if season_id is None:
-        # Merge all seasons (last season's data takes precedence)
+        valid_sids = _season_ids_for_comps(comp_ids) if comp_ids and len(comp_ids) < len(COMPETITIONS) else None
         merged = {}
         for sid in sorted(season_team_stats.keys()):
-            merged.update(season_team_stats.get(sid, {}))
+            if valid_sids is None or sid in valid_sids:
+                merged.update(season_team_stats.get(sid, {}))
         return merged
     if isinstance(season_id, list):
         merged = {}
@@ -4954,8 +4970,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown") if isinstance(selected_season_id, int) else "Unknown"
         team_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
         team_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
-        team_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
-        team_season_stats = get_season_team_stats(season_team_stats, active_season_ids)
+        team_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
+        team_season_stats = get_season_team_stats(season_team_stats, active_season_ids, comp_ids=selected_comp_ids)
 
         all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
         selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
@@ -5452,7 +5468,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.player_profile_last_season = selected_season_id
         profile_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
         profile_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
-        profile_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
+        profile_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- 1. Load All Necessary Data ---
         player_details_df = load_player_details()
@@ -6211,7 +6227,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_season_id = season_selector("player_comparison", include_all_seasons=True, comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
         comp_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
-        comp_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
+        comp_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- 1. Load Data ---
         try:
@@ -6344,7 +6360,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
         analysis_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
-        analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
+        analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- 1. Load Data ---
         try:
@@ -7089,7 +7105,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_season_id = season_selector("shadow_team", include_all_seasons=True, comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
         shadow_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
-        shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids)
+        shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- Load Data ---
         player_details_df = load_player_details()
