@@ -215,6 +215,7 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
 
     unique_player_ids = set()
     match_lineups = {}  # {match_id: {team_name: {lineup, bench, substitutions, formation}}}
+    player_team_map = {}  # {playerId: teamName} — built from lineup data
 
     print(f"\n🔍 Collecting player IDs from {len(match_ids)} matches...")
 
@@ -244,16 +245,18 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
                 if not team_name or team_name.startswith('team_'):
                     team_name = f'team_{team_id}'
 
-                # Collect all player IDs from lineup and bench
+                # Collect all player IDs from lineup and bench, map to team
                 for player in formation.get('lineup', []):
                     pid = player.get('playerId')
                     if pid:
                         unique_player_ids.add(pid)
+                        player_team_map[pid] = team_name
 
                 for player in formation.get('bench', []):
                     pid = player.get('playerId')
                     if pid:
                         unique_player_ids.add(pid)
+                        player_team_map[pid] = team_name
 
                 # Store lineup, bench, and substitution data for this team
                 match_lineups[match_id][team_name] = {
@@ -273,6 +276,7 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
     print(f"   (Competition: {competition_id}, Season: {season_id})")
 
     player_stats_list = []
+    unknown_name_pids = []  # Track players needing name resolution
 
     for pid in tqdm(unique_player_ids, desc="Fetching Player Stats"):
         url = f"{base_url_v3}/players/{pid}/advancedstats"
@@ -298,19 +302,49 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
                     # First position is most played
                     api_position = positions_data[0].get('position', {}).get('code', '').upper()
 
-                # Get identity from events (fallback to API position)
+                # Get identity from events first, then lineup team map as fallback
                 identity = id_map.get(pid, {'name': 'Unknown', 'team': 'Unknown', 'pos': 'Unknown'})
+                player_name = identity['name']
+                team_name = identity['team']
+
+                # Use lineup-based team name if events didn't have it
+                if team_name == 'Unknown' and pid in player_team_map:
+                    team_name = player_team_map[pid]
 
                 player_stats_list.append({
                     'playerId': pid,
-                    'playerName': identity['name'],
-                    'teamName': identity['team'],
+                    'playerName': player_name,
+                    'teamName': team_name,
                     'primaryPosition': api_position if api_position else identity['pos'],
                     'totalMinutes': minutes
                 })
 
+                if player_name == 'Unknown':
+                    unknown_name_pids.append(pid)
+
         except Exception as e:
             print(f"  -> ⚠️ Error fetching player {pid}: {e}")
+
+    # --- STEP 3b: Resolve unknown player names via /players/{pid} endpoint ---
+    if unknown_name_pids:
+        print(f"\n🔍 Resolving {len(unknown_name_pids)} unknown player names...")
+        name_lookup = {}
+        for pid in tqdm(unknown_name_pids, desc="Resolving Names"):
+            try:
+                r = session.get(f"{base_url_v3}/players/{pid}", auth=auth, timeout=20)
+                if r.status_code == 200:
+                    pdata = r.json()
+                    name = pdata.get('shortName') or pdata.get('lastName') or pdata.get('firstName')
+                    if name:
+                        name_lookup[pid] = name
+            except:
+                continue
+        # Patch the stats list
+        if name_lookup:
+            for entry in player_stats_list:
+                if entry['playerName'] == 'Unknown' and entry['playerId'] in name_lookup:
+                    entry['playerName'] = name_lookup[entry['playerId']]
+            print(f"   ✅ Resolved {len(name_lookup)} player names.")
 
     # --- STEP 4: Create DataFrame ---
     if not player_stats_list:
