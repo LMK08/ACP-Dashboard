@@ -408,7 +408,7 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v8'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v9'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -2490,7 +2490,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     minutes_gt_0 = total_minutes > 0
     
     # Define cols that should NOT be normalized
-    rate_cols = [col for col in base_df.columns if '%' in col or 'per' in col or 'index' in col or 'Percentage' in col or 'Avg' in col]
+    rate_cols = [col for col in base_df.columns if '%' in col or 'per' in col.lower() or 'index' in col.lower() or 'Percentage' in col or 'Avg' in col]
     info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y', 'Defensive Area']
     dont_normalize = rate_cols + info_cols
 
