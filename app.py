@@ -3031,16 +3031,22 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season
     wyscout_stats = load_team_advanced_stats()
     if wyscout_stats is not None:
         print("Using Wyscout team advanced stats for radars...")
-        return _build_radars_from_wyscout(wyscout_stats, season_id=season_id)
+        raw_df, pct_df = _build_radars_from_wyscout(wyscout_stats, season_id=season_id)
+        if not raw_df.empty:
+            return raw_df, pct_df
+        print("Wyscout stats empty for this season, falling back to events...")
 
-    print("Wyscout stats not available, calculating from events...")
+    print("Calculating radar stats from events...")
     return _calculate_radars_from_events(season_events_df, matches_summary_df)
 
 def _build_radars_from_wyscout(df, season_id=None):
     """Build radar DataFrames from Wyscout team advanced stats.
     Filters by season_id so percentiles are compared within the selected season."""
     if season_id is not None and 'seasonId' in df.columns:
-        df = df[df['seasonId'] == season_id]
+        if isinstance(season_id, list):
+            df = df[df['seasonId'].isin(season_id)]
+        else:
+            df = df[df['seasonId'] == season_id]
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -4980,13 +4986,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Load player details for roster table
         player_details_df = load_player_details()
 
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df, season_id=selected_season_id)
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
 
         # Compute set piece radar data (all rate metrics — higher = better, no inversions)
         sp_df_raw = None
         sp_df_pct = None
         try:
-            sp_df_raw = calculate_set_piece_metrics(team_events_df, season_id=selected_season_id)
+            sp_df_raw = calculate_set_piece_metrics(team_events_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
             if sp_df_raw is not None and not sp_df_raw.empty:
                 sp_df_pct = sp_df_raw.copy()
                 for col in sp_df_pct.columns:
@@ -5252,8 +5258,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         league_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
 
         # --- 1. ALL DATA CALCS ---
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df, season_id=selected_season_id)
-        team_strength_df = calculate_team_strength(league_events_df, league_matches_df, season_id=selected_season_id).copy()
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
+        team_strength_df = calculate_team_strength(league_events_df, league_matches_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id).copy()
 
         # Filter all_match_data to only include matches from selected season
         season_match_ids = set(league_matches_df['matchId'].dropna().unique())
