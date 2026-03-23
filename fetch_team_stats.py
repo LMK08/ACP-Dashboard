@@ -70,50 +70,50 @@ def main():
                 url = f"https://apirest.wyscout.com/v3/teams/{team_id}/advancedstats"
                 params = {'compId': comp_id, 'seasonId': season_id}
 
-            try:
-                r = session.get(url, auth=auth, params=params, timeout=15)
-                if r.status_code != 200:
-                    print(f"  {team_name}: HTTP {r.status_code}")
-                    continue
+                try:
+                    r = session.get(url, auth=auth, params=params, timeout=15)
+                    if r.status_code != 200:
+                        print(f"  {team_name}: HTTP {r.status_code}")
+                        continue
 
-                data = r.json()
-                avg = data.get('average', {})
-                pct = data.get('percent', {})
-                total = data.get('total', {})
+                    data = r.json()
+                    avg = data.get('average', {})
+                    pct = data.get('percent', {})
+                    total = data.get('total', {})
 
-                rows.append({
-                    'team_id': team_id,
-                    'team_name': team_name,
-                    'seasonId': season_id,
-                    # Offensive
-                    'goals': avg.get('goals', 0),
-                    'xg': avg.get('xgShot', 0),
-                    'shots': avg.get('shots', 0),
-                    'touch_in_box': avg.get('touchInBox', 0),
-                    'passes_to_final_third': avg.get('passesToFinalThird', 0),
-                    'crosses': avg.get('crosses', 0),
-                    'successful_dribbles': avg.get('successfulDribbles', 0),
-                    # Distribution
-                    'passes': avg.get('passes', 0),
-                    'progressive_run': avg.get('progressiveRun', 0),
-                    'forward_passes': avg.get('forwardPasses', 0),
-                    'possession_percent': avg.get('possessionPercent', 0),
-                    'ball_losses': avg.get('ballLosses', 0),
-                    # Defensive
-                    'conceded_goals': avg.get('concededGoals', 0),
-                    'xg_shot_against': avg.get('xgShotAgainst', 0),
-                    'shots_against': avg.get('shotsAgainst', 0),
-                    'aerial_duels_won_pct': pct.get('aerialDuelsWon', 0),
-                    'defensive_duels_won_pct': pct.get('newDefensiveDuelsWon', 0),
-                    'interceptions': avg.get('interceptions', 0),
-                    'fouls': avg.get('fouls', 0),
-                    'ppda': total.get('ppda', 0),
-                })
-                print(f"  {team_name}: OK")
-            except Exception as e:
-                print(f"  {team_name}: Error - {e}")
+                    rows.append({
+                        'team_id': team_id,
+                        'team_name': team_name,
+                        'seasonId': season_id,
+                        # Offensive
+                        'goals': avg.get('goals', 0),
+                        'xg': avg.get('xgShot', 0),
+                        'shots': avg.get('shots', 0),
+                        'touch_in_box': avg.get('touchInBox', 0),
+                        'passes_to_final_third': avg.get('passesToFinalThird', 0),
+                        'crosses': avg.get('crosses', 0),
+                        'successful_dribbles': avg.get('successfulDribbles', 0),
+                        # Distribution
+                        'passes': avg.get('passes', 0),
+                        'progressive_run': avg.get('progressiveRun', 0),
+                        'forward_passes': avg.get('forwardPasses', 0),
+                        'possession_percent': avg.get('possessionPercent', 0),
+                        'ball_losses': avg.get('ballLosses', 0),
+                        # Defensive
+                        'conceded_goals': avg.get('concededGoals', 0),
+                        'xg_shot_against': avg.get('xgShotAgainst', 0),
+                        'shots_against': avg.get('shotsAgainst', 0),
+                        'aerial_duels_won_pct': pct.get('aerialDuelsWon', 0),
+                        'defensive_duels_won_pct': pct.get('newDefensiveDuelsWon', 0),
+                        'interceptions': avg.get('interceptions', 0),
+                        'fouls': avg.get('fouls', 0),
+                        'ppda': total.get('ppda', 0),
+                    })
+                    print(f"  {team_name}: OK")
+                except Exception as e:
+                    print(f"  {team_name}: Error - {e}")
 
-            time.sleep(0.3)
+                time.sleep(0.3)
 
     df = pd.DataFrame(rows)
     df.to_parquet(OUTPUT_FILE, index=False)
