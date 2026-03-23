@@ -5373,21 +5373,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 5. All Teams Strength Chart ---
         st.subheader("Team Strength Scatterplot (All Teams)")
 
-        # Multi-season comparison option
+        # Multi-season comparison option (filtered to selected league)
+        league_scatter_map = {}
+        for cid in selected_comp_ids:
+            if cid in COMPETITIONS:
+                league_scatter_map.update(COMPETITIONS[cid]["seasons"])
+        scatter_season_labels = list(league_scatter_map.values())
+        scatter_default = league_scatter_map.get(selected_season_id)
+        if not scatter_default and scatter_season_labels:
+            scatter_default = scatter_season_labels[0]
         scatter_seasons = st.multiselect(
-            "Compare seasons", list(SEASON_ID_MAP.values()),
-            default=[SEASON_ID_MAP.get(selected_season_id, SEASON_ID_MAP[CURRENT_SEASON_ID])],
+            "Compare seasons", scatter_season_labels,
+            default=[scatter_default] if scatter_default else [],
             key="scatter_seasons"
         )
-        season_name_to_id_scatter = {v: k for k, v in SEASON_ID_MAP.items()}
+        season_name_to_id_scatter = {v: k for k, v in league_scatter_map.items()}
 
         if len(scatter_seasons) > 1:
             # Multi-season: combine team_strength_df from each season
             combined_strength_frames = []
             for sname in scatter_seasons:
                 sid = season_name_to_id_scatter[sname]
-                s_events = get_season_events(raw_events_df, sid)
-                s_matches = get_season_matches(matches_summary_df, sid)
+                s_events = filter_by_league(get_season_events(raw_events_df, sid), selected_comp_ids)
+                s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
                 s_df = calculate_team_strength(s_events, s_matches, season_id=sid).copy()
                 if not s_df.empty:
                     s_df.index = [f"{t} ({sname})" for t in s_df.index]
@@ -6811,18 +6819,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             # Display Team Strength Ratings (Multi-Season with SOS)
             with st.expander("Team Strength Ratings", expanded=False):
+                # Build season options filtered to selected league(s)
+                league_season_map = {}
+                for cid in selected_comp_ids:
+                    if cid in COMPETITIONS:
+                        league_season_map.update(COMPETITIONS[cid]["seasons"])
+                league_season_labels = list(league_season_map.values())
+                # Default to current season for selected league
+                default_label = league_season_map.get(
+                    COMPETITIONS[selected_comp_ids[0]].get("current_season") if selected_comp_ids else CURRENT_SEASON_ID,
+                    league_season_labels[0] if league_season_labels else None
+                )
                 rating_seasons = st.multiselect(
-                    "Seasons", list(SEASON_ID_MAP.values()),
-                    default=[SEASON_ID_MAP[CURRENT_SEASON_ID]],
+                    "Seasons", league_season_labels,
+                    default=[default_label] if default_label else [],
                     key="rating_seasons"
                 )
-                # Reverse-lookup season IDs from display names
-                season_name_to_id = {v: k for k, v in SEASON_ID_MAP.items()}
+                # Reverse-lookup season IDs from display names (league-filtered)
+                season_name_to_id = {v: k for k, v in league_season_map.items()}
                 rating_rows = []
                 for season_name in rating_seasons:
                     sid = season_name_to_id[season_name]
-                    s_events = get_season_events(raw_events_df, sid)
-                    s_matches = get_season_matches(matches_summary_df, sid)
+                    s_events = filter_by_league(get_season_events(raw_events_df, sid), selected_comp_ids)
+                    s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
                     ts_df = calculate_team_strength(s_events, s_matches, season_id=sid)
                     if ts_df.empty:
                         continue
