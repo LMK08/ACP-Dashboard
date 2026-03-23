@@ -3028,13 +3028,19 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season
     Uses Wyscout team advanced stats if available, otherwise falls back to event-based calculation.
     season_id filters the Wyscout stats to compare within a single season."""
 
+    # Count how many teams are in the events data for comparison
+    event_teams = set()
+    if 'team.name' in season_events_df.columns:
+        event_teams = set(season_events_df['team.name'].dropna().unique())
+
     wyscout_stats = load_team_advanced_stats()
     if wyscout_stats is not None:
-        print("Using Wyscout team advanced stats for radars...")
         raw_df, pct_df = _build_radars_from_wyscout(wyscout_stats, season_id=season_id)
-        if not raw_df.empty:
+        # Only use Wyscout stats if they cover at least half the teams in the events
+        if not raw_df.empty and (not event_teams or len(raw_df) >= len(event_teams) * 0.5):
+            print(f"Using Wyscout team advanced stats for radars ({len(raw_df)} teams)...")
             return raw_df, pct_df
-        print("Wyscout stats empty for this season, falling back to events...")
+        print(f"Wyscout stats insufficient ({len(raw_df)} of {len(event_teams)} teams), falling back to events...")
 
     print("Calculating radar stats from events...")
     return _calculate_radars_from_events(season_events_df, matches_summary_df)
