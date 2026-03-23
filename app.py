@@ -2494,13 +2494,28 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y', 'Defensive Area']
     dont_normalize = rate_cols + info_cols
 
+    # DEBUG: Log goalsConceded before normalization
+    if 'goalsConceded' in base_df.columns:
+        gk_mask = base_df['goalsConceded'] > 0
+        if gk_mask.any():
+            print(f"  DEBUG goalsConceded BEFORE normalization: {base_df.loc[gk_mask, 'goalsConceded'].head(3).tolist()}")
+            print(f"  DEBUG totalMinutes for those GKs: {base_df.loc[gk_mask, 'totalMinutes'].head(3).tolist()}")
+
     for col in all_calculated_metrics:
         if col not in dont_normalize and pd.api.types.is_numeric_dtype(base_df[col]):
+            if col == 'goalsConceded':
+                print(f"  DEBUG: Normalizing goalsConceded (in dont_normalize={col in dont_normalize})")
             base_df[col] = np.where(
                 minutes_gt_0,
                 (base_df[col].astype(float) / total_minutes) * 90,
                 0
             )
+
+    # DEBUG: Log goalsConceded after normalization
+    if 'goalsConceded' in base_df.columns:
+        gk_mask = base_df['goalsConceded'] > 0
+        if gk_mask.any():
+            print(f"  DEBUG goalsConceded AFTER normalization: {base_df.loc[gk_mask, 'goalsConceded'].head(3).tolist()}")
             
     # Territorial Dominance = (Opp xT into Def Area (per 90) / Defensive Area (sq m)) × 100000
     # Measures opposition threat density per square meter of defensive coverage (scaled ×100000)
