@@ -276,7 +276,7 @@ def detect_campeonato_groups(matches_df):
 
 
 def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stats, league_avg_stats):
-    """Run Campeonato de Portugal simulation (Phase 1 group standings)."""
+    """Run Campeonato de Portugal simulation (Phase 1 + promotion playoffs)."""
     print("=" * 60)
     print("Campeonato de Portugal Season Simulation")
     print("=" * 60)
@@ -286,8 +286,13 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
     print(f"\nDetected {len(groups)} groups")
 
     results = {}
+    group_names_sorted = sorted(groups.keys())  # Série A, B, C, D
 
-    for group_name, group_teams in groups.items():
+    # ── Phase 1: Simulate each group and store per-sim standings ──
+    group_sim_data = {}  # {group_name: {sim_idx: [team1, team2, ...] sorted by final pos}}
+
+    for group_name in group_names_sorted:
+        group_teams = groups[group_name]
         print(f"\n{'─' * 60}")
         print(f"Processing: {group_name} ({len(group_teams)} teams)")
 
@@ -341,7 +346,7 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
             starting_gd[team] = row['GD']
             starting_gf[team] = row['GF']
 
-        rng = np.random.default_rng(seed=42)
+        rng = np.random.default_rng(seed=42 + hash(group_name) % 1000)
 
         fixture_list = list(remaining_fixtures)
         if fixture_list:
@@ -349,6 +354,8 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
             cumulative_probs = np.cumsum(prob_matrix, axis=1)
         else:
             cumulative_probs = np.array([])
+
+        per_sim_standings = []  # Store final standings per sim for playoff pairing
 
         for sim in range(N_SIMULATIONS):
             pts = dict(starting_pts)
@@ -382,6 +389,9 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
             final = sorted(group_teams, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
             for pos, team in enumerate(final):
                 position_counts[team][pos] += 1
+            per_sim_standings.append(final)
+
+        group_sim_data[group_name] = per_sim_standings
 
         pos_prob_df = pd.DataFrame(
             {team: position_counts[team] / N_SIMULATIONS for team in group_teams},
@@ -402,7 +412,121 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
             'current_standings': current_table,
             'matches_remaining': len(remaining_fixtures),
             'bonus_points': {},
+            'playoff_pct': {},
+            'promotion_pct': {},
         }
+
+    # ── Phase 2: Promotion playoff simulation ──
+    # Playoff pairings: Série A + Série B → Playoff Group 1, Série C + Série D → Playoff Group 2
+    # Top 2 from each série qualify; top 2 from each playoff group get promoted
+    playoff_pairings = []
+    if len(group_names_sorted) >= 4:
+        playoff_pairings = [
+            (group_names_sorted[0], group_names_sorted[1]),  # Série A + B
+            (group_names_sorted[2], group_names_sorted[3]),  # Série C + D
+        ]
+    elif len(group_names_sorted) == 2:
+        playoff_pairings = [(group_names_sorted[0], group_names_sorted[1])]
+
+    if playoff_pairings:
+        print(f"\n{'=' * 60}")
+        print("Promotion Playoff Simulation")
+        print(f"{'=' * 60}")
+
+        # Track playoff qualification and promotion counts per team
+        playoff_counts = {}  # team -> count of making top 2 in série
+        promotion_counts = {}  # team -> count of finishing top 2 in playoff group
+        all_teams = set()
+        for g in groups.values():
+            for t in g:
+                all_teams.add(t)
+                playoff_counts[t] = 0
+                promotion_counts[t] = 0
+
+        # Pre-compute playoff match probabilities for all possible team pairs
+        # (we don't know which teams will qualify until each sim)
+        playoff_match_probs_cache = {}
+
+        def get_playoff_match_prob(home, away):
+            key = (home, away)
+            if key not in playoff_match_probs_cache:
+                home_cum = team_stats.get(home)
+                away_cum = team_stats.get(away)
+                if not home_cum or not away_cum:
+                    playoff_match_probs_cache[key] = np.array([0.25, 0.45, 0.30])
+                else:
+                    home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
+                    away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+                    home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
+                    away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
+                    fv = build_feature_vector(home_feats, away_feats)
+                    X = scaler.transform([fv])
+                    playoff_match_probs_cache[key] = model.predict_proba(X)[0]
+            return playoff_match_probs_cache[key]
+
+        playoff_rng = np.random.default_rng(seed=99)
+
+        for sim in range(N_SIMULATIONS):
+            for group_a_name, group_b_name in playoff_pairings:
+                standings_a = group_sim_data[group_a_name][sim]
+                standings_b = group_sim_data[group_b_name][sim]
+                top2_a = standings_a[:2]
+                top2_b = standings_b[:2]
+
+                # Track playoff qualification
+                for t in top2_a + top2_b:
+                    playoff_counts[t] += 1
+
+                # Simulate 4-team round-robin playoff (6 matches)
+                playoff_teams = top2_a + top2_b
+                playoff_pts = {t: 0 for t in playoff_teams}
+                playoff_gd = {t: 0 for t in playoff_teams}
+                playoff_gf = {t: 0 for t in playoff_teams}
+
+                for h in playoff_teams:
+                    for a in playoff_teams:
+                        if h == a:
+                            continue
+                        proba = get_playoff_match_prob(h, a)
+                        r = playoff_rng.random()
+                        if r < proba[0]:  # Draw
+                            playoff_pts[h] += 1
+                            playoff_pts[a] += 1
+                            playoff_gf[h] += 1
+                            playoff_gf[a] += 1
+                        elif r < proba[0] + proba[1]:  # Home win
+                            playoff_pts[h] += 3
+                            playoff_gd[h] += 1
+                            playoff_gd[a] -= 1
+                            playoff_gf[h] += 2
+                            playoff_gf[a] += 1
+                        else:  # Away win
+                            playoff_pts[a] += 3
+                            playoff_gd[a] += 1
+                            playoff_gd[h] -= 1
+                            playoff_gf[a] += 2
+                            playoff_gf[h] += 1
+
+                # Top 2 in playoff group get promoted
+                playoff_final = sorted(playoff_teams, key=lambda t: (playoff_pts[t], playoff_gd[t], playoff_gf[t]), reverse=True)
+                for t in playoff_final[:2]:
+                    promotion_counts[t] += 1
+
+        # Store playoff and promotion percentages in each group's results
+        for group_name, group_teams in groups.items():
+            results[group_name]['playoff_pct'] = {t: playoff_counts[t] / N_SIMULATIONS for t in group_teams}
+            results[group_name]['promotion_pct'] = {t: promotion_counts[t] / N_SIMULATIONS for t in group_teams}
+
+        # Print summary
+        for pairing_idx, (ga, gb) in enumerate(playoff_pairings):
+            print(f"\n  Playoff Group {pairing_idx + 1} ({ga} + {gb}):")
+            combined = list(groups[ga]) + list(groups[gb])
+            combined.sort(key=lambda t: promotion_counts[t], reverse=True)
+            for t in combined[:8]:
+                pq = playoff_counts[t] / N_SIMULATIONS
+                pp = promotion_counts[t] / N_SIMULATIONS
+                if pq > 0.005:
+                    print(f"    {t:30s}  Playoff: {pq:6.1%}  Promotion: {pp:6.1%}")
 
     return results
 

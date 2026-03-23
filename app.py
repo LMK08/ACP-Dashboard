@@ -6901,10 +6901,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 n_sims = sim_data.get('n_simulations', 0)
                 st.caption(f"Based on {n_sims:,} Monte Carlo simulations | Updated: {sim_ts[:16].replace('T', ' ')}")
 
-                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None):
+                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None, playoff_pct=None, promotion_pct=None):
                     """Render a color-coded probability table for a second-stage group."""
                     n_teams = len(prob_df)
                     pos_cols = [str(i+1) for i in range(n_teams)]
+                    is_serie = group_name.startswith('Série')
 
                     # Build lookup for points and matches played from current standings
                     standings_lookup = {}
@@ -6928,6 +6929,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         if group_name == 'Promotion':
                             html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
                             html += '<th style="padding:6px 8px;">Playoff %</th>'
+                        elif is_serie:
+                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Playoff %</th>'
+                            html += '<th style="padding:6px 8px;">Promo %</th>'
+                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
                         else:
                             html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
                         html += '</tr>'
@@ -6949,16 +6954,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 bg = ''
                                 if group_name == 'Promotion':
                                     if pos_num <= 2:
-                                        # Green for promotion positions
                                         intensity = min(val * 1.2, 1.0)
                                         bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
                                     elif pos_num == 3:
-                                        # Yellow for playoff position
                                         intensity = min(val * 1.2, 1.0)
                                         bg = f'background-color:rgba(241,196,15,{intensity:.2f});'
+                                elif is_serie:
+                                    if pos_num <= 2:
+                                        # Green for playoff qualification positions
+                                        intensity = min(val * 1.2, 1.0)
+                                        bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
+                                    elif pos_num >= n_teams - 4:
+                                        # Red for relegation positions (bottom 5)
+                                        intensity = min(val * 1.2, 1.0)
+                                        bg = f'background-color:rgba(231,76,60,{intensity:.2f});'
                                 else:
                                     if pos_num >= n_teams - 1:
-                                        # Red for relegation positions (last 2)
                                         intensity = min(val * 1.2, 1.0)
                                         bg = f'background-color:rgba(231,76,60,{intensity:.2f});'
 
@@ -6968,11 +6979,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             # Summary columns
                             if group_name == 'Promotion':
                                 promo_pct = prob_df.loc[team, '1'] + prob_df.loc[team, '2']
-                                playoff_pct = prob_df.loc[team, '3']
+                                po_pct = prob_df.loc[team, '3']
                                 promo_bg = f'background-color:rgba(46,204,113,{min(promo_pct * 1.2, 1.0):.2f});'
-                                playoff_bg = f'background-color:rgba(241,196,15,{min(playoff_pct * 1.2, 1.0):.2f});'
+                                po_bg = f'background-color:rgba(241,196,15,{min(po_pct * 1.2, 1.0):.2f});'
                                 html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{promo_bg}">{promo_pct:.1%}</td>'
-                                html += f'<td style="padding:6px 8px;font-weight:bold;{playoff_bg}">{playoff_pct:.1%}</td>'
+                                html += f'<td style="padding:6px 8px;font-weight:bold;{po_bg}">{po_pct:.1%}</td>'
+                            elif is_serie:
+                                # Playoff % = chance of finishing top 2 in série
+                                team_playoff = playoff_pct.get(team, 0) if playoff_pct else 0
+                                # Promotion % = chance of top 2 in série AND top 2 in playoff group
+                                team_promo = promotion_pct.get(team, 0) if promotion_pct else 0
+                                # Relegation % = bottom 5 positions
+                                releg_positions = [str(i) for i in range(n_teams - 4, n_teams + 1)]
+                                team_releg = sum(prob_df.loc[team, p] for p in releg_positions if p in prob_df.columns)
+
+                                playoff_bg = f'background-color:rgba(46,204,113,{min(team_playoff * 1.2, 1.0):.2f});'
+                                promo_bg = f'background-color:rgba(46,204,113,{min(team_promo * 2.0, 1.0):.2f});'
+                                releg_bg = f'background-color:rgba(231,76,60,{min(team_releg * 1.2, 1.0):.2f});'
+                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{playoff_bg}">{team_playoff:.1%}</td>'
+                                html += f'<td style="padding:6px 8px;font-weight:bold;{promo_bg}">{team_promo:.1%}</td>'
+                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{releg_bg}">{team_releg:.1%}</td>'
                             else:
                                 releg_pct = prob_df.loc[team, str(n_teams - 1)] + prob_df.loc[team, str(n_teams)]
                                 releg_bg = f'background-color:rgba(231,76,60,{min(releg_pct * 1.2, 1.0):.2f});'
@@ -7004,7 +7030,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         render_probability_table(
                             group_name, g['position_probabilities'], g['matches_remaining'],
                             bonus_points=g.get('bonus_points'), expanded=expanded,
-                            current_standings=g.get('current_standings')
+                            current_standings=g.get('current_standings'),
+                            playoff_pct=g.get('playoff_pct'),
+                            promotion_pct=g.get('promotion_pct'),
                         )
 
             # Team selection — cross-season team-season combos
