@@ -2541,6 +2541,12 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     print("--- FINISHED: New All-Player-Stats Calculation ---")
     result = base_df.fillna(0).reset_index()
 
+    # DEBUG: Verify goalsConceded in final result for Diogo Figueiredo
+    if 'goalsConceded' in result.columns and 'playerId' in result.columns:
+        _dbg = result[result['playerId'] == 593057]
+        if not _dbg.empty:
+            print(f"  DEBUG FINAL RESULT: Diogo Figueiredo goalsConceded={_dbg['goalsConceded'].values[0]:.4f}, totalMinutes={_dbg['totalMinutes'].values[0]}")
+
     # Save to disk cache for fast loading on restart
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
