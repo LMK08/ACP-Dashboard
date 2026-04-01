@@ -6596,36 +6596,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 3. Display based on selected view ---
         if _selected_view == "Overview":
-            # Show side-by-side tables for each position group
-            for group_name, group_templates in _TEMPLATE_GROUPS.items():
+            # Build one combined table with all templates, ordered forwards → goalkeepers
+            _OVERVIEW_ORDER = [
+                'Forwards', 'Attacking Mids / Wingers', 'Central Midfielders',
+                'Full Backs', 'Center Backs', 'Goalkeepers',
+            ]
+            all_overview_rows = []
+            all_overview_pids = []
+            for group_name in _OVERVIEW_ORDER:
+                group_templates = _TEMPLATE_GROUPS.get(group_name, [])
                 valid_templates = [t for t in group_templates if t in POSITION_GROUPS]
-                if not valid_templates:
-                    continue
+                for tmpl in valid_templates:
+                    display_df, player_ids = _build_template_table(tmpl, filtered_df, num_players, compact=True)
+                    if display_df is not None and not display_df.empty:
+                        # Replace Rank with Template column
+                        display_df = display_df.drop(columns=['Rank'])
+                        display_df.insert(0, 'Template', tmpl)
+                        all_overview_rows.append(display_df)
+                        all_overview_pids.extend(player_ids)
 
-                st.subheader(group_name)
-                # Display 2 tables per row
-                for i in range(0, len(valid_templates), 2):
-                    cols = st.columns(2)
-                    for j, col in enumerate(cols):
-                        idx = i + j
-                        if idx >= len(valid_templates):
-                            break
-                        tmpl = valid_templates[idx]
-                        with col:
-                            st.markdown(f"**{tmpl}**")
-                            display_df, player_ids = _build_template_table(tmpl, filtered_df, num_players, compact=True)
-                            if display_df is not None and not display_df.empty:
-                                selection = st.dataframe(
-                                    display_df.set_index('Rank'),
-                                    use_container_width=True,
-                                    on_select="rerun",
-                                    selection_mode="single-row",
-                                    key=f"overview_{tmpl}",
-                                    height=min(35 * len(display_df) + 38, 400)
-                                )
-                                _handle_row_selection(selection, player_ids)
-                            else:
-                                st.caption("No players match current filters.")
+            if all_overview_rows:
+                combined_overview = pd.concat(all_overview_rows, ignore_index=True)
+                combined_overview.insert(0, 'Rank', range(1, len(combined_overview) + 1))
+
+                st.subheader("Player Overview")
+                st.caption("Click on a row to view that player's profile")
+                selection = st.dataframe(
+                    combined_overview.set_index('Rank'),
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="overview_combined"
+                )
+                _handle_row_selection(selection, all_overview_pids)
+            else:
+                st.warning("No players match current filters.")
 
         elif _selected_view == "Individual Metric":
             # --- Individual Metric mode (preserved from original) ---
