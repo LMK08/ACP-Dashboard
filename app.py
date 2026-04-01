@@ -6596,39 +6596,55 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- 3. Display based on selected view ---
         if _selected_view == "Overview":
-            # Build one combined table with all templates, ordered forwards → goalkeepers
+            # Build wide pivot table: each template is a column group with Player, Team, Minutes, Rating
             _OVERVIEW_ORDER = [
                 'Forwards', 'Attacking Mids / Wingers', 'Central Midfielders',
                 'Full Backs', 'Center Backs', 'Goalkeepers',
             ]
-            all_overview_rows = []
-            all_overview_pids = []
+            # Collect per-template data as lists aligned by rank
+            template_columns = {}  # {template_name: [(player, team, minutes, rating), ...]}
             for group_name in _OVERVIEW_ORDER:
                 group_templates = _TEMPLATE_GROUPS.get(group_name, [])
-                valid_templates = [t for t in group_templates if t in POSITION_GROUPS]
-                for tmpl in valid_templates:
-                    display_df, player_ids = _build_template_table(tmpl, filtered_df, num_players, compact=True)
+                for tmpl in [t for t in group_templates if t in POSITION_GROUPS]:
+                    display_df, _ = _build_template_table(tmpl, filtered_df, num_players, compact=True)
                     if display_df is not None and not display_df.empty:
-                        # Replace Rank with Template column
-                        display_df = display_df.drop(columns=['Rank'])
-                        display_df.insert(0, 'Template', tmpl)
-                        all_overview_rows.append(display_df)
-                        all_overview_pids.extend(player_ids)
+                        rows = []
+                        for _, row in display_df.iterrows():
+                            rows.append((row.get('Player', ''), row.get('Team', ''), int(row.get('Minutes', 0)), round(float(row.get('Rating', 0)), 1)))
+                        template_columns[tmpl] = rows
 
-            if all_overview_rows:
-                combined_overview = pd.concat(all_overview_rows, ignore_index=True)
-                combined_overview.insert(0, 'Rank', range(1, len(combined_overview) + 1))
+            if template_columns:
+                max_rows = max(len(v) for v in template_columns.values())
+                # Build MultiIndex columns DataFrame
+                col_tuples = []
+                data_dict = {}
+                for tmpl in template_columns:
+                    for sub in ['Player', 'Team', 'Min', 'Rating']:
+                        col_tuples.append((tmpl, sub))
+                        data_dict[(tmpl, sub)] = []
+
+                for rank_idx in range(max_rows):
+                    for tmpl in template_columns:
+                        rows = template_columns[tmpl]
+                        if rank_idx < len(rows):
+                            player, team, mins, rating = rows[rank_idx]
+                            data_dict[(tmpl, 'Player')].append(player)
+                            data_dict[(tmpl, 'Team')].append(team)
+                            data_dict[(tmpl, 'Min')].append(mins)
+                            data_dict[(tmpl, 'Rating')].append(rating)
+                        else:
+                            data_dict[(tmpl, 'Player')].append('')
+                            data_dict[(tmpl, 'Team')].append('')
+                            data_dict[(tmpl, 'Min')].append('')
+                            data_dict[(tmpl, 'Rating')].append('')
+
+                multi_idx = pd.MultiIndex.from_tuples(col_tuples)
+                overview_df = pd.DataFrame(data_dict, columns=multi_idx)
+                overview_df.index = range(1, len(overview_df) + 1)
+                overview_df.index.name = 'Rank'
 
                 st.subheader("Player Overview")
-                st.caption("Click on a row to view that player's profile")
-                selection = st.dataframe(
-                    combined_overview.set_index('Rank'),
-                    use_container_width=True,
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key="overview_combined"
-                )
-                _handle_row_selection(selection, all_overview_pids)
+                st.dataframe(overview_df, use_container_width=True)
             else:
                 st.warning("No players match current filters.")
 
