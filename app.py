@@ -6422,11 +6422,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 2. Sidebar Controls ---
         st.sidebar.subheader("Analysis Options")
 
-        # Mode selector
-        analysis_mode = st.sidebar.radio(
-            "Sort By:",
-            ("Position Rating", "Individual Metric"),
-            key="player_analysis_mode"
+        # Template / mode selector — Overview is the default landing page
+        _TEMPLATE_GROUPS = {
+            'Goalkeepers': ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK'],
+            'Center Backs': ['Ball-Playing Centerback', 'Stopper', 'Athletic Centerback'],
+            'Full Backs': ['Full Back', 'Wingback', 'Inverted Full Back'],
+            'Central Midfielders': ['Box-to-Box', 'Holding Mid', 'Ball-Winning Mid', 'Deep-lying Playmaker'],
+            'Attacking Mids / Wingers': ['Advanced Playmaker', 'Wide Winger', 'Creative Winger', 'Inside Forward'],
+            'Forwards': ['Shadow Striker', 'Mobile Striker', 'Poacher', 'Target Man', 'Pressing Forward'],
+        }
+        # Build ordered template list from groups (preserving group order)
+        _ordered_templates = []
+        for _grp_templates in _TEMPLATE_GROUPS.values():
+            _ordered_templates.extend([t for t in _grp_templates if t in POSITION_GROUPS])
+        _selector_options = ["Overview"] + _ordered_templates + ["Individual Metric"]
+        _selected_view = st.sidebar.selectbox(
+            "View:",
+            _selector_options,
+            index=0,
+            key="player_analysis_view"
         )
 
         # Minimum minutes filter
@@ -6506,105 +6520,115 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.warning(f"No players found who played at {pos_label} with current filters.")
                         st.stop()
 
-        # --- 3. Mode-Specific Controls and Display ---
-        if analysis_mode == "Position Rating":
-            # Position template selector
-            all_templates = sorted(list(POSITION_GROUPS.keys()))
-            selected_template = st.sidebar.selectbox(
-                "Select Position Template:",
-                all_templates,
-                key="player_analysis_template"
-            )
+        # --- Helper: build a display table for a given template ---
+        def _build_template_table(template_name, source_df, n_players, compact=False):
+            """Build a display DataFrame for a template. Returns (display_df, player_ids) or (None, [])."""
+            positions_in_group = POSITION_GROUPS.get(template_name, [])
+            score_col = f"{template_name}_Score"
+            if score_col not in source_df.columns:
+                return None, []
 
-            # Get positions that map to this template
-            positions_in_group = POSITION_GROUPS.get(selected_template, [])
-
-            # Filter to players who play these positions
             if analysis_pos_played_active:
-                # Position-played filter already applied; skip primaryPosition filtering
-                template_filtered_df = filtered_df
+                tdf = source_df
             else:
-                template_filtered_df = filtered_df[
-                    filtered_df['primaryPosition'].isin(positions_in_group)
-                ]
+                tdf = source_df[source_df['primaryPosition'].isin(positions_in_group)]
 
-            if template_filtered_df.empty:
-                st.warning(f"No players found for {selected_template} template with current filters.")
-                st.stop()
+            if tdf.empty:
+                return None, []
 
-            # Sort by position score
-            score_col = f"{selected_template}_Score"
-            if score_col in template_filtered_df.columns:
-                sorted_df = template_filtered_df.sort_values(by=score_col, ascending=False).head(num_players)
+            sorted_tdf = tdf.sort_values(by=score_col, ascending=False).head(n_players)
+
+            if compact:
+                # Overview mode: Rank, Player, Team, Position, Minutes, Age, Rating
+                cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', score_col]
             else:
-                st.error(f"Score column '{score_col}' not found.")
-                st.stop()
+                # Template-specific mode: include all weighted metrics (weight > 0) sorted by weight desc
+                template_weights = WEIGHTS.get(template_name, {})
+                weighted_metrics = sorted(
+                    [(m, w) for m, w in template_weights.items() if w > 0],
+                    key=lambda x: x[1], reverse=True
+                )
+                metric_cols = [m for m, _ in weighted_metrics if m in sorted_tdf.columns]
+                cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', score_col] + metric_cols
 
-            # Display header
-            st.subheader(f"Top {selected_template}s by Rating")
-
-            # Define display columns based on position type
-            key_metrics = list(WEIGHTS.get(selected_template, {}).keys())[:5]
-            display_cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', score_col] + \
-                           [m for m in key_metrics if m in sorted_df.columns]
-
-            # Create display dataframe
-            display_df = sorted_df[display_cols].copy()
-            display_df = display_df.rename(columns={
+            cols = [c for c in cols if c in sorted_tdf.columns]
+            display = sorted_tdf[cols].copy()
+            display = display.rename(columns={
                 'playerName': 'Player',
                 'teamName': 'Team',
                 'primaryPosition': 'Position',
                 'totalMinutes': 'Minutes',
                 score_col: 'Rating'
             })
-            display_df['Rating'] = display_df['Rating'].round(1)
-            display_df['Minutes'] = display_df['Minutes'].astype(int)
+            display['Rating'] = display['Rating'].round(1)
+            display['Minutes'] = display['Minutes'].astype(int)
 
-            # Add Pos. Minutes column when position-played filter is active
-            if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
-                display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
+            # Add Pos. Minutes
+            if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
+                display.insert(display.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_tdf['posMinutes'].astype(int).values)
 
-            # Add Age column
+            # Add Age
             if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
-                age_col_pos = display_df.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display_df.columns else display_df.columns.get_loc('Minutes') + 1
-                display_df.insert(age_col_pos, 'Age', sorted_df['playerId'].map(
+                age_pos = display.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display.columns else display.columns.get_loc('Minutes') + 1
+                display.insert(age_pos, 'Age', sorted_tdf['playerId'].map(
                     lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
                 ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
 
-            # Round numeric columns
-            for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Rating', 'Pos. Minutes', 'Age']:
-                    decimals = 3 if col in THOUSANDTHS_METRICS else 2
-                    display_df[col] = display_df[col].round(decimals)
+            # Round metric columns
+            for col in display.columns:
+                if pd.api.types.is_numeric_dtype(display[col]) and col not in ['Minutes', 'Rating', 'Pos. Minutes', 'Age', 'Rank']:
+                    decimals = 3 if col in THOUSANDTHS_METRICS else (0 if col in WHOLE_NUMBER_METRICS else 2)
+                    display[col] = display[col].round(decimals)
 
-            # Add rank column
-            display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
+            display.insert(0, 'Rank', range(1, len(display) + 1))
+            return display, sorted_tdf['playerId'].tolist()
 
-            # Store player IDs for lookup (hidden from display)
-            player_ids = sorted_df['playerId'].tolist()
-
-            # Display table with row selection
-            st.caption("Click on a row to view that player's profile")
-            selection = st.dataframe(
-                display_df.set_index('Rank'),
-                use_container_width=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="position_rating_table"
-            )
-
-            # Handle row selection
+        # --- Helper: handle row selection from a dataframe ---
+        def _handle_row_selection(selection, player_ids):
             if selection and selection.selection and selection.selection.rows:
                 selected_row_idx = selection.selection.rows[0]
-                selected_player_id = player_ids[selected_row_idx]
-                st.session_state.selected_player_id = selected_player_id
-                st.session_state.nav_to_profile = True
-                st.session_state.nav_season_id = selected_season_id
-                st.session_state.nav_has_season = True
-                st.rerun()
+                if selected_row_idx < len(player_ids):
+                    st.session_state.selected_player_id = player_ids[selected_row_idx]
+                    st.session_state.nav_to_profile = True
+                    st.session_state.nav_season_id = selected_season_id
+                    st.session_state.nav_has_season = True
+                    st.rerun()
 
-        else:  # Individual Metric mode
-            # Build metric options from constants
+        # --- 3. Display based on selected view ---
+        if _selected_view == "Overview":
+            # Show side-by-side tables for each position group
+            for group_name, group_templates in _TEMPLATE_GROUPS.items():
+                valid_templates = [t for t in group_templates if t in POSITION_GROUPS]
+                if not valid_templates:
+                    continue
+
+                st.subheader(group_name)
+                # Display 2 tables per row
+                for i in range(0, len(valid_templates), 2):
+                    cols = st.columns(2)
+                    for j, col in enumerate(cols):
+                        idx = i + j
+                        if idx >= len(valid_templates):
+                            break
+                        tmpl = valid_templates[idx]
+                        with col:
+                            st.markdown(f"**{tmpl}**")
+                            display_df, player_ids = _build_template_table(tmpl, filtered_df, num_players, compact=True)
+                            if display_df is not None and not display_df.empty:
+                                selection = st.dataframe(
+                                    display_df.set_index('Rank'),
+                                    use_container_width=True,
+                                    on_select="rerun",
+                                    selection_mode="single-row",
+                                    key=f"overview_{tmpl}",
+                                    height=min(35 * len(display_df) + 38, 400)
+                                )
+                                _handle_row_selection(selection, player_ids)
+                            else:
+                                st.caption("No players match current filters.")
+
+        elif _selected_view == "Individual Metric":
+            # --- Individual Metric mode (preserved from original) ---
             metric_categories = {
                 "Output": OUTPUT_METRICS,
                 "Passing": PASSING_METRICS,
@@ -6613,28 +6637,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "Goalkeeping": GOALKEEPING_METRICS
             }
 
-            # Category selector
             selected_category = st.sidebar.selectbox(
                 "Metric Category:",
                 list(metric_categories.keys()),
                 key="player_analysis_metric_category"
             )
 
-            # Get available metrics for this category (that exist in dataframe)
             available_metrics = [m for m in metric_categories[selected_category]
                                if m in filtered_df.columns]
             if not available_metrics:
                 st.warning(f"No metrics available for {selected_category} category.")
                 st.stop()
 
-            # Metric selector
             selected_metric = st.sidebar.selectbox(
                 "Select Metric:",
                 available_metrics,
                 key="player_analysis_metric_v2"
             )
 
-            # Optional: Position filter for metric view
             all_positions = sorted(filtered_df['primaryPosition'].dropna().unique().tolist())
             position_filter = st.sidebar.multiselect(
                 "Filter by Position (optional):",
@@ -6643,7 +6663,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 key="player_analysis_position_filter"
             )
 
-            # Apply position filter
             if position_filter:
                 metric_filtered_df = filtered_df[filtered_df['primaryPosition'].isin(position_filter)]
             else:
@@ -6653,14 +6672,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.warning("No players found with current filters.")
                 st.stop()
 
-            # Sort by selected metric (ascending for inverted metrics where lower is better)
             _sort_ascending = selected_metric in INVERT_METRICS
             sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
 
-            # Display header
             st.subheader(f"Top Players by {selected_metric} (per 90)")
 
-            # Define display columns - include related metrics for context
             related_metrics = []
             if selected_metric in OUTPUT_METRICS:
                 related_metrics = ['Goals', 'xG', 'npxG', 'Shots', 'Assists', 'xAOP']
@@ -6673,13 +6689,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             elif selected_metric in GOALKEEPING_METRICS:
                 related_metrics = ['goalsPrevented', 'savePercentage', 'exits']
 
-            # Remove selected metric from related and filter to available
             related_metrics = [m for m in related_metrics if m in sorted_df.columns and m != selected_metric][:4]
 
             display_cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', selected_metric] + related_metrics
             display_cols = [c for c in display_cols if c in sorted_df.columns]
 
-            # Create display dataframe
             display_df = sorted_df[display_cols].copy()
             display_df = display_df.rename(columns={
                 'playerName': 'Player',
@@ -6689,30 +6703,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             })
             display_df['Minutes'] = display_df['Minutes'].astype(int)
 
-            # Add Pos. Minutes column when position-played filter is active
             if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
                 display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
 
-            # Add Age column
             if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
                 age_col_pos = display_df.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display_df.columns else display_df.columns.get_loc('Minutes') + 1
                 display_df.insert(age_col_pos, 'Age', sorted_df['playerId'].map(
                     lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
                 ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
 
-            # Round numeric columns
             for col in display_df.columns:
                 if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
-            # Add rank column
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
-
-            # Store player IDs for lookup (hidden from display)
             player_ids = sorted_df['playerId'].tolist()
 
-            # Display table with row selection
             st.caption("Click on a row to view that player's profile")
             selection = st.dataframe(
                 display_df.set_index('Rank'),
@@ -6721,16 +6728,39 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 selection_mode="single-row",
                 key="individual_metric_table"
             )
+            _handle_row_selection(selection, player_ids)
 
-            # Handle row selection
-            if selection and selection.selection and selection.selection.rows:
-                selected_row_idx = selection.selection.rows[0]
-                selected_player_id = player_ids[selected_row_idx]
-                st.session_state.selected_player_id = selected_player_id
-                st.session_state.nav_to_profile = True
-                st.session_state.nav_season_id = selected_season_id
-                st.session_state.nav_has_season = True
-                st.rerun()
+        else:
+            # --- Template-specific view ---
+            selected_template = _selected_view
+            st.subheader(f"Top {selected_template}s by Rating")
+
+            display_df, player_ids = _build_template_table(selected_template, filtered_df, num_players, compact=False)
+
+            if display_df is not None and not display_df.empty:
+                st.caption("Click on a row to view that player's profile")
+                selection = st.dataframe(
+                    display_df.set_index('Rank'),
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="template_detail_table"
+                )
+                _handle_row_selection(selection, player_ids)
+
+                # Display weight reference table below
+                template_weights = WEIGHTS.get(selected_template, {})
+                weighted_items = sorted(
+                    [(m, w) for m, w in template_weights.items() if w > 0],
+                    key=lambda x: x[1], reverse=True
+                )
+                if weighted_items:
+                    with st.expander("Template Weights", expanded=False):
+                        weight_df = pd.DataFrame(weighted_items, columns=['Metric', 'Weight'])
+                        weight_df['Weight'] = weight_df['Weight'].apply(lambda w: f"{w:.1f}")
+                        st.dataframe(weight_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"No players found for {selected_template} template with current filters.")
 
     elif analysis_type == 'Match Predictor':
         selected_comp_ids = league_selector("match_predictor")
