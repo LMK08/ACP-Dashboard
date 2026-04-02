@@ -2434,6 +2434,14 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     player_xt = successful_threat.groupby('player.id')['xT'].sum().reset_index()
     base_df = base_df.merge(player_xt.set_index('player.id'), left_index=True, right_index=True, how='left')
 
+    # Split xT into open play (xTOP) and set piece (xTSP)
+    set_piece_types_xt = ['corner', 'free_kick', 'throw_in', 'goal_kick']
+    successful_threat = successful_threat.copy()
+    successful_threat['xt_type'] = np.where(successful_threat['type.primary'].isin(set_piece_types_xt), 'xTSP', 'xTOP')
+    xt_split = successful_threat.groupby(['player.id', 'xt_type'])['xT'].sum()
+    xt_split_df = xt_split.unstack(fill_value=0).reset_index()
+    base_df = base_df.merge(xt_split_df.set_index('player.id'), left_index=True, right_index=True, how='left')
+
     # --- Step 3: Calculate Goalkeeper Stats ---
     print("Step 3: Calculating Goalkeeper stats...")
     gk_ids = events_df[events_df.get('player.position') == 'GK']['player.id'].dropna().unique().astype(int)
