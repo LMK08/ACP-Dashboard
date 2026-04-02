@@ -1013,13 +1013,15 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
     try:
         xt_data_from_image = [[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]]
         xt_grid = np.array(xt_data_from_image); rows, cols = xt_grid.shape
-        move_df = events_df[events_df['type.primary'].isin(['pass', 'touch', 'acceleration'])].copy()
+        _sp_types = ['corner', 'free_kick', 'throw_in']
+        move_df = events_df[events_df['type.primary'].isin(['pass', 'touch', 'acceleration'] + _sp_types)].copy()
         successful_pass = (move_df['type.primary'] == 'pass') & (move_df.get('pass.accurate') == True)
-        other_successful_moves = move_df['type.primary'].isin(['touch', 'acceleration'])
+        other_successful_moves = move_df['type.primary'].isin(['touch', 'acceleration'] + _sp_types)
         move_df = move_df[successful_pass | other_successful_moves]
         move_df['start_x'] = move_df['location.x']; move_df['start_y'] = move_df['location.y']
-        move_df['end_x'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
-        move_df['end_y'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
+        _is_pass_like = move_df['type.primary'].isin(['pass'] + _sp_types)
+        move_df['end_x'] = np.where(_is_pass_like, move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
+        move_df['end_y'] = np.where(_is_pass_like, move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
         move_df = move_df.dropna(subset=['end_x', 'end_y', 'player.id'])
 
         # Vectorized xT zone calculation (much faster than apply)
@@ -1041,7 +1043,7 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
         # xTSP = xT from throw-ins, corners, free kicks only. Everything else = xTOP.
         successful_threat = successful_threat.copy()
         successful_threat['xt_type'] = np.where(
-            successful_threat['type.primary'].isin(['corner', 'free_kick', 'throw_in']), 'xTSP', 'xTOP'
+            successful_threat['type.primary'].isin(_sp_types), 'xTSP', 'xTOP'
         )
         xt_split = successful_threat.groupby(['player.id', 'xt_type'])['xT'].sum()
         xt_split_df = xt_split.unstack(fill_value=0).reset_index()
@@ -2414,13 +2416,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     # -- xT --
     xt_data_from_image = [[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.04, 0.11, 0.26, 0.26], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06], [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05], [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]]
     xt_grid = np.array(xt_data_from_image); rows, cols = xt_grid.shape
-    move_df = events_df[events_df['type.primary'].isin(['pass', 'touch', 'acceleration'])].copy()
+    _sp_types = ['corner', 'free_kick', 'throw_in']
+    move_df = events_df[events_df['type.primary'].isin(['pass', 'touch', 'acceleration'] + _sp_types)].copy()
     successful_pass = (move_df['type.primary'] == 'pass') & (move_df.get('pass.accurate') == True)
-    other_successful_moves = move_df['type.primary'].isin(['touch', 'acceleration'])
+    other_successful_moves = move_df['type.primary'].isin(['touch', 'acceleration'] + _sp_types)
     move_df = move_df[successful_pass | other_successful_moves]
     move_df['start_x'] = move_df['location.x']; move_df['start_y'] = move_df['location.y']
-    move_df['end_x'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
-    move_df['end_y'] = np.where(move_df['type.primary'] == 'pass', move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
+    # Set pieces (corners, free kicks, throw-ins) use pass.endLocation like passes
+    _is_pass_like = move_df['type.primary'].isin(['pass'] + _sp_types)
+    move_df['end_x'] = np.where(_is_pass_like, move_df.get('pass.endLocation.x'), move_df.get('carry.endLocation.x'))
+    move_df['end_y'] = np.where(_is_pass_like, move_df.get('pass.endLocation.y'), move_df.get('carry.endLocation.y'))
     move_df = move_df.dropna(subset=['end_x', 'end_y', 'player.id'])
 
     # Vectorized xT zone calculation (much faster than apply)
@@ -2441,7 +2446,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     # xTSP = xT from throw-ins, corners, free kicks only. Everything else = xTOP.
     successful_threat = successful_threat.copy()
     successful_threat['xt_type'] = np.where(
-        successful_threat['type.primary'].isin(['corner', 'free_kick', 'throw_in']), 'xTSP', 'xTOP'
+        successful_threat['type.primary'].isin(_sp_types), 'xTSP', 'xTOP'
     )
     xt_split = successful_threat.groupby(['player.id', 'xt_type'])['xT'].sum()
     xt_split_df = xt_split.unstack(fill_value=0).reset_index()
