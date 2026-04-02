@@ -408,7 +408,7 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v9'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v10'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -1036,6 +1036,14 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
         player_xt = successful_threat.groupby('player.id')['xT'].sum().reset_index()
         combined_df = pd.merge(combined_df, player_xt, left_on='playerId', right_on='player.id', how='left')
         if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
+
+        # Split xT into open play (xTOP) and set piece (xTSP)
+        set_piece_types_xt = ['corner', 'free_kick', 'throw_in', 'goal_kick']
+        successful_threat['xt_type'] = np.where(successful_threat['type.primary'].isin(set_piece_types_xt), 'xTSP', 'xTOP')
+        xt_split = successful_threat.groupby(['player.id', 'xt_type'])['xT'].sum()
+        xt_split_df = xt_split.unstack(fill_value=0).reset_index()
+        combined_df = pd.merge(combined_df, xt_split_df, left_on='playerId', right_on='player.id', how='left')
+        if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
     except Exception as e:
         print(f"  -> ❌ ERROR (Step 4): {e}")
 
@@ -1206,7 +1214,7 @@ WEIGHTS = {
     'Pressing Forward': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xT': 2, 'Passes': 2, 'Passes successful %': 1.0, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 2, 'Dribbles': 2, 'Dribbles successful %': 2, 'Loss index': 5, 'Aerial duels': 1.0, 'Aerial duels successful %': 1.0, 'Defensive duels successful': 1.0, 'Interceptions': 8, 'Recoveries': 10, 'Counterpressing Recoveries': 4}
 }
 INVERT_METRICS = ['Loss index', 'goalsConceded']
-OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'Second assists', 'Shots', 'xG per Shot']
+OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
@@ -1888,7 +1896,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     # Disk cache: load pre-computed results if available
-    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance'}
+    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'xTOP', 'xTSP'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
@@ -2592,7 +2600,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     (each low-minute player is temporarily added to the sample for their own percentile).
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
-    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance'}
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'xTOP', 'xTSP'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):

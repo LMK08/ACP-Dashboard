@@ -432,6 +432,8 @@ metric_categories:
     - xAOP
     - xASP
     - xT
+    - xTOP
+    - xTSP
     - Second assists
     - Shots
     - xG per Shot
