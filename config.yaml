@@ -56,7 +56,7 @@ weights:
   Ball-Playing Centerback:
     npxG: 1.0
     xAOP: 1.0
-    xT: 20
+    xTOP: 20
     Passes: 20
     Passes successful %: 6
     Progressive Passes: 20
@@ -77,7 +77,7 @@ weights:
   Stopper:
     npxG: 3.0
     xAOP: 0
-    xT: 1.0
+    xTOP: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
@@ -98,7 +98,7 @@ weights:
   Athletic Centerback:
     npxG: 4.0
     xAOP: 0
-    xT: 1.0
+    xTOP: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
@@ -120,7 +120,7 @@ weights:
     Passes: 4
     Passes successful %: 3
     Progressive Passes: 2
-    xT: 4.0
+    xTOP: 4.0
     Goals: 1.0
     npxG: 4
     Shots: 2
@@ -137,7 +137,7 @@ weights:
     Passes: 6
     Passes successful %: 6
     Progressive Passes: 2
-    xT: 4.0
+    xTOP: 4.0
     npxG: 1.0
     xAOP: 1.0
     Progressive runs: 1.0
@@ -150,7 +150,7 @@ weights:
     Passes: 4
     Passes successful %: 6
     Progressive Passes: 2
-    xT: 2.0
+    xTOP: 2.0
     npxG: 1.0
     xAOP: 1.0
     Progressive runs: 1.0
@@ -166,7 +166,7 @@ weights:
     Passes successful %: 6
     Progressive Passes: 10
     Passes to final third successful: 8
-    xT: 10
+    xTOP: 10
     npxG: 1.0
     xAOP: 8
     Progressive runs: 2
@@ -179,7 +179,7 @@ weights:
     Passes: 6
     Passes successful %: 2
     Progressive Passes: 4
-    xT: 8
+    xTOP: 8
     Goals: 2
     npxG: 8
     Shots: 2
@@ -196,7 +196,7 @@ weights:
   Full Back:
     npxG: 4
     xAOP: 4
-    xT: 3
+    xTOP: 3
     Passes: 2
     Passes successful %: 2
     Progressive Passes: 2
@@ -216,7 +216,7 @@ weights:
     xG per Shot: 1
     Assists: 6
     xAOP: 8
-    xT: 6
+    xTOP: 6
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 2
@@ -233,7 +233,7 @@ weights:
   Inverted Full Back:
     npxG: 1.0
     xAOP: 1.0
-    xT: 12
+    xTOP: 12
     Passes: 16
     Passes successful %: 6
     Progressive Passes: 8
@@ -253,7 +253,7 @@ weights:
     xG per Shot: 2
     Assists: 4
     xAOP: 8
-    xT: 6
+    xTOP: 6
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
@@ -275,7 +275,7 @@ weights:
     xG per Shot: 2
     Assists: 6
     xAOP: 12
-    xT: 10
+    xTOP: 10
     Passes: 2
     Passes successful %: 1.0
     Progressive Passes: 2
@@ -297,7 +297,7 @@ weights:
     xG per Shot: 8
     Assists: 10
     xAOP: 20
-    xT: 2
+    xTOP: 2
     Passes: 1.0
     Passes successful %: 1.0
     Progressive runs: 2
@@ -316,7 +316,7 @@ weights:
     xG per Shot: 8
     Assists: 10
     xAOP: 20
-    xT: 4
+    xTOP: 4
     Passes: 2
     Passes successful %: 2
     Progressive Passes: 3
@@ -336,7 +336,7 @@ weights:
     xG per Shot: 8
     Assists: 10
     xAOP: 20
-    xT: 4
+    xTOP: 4
     Passes: 2
     Passes successful %: 1.0
     Progressive Passes: 1.0
@@ -376,7 +376,7 @@ weights:
     xG per Shot: 8
     Assists: 10
     xAOP: 20
-    xT: 2
+    xTOP: 2
     Passes: 2
     Passes successful %: 2
     Progressive Passes: 1.0
@@ -398,7 +398,7 @@ weights:
     xG per Shot: 8
     Assists: 10
     xAOP: 20
-    xT: 2
+    xTOP: 2
     Passes: 2
     Passes successful %: 1.0
     Progressive Passes: 1.0
@@ -520,22 +520,22 @@ distribution_metrics_by_position:
   Shot Stopper: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
   Cross Claimer: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk']
   Ball-playing GK: ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'recoveries_gk', 'passes_gk', 'Passes successful %', 'longPassesSuccessful_gk']
-  Ball-Playing Centerback: ['xT', 'Passes', 'Passes successful %', 'Progressive Passes', 'Progressive runs', 'Avg defensive action height']
+  Ball-Playing Centerback: ['xTOP', 'Passes', 'Passes successful %', 'Progressive Passes', 'Progressive runs', 'Avg defensive action height']
   Stopper: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels att box successful', 'Avg defensive action height']
   Athletic Centerback: ['npxG', 'Progressive runs', 'Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Aerial duels att box successful', 'Avg defensive action height']
-  Box-to-Box: ['Progressive Passes', 'npxG', 'Shots', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
-  Holding Mid: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
+  Box-to-Box: ['Progressive Passes', 'npxG', 'Shots', 'xAOP', 'xTOP', 'Progressive runs', 'Dribbles successful', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
+  Holding Mid: ['Passes', 'Passes successful %', 'Progressive Passes', 'xTOP', 'Aerial duels successful', 'Defensive duels successful', 'Interceptions', 'Recoveries']
   Ball-Winning Mid: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Recoveries Opp Half']
-  Deep-lying Playmaker: ['Passes', 'Passes successful %', 'Progressive Passes', 'xT', 'xAOP', 'Progressive runs']
-  Advanced Playmaker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles successful']
+  Deep-lying Playmaker: ['Passes', 'Passes successful %', 'Progressive Passes', 'xTOP', 'xAOP', 'Progressive runs']
+  Advanced Playmaker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xTOP', 'Progressive runs', 'Dribbles successful']
   Full Back: ['Aerial duels', 'Aerial duels successful %', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries', 'Clearances', 'Avg defensive action height']
-  Wingback: ['Assists', 'xAOP', 'xT', 'Passes', 'Crosses successful', 'Progressive runs', 'Interceptions', 'Recoveries']
-  Inverted Full Back: ['Progressive Passes', 'xT', 'Progressive runs', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries']
-  Wide Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Crosses successful', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
-  Creative Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Wingback: ['Assists', 'xAOP', 'xTOP', 'Passes', 'Crosses successful', 'Progressive runs', 'Interceptions', 'Recoveries']
+  Inverted Full Back: ['Progressive Passes', 'xTOP', 'Progressive runs', 'Defensive duels', 'Defensive duels successful %', 'Interceptions', 'Recoveries']
+  Wide Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xTOP', 'Crosses successful', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Creative Winger: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xTOP', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
   Inside Forward: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index']
-  Shadow Striker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
-  Mobile Striker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xT', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Shadow Striker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xTOP', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
+  Mobile Striker: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'xTOP', 'Progressive runs', 'Dribbles', 'Dribbles successful %', 'Loss index']
   Poacher: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index']
   Target Man: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index', 'Aerial duels', 'Aerial duels successful %', 'Clearances']
   Pressing Forward: ['Goals', 'npxG', 'Shots', 'xG per Shot', 'Assists', 'xAOP', 'Loss index', 'Defensive duels successful', 'Interceptions', 'Recoveries', 'Counterpressing Recoveries']
