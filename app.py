@@ -1038,8 +1038,16 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
         if 'player.id' in combined_df.columns: combined_df = combined_df.drop(columns=['player.id'])
 
         # Split xT into open play (xTOP) and set piece (xTSP)
-        set_piece_types_xt = ['corner', 'free_kick', 'throw_in', 'goal_kick']
-        successful_threat['xt_type'] = np.where(successful_threat['type.primary'].isin(set_piece_types_xt), 'xTSP', 'xTOP')
+        # Use possession-based classification: set-piece phase = possession tagged with
+        # corner/free_kick/throw_in/goal_kick AND within first 5 actions of that possession
+        _sp_tags = {'corner', 'free_kick', 'throw_in', 'goal_kick'}
+        successful_threat = successful_threat.copy()
+        _has_sp_tag = successful_threat['possession.types'].apply(
+            lambda x: bool(_sp_tags & set(x)) if isinstance(x, (list, np.ndarray)) else False
+        )
+        _event_idx = pd.to_numeric(successful_threat.get('possession.eventIndex'), errors='coerce').fillna(999)
+        _is_set_piece = _has_sp_tag & (_event_idx <= 5)
+        successful_threat['xt_type'] = np.where(_is_set_piece, 'xTSP', 'xTOP')
         xt_split = successful_threat.groupby(['player.id', 'xt_type'])['xT'].sum()
         xt_split_df = xt_split.unstack(fill_value=0).reset_index()
         combined_df = pd.merge(combined_df, xt_split_df, left_on='playerId', right_on='player.id', how='left')
@@ -2435,9 +2443,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df = base_df.merge(player_xt.set_index('player.id'), left_index=True, right_index=True, how='left')
 
     # Split xT into open play (xTOP) and set piece (xTSP)
-    set_piece_types_xt = ['corner', 'free_kick', 'throw_in', 'goal_kick']
+    # Use possession-based classification: set-piece phase = possession tagged with
+    # corner/free_kick/throw_in/goal_kick AND within first 5 actions of that possession
+    _sp_tags = {'corner', 'free_kick', 'throw_in', 'goal_kick'}
     successful_threat = successful_threat.copy()
-    successful_threat['xt_type'] = np.where(successful_threat['type.primary'].isin(set_piece_types_xt), 'xTSP', 'xTOP')
+    _has_sp_tag = successful_threat['possession.types'].apply(
+        lambda x: bool(_sp_tags & set(x)) if isinstance(x, (list, np.ndarray)) else False
+    )
+    _event_idx = pd.to_numeric(successful_threat.get('possession.eventIndex'), errors='coerce').fillna(999)
+    _is_set_piece = _has_sp_tag & (_event_idx <= 5)
+    successful_threat['xt_type'] = np.where(_is_set_piece, 'xTSP', 'xTOP')
     xt_split = successful_threat.groupby(['player.id', 'xt_type'])['xT'].sum()
     xt_split_df = xt_split.unstack(fill_value=0).reset_index()
     base_df = base_df.merge(xt_split_df.set_index('player.id'), left_index=True, right_index=True, how='left')
