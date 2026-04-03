@@ -5622,6 +5622,85 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- 3. Get Player's Match Log ---
         player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df, season_id=selected_season_id)
 
+        # Enrich match log with per-match xA (xAOP/xASP) and xT (xTOP/xTSP) from raw events
+        if not player_match_log_df.empty and not profile_events_df.empty:
+            try:
+                _p_events = profile_events_df[profile_events_df['player.name'] == selected_player_name].copy()
+                if not _p_events.empty:
+                    # Per-match xA: find shot assists, map to shot xG
+                    _p_events['shot_event_id'] = np.where(_p_events['shot.xg'].notna(), _p_events['id'], np.nan)
+                    _p_events['next_shot_id'] = _p_events.groupby('matchId')['shot_event_id'].bfill()
+                    _shot_xg_map = _p_events[_p_events['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
+                    # Get all events in matches this player played (need all players for shot assists)
+                    _player_match_ids = _p_events['matchId'].unique()
+                    _match_events = profile_events_df[profile_events_df['matchId'].isin(_player_match_ids)].copy()
+                    _match_events['shot_event_id'] = np.where(_match_events['shot.xg'].notna(), _match_events['id'], np.nan)
+                    _match_events['next_shot_id'] = _match_events.groupby('matchId')['shot_event_id'].bfill()
+                    _all_shot_xg = _match_events[_match_events['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
+                    _assists = _match_events[
+                        (_match_events['player.name'] == selected_player_name) &
+                        (_match_events.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x))
+                    ].copy()
+                    _assists['xA'] = _assists['next_shot_id'].map(_all_shot_xg)
+                    _sp_types = ['corner', 'free_kick', 'throw_in', 'goal_kick']
+                    _assists['_xa_type'] = np.where(_assists['type.primary'].isin(_sp_types), 'xASP', 'xAOP')
+                    # Aggregate per match
+                    _xa_per_match = _assists.groupby(['matchId', '_xa_type'])['xA'].sum().unstack(fill_value=0).reset_index()
+                    for _c in ['xAOP', 'xASP']:
+                        if _c not in _xa_per_match.columns:
+                            _xa_per_match[_c] = 0.0
+                    _xa_total = _assists.groupby('matchId')['xA'].sum().reset_index().rename(columns={'xA': 'xA_total'})
+                    _xa_per_match = _xa_per_match.merge(_xa_total, on='matchId', how='left')
+
+                    # Per-match xT: calculate from passes/touches/accelerations + set pieces
+                    _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
+                    _xt_grid = np.array(_xt_data); _r, _c = _xt_grid.shape
+                    _sp_xt = ['corner', 'free_kick', 'throw_in']
+                    _moves = _p_events[_p_events['type.primary'].isin(['pass', 'touch', 'acceleration'] + _sp_xt)].copy()
+                    _suc_pass = (_moves['type.primary'] == 'pass') & (_moves.get('pass.accurate') == True)
+                    _other_suc = _moves['type.primary'].isin(['touch', 'acceleration'] + _sp_xt)
+                    _moves = _moves[_suc_pass | _other_suc]
+                    _is_pass_like = _moves['type.primary'].isin(['pass'] + _sp_xt)
+                    _moves['_ex'] = np.where(_is_pass_like, _moves.get('pass.endLocation.x'), _moves.get('carry.endLocation.x'))
+                    _moves['_ey'] = np.where(_is_pass_like, _moves.get('pass.endLocation.y'), _moves.get('carry.endLocation.y'))
+                    _moves = _moves.dropna(subset=['_ex', '_ey'])
+                    _moves['_sc'] = np.clip((_moves['location.x'].astype(float).fillna(0) / 100 * _c).astype(int), 0, _c-1)
+                    _moves['_sr'] = np.clip((_moves['location.y'].astype(float).fillna(0) / 100 * _r).astype(int), 0, _r-1)
+                    _moves['_ec'] = np.clip((_moves['_ex'].astype(float).fillna(0) / 100 * _c).astype(int), 0, _c-1)
+                    _moves['_er'] = np.clip((_moves['_ey'].astype(float).fillna(0) / 100 * _r).astype(int), 0, _r-1)
+                    _moves['_xT'] = _xt_grid[_moves['_er'].values, _moves['_ec'].values] - _xt_grid[_moves['_sr'].values, _moves['_sc'].values]
+                    _pos_xt = _moves[_moves['_xT'] > 0].copy()
+                    _pos_xt['_xt_type'] = np.where(_pos_xt['type.primary'].isin(_sp_xt), 'xTSP', 'xTOP')
+                    _xt_per_match = _pos_xt.groupby(['matchId', '_xt_type'])['_xT'].sum().unstack(fill_value=0).reset_index()
+                    for _c_name in ['xTOP', 'xTSP']:
+                        if _c_name not in _xt_per_match.columns:
+                            _xt_per_match[_c_name] = 0.0
+                    _xt_total = _pos_xt.groupby('matchId')['_xT'].sum().reset_index().rename(columns={'_xT': 'xT_total'})
+                    _xt_per_match = _xt_per_match.merge(_xt_total, on='matchId', how='left')
+
+                    # Map matchId to match log rows via Date + opponent lookup
+                    _mid_map = profile_matches_df.set_index('matchId')['dateutc'].to_dict()
+                    _xa_per_match['_date'] = _xa_per_match['matchId'].map(_mid_map)
+                    _xa_per_match['_date'] = pd.to_datetime(_xa_per_match['_date'], errors='coerce').apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A')
+                    _xt_per_match['_date'] = _xt_per_match['matchId'].map(_mid_map)
+                    _xt_per_match['_date'] = pd.to_datetime(_xt_per_match['_date'], errors='coerce').apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A')
+
+                    # Merge into match log
+                    player_match_log_df = player_match_log_df.merge(
+                        _xa_per_match[['_date', 'xAOP', 'xASP']].rename(columns={'_date': 'Date'}),
+                        on='Date', how='left'
+                    )
+                    player_match_log_df = player_match_log_df.merge(
+                        _xt_per_match[['_date', 'xTOP', 'xTSP']].rename(columns={'_date': 'Date'}),
+                        on='Date', how='left'
+                    )
+                    # Round and fill
+                    for _mc in ['xAOP', 'xASP', 'xTOP', 'xTSP']:
+                        if _mc in player_match_log_df.columns:
+                            player_match_log_df[_mc] = player_match_log_df[_mc].fillna(0).round(2)
+            except Exception as e:
+                print(f"Warning: Could not enrich match log with xA/xT: {e}")
+
         # --- 4. Display Player Bio ---
         current_team = player_per_90_stats.get('teamName', 'N/A')
         current_pos = player_per_90_stats.get('primaryPosition', 'N/A')
@@ -6280,7 +6359,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         if player_match_log_df.empty:
             st.info("No individual match stats found for this player.")
         else:
-            key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'Actions / successful', 'Passes / accurate', 'Duels / won']
+            key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'xAOP', 'xASP', 'xTOP', 'xTSP', 'Actions / successful', 'Passes / accurate', 'Duels / won']
             cols_to_show = [c for c in key_match_stats if c in player_match_log_df.columns]
             st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
             with st.expander("View Full Match Log (All Stats)"):

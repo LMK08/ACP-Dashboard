@@ -1407,10 +1407,64 @@ def calculate_match_data(match_df, home_team, away_team):
                 minutes_val = player_minutes.get(player)
                 minutes_display = f"{int(minutes_val)}'" if pd.notna(minutes_val) else "N/A"
 
+                # Per-match xA (split into xAOP/xASP)
+                _xa_op = 0.0; _xa_sp = 0.0
+                try:
+                    _assists_mask = player_events.get('type.secondary', pd.Series(dtype='object')).apply(
+                        lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x
+                    )
+                    _player_assists = player_events[_assists_mask]
+                    if not _player_assists.empty:
+                        # Map assist to next shot's xG
+                        _match_shot_ids = match_df[match_df['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
+                        _pa = _player_assists.copy()
+                        _pa['_shot_id'] = match_df.loc[match_df.index.isin(_pa.index)].groupby('matchId')['id'].shift(-1) if False else np.nan
+                        # Use bfill approach on full match events
+                        _full_match = match_df.copy()
+                        _full_match['_shot_event_id'] = np.where(_full_match['shot.xg'].notna(), _full_match['id'], np.nan)
+                        _full_match['_next_shot'] = _full_match['_shot_event_id'].bfill()
+                        _pa_with_shot = _full_match.loc[_player_assists.index]
+                        _pa_xa = _pa_with_shot['_next_shot'].map(_match_shot_ids)
+                        _sp_types = ['corner', 'free_kick', 'throw_in', 'goal_kick']
+                        _is_sp = _player_assists['type.primary'].isin(_sp_types)
+                        _xa_sp = float(_pa_xa[_is_sp].sum()) if _is_sp.any() else 0.0
+                        _xa_op = float(_pa_xa[~_is_sp].sum()) if (~_is_sp).any() else 0.0
+                except Exception:
+                    pass
+
+                # Per-match xT (split into xTOP/xTSP)
+                _xt_op = 0.0; _xt_sp = 0.0
+                try:
+                    _sp_xt_types = ['corner', 'free_kick', 'throw_in']
+                    _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
+                    _xt_grid = np.array(_xt_data); _xr, _xc = _xt_grid.shape
+                    _pmoves = player_events[player_events['type.primary'].isin(['pass', 'touch', 'acceleration'] + _sp_xt_types)].copy()
+                    _suc_p = (_pmoves['type.primary'] == 'pass') & (_pmoves.get('pass.accurate') == True)
+                    _suc_o = _pmoves['type.primary'].isin(['touch', 'acceleration'] + _sp_xt_types)
+                    _pmoves = _pmoves[_suc_p | _suc_o]
+                    if not _pmoves.empty:
+                        _pl = _pmoves['type.primary'].isin(['pass'] + _sp_xt_types)
+                        _pmoves['_ex'] = np.where(_pl, _pmoves.get('pass.endLocation.x'), _pmoves.get('carry.endLocation.x'))
+                        _pmoves['_ey'] = np.where(_pl, _pmoves.get('pass.endLocation.y'), _pmoves.get('carry.endLocation.y'))
+                        _pmoves = _pmoves.dropna(subset=['_ex', '_ey'])
+                        if not _pmoves.empty:
+                            _sc = np.clip((_pmoves['location.x'].astype(float).fillna(0)/100*_xc).astype(int), 0, _xc-1)
+                            _sr = np.clip((_pmoves['location.y'].astype(float).fillna(0)/100*_xr).astype(int), 0, _xr-1)
+                            _ec = np.clip((_pmoves['_ex'].astype(float).fillna(0)/100*_xc).astype(int), 0, _xc-1)
+                            _er = np.clip((_pmoves['_ey'].astype(float).fillna(0)/100*_xr).astype(int), 0, _xr-1)
+                            _xt_vals = _xt_grid[_er.values, _ec.values] - _xt_grid[_sr.values, _sc.values]
+                            _pos_mask = _xt_vals > 0
+                            _is_sp_xt = _pmoves['type.primary'].isin(_sp_xt_types).values
+                            _xt_sp = float(_xt_vals[_pos_mask & _is_sp_xt].sum())
+                            _xt_op = float(_xt_vals[_pos_mask & ~_is_sp_xt].sum())
+                except Exception:
+                    pass
 
                 player_stats_list.append({
-                    "Player": player, "Minutes": minutes_display, # Changed column name slightly for clarity
+                    "Player": player, "Minutes": minutes_display,
                     "Goals / xG": f"{goals}/{round(xg, 2) if pd.notna(xg) and xg > 0 else '-'}",
+                    "xAOP": round(_xa_op, 2) if _xa_op > 0 else "-", "xASP": round(_xa_sp, 2) if _xa_sp > 0 else "-",
+                    "xTOP": round(_xt_op, 2) if _xt_op > 0 else "-", "xTSP": round(_xt_sp, 2) if _xt_sp > 0 else "-",
                     "Actions / successful": f"{total_actions}/{successful_actions}", "Shots / on target": f"{total_shots}/{shots_on_target}",
                     "Passes / accurate": f"{total_passes}/{accurate_passes}", "Crosses / accurate": f"{crosses.shape[0]}/{accurate_crosses}",
                     "Dribbles / successful": f"{dribbles.shape[0]}/{successful_dribbles}", "Duels / won": f"{total_duels}/{duels_won}",
