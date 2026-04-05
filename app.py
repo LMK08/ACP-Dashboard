@@ -408,7 +408,7 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v10'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v11'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -1224,7 +1224,7 @@ PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long p
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
-OFF_BALL_DEFENDING_METRICS = ['Defensive Area', 'Territorial Dominance', 'Opp xT into Def Area', 'Opp xT from Def Area', 'Opp Pass Success % into Def Area']
+OFF_BALL_DEFENDING_METRICS = ['Defensive Area', 'Territorial Dominance OE', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Opp Pass Success % into Def Area']
 DISTRIBUTION_METRICS_BY_POSITION = {
     'Shot Stopper': ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk'],
     'Cross Claimer': ['goalsPrevented', 'goalsPreventedPerSOT', 'exits', 'Long passes successful %', 'recoveries_gk'],
@@ -1901,7 +1901,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
     # Disk cache: load pre-computed results if available
-    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'xTOP', 'xTSP'}
+    _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
@@ -2224,6 +2224,33 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         )
         base_df = base_df.merge(_area_series, left_index=True, right_index=True, how='left')
 
+        # Expected xT across the full defensive ellipse (opposition perspective)
+        # Sample points on a 2m grid inside each player's 68% confidence ellipse,
+        # convert to opposition Wyscout coords, look up xT grid values, and average.
+        # This captures the threat level across the entire defensive zone, not just the center.
+        _expected_xt = {}
+        _sample_step = 2.0  # meters
+        for _pid, (_mean, _cov_inv, _area) in _ellipse_params.items():
+            _cov = np.linalg.inv(_cov_inv)
+            _max_radius = np.sqrt(np.linalg.eigvalsh(_cov).max() * CHI2_68_2DF)
+            _xs = np.arange(_mean[0] - _max_radius, _mean[0] + _max_radius + _sample_step, _sample_step)
+            _ys = np.arange(_mean[1] - _max_radius, _mean[1] + _max_radius + _sample_step, _sample_step)
+            _gx, _gy = np.meshgrid(_xs, _ys)
+            _pts = np.column_stack([_gx.ravel(), _gy.ravel()])
+            _d = _pts - _mean
+            _inside = np.sum(_d @ _cov_inv * _d, axis=1) < CHI2_68_2DF
+            _pts_in = _pts[_inside]
+            if len(_pts_in) == 0:
+                _expected_xt[_pid] = 0.0
+                continue
+            _opp_x = 100 - (_pts_in[:, 0] / 1.05)
+            _opp_y = 100 - (_pts_in[:, 1] / 0.68)
+            _r = np.clip((_opp_y / 100 * _xt_rows).astype(int), 0, _xt_rows - 1)
+            _c = np.clip((_opp_x / 100 * _xt_cols).astype(int), 0, _xt_cols - 1)
+            _expected_xt[_pid] = _xt_grid[_r, _c].mean()
+        _expected_xt_series = pd.Series(_expected_xt, name='Expected xT at Center')
+        base_df = base_df.merge(_expected_xt_series, left_index=True, right_index=True, how='left')
+
         # -- Build opposition xT dataset (open-play passes/touches/accelerations) --
         _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
         _xt_grid = np.array(_xt_data)
@@ -2370,6 +2397,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         base_df['Defensive Area'] = 0.0
         base_df['Opp xT into Def Area'] = 0.0
         base_df['Opp xT from Def Area'] = 0.0
+        base_df['Expected xT at Center'] = 0.0
         base_df['_opp_pass_into_total'] = 0.0
         base_df['_opp_pass_into_succ'] = 0.0
 
@@ -2517,7 +2545,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     
     # Define cols that should NOT be normalized
     rate_cols = [col for col in base_df.columns if '%' in col or 'per' in col.lower() or 'index' in col.lower() or 'Percentage' in col or 'Avg' in col]
-    info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y', 'Defensive Area']
+    info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y', 'Defensive Area', 'Expected xT at Center']
     dont_normalize = rate_cols + info_cols
 
     # DEBUG: Log goalsConceded before normalization
@@ -2543,17 +2571,48 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         if gk_mask.any():
             print(f"  DEBUG goalsConceded AFTER normalization: {base_df.loc[gk_mask, 'goalsConceded'].head(3).tolist()}")
             
-    # Territorial Dominance = (Opp xT into Def Area (per 90) / Defensive Area (sq m)) × 100000
-    # Measures opposition threat density per square meter of defensive coverage (scaled ×100000)
-    print(f"  DEBUG Territorial Dominance inputs:")
-    print(f"    Opp xT into Def Area (after per90): non-zero={( base_df['Opp xT into Def Area'] != 0).sum()}, min={base_df['Opp xT into Def Area'].min():.6f}, max={base_df['Opp xT into Def Area'].max():.6f}, mean={base_df['Opp xT into Def Area'].mean():.6f}")
-    print(f"    Defensive Area: non-zero={(base_df['Defensive Area'] > 0).sum()}, min={base_df['Defensive Area'][base_df['Defensive Area'] > 0].min() if (base_df['Defensive Area'] > 0).any() else 0:.2f}, max={base_df['Defensive Area'].max():.2f}, mean={base_df['Defensive Area'].mean():.2f}")
+    # -- OE (Over-Expectation) metrics: normalize opposition metrics by Expected xT at Center --
+    # This accounts for positional expectation: CBs near goal naturally face higher opposition xT.
+    # OE = raw metric / Expected xT at Center — higher OE = more opposition threat than expected.
+    _has_expected = (base_df['Expected xT at Center'] > 0)
+    _has_area = (base_df['Defensive Area'] > 0)
+
+    print(f"  DEBUG OE metric inputs:")
+    print(f"    Opp xT into Def Area (after per90): non-zero={( base_df['Opp xT into Def Area'] != 0).sum()}")
+    print(f"    Opp xT from Def Area (after per90): non-zero={( base_df['Opp xT from Def Area'] != 0).sum()}")
+    print(f"    Expected xT at Center: non-zero={_has_expected.sum()}, min={base_df.loc[_has_expected, 'Expected xT at Center'].min():.4f}, max={base_df['Expected xT at Center'].max():.4f}")
+
+    # Opp xT into Def Area OE = (Opp xT into Def Area per 90) / Expected xT at Center
+    base_df['Opp xT into Def Area OE'] = np.where(
+        _has_expected,
+        base_df['Opp xT into Def Area'] / base_df['Expected xT at Center'],
+        0
+    )
+
+    # Opp xT from Def Area OE = (Opp xT from Def Area per 90) / Expected xT at Center
+    base_df['Opp xT from Def Area OE'] = np.where(
+        _has_expected,
+        base_df['Opp xT from Def Area'] / base_df['Expected xT at Center'],
+        0
+    )
+
+    # Territorial Dominance OE = Opp xT into Def Area per 90 / (Defensive Area × Expected xT at Center) × 10000
+    base_df['Territorial Dominance OE'] = np.where(
+        _has_area & _has_expected,
+        (base_df['Opp xT into Def Area'] / (base_df['Defensive Area'] * base_df['Expected xT at Center'])) * 10000,
+        0
+    )
+
+    # Keep the original Territorial Dominance as well (raw, non-OE)
     base_df['Territorial Dominance'] = np.where(
-        base_df['Defensive Area'] > 0,
+        _has_area,
         (base_df['Opp xT into Def Area'] / base_df['Defensive Area']) * 100000,
         0
     )
-    print(f"    Territorial Dominance: non-zero={(base_df['Territorial Dominance'] != 0).sum()}, min={base_df['Territorial Dominance'].min():.6f}, max={base_df['Territorial Dominance'].max():.6f}")
+
+    print(f"    Opp xT into Def Area OE: non-zero={(base_df['Opp xT into Def Area OE'] != 0).sum()}, min={base_df['Opp xT into Def Area OE'].min():.4f}, max={base_df['Opp xT into Def Area OE'].max():.4f}")
+    print(f"    Opp xT from Def Area OE: non-zero={(base_df['Opp xT from Def Area OE'] != 0).sum()}, min={base_df['Opp xT from Def Area OE'].min():.4f}, max={base_df['Opp xT from Def Area OE'].max():.4f}")
+    print(f"    Territorial Dominance OE: non-zero={(base_df['Territorial Dominance OE'] != 0).sum()}, min={base_df['Territorial Dominance OE'].min():.6f}, max={base_df['Territorial Dominance OE'].max():.6f}")
 
     # Clean up and return
     base_df = base_df.reset_index() # 'playerId' is now a column
@@ -2618,7 +2677,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     (each low-minute player is temporarily added to the sample for their own percentile).
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
-    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'xTOP', 'xTSP'}
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
