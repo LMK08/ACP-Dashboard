@@ -2224,6 +2224,11 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         )
         base_df = base_df.merge(_area_series, left_index=True, right_index=True, how='left')
 
+        # -- Build xT grid (used for both Expected xT and opposition xT calculations) --
+        _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
+        _xt_grid = np.array(_xt_data)
+        _xt_rows, _xt_cols = _xt_grid.shape
+
         # Expected xT across the full defensive ellipse (opposition perspective)
         # Sample points on a 2m grid inside each player's 68% confidence ellipse,
         # convert to opposition Wyscout coords, look up xT grid values, and average.
@@ -2252,9 +2257,6 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         base_df = base_df.merge(_expected_xt_series, left_index=True, right_index=True, how='left')
 
         # -- Build opposition xT dataset (open-play passes/touches/accelerations) --
-        _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
-        _xt_grid = np.array(_xt_data)
-        _xt_rows, _xt_cols = _xt_grid.shape
 
         _opp_moves = events_df[
             events_df['type.primary'].isin(['pass', 'touch', 'acceleration']) & _is_open_play
