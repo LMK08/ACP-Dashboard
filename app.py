@@ -2832,14 +2832,14 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
                     grid_raw = mean + sig * std
                 grid_label = fmt_val(metric, grid_raw)
                 # Place labels slightly outside each gridline
-                ax.text(angle_rad, lvl + 3, grid_label, size=5.5, ha='center', va='bottom', color='grey', alpha=0.8)
+                ax.text(angle_rad, lvl + 3, grid_label, size=6.5, ha='center', va='bottom', color='black', alpha=0.7)
 
         # Player raw value label (on the shape)
         for i, metric in enumerate(metrics):
             angle_rad = angles[i]
             label = fmt_val(metric, player_data[metric].values[0]) if metric in player_data.columns else "0"
             label_pos = min(values[i] + 6, 95)
-            ax.text(angle_rad, label_pos, label, size=8, ha='center', va='center', color='blue', fontweight='bold')
+            ax.text(angle_rad, label_pos, label, size=8, ha='center', va='center', color='blue')
 
     else:
         # --- PERCENTILE MODE (original behavior) ---
@@ -2959,7 +2959,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     relevant_metrics = DISTRIBUTION_METRICS_BY_POSITION.get(highest_scoring_group, metrics)
     relevant_metrics = [m for m in relevant_metrics if m in player_data.columns]
 
-    fig = plt.figure(figsize=(20, 10))
+    fig = plt.figure(figsize=(24, 13))
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
 
