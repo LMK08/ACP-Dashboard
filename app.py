@@ -2819,9 +2819,9 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         plt.yticks([25, 50, 75, 100], ["", "", "", ""], color="grey", size=7, zorder=1)
         plt.ylim(0, 100)
 
-        # Spoke labels: show raw values at each gridline level
-        _grid_levels = [0, 25, 50, 75, 100]  # center, -1σ, mean, +1σ, +2σ
-        _sigma_offsets = [-2, -1, 0, 1, 2]    # corresponding σ offsets
+        # Spoke labels: show raw values at each gridline level (skip innermost = mean-2σ)
+        _grid_levels = [25, 50, 75, 100]   # -1σ, mean, +1σ, +2σ
+        _sigma_offsets = [-1, 0, 1, 2]      # corresponding σ offsets
         for i, metric in enumerate(metrics):
             angle_rad = angles[i]
             mean = _means[metric]; std = _stds[metric]
@@ -2831,8 +2831,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
                 else:
                     grid_raw = mean + sig * std
                 grid_label = fmt_val(metric, grid_raw)
-                # Place labels slightly outside each gridline
-                ax.text(angle_rad, lvl + 3, grid_label, size=6.5, ha='center', va='bottom', color='black', alpha=0.7)
+                ax.text(angle_rad, lvl + 3, grid_label, size=7.5, ha='center', va='bottom', color='black', alpha=0.85)
 
         # Player raw value label (on the shape)
         for i, metric in enumerate(metrics):
@@ -2959,7 +2958,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     relevant_metrics = DISTRIBUTION_METRICS_BY_POSITION.get(highest_scoring_group, metrics)
     relevant_metrics = [m for m in relevant_metrics if m in player_data.columns]
 
-    fig = plt.figure(figsize=(24, 13))
+    fig = plt.figure(figsize=(20, 10))
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
 
