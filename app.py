@@ -6097,25 +6097,90 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Career radar section disabled to reduce memory usage
         # TODO: Re-enable when Streamlit Cloud resources are upgraded
 
-        # --- Minutes by Position Breakdown ---
-        minutes_by_pos = get_player_minutes_by_position(profile_events_df, player_id, player_match_log_df)
-        if not minutes_by_pos.empty and len(minutes_by_pos) > 1:
-            st.caption("Minutes by Position")
-            st.dataframe(
-                minutes_by_pos,
-                column_config={
-                    "Position": st.column_config.TextColumn("Position"),
-                    "Minutes": st.column_config.NumberColumn("Minutes", format="%d"),
-                    "Percentage": st.column_config.ProgressColumn(
-                        "% of Minutes",
-                        min_value=0,
-                        max_value=100,
-                        format="%.1f%%",
-                    ),
-                },
-                hide_index=True,
-                use_container_width=False,
-            )
+        # --- Minutes by Position + Outlier Stats side-by-side ---
+        _col_mins, _col_outliers = st.columns([1, 2])
+
+        with _col_mins:
+            minutes_by_pos = get_player_minutes_by_position(profile_events_df, player_id, player_match_log_df)
+            if not minutes_by_pos.empty and len(minutes_by_pos) > 1:
+                st.caption("Minutes by Position")
+                st.dataframe(
+                    minutes_by_pos,
+                    column_config={
+                        "Position": st.column_config.TextColumn("Position"),
+                        "Minutes": st.column_config.NumberColumn("Minutes", format="%d"),
+                        "Percentage": st.column_config.ProgressColumn(
+                            "% of Minutes",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f%%",
+                        ),
+                    },
+                    hide_index=True,
+                    use_container_width=False,
+                )
+
+        with _col_outliers:
+            # Compute outlier stats: metrics beyond 2σ / 3σ from positional mean
+            try:
+                # Use the best role's position group as the population
+                _outlier_pop = radar_stats_df[
+                    radar_stats_df['primaryPosition'].isin(POSITION_GROUPS.get(best_role, [selected_raw_pos]))
+                ].copy() if 'best_role' in dir() and best_role else radar_stats_df.copy()
+                if 'totalMinutes' in _outlier_pop.columns:
+                    _outlier_pop = _outlier_pop[pd.to_numeric(_outlier_pop['totalMinutes'], errors='coerce').fillna(0) >= 300]
+
+                # Gather all numeric per-90 metrics (exclude info/intermediate columns)
+                _skip_cols = {'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition',
+                              'tertiaryPosition', 'playerId', 'player.id', 'Defensive Area', 'Expected xT at Center'}
+                _skip_suffixes = ('_percentile', '_Score', '_TotalScore', '_Rank')
+                _all_metrics = [c for c in radar_player_data_row.columns
+                                if pd.api.types.is_numeric_dtype(radar_player_data_row[c])
+                                and c not in _skip_cols
+                                and not c.endswith(_skip_suffixes)]
+
+                _outliers_2s = []  # (metric, value, z_score, direction)
+                _outliers_3s = []
+                for _m in _all_metrics:
+                    if _m not in _outlier_pop.columns:
+                        continue
+                    _pop_vals = pd.to_numeric(_outlier_pop[_m], errors='coerce').dropna()
+                    if len(_pop_vals) < 5:
+                        continue
+                    _mean = _pop_vals.mean()
+                    _std = _pop_vals.std()
+                    if _std == 0:
+                        continue
+                    _player_val = float(radar_player_data_row[_m].values[0])
+                    _z = (_player_val - _mean) / _std
+                    # For inverted metrics, negative z is "good" (below average = better)
+                    if _m in INVERT_METRICS:
+                        _direction = "⬇️" if _z < 0 else "⬆️"
+                    else:
+                        _direction = "⬆️" if _z > 0 else "⬇️"
+                    if abs(_z) >= 3:
+                        _outliers_3s.append((_m, _player_val, _z, _direction))
+                    elif abs(_z) >= 2:
+                        _outliers_2s.append((_m, _player_val, _z, _direction))
+
+                # Sort by absolute z-score descending
+                _outliers_3s.sort(key=lambda x: abs(x[2]), reverse=True)
+                _outliers_2s.sort(key=lambda x: abs(x[2]), reverse=True)
+
+                if _outliers_3s or _outliers_2s:
+                    st.caption("Statistical Outliers (vs. positional avg)")
+                    if _outliers_3s:
+                        st.markdown("**🔴 Super-outliers (> 3σ)**")
+                        for _m, _v, _z, _d in _outliers_3s:
+                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
+                    if _outliers_2s:
+                        st.markdown("**🟡 Outliers (> 2σ)**")
+                        for _m, _v, _z, _d in _outliers_2s:
+                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
+                else:
+                    st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
+            except Exception as e:
+                print(f"Warning: Could not compute outlier stats: {e}")
 
         st.divider()
 
