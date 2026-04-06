@@ -2764,48 +2764,110 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     return result
 
 
-def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None, season_label=None):
-    """Helper function to create the base radar chart."""
-    
+def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None, season_label=None, radar_mode='percentile', population_data=None):
+    """Helper function to create the base radar chart.
+    radar_mode: 'percentile' (default) or 'raw' (raw per-90 values, mean ± 2σ scale).
+    population_data: DataFrame of the position group population (required for 'raw' mode).
+    """
+
     num_metrics = len(metrics)
     angles = [n / float(num_metrics) * 2 * pi for n in range(num_metrics)]
     angles += angles[:1]
-    
+
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([])  
-
-    values = []
-    for metric in metrics:
-        col = metric + '_percentile'
-        if col in player_data.columns:
-            # Explicitly convert to float and handle NaNs
-            val = float(player_data[col].values[0])
-            # --- THIS IS THE FIX: Scale 0-1 value to 0-100 ---
-            values.append(np.nan_to_num(val, nan=0.0) * 100)
-        else:
-            values.append(0.0) # Default to 0 if metric is missing
-            print(f"Warning: Missing percentile column {col} for radar.")
-            
-    values += values[:1] # Close the loop
-
-    # --- UPDATED: Set zorder to force plot on top of grid ---
-    ax.plot(angles, values, linewidth=2, linestyle='solid', color='#0077b6', zorder=3)  
-    ax.fill(angles, values, '#0077b6', alpha=0.25, zorder=2)
-
-    ax.set_rlabel_position(0)
-    # --- UPDATED: Set grid zorder to 1 (behind the plot) ---
-    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
-    plt.ylim(0, 100)
+    ax.set_xticklabels([])
 
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan', 'off_ball_defending': '#7ECE2B'}
 
-    # Plot raw values
-    for i, metric in enumerate(metrics):
-        angle_rad = angles[i]
-        label = fmt_val(metric, player_data[metric].values[0])
-        ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
+    if radar_mode == 'raw' and population_data is not None:
+        # --- RAW VALUE MODE: scale = mean ± 2σ ---
+        # Filter population to 300+ minutes
+        _pop = population_data.copy()
+        if 'totalMinutes' in _pop.columns:
+            _pop = _pop[pd.to_numeric(_pop['totalMinutes'], errors='coerce').fillna(0) >= 300]
 
-    # Plot metric names
+        # Compute mean and std for each metric from the population
+        _means = {}; _stds = {}
+        for metric in metrics:
+            if metric in _pop.columns:
+                vals = pd.to_numeric(_pop[metric], errors='coerce').dropna()
+                _means[metric] = vals.mean() if len(vals) > 0 else 0
+                _stds[metric] = vals.std() if len(vals) > 1 else 1
+            else:
+                _means[metric] = 0; _stds[metric] = 1
+            if _stds[metric] == 0: _stds[metric] = 1  # prevent division by zero
+
+        # Map player raw values to 0-100 scale where 0 = mean - 2σ, 100 = mean + 2σ
+        # 50 = mean
+        values = []
+        for metric in metrics:
+            raw_val = float(player_data[metric].values[0]) if metric in player_data.columns else 0.0
+            # For inverted metrics, flip direction: higher raw = worse = lower on chart
+            if metric in INVERT_METRICS:
+                mapped = 50 - ((raw_val - _means[metric]) / _stds[metric]) * 25
+            else:
+                mapped = 50 + ((raw_val - _means[metric]) / _stds[metric]) * 25
+            mapped = np.clip(mapped, 0, 100)
+            values.append(mapped)
+        values += values[:1]
+
+        ax.plot(angles, values, linewidth=2, linestyle='solid', color='#0077b6', zorder=3)
+        ax.fill(angles, values, '#0077b6', alpha=0.25, zorder=2)
+
+        # Gridlines at 0, 25, 50, 75, 100 (= mean-2σ, mean-1σ, mean, mean+1σ, mean+2σ)
+        ax.set_rlabel_position(0)
+        plt.yticks([25, 50, 75, 100], ["", "", "", ""], color="grey", size=7, zorder=1)
+        plt.ylim(0, 100)
+
+        # Spoke labels: show raw values at each gridline level
+        _grid_levels = [0, 25, 50, 75, 100]  # center, -1σ, mean, +1σ, +2σ
+        _sigma_offsets = [-2, -1, 0, 1, 2]    # corresponding σ offsets
+        for i, metric in enumerate(metrics):
+            angle_rad = angles[i]
+            mean = _means[metric]; std = _stds[metric]
+            for lvl, sig in zip(_grid_levels, _sigma_offsets):
+                if metric in INVERT_METRICS:
+                    grid_raw = mean - sig * std  # inverted: higher position = lower raw
+                else:
+                    grid_raw = mean + sig * std
+                grid_label = fmt_val(metric, grid_raw)
+                # Place labels slightly outside each gridline
+                ax.text(angle_rad, lvl + 3, grid_label, size=5.5, ha='center', va='bottom', color='grey', alpha=0.8)
+
+        # Player raw value label (on the shape)
+        for i, metric in enumerate(metrics):
+            angle_rad = angles[i]
+            label = fmt_val(metric, player_data[metric].values[0]) if metric in player_data.columns else "0"
+            label_pos = min(values[i] + 6, 95)
+            ax.text(angle_rad, label_pos, label, size=8, ha='center', va='center', color='blue', fontweight='bold')
+
+    else:
+        # --- PERCENTILE MODE (original behavior) ---
+        values = []
+        for metric in metrics:
+            col = metric + '_percentile'
+            if col in player_data.columns:
+                val = float(player_data[col].values[0])
+                values.append(np.nan_to_num(val, nan=0.0) * 100)
+            else:
+                values.append(0.0)
+                print(f"Warning: Missing percentile column {col} for radar.")
+        values += values[:1]
+
+        ax.plot(angles, values, linewidth=2, linestyle='solid', color='#0077b6', zorder=3)
+        ax.fill(angles, values, '#0077b6', alpha=0.25, zorder=2)
+
+        ax.set_rlabel_position(0)
+        plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)
+        plt.ylim(0, 100)
+
+        # Plot raw values near the shape
+        for i, metric in enumerate(metrics):
+            angle_rad = angles[i]
+            label = fmt_val(metric, player_data[metric].values[0])
+            ax.text(angle_rad, 85, label, size=8, ha='center', va='center', color='blue')
+
+    # Plot metric names (shared by both modes)
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
         if metric in OFF_BALL_DEFENDING_METRICS: color = category_colors['off_ball_defending']
@@ -2818,7 +2880,8 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
     ax.set_rlabel_position(0)
-    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7)
+    if radar_mode != 'raw':
+        plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7)
     plt.ylim(0, 100)
 
     player_name = player_data['playerName'].values[0]
@@ -2831,7 +2894,8 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
 
     today = datetime.date.today()
     _season_str = season_label if season_label else SEASON_ID_MAP.get(CURRENT_SEASON_ID, '25-26')
-    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n{_season_str} \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
+    _mode_label = "Raw per 90 (mean ± 2σ)" if radar_mode == 'raw' else "Percentile"
+    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n{_mode_label} \n{_season_str} \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
     # Build legend dynamically based on which categories are present in the metrics
     _has_off_ball = any(m in OFF_BALL_DEFENDING_METRICS for m in metrics)
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
@@ -2874,9 +2938,9 @@ def get_percentile_suffix(value):
     else: suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(value % 10, 'th')
     return suffix
 
-def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None, season_label=None):
+def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None, season_label=None, radar_mode='percentile'):
     """Creates the combined figure with radar and distribution plots."""
-    
+
     player_name = player_data['playerName'].values[0]
     highest_scoring_group = None; highest_score = -1; scores_by_group = {}
 
@@ -2890,7 +2954,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
     if highest_scoring_group is None:
         print(f"No highest scoring group found for {player_name}. Using default.")
-        highest_scoring_group = eligible_groups[0] if eligible_groups else "Default"  
+        highest_scoring_group = eligible_groups[0] if eligible_groups else "Default"
 
     relevant_metrics = DISTRIBUTION_METRICS_BY_POSITION.get(highest_scoring_group, metrics)
     relevant_metrics = [m for m in relevant_metrics if m in player_data.columns]
@@ -2898,8 +2962,12 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     fig = plt.figure(figsize=(20, 10))
     gs = GridSpec(1, 2, width_ratios=[2.5, 1.2], figure=fig)
     ax_radar = plt.subplot(gs[0], polar=True)
-    
-    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking, season_label=season_label)
+
+    # Get population for the best-matching position group (used for raw mode)
+    _pop_group = POSITION_GROUPS.get(highest_scoring_group, [player_data['primaryPosition'].values[0]])
+    _pop_for_radar = all_position_data[all_position_data['primaryPosition'].isin(_pop_group)]
+
+    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking, season_label=season_label, radar_mode=radar_mode, population_data=_pop_for_radar)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
                   horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
@@ -5949,6 +6017,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.caption(f"Best Template Match: **{best_role}** *(radar hidden — {int(total_minutes)} min played, 300 min required)*")
             else:
                 st.caption(f"Best Template Match: **{best_role}**")
+                _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
 
             # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
@@ -6020,6 +6089,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Plot
             if _show_radar:
                 _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+                _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
                 fig_radar = create_radar_with_distributions(
                     radar_player_data_row,
                     metrics_to_plot,
@@ -6027,7 +6097,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     eligible_roles,
                     all_position_data=final_population,
                     full_df_for_ranking=radar_stats_df,
-                    season_label=_radar_season_label
+                    season_label=_radar_season_label,
+                    radar_mode=_radar_mode
                 )
                 st.pyplot(fig_radar, use_container_width=True)
 
