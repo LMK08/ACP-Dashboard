@@ -1438,7 +1438,12 @@ if _config:
     DRIBBLING_METRICS = _config.get('metric_categories', {}).get('dribbling', DRIBBLING_METRICS)
     GOALKEEPING_METRICS = _config.get('metric_categories', {}).get('goalkeeping', GOALKEEPING_METRICS)
     DISTRIBUTION_METRICS_BY_POSITION = _config.get('distribution_metrics_by_position', DISTRIBUTION_METRICS_BY_POSITION)
+    # Metrics that are kept in the role weights (so they still contribute to the
+    # composite role-fit score) but hidden from the radar chart axes.
+    RADAR_HIDDEN_METRICS: set[str] = set(_config.get('radar_hidden_metrics', []) or [])
     logger.info("Configuration loaded from config.yaml")
+else:
+    RADAR_HIDDEN_METRICS = set()
 
 # Formation coordinates for XI graphic (Opta 0-100 coordinate system)
 # Note: Left positions use higher x values (right side of screen) to match broadcast view
@@ -6193,7 +6198,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
-            metrics_to_plot = [m for m in metrics_to_plot if m in radar_player_data_row.columns]
+            metrics_to_plot = [m for m in metrics_to_plot
+                               if m in radar_player_data_row.columns
+                               and m not in RADAR_HIDDEN_METRICS]
 
             # Get Population for distribution
             final_population = radar_stats_df[
@@ -6851,7 +6858,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.info(f"⚠️ **Insufficient sample size** — {' and '.join(_below_threshold)} has not reached the **300-minute minimum** required for radar charts and percentile rankings to be statistically meaningful.")
         else:
             metrics_to_plot = list(WEIGHTS[selected_template].keys())
-            metrics_to_plot = [m for m in metrics_to_plot if m in player_stats_with_scores_df.columns]
+            metrics_to_plot = [m for m in metrics_to_plot
+                               if m in player_stats_with_scores_df.columns
+                               and m not in RADAR_HIDDEN_METRICS]
 
             # --- FIX: Use a square figure to prevent distortion ---
             fig = plt.figure(figsize=(15, 15))

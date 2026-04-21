@@ -354,6 +354,7 @@ weights:
     Recoveries: 1.0
     Counterpressing Recoveries: 1
     Interrupting Value: 1.0
+    Loss index: 5
   Creative Winger:
     Goals: 4
     npxG: 8
@@ -381,6 +382,7 @@ weights:
     Recoveries: 1.0
     Counterpressing Recoveries: 1
     Interrupting Value: 1.0
+    Loss index: 5
   Inside Forward:
     Goals: 15
     npxG: 30
@@ -405,6 +407,7 @@ weights:
     Recoveries: 1.0
     Counterpressing Recoveries: 1
     Interrupting Value: 1.0
+    Loss index: 5
   Shadow Striker:
     Goals: 15
     npxG: 30
@@ -430,6 +433,7 @@ weights:
     Interceptions: 1.0
     Recoveries: 3
     Interrupting Value: 1.0
+    Loss index: 5
   Mobile Striker:
     Goals: 15
     npxG: 30
@@ -456,6 +460,7 @@ weights:
     Interceptions: 1.0
     Recoveries: 6
     Interrupting Value: 1.0
+    Loss index: 5
   Poacher:
     Goals: 20
     npxG: 40
@@ -480,6 +485,7 @@ weights:
     Interceptions: 1.0
     Recoveries: 1.0
     Interrupting Value: 1.0
+    Loss index: 5
   Target Man:
     Goals: 15
     npxG: 30
@@ -507,6 +513,7 @@ weights:
     Recoveries: 1.0
     Clearances: 10
     Interrupting Value: 3.0
+    Loss index: 5
   Pressing Forward:
     Goals: 15
     npxG: 30
@@ -534,6 +541,7 @@ weights:
     Recoveries: 10
     Counterpressing Recoveries: 4
     Interrupting Value: 30.0
+    Loss index: 5
 invert_metrics:
   - Loss index
   - goalsConceded
@@ -912,3 +920,5 @@ xt_grid:
   - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.05, 0.06, 0.06]
   - [0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.03, 0.04, 0.05, 0.05]
   - [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.04]
+radar_hidden_metrics:
+  - Loss index
