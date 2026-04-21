@@ -30,7 +30,7 @@ weights:
     Total Value: 1.0
     Passes successful %: 1.0
     Long passes successful %: 1.0
-    Passing Value: 1.0
+    GK Distribution Value: 1.0
     goalsPrevented: 4.0
     goalsPreventedPerSOT: 4.0
     goalsConceded: 1.0
@@ -43,7 +43,7 @@ weights:
   Cross Claimer:
     Total Value: 1.0
     Passes successful %: 1.0
-    Passing Value: 1.0
+    GK Distribution Value: 1.0
     goalsPrevented: 2.0
     goalsPreventedPerSOT: 2.0
     goalsConceded: 1.0
@@ -57,7 +57,7 @@ weights:
   Ball-playing GK:
     Total Value: 1.0
     Passes successful %: 4.0
-    Passing Value: 12.0
+    GK Distribution Value: 12.0
     goalsPrevented: 2.0
     goalsPreventedPerSOT: 2.0
     goalsConceded: 1.0
@@ -658,6 +658,7 @@ metric_categories:
     - Shot-Stopping Value
     - Handling Value
     - Sweeping Value
+    - GK Distribution Value
 distribution_metrics_by_position:
   Shot Stopper:
     - 'goalsPrevented'
@@ -667,6 +668,7 @@ distribution_metrics_by_position:
     - 'recoveries_gk'
     - Shot-Stopping Value
     - Handling Value
+    - GK Distribution Value
   Cross Claimer:
     - 'goalsPrevented'
     - 'goalsPreventedPerSOT'
@@ -675,6 +677,7 @@ distribution_metrics_by_position:
     - 'recoveries_gk'
     - Sweeping Value
     - Handling Value
+    - GK Distribution Value
   Ball-playing GK:
     - 'goalsPrevented'
     - 'goalsPreventedPerSOT'
@@ -685,6 +688,7 @@ distribution_metrics_by_position:
     - 'longPassesSuccessful_gk'
     - Passing Value
     - Sweeping Value
+    - GK Distribution Value
   Ball-Playing Centerback:
     - 'xTOP'
     - 'Passes'

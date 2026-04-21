@@ -551,7 +551,7 @@ GPA_VALUE_CATEGORIES = [
     "Shooting", "Passing", "Receiving", "Dribbling",
     "Corner", "FreeKick", "ThrowIn", "SetPiece",
     "Interrupting", "Fouling",
-    "GK_Shotstopping", "GK_Handling", "GK_Sweeping",
+    "GK_Shotstopping", "GK_Handling", "GK_Sweeping", "GK_Distribution",
     "Other", "total_v",
 ]
 # Map raw V category → display per-90 column name (used in radar + config.yaml).
@@ -571,6 +571,7 @@ GPA_PER90_DISPLAY: dict[str, str] = {
     "GK_Shotstopping": "Shot-Stopping Value",
     "GK_Handling":     "Handling Value",
     "GK_Sweeping":     "Sweeping Value",
+    "GK_Distribution": "GK Distribution Value",
     "total_v":         "Total Value",
 }
 GPA_PER90_COLS = [GPA_PER90_DISPLAY.get(c, f"{c}_per_90") for c in GPA_VALUE_CATEGORIES]
