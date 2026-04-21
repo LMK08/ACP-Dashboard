@@ -48,7 +48,11 @@ jobs:
           cd github-repo
 
           # Copy all Python files, config, and requirements
-          for f in *.py requirements.txt config.yaml league_config.py Dockerfile; do
+          # gpa_player_season_values.parquet is a small (~1.3MB) pre-computed
+          # data file from the external GPA model project, included here so the
+          # Value-based radar metrics work on HF. Refreshed manually via
+          # `python src/export_to_dashboard.py` in the GPA repo.
+          for f in *.py requirements.txt config.yaml league_config.py Dockerfile gpa_player_season_values.parquet; do
             if [ -f "$f" ]; then
               cp "$f" ../hf-repo/
             fi

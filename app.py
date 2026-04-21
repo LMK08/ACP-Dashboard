@@ -543,6 +543,175 @@ def load_player_details():
         return pd.DataFrame()
 
 # ==============================================================================
+# 2A-GPA. GPA ACTION-VALUE DATA LOADER
+# Per-player-season V breakdown from the GPA model project (LOSO-clean,
+# out-of-sample). See the GPA repo's src/export_to_dashboard.py for the source.
+# ==============================================================================
+GPA_VALUE_CATEGORIES = [
+    "Shooting", "Passing", "Receiving", "Dribbling",
+    "Corner", "FreeKick", "ThrowIn", "SetPiece",
+    "Interrupting", "Fouling",
+    "GK_Shotstopping", "GK_Handling", "GK_Sweeping",
+    "Other", "total_v",
+]
+# Map raw V category → display per-90 column name (used in radar + config.yaml).
+# All 15 metrics use the "X Value" naming convention.
+GPA_PER90_DISPLAY: dict[str, str] = {
+    "Shooting":        "Shooting Value",
+    "Passing":         "Passing Value",
+    "Receiving":       "Receiving Value",
+    "Dribbling":       "Dribbling Value",
+    "SetPiece":        "Set Piece Value",
+    "Corner":          "Corner Value",
+    "FreeKick":        "Free Kick Value",
+    "ThrowIn":         "Throw-In Value",
+    "Interrupting":    "Interrupting Value",
+    "Fouling":         "Fouling Value",
+    "Other":           "Other Value",
+    "GK_Shotstopping": "Shot-Stopping Value",
+    "GK_Handling":     "Handling Value",
+    "GK_Sweeping":     "Sweeping Value",
+    "total_v":         "Total Value",
+}
+GPA_PER90_COLS = [GPA_PER90_DISPLAY.get(c, f"{c}_per_90") for c in GPA_VALUE_CATEGORIES]
+
+@st.cache_data(ttl=3600)
+def load_gpa_values():
+    """Load per-(playerId, seasonId) GPA action-value categories.
+
+    Returns DataFrame with columns:
+        playerId, seasonId, competitionId, name, position, position_group,
+        mins_played, primary_share, <category>, <category>_per_90
+
+    Returns empty DataFrame if the file is missing so the rest of the app
+    still works unchanged.
+    """
+    path = os.path.join(os.path.dirname(__file__), 'gpa_player_season_values.parquet')
+    if not os.path.exists(path):
+        logger.info("gpa_player_season_values.parquet not found — GPA features disabled")
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+        df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        logger.info(f"Loaded GPA values: {len(df):,} rows × {df.shape[1]} cols")
+        return df
+    except Exception as e:
+        logger.error(f"Failed to load GPA values parquet: {e}")
+        return pd.DataFrame()
+
+
+def get_gpa_values_filtered(gpa_df, season_ids=None, comp_ids=None):
+    """Return GPA values filtered by active season + competition selection.
+
+    Args:
+        gpa_df: full GPA DataFrame from load_gpa_values()
+        season_ids: list of season IDs; if None/empty → all seasons
+        comp_ids: list of competition IDs; if None/empty → all competitions
+
+    When the user has picked a single season, returns that season's rows directly.
+    When multiple seasons are active (e.g. "All Seasons"), aggregates raw V sums
+    across seasons per playerId and recomputes per-90 values using summed mins.
+    """
+    if gpa_df is None or gpa_df.empty:
+        return pd.DataFrame()
+
+    df = gpa_df.copy()
+    if comp_ids:
+        df = df[df['competitionId'].isin(comp_ids)]
+    if season_ids:
+        df = df[df['seasonId'].isin(season_ids)]
+    if df.empty:
+        return df
+
+    # If only one season is active after filtering, no aggregation needed.
+    n_seasons = df['seasonId'].nunique()
+    if n_seasons <= 1:
+        return df.reset_index(drop=True)
+
+    # Aggregate raw V + mins across seasons per player, then recompute /90.
+    raw_v_cols = [c for c in GPA_VALUE_CATEGORIES if c in df.columns]
+    agg_spec = {c: 'sum' for c in raw_v_cols}
+    agg_spec['mins_played'] = 'sum'
+    # Keep most-recent metadata (name/position may change over seasons)
+    agg_spec['name'] = 'last'
+    agg_spec['position'] = 'last'
+    agg_spec['position_group'] = 'last'
+    # primary_share: minutes-weighted mean
+    df = df.sort_values('seasonId')
+    out = df.groupby('playerId', as_index=False).agg(agg_spec)
+    # Minutes-weighted primary_share
+    ps = (df.assign(_w=df['primary_share'] * df['mins_played'])
+             .groupby('playerId').agg(_w=('_w','sum'), m=('mins_played','sum')))
+    ps['primary_share'] = ps['_w'] / ps['m'].clip(lower=1)
+    out = out.merge(ps[['primary_share']], on='playerId', how='left')
+
+    # Recompute per-90 from the aggregated totals, using the display names
+    # for the 9 core metrics and the _per_90 suffix for auxiliary ones.
+    mins = out['mins_played'].clip(lower=1)
+    for cat in raw_v_cols:
+        col = GPA_PER90_DISPLAY.get(cat, f'{cat}_per_90')
+        out[col] = out[cat] * 90.0 / mins
+
+    # Virtual identifiers for the aggregated view
+    out['seasonId'] = pd.NA
+    out['competitionId'] = (comp_ids[0] if comp_ids and len(comp_ids) == 1 else pd.NA)
+    return out.reset_index(drop=True)
+
+
+def merge_gpa_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
+    """Merge GPA "X Value" columns into player_stats_df.
+
+    V data is filtered to the active (season × competition) selection and
+    aggregated across seasons when multiple are active (sum raw V + mins,
+    recompute /90). Merged on playerId.
+
+    Missing GPA rows (players with events but no V data, e.g. under-500-min
+    sample or pre-21/22) get 0 for every Value column so percentile math
+    doesn't drop them entirely.
+
+    Returns the stats DF unchanged if V data or stats DF is empty.
+    """
+    if player_stats_df is None or len(player_stats_df) == 0:
+        return player_stats_df
+    gpa_df = load_gpa_values()
+    if gpa_df is None or gpa_df.empty:
+        return player_stats_df
+
+    v_filtered = get_gpa_values_filtered(gpa_df, season_ids=season_ids, comp_ids=comp_ids)
+    if v_filtered.empty:
+        return player_stats_df
+
+    value_cols = [c for c in v_filtered.columns if c.endswith("Value")]
+    if not value_cols:
+        return player_stats_df
+
+    v_sub = v_filtered[["playerId"] + value_cols].copy()
+    v_sub["playerId"] = pd.to_numeric(v_sub["playerId"], errors="coerce").astype("Int64")
+    v_sub = v_sub.dropna(subset=["playerId"]).drop_duplicates(subset=["playerId"], keep="last")
+
+    df = player_stats_df
+    had_index = df.index.name == "playerId"
+    if had_index:
+        df = df.reset_index()
+    df = df.copy()
+    df["playerId"] = pd.to_numeric(df["playerId"], errors="coerce").astype("Int64")
+
+    # Drop any existing V columns before merge (idempotent)
+    existing = [c for c in value_cols if c in df.columns]
+    if existing:
+        df = df.drop(columns=existing)
+
+    merged = df.merge(v_sub, on="playerId", how="left")
+    for col in value_cols:
+        merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0.0)
+
+    if had_index:
+        merged = merged.set_index("playerId")
+    return merged
+
+
+# ==============================================================================
 # 2B. SEASON FILTERING HELPERS
 # ==============================================================================
 def get_season_events(raw_events_df, season_id):
@@ -5664,6 +5833,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         try:
             with st.spinner("Calculating player statistics (this may take a moment on first load)..."):
                 player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df, season_id=selected_season_id)
+                # Merge GPA Value columns (scoped to active season × competition)
+                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
@@ -5941,6 +6112,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 pos_filtered_stats = calculate_all_player_stats(
                     pos_filtered_events, pos_player_minutes_df, season_id=pos_cache_key
                 )
+                # Merge GPA Value columns (same season × competition scope as profile)
+                pos_filtered_stats = merge_gpa_values_into_stats(pos_filtered_stats, active_season_ids, selected_comp_ids)
                 pos_filtered_scores = calculate_player_percentiles_and_scores(
                     pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=pos_cache_key
                 )
@@ -6568,6 +6741,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         try:
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
+                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )
@@ -6701,6 +6875,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         try:
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
+                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )
@@ -7538,6 +7713,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         try:
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
+                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
                 )

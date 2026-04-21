@@ -27,6 +27,7 @@ __pycache__/
 !season_simulation.pkl
 !transferred_players.json
 !match_ids_for_season_191782.csv
+!gpa_player_season_values.parquet
 
 # System files
 .DS_Store
