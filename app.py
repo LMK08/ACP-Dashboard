@@ -616,11 +616,18 @@ def get_gpa_values_filtered(gpa_df, season_ids=None, comp_ids=None):
     if gpa_df is None or gpa_df.empty:
         return pd.DataFrame()
 
+    # Defensively coerce scalar inputs to lists. get_season_ids_for_selection
+    # can return a single int for single-competition selections.
+    if isinstance(season_ids, (int, np.integer)):
+        season_ids = [int(season_ids)]
+    if isinstance(comp_ids, (int, np.integer)):
+        comp_ids = [int(comp_ids)]
+
     df = gpa_df.copy()
     if comp_ids:
-        df = df[df['competitionId'].isin(comp_ids)]
+        df = df[df['competitionId'].isin(list(comp_ids))]
     if season_ids:
-        df = df[df['seasonId'].isin(season_ids)]
+        df = df[df['seasonId'].isin(list(season_ids))]
     if df.empty:
         return df
 
