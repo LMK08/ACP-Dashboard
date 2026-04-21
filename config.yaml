@@ -27,55 +27,60 @@ position_groups:
 
 weights:
   Shot Stopper:
+    Total Value: 1.0
+    Passes successful %: 1.0
+    Long passes successful %: 1.0
+    Passing Value: 1.0
     goalsPrevented: 4.0
     goalsPreventedPerSOT: 4.0
     goalsConceded: 1.0
     exits: 1.0
-    Passes successful %: 1.0
-    Long passes successful %: 1.0
     passes_gk: 1.0
     recoveries_gk: 1.0
     Shot-Stopping Value: 12.0
     Handling Value: 5.0
     Sweeping Value: 1.0
-    Passing Value: 1.0
-    Total Value: 1.0
   Cross Claimer:
+    Total Value: 1.0
+    Passes successful %: 1.0
+    Passing Value: 1.0
     goalsPrevented: 2.0
     goalsPreventedPerSOT: 2.0
     goalsConceded: 1.0
     exits: 6.0
-    Passes successful %: 1.0
     longPassesSuccessful_gk: 1
     passes_gk: 1.0
     recoveries_gk: 10
     Shot-Stopping Value: 6.0
     Handling Value: 6.0
     Sweeping Value: 15.0
-    Passing Value: 1.0
-    Total Value: 1.0
   Ball-playing GK:
+    Total Value: 1.0
+    Passes successful %: 4.0
+    Passing Value: 12.0
     goalsPrevented: 2.0
     goalsPreventedPerSOT: 2.0
     goalsConceded: 1.0
     exits: 2.0
-    Passes successful %: 4.0
     longPassesSuccessful_gk: 6.0
     passes_gk: 8.0
     recoveries_gk: 1.0
     Shot-Stopping Value: 1.0
     Handling Value: 1.0
     Sweeping Value: 6.0
-    Passing Value: 12.0
-    Total Value: 1.0
   Ball-Playing Centerback:
     npxG: 1.0
     xAOP: 1.0
     xTOP: 20
+    Shooting Value: 1.0
+    Total Value: 1.0
     Passes: 20
     Passes successful %: 6
     Progressive Passes: 20
+    Passing Value: 30.0
+    Receiving Value: 1.0
     Progressive runs: 6
+    Dribbling Value: 10.0
     Aerial duels: 2
     Aerial duels successful %: 6
     Aerial duels att box successful: 1
@@ -89,20 +94,20 @@ weights:
     Territorial Dominance OE: 2
     Opp xT into Def Area OE: 1
     Opp xT from Def Area OE: 1
-    Shooting Value: 1.0
-    Passing Value: 30.0
-    Receiving Value: 1.0
-    Dribbling Value: 10.0
     Interrupting Value: 10.0
-    Total Value: 1.0
   Stopper:
     npxG: 3.0
     xAOP: 0
     xTOP: 1.0
+    Shooting Value: 1.0
+    Total Value: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
+    Passing Value: 3.0
+    Receiving Value: 1.0
     Progressive runs: 1.0
+    Dribbling Value: 1.0
     Aerial duels: 8
     Aerial duels successful %: 10
     Aerial duels att box successful: 2
@@ -116,20 +121,20 @@ weights:
     Territorial Dominance OE: 8
     Opp xT into Def Area OE: 4
     Opp xT from Def Area OE: 4
-    Shooting Value: 1.0
-    Passing Value: 3.0
-    Receiving Value: 1.0
-    Dribbling Value: 1.0
     Interrupting Value: 20.0
-    Total Value: 1.0
   Athletic Centerback:
     npxG: 4.0
     xAOP: 0
     xTOP: 1.0
+    Shooting Value: 2.0
+    Total Value: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
+    Passing Value: 6.0
+    Receiving Value: 1.0
     Progressive runs: 4
+    Dribbling Value: 4.0
     Aerial duels: 5
     Aerial duels successful %: 10
     Aerial duels att box successful: 6
@@ -143,16 +148,8 @@ weights:
     Territorial Dominance OE: 14
     Opp xT into Def Area OE: 8
     Opp xT from Def Area OE: 2
-    Shooting Value: 2.0
-    Passing Value: 6.0
-    Receiving Value: 1.0
-    Dribbling Value: 4.0
     Interrupting Value: 16.0
-    Total Value: 1.0
   Box-to-Box:
-    Passes: 4
-    Passes successful %: 3
-    Progressive Passes: 2
     xTOP: 4.0
     Goals: 1.0
     npxG: 4
@@ -160,45 +157,53 @@ weights:
     xG per Shot: 1.0
     Assists: 1.0
     xAOP: 4
+    Shooting Value: 6.0
+    Total Value: 1.0
+    Passes: 4
+    Passes successful %: 3
+    Progressive Passes: 2
+    Passing Value: 10.0
+    Receiving Value: 6.0
     Progressive runs: 5
     Dribbles successful: 4
+    Dribbling Value: 8.0
     Aerial duels successful: 1.0
     Defensive duels successful: 2
     Interceptions: 3
     Recoveries: 4
-    Shooting Value: 6.0
-    Passing Value: 10.0
-    Receiving Value: 6.0
-    Dribbling Value: 8.0
     Interrupting Value: 8.0
-    Total Value: 1.0
   Holding Mid:
-    Passes: 4
-    Passes successful %: 4
-    Progressive Passes: 2
     xTOP: 4.0
     npxG: 1.0
     xAOP: 1.0
+    Shooting Value: 1.0
+    Total Value: 1.0
+    Passes: 4
+    Passes successful %: 4
+    Progressive Passes: 2
+    Passing Value: 10.0
+    Receiving Value: 1.0
     Progressive runs: 1.0
     Dribbles successful: 1.0
+    Dribbling Value: 1.0
     Aerial duels successful: 4
     Defensive duels successful: 6
     Interceptions: 6
     Recoveries: 6
-    Shooting Value: 1.0
-    Passing Value: 10.0
-    Receiving Value: 1.0
-    Dribbling Value: 1.0
     Interrupting Value: 12.0
-    Total Value: 1.0
   Ball-Winning Mid:
-    Passes: 4
-    Passes successful %: 6
-    Progressive Passes: 2
     xTOP: 2.0
     npxG: 1.0
     xAOP: 1.0
+    Shooting Value: 1.0
+    Total Value: 1.0
+    Passes: 4
+    Passes successful %: 6
+    Progressive Passes: 2
+    Passing Value: 6.0
+    Receiving Value: 1.0
     Progressive runs: 1.0
+    Dribbling Value: 1.0
     Aerial duels: 4
     Aerial duels successful %: 6
     Defensive duels: 6
@@ -206,36 +211,28 @@ weights:
     Interceptions: 10
     Recoveries: 10
     Recoveries Opp Half: 4
-    Shooting Value: 1.0
-    Passing Value: 6.0
-    Receiving Value: 1.0
-    Dribbling Value: 1.0
     Interrupting Value: 14.0
-    Total Value: 1.0
   Deep-lying Playmaker:
+    xTOP: 10
+    npxG: 1.0
+    xAOP: 8
+    Shooting Value: 1.0
+    Total Value: 1.0
     Passes: 10
     Passes successful %: 6
     Progressive Passes: 10
     Passes to final third successful: 8
-    xTOP: 10
-    npxG: 1.0
-    xAOP: 8
+    Passing Value: 25.0
+    Receiving Value: 5.0
     Progressive runs: 2
     Dribbles successful: 1.0
+    Dribbling Value: 4.0
     Aerial duels successful: 1.0
     Defensive duels successful: 4
     Interceptions: 4
     Recoveries: 6
-    Shooting Value: 1.0
-    Passing Value: 25.0
-    Receiving Value: 5.0
-    Dribbling Value: 4.0
     Interrupting Value: 6.0
-    Total Value: 1.0
   Advanced Playmaker:
-    Passes: 6
-    Passes successful %: 2
-    Progressive Passes: 4
     xTOP: 8
     Goals: 2
     npxG: 8
@@ -243,27 +240,35 @@ weights:
     xG per Shot: 2
     Assists: 2
     xAOP: 8
+    Shooting Value: 10.0
+    Total Value: 1.0
+    Passes: 6
+    Passes successful %: 2
+    Progressive Passes: 4
+    Passing Value: 20.0
+    Receiving Value: 10.0
     Progressive runs: 2
     Dribbles successful: 2
+    Dribbling Value: 8.0
     Aerial duels successful: 1.0
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 1.0
     Counterpressing Recoveries: 1
-    Shooting Value: 10.0
-    Passing Value: 20.0
-    Receiving Value: 10.0
-    Dribbling Value: 8.0
     Interrupting Value: 1.0
-    Total Value: 1.0
   Full Back:
     npxG: 4
     xAOP: 4
     xTOP: 3
+    Shooting Value: 4.0
+    Total Value: 1.0
     Passes: 2
     Passes successful %: 2
     Progressive Passes: 2
+    Passing Value: 16.0
+    Receiving Value: 4.0
     Progressive runs: 2
+    Dribbling Value: 8.0
     Aerial duels: 2
     Aerial duels successful %: 8
     Defensive duels: 4
@@ -272,12 +277,7 @@ weights:
     Recoveries: 8
     Clearances: 2
     Avg defensive action height: 0
-    Shooting Value: 4.0
-    Passing Value: 16.0
-    Receiving Value: 4.0
-    Dribbling Value: 8.0
     Interrupting Value: 16.0
-    Total Value: 1.0
   Wingback:
     Goals: 2
     npxG: 4
@@ -286,11 +286,16 @@ weights:
     Assists: 6
     xAOP: 8
     xTOP: 6
+    Shooting Value: 10.0
+    Total Value: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 2
     Crosses successful: 2
+    Passing Value: 20.0
+    Receiving Value: 10.0
     Progressive runs: 3
+    Dribbling Value: 14.0
     Aerial duels: 1.0
     Aerial duels successful %: 1.0
     Defensive duels: 1.0
@@ -299,20 +304,20 @@ weights:
     Recoveries: 4
     Clearances: 1.0
     Avg defensive action height: 0
-    Shooting Value: 10.0
-    Passing Value: 20.0
-    Receiving Value: 10.0
-    Dribbling Value: 14.0
     Interrupting Value: 5.0
-    Total Value: 1.0
   Inverted Full Back:
     npxG: 1.0
     xAOP: 1.0
     xTOP: 12
+    Shooting Value: 6.0
+    Total Value: 1.0
     Passes: 16
     Passes successful %: 6
     Progressive Passes: 8
+    Passing Value: 30.0
+    Receiving Value: 10.0
     Progressive runs: 2
+    Dribbling Value: 10.0
     Aerial duels: 1.0
     Aerial duels successful %: 4
     Defensive duels: 4
@@ -321,12 +326,7 @@ weights:
     Recoveries: 4
     Clearances: 1.0
     Avg defensive action height: 0
-    Shooting Value: 6.0
-    Passing Value: 30.0
-    Receiving Value: 10.0
-    Dribbling Value: 10.0
     Interrupting Value: 10.0
-    Total Value: 1.0
   Wide Winger:
     Goals: 4
     npxG: 8
@@ -335,26 +335,26 @@ weights:
     Assists: 4
     xAOP: 8
     xTOP: 6
+    Shooting Value: 10.0
+    Total Value: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
     Deep Completions: 2
     Crosses successful: 2
+    Passing Value: 16.0
+    Receiving Value: 10.0
     Progressive runs: 2
     Dribbles: 4
     Dribbles successful %: 2
-    Loss index: 5
+    Dribbling Value: 14.0
     Aerial duels successful: 1.0
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 1.0
     Counterpressing Recoveries: 1
-    Shooting Value: 10.0
-    Passing Value: 16.0
-    Receiving Value: 10.0
-    Dribbling Value: 14.0
     Interrupting Value: 1.0
-    Total Value: 1.0
+    Loss index: 5
   Creative Winger:
     Goals: 4
     npxG: 8
@@ -363,26 +363,26 @@ weights:
     Assists: 6
     xAOP: 12
     xTOP: 10
+    Shooting Value: 14.0
+    Total Value: 1.0
     Passes: 2
     Passes successful %: 1.0
     Progressive Passes: 2
     Deep Completions: 3
     Crosses successful: 2
+    Passing Value: 20.0
+    Receiving Value: 12.0
     Progressive runs: 2
     Dribbles: 2
     Dribbles successful %: 4
-    Loss index: 5
+    Dribbling Value: 12.0
     Aerial duels successful: 1.0
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 1.0
     Counterpressing Recoveries: 1
-    Shooting Value: 14.0
-    Passing Value: 20.0
-    Receiving Value: 12.0
-    Dribbling Value: 12.0
     Interrupting Value: 1.0
-    Total Value: 1.0
+    Loss index: 5
   Inside Forward:
     Goals: 15
     npxG: 30
@@ -391,23 +391,23 @@ weights:
     Assists: 10
     xAOP: 20
     xTOP: 2
+    Shooting Value: 30.0
+    Total Value: 1.0
     Passes: 1.0
     Passes successful %: 1.0
+    Passing Value: 10.0
+    Receiving Value: 30.0
     Progressive runs: 2
     Dribbles: 4
     Dribbles successful %: 4
-    Loss index: 5
+    Dribbling Value: 10.0
     Aerial duels successful: 4
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 1.0
     Counterpressing Recoveries: 1
-    Shooting Value: 30.0
-    Passing Value: 10.0
-    Receiving Value: 30.0
-    Dribbling Value: 10.0
     Interrupting Value: 1.0
-    Total Value: 1.0
+    Loss index: 5
   Shadow Striker:
     Goals: 15
     npxG: 30
@@ -416,24 +416,24 @@ weights:
     Assists: 10
     xAOP: 20
     xTOP: 4
+    Shooting Value: 30.0
+    Total Value: 1.0
     Passes: 2
     Passes successful %: 2
     Progressive Passes: 3
     Deep Completions: 3
+    Passing Value: 20.0
+    Receiving Value: 20.0
     Progressive runs: 2
     Dribbles: 4
     Dribbles successful %: 4
-    Loss index: 5
+    Dribbling Value: 14.0
     Aerial duels successful: 2
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 3
-    Shooting Value: 30.0
-    Passing Value: 20.0
-    Receiving Value: 20.0
-    Dribbling Value: 14.0
     Interrupting Value: 1.0
-    Total Value: 1.0
+    Loss index: 5
   Mobile Striker:
     Goals: 15
     npxG: 30
@@ -442,25 +442,25 @@ weights:
     Assists: 10
     xAOP: 20
     xTOP: 4
+    Shooting Value: 30.0
+    Total Value: 1.0
     Passes: 2
     Passes successful %: 1.0
     Progressive Passes: 1.0
     Deep Completions: 1.0
+    Passing Value: 20.0
+    Receiving Value: 20.0
     Progressive runs: 8
     Dribbles: 8
     Dribbles successful %: 6
-    Loss index: 5
+    Dribbling Value: 20.0
     Aerial duels: 1.0
     Aerial duels successful %: 1.0
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 6
-    Shooting Value: 30.0
-    Passing Value: 20.0
-    Receiving Value: 20.0
-    Dribbling Value: 20.0
     Interrupting Value: 1.0
-    Total Value: 1.0
+    Loss index: 5
   Poacher:
     Goals: 20
     npxG: 40
@@ -468,24 +468,24 @@ weights:
     xG per Shot: 10
     Assists: 10
     xAOP: 20
+    Shooting Value: 40.0
+    Total Value: 1.0
     Passes: 1.0
     Passes successful %: 1.0
     Progressive Passes: 1.0
     Deep Completions: 1.0
+    Passing Value: 6.0
+    Receiving Value: 30.0
     Progressive runs: 1.0
     Dribbles successful: 1.0
-    Loss index: 5
+    Dribbling Value: 6.0
     Aerial duels: 5
     Aerial duels successful %: 5
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 1.0
-    Shooting Value: 40.0
-    Passing Value: 6.0
-    Receiving Value: 30.0
-    Dribbling Value: 6.0
     Interrupting Value: 1.0
-    Total Value: 1.0
+    Loss index: 5
   Target Man:
     Goals: 15
     npxG: 30
@@ -494,26 +494,26 @@ weights:
     Assists: 10
     xAOP: 20
     xTOP: 2
+    Shooting Value: 30.0
+    Total Value: 1.0
     Passes: 2
     Passes successful %: 2
     Progressive Passes: 1.0
     Deep Completions: 1.0
+    Passing Value: 10.0
+    Receiving Value: 20.0
     Progressive runs: 1.0
     Dribbles: 1.0
     Dribbles successful %: 1.0
-    Loss index: 5
+    Dribbling Value: 8.0
     Aerial duels: 10
     Aerial duels successful %: 10
     Defensive duels successful: 1.0
     Interceptions: 1.0
     Recoveries: 1.0
     Clearances: 10
-    Shooting Value: 30.0
-    Passing Value: 10.0
-    Receiving Value: 20.0
-    Dribbling Value: 8.0
     Interrupting Value: 3.0
-    Total Value: 1.0
+    Loss index: 5
   Pressing Forward:
     Goals: 15
     npxG: 30
@@ -522,26 +522,26 @@ weights:
     Assists: 10
     xAOP: 20
     xTOP: 2
+    Shooting Value: 30.0
+    Total Value: 1.0
     Passes: 2
     Passes successful %: 1.0
     Progressive Passes: 1.0
     Deep Completions: 1.0
+    Passing Value: 20.0
+    Receiving Value: 20.0
     Progressive runs: 2
     Dribbles: 2
     Dribbles successful %: 2
-    Loss index: 5
+    Dribbling Value: 20.0
     Aerial duels: 1.0
     Aerial duels successful %: 1.0
     Defensive duels successful: 1.0
     Interceptions: 8
     Recoveries: 10
     Counterpressing Recoveries: 4
-    Shooting Value: 30.0
-    Passing Value: 20.0
-    Receiving Value: 20.0
-    Dribbling Value: 20.0
     Interrupting Value: 30.0
-    Total Value: 1.0
+    Loss index: 5
 invert_metrics:
   - Loss index
   - goalsConceded
