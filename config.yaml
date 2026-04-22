@@ -86,7 +86,7 @@ weights:
     Clearances: 2
     Avg defensive action height: 1
     Defensive Area: 1
-    Territorial Dominance OE: 2
+    Territorial Dominance: 2
     Opp xT into Def Area OE: 1
     Opp xT from Def Area OE: 1
   Stopper:
@@ -110,7 +110,7 @@ weights:
     Clearances: 3
     Avg defensive action height: 0
     Defensive Area: 2
-    Territorial Dominance OE: 8
+    Territorial Dominance: 8
     Opp xT into Def Area OE: 4
     Opp xT from Def Area OE: 4
   Athletic Centerback:
@@ -134,7 +134,7 @@ weights:
     Clearances: 2
     Avg defensive action height: 1
     Defensive Area: 10
-    Territorial Dominance OE: 14
+    Territorial Dominance: 14
     Opp xT into Def Area OE: 8
     Opp xT from Def Area OE: 2
   Box-to-Box:
@@ -507,8 +507,6 @@ invert_metrics:
   - Opp xT from Def Area OE
   - Opp Pass Success % into Def Area
   - Territorial Dominance
-  - Territorial Dominance OE
-
 metric_categories:
   output:
     - Goals
@@ -586,7 +584,6 @@ metric_categories:
     - Opp xT from Def Area
     - Opp xT from Def Area OE
     - Territorial Dominance
-    - Territorial Dominance OE
   dribbling:
     - Dribbles
     - Dribbles successful
