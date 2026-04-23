@@ -552,7 +552,7 @@ GPA_VALUE_CATEGORIES = [
     "Corner", "FreeKick", "ThrowIn", "SetPiece",
     "Interrupting", "Fouling",
     "GK_Shotstopping", "GK_Handling", "GK_Sweeping", "GK_Distribution",
-    "Other", "total_v",
+    "Other", "total_v", "total_offensive_v", "gk_total_v",
 ]
 # Map raw V category → display per-90 column name (used in radar + config.yaml).
 # All 15 metrics use the "X Value" naming convention.
@@ -573,6 +573,8 @@ GPA_PER90_DISPLAY: dict[str, str] = {
     "GK_Sweeping":     "Sweeping Value",
     "GK_Distribution": "GK Distribution Value",
     "total_v":         "Total Value",
+    "total_offensive_v": "Total Offensive Value",
+    "gk_total_v":        "GK Total Value",
 }
 GPA_PER90_COLS = [GPA_PER90_DISPLAY.get(c, f"{c}_per_90") for c in GPA_VALUE_CATEGORIES]
 
@@ -660,6 +662,15 @@ def get_gpa_values_filtered(gpa_df, season_ids=None, comp_ids=None):
     for cat in raw_v_cols:
         col = GPA_PER90_DISPLAY.get(cat, f'{cat}_per_90')
         out[col] = out[cat] * 90.0 / mins
+
+    # Preserve position-based masking for the totals (outfield vs GK).
+    if 'position_group' in out.columns:
+        is_gk_agg = out['position_group'].eq('GK')
+        for col in ('Total Value', 'Total Offensive Value'):
+            if col in out.columns:
+                out.loc[is_gk_agg, col] = 0.0
+        if 'GK Total Value' in out.columns:
+            out.loc[~is_gk_agg, 'GK Total Value'] = 0.0
 
     # Virtual identifiers for the aggregated view
     out['seasonId'] = pd.NA
