@@ -523,6 +523,9 @@ metric_categories:
     - Shots
     - xG per Shot
     - Shooting Value
+    - Total Value
+    - Total Offensive Value
+    - GK Total Value
   passing:
     - Passes
     - Passes successful
