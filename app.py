@@ -6072,7 +6072,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         _MIN_RADAR_MINUTES = 300
         _show_radar = total_minutes >= _MIN_RADAR_MINUTES
         if not _show_radar:
-            st.info(f"⚠️ **Insufficient sample size** — {player_per_90_stats.get('playerName', 'This player')} has only played **{int(total_minutes)} minutes** this season. A minimum of **{_MIN_RADAR_MINUTES} minutes** is required for radar charts and percentile rankings to be statistically meaningful.")
+            st.info(f"⚠️ **Insufficient sample size** — {player_per_90_stats.get('playerName', 'This player')} has only played **{int(total_minutes)} minutes** this season.")
 
         # 1. Detect Raw Positions (What did they actually play?)
         try:
@@ -6327,7 +6327,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
                 # Gather all numeric per-90 metrics (exclude info/intermediate columns)
                 _skip_cols = {'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition',
-                              'tertiaryPosition', 'playerId', 'player.id', 'Defensive Area', 'Expected xT at Center'}
+                              'tertiaryPosition', 'playerId', 'player.id', 'Defensive Area', 'Expected xT at Center',
+                              'competitionId', 'competitionId_per_90'}
                 _skip_suffixes = ('_percentile', '_Score', '_TotalScore', '_Rank')
                 _all_metrics = [c for c in radar_player_data_row.columns
                                 if pd.api.types.is_numeric_dtype(radar_player_data_row[c])
@@ -6863,7 +6864,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _below_threshold.append(f"{selected_player_b_name} ({int(_mins_b)} min)")
 
         if _below_threshold:
-            st.info(f"⚠️ **Insufficient sample size** — {' and '.join(_below_threshold)} has not reached the **300-minute minimum** required for radar charts and percentile rankings to be statistically meaningful.")
+            st.info(f"⚠️ **Insufficient sample size** — {' and '.join(_below_threshold)}.")
 
         metrics_to_plot = list(WEIGHTS[selected_template].keys())
         metrics_to_plot = [m for m in metrics_to_plot
