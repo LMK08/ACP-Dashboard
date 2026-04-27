@@ -6202,11 +6202,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if best_role is None: best_role = eligible_roles[0]
 
             # 4. Generate Chart for the Winner
-            if not _show_radar:
-                st.caption(f"Best Template Match: **{best_role}** *(radar hidden — {int(total_minutes)} min played, 300 min required)*")
-            else:
-                st.caption(f"Best Template Match: **{best_role}**")
-                _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
+            st.caption(f"Best Template Match: **{best_role}**")
+            _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
 
             # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
@@ -6278,20 +6275,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # -----------------------------------------------------------------------
 
             # Plot
-            if _show_radar:
-                _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-                _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
-                fig_radar = create_radar_with_distributions(
-                    radar_player_data_row,
-                    metrics_to_plot,
-                    best_role,
-                    eligible_roles,
-                    all_position_data=final_population,
-                    full_df_for_ranking=radar_stats_df,
-                    season_label=_radar_season_label,
-                    radar_mode=_radar_mode
-                )
-                st.pyplot(fig_radar, use_container_width=True)
+            _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+            _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
+            fig_radar = create_radar_with_distributions(
+                radar_player_data_row,
+                metrics_to_plot,
+                best_role,
+                eligible_roles,
+                all_position_data=final_population,
+                full_df_for_ranking=radar_stats_df,
+                season_label=_radar_season_label,
+                radar_mode=_radar_mode
+            )
+            st.pyplot(fig_radar, use_container_width=True)
 
         # Career radar section disabled to reduce memory usage
         # TODO: Re-enable when Streamlit Cloud resources are upgraded
@@ -6868,26 +6864,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         if _below_threshold:
             st.info(f"⚠️ **Insufficient sample size** — {' and '.join(_below_threshold)} has not reached the **300-minute minimum** required for radar charts and percentile rankings to be statistically meaningful.")
-        else:
-            metrics_to_plot = list(WEIGHTS[selected_template].keys())
-            metrics_to_plot = [m for m in metrics_to_plot
-                               if m in player_stats_with_scores_df.columns
-                               and m not in RADAR_HIDDEN_METRICS]
 
-            # --- FIX: Use a square figure to prevent distortion ---
-            fig = plt.figure(figsize=(15, 15))
-            # [left, bottom, width, height] - This centers the radar
-            ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
+        metrics_to_plot = list(WEIGHTS[selected_template].keys())
+        metrics_to_plot = [m for m in metrics_to_plot
+                           if m in player_stats_with_scores_df.columns
+                           and m not in RADAR_HIDDEN_METRICS]
 
-            plot_comparison_radar(
-                ax_radar,
-                player_a_data,
-                player_b_data,
-                metrics_to_plot,
-                selected_template
-            )
+        # --- FIX: Use a square figure to prevent distortion ---
+        fig = plt.figure(figsize=(15, 15))
+        # [left, bottom, width, height] - This centers the radar
+        ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
 
-            st.pyplot(fig, use_container_width=True)
+        plot_comparison_radar(
+            ax_radar,
+            player_a_data,
+            player_b_data,
+            metrics_to_plot,
+            selected_template
+        )
+
+        st.pyplot(fig, use_container_width=True)
 
     # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
