@@ -2866,7 +2866,7 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     return career_stats
 
 @st.cache_data
-def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=300, season_id=None, cache_version=STATS_CACHE_VERSION):
+def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=500, season_id=None, cache_version=STATS_CACHE_VERSION):
     """Calculates percentiles and scores for all players based on position.
     Players below min_minutes are kept but ranked against the min_minutes+ population
     (each low-minute player is temporarily added to the sample for their own percentile).
@@ -2896,7 +2896,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
         print(f"Warning: No players found with >= {min_minutes} minutes.")
         return pd.DataFrame()
 
-    # Calculate percentiles — ONLY for qualifying players (300+ min)
+    # Calculate percentiles — ONLY for qualifying players (500+ min)
     # Sub-threshold players are excluded from rankings entirely
     for position, group in _position_groups.items():
         metrics = list(_weights[position].keys())
@@ -2974,10 +2974,10 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
 
     if radar_mode == 'raw' and population_data is not None:
         # --- RAW VALUE MODE: scale = mean ± 2σ ---
-        # Filter population to 300+ minutes
+        # Filter population to 500+ minutes
         _pop = population_data.copy()
         if 'totalMinutes' in _pop.columns:
-            _pop = _pop[pd.to_numeric(_pop['totalMinutes'], errors='coerce').fillna(0) >= 300]
+            _pop = _pop[pd.to_numeric(_pop['totalMinutes'], errors='coerce').fillna(0) >= 500]
 
         # Compute mean and std for each metric from the population
         _means = {}; _stds = {}
@@ -3163,7 +3163,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     relevant_players_data = all_position_data[all_position_data['primaryPosition'].isin(primary_pos_group)]
     # Exclude sub-threshold players from distributions
     if 'totalMinutes' in relevant_players_data.columns:
-        relevant_players_data = relevant_players_data[pd.to_numeric(relevant_players_data['totalMinutes'], errors='coerce').fillna(0) >= 300]
+        relevant_players_data = relevant_players_data[pd.to_numeric(relevant_players_data['totalMinutes'], errors='coerce').fillna(0) >= 500]
     
     if relevant_metrics and not relevant_players_data.empty:
         gs_distributions = GridSpec(len(relevant_metrics), 1, left=0.70, right=0.98, top=0.82, bottom=0.07, hspace=0.7, figure=fig)
@@ -5861,7 +5861,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
@@ -6139,7 +6139,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # Merge GPA Value columns (same season × competition scope as profile)
                 pos_filtered_stats = merge_gpa_values_into_stats(pos_filtered_stats, active_season_ids, selected_comp_ids)
                 pos_filtered_scores = calculate_player_percentiles_and_scores(
-                    pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=pos_cache_key
+                    pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=pos_cache_key
                 )
                 if not pos_filtered_scores.empty:
                     radar_stats_df = pos_filtered_scores
@@ -6323,7 +6323,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     radar_stats_df['primaryPosition'].isin(POSITION_GROUPS.get(best_role, [selected_raw_pos]))
                 ].copy() if 'best_role' in dir() and best_role else radar_stats_df.copy()
                 if 'totalMinutes' in _outlier_pop.columns:
-                    _outlier_pop = _outlier_pop[pd.to_numeric(_outlier_pop['totalMinutes'], errors='coerce').fillna(0) >= 300]
+                    _outlier_pop = _outlier_pop[pd.to_numeric(_outlier_pop['totalMinutes'], errors='coerce').fillna(0) >= 500]
 
                 # Gather all numeric per-90 metrics (exclude info/intermediate columns)
                 _skip_cols = {'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition',
@@ -6765,7 +6765,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -6901,7 +6901,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -6940,9 +6940,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         max_minutes = int(player_stats_with_scores_df['totalMinutes'].max())
         min_minutes_filter = st.sidebar.slider(
             "Minimum Minutes Played:",
-            min_value=300,
-            max_value=max(max_minutes, 300),
-            value=300,
+            min_value=500,
+            max_value=max(max_minutes, 500),
+            value=500,
             step=45,
             key="player_analysis_min_minutes"
         )
@@ -7739,7 +7739,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=300, season_id=selected_season_id
+                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
