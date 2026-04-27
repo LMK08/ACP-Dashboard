@@ -3186,6 +3186,11 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             if len(valid_relevant_players) > 0: percentile_rank = scipy.stats.percentileofscore(valid_relevant_players, player_value, kind='strict')
             percentile_rank_int = int(percentile_rank); suffix = get_percentile_suffix(percentile_rank_int)
             min_value = valid_relevant_players.min(); max_value = valid_relevant_players.max()
+            # Extend axis to include the player's value so their marker is always
+            # visible — covers outliers above/below the qualifying-population range.
+            if not pd.isna(player_value):
+                if pd.isna(min_value) or player_value < min_value: min_value = player_value
+                if pd.isna(max_value) or player_value > max_value: max_value = player_value
             if pd.isna(min_value) or pd.isna(max_value) or min_value == max_value: min_value = player_value - 0.1; max_value = player_value + 0.1
             if min_value == max_value: max_value = min_value + 1.0 # Handle 0 case
             
