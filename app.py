@@ -3239,16 +3239,21 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
         for i, (_, player_row) in enumerate(export_df.iterrows()):
             player_name = str(player_row.get('playerName', f'player_{i}'))
             try:
-                raw_pos = player_row.get('primaryPosition', None)
-                if raw_pos is None or pd.isna(raw_pos):
+                # Primary position — same field shown in the player profile
+                # header (`primaryPosition` from the stats DataFrame). Each
+                # exported radar uses this and only this position; the role
+                # template is the best-fit among templates that cover it.
+                primary_pos = player_row.get('primaryPosition', None)
+                if primary_pos is None or pd.isna(primary_pos) or str(primary_pos) in ('Unknown', 'N/A', ''):
                     skipped.append((player_name, 'missing primary position'))
                     continue
 
-                # Eligible role templates for the player's raw position
+                # Eligible role templates: only those whose position group
+                # contains the player's primary position.
                 eligible_roles = [r for r in WEIGHTS
-                                   if raw_pos in POSITION_GROUPS.get(r, [])]
+                                   if primary_pos in POSITION_GROUPS.get(r, [])]
                 if not eligible_roles:
-                    skipped.append((player_name, f'no role template for {raw_pos}'))
+                    skipped.append((player_name, f'no role template for {primary_pos}'))
                     continue
 
                 # Best role: highest existing _Score among eligible templates.
@@ -3258,7 +3263,7 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                 )
 
                 # Population for distributions: same position group.
-                pop_pos_group = POSITION_GROUPS.get(best_role, [raw_pos])
+                pop_pos_group = POSITION_GROUPS.get(best_role, [primary_pos])
                 final_population = full_pop_df[full_pop_df['primaryPosition'].isin(pop_pos_group)]
                 if len(final_population) < 5:
                     final_population = full_pop_df
