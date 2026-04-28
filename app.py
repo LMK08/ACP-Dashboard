@@ -3230,37 +3230,68 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
     import re
     import zipfile
 
+    # Position-bucket ordering: GK → CB → FB → CM → AM → WG → ST. Used to
+    # name files so the ZIP listing groups by position and ranks players
+    # by best-fit role score within each group.
+    _RAW_TO_BUCKET = {
+        'GK': ('1_GK', 1),
+        'CB': ('2_CB', 2), 'LCB': ('2_CB', 2), 'RCB': ('2_CB', 2),
+        'LCB3': ('2_CB', 2), 'RCB3': ('2_CB', 2),
+        'LB': ('3_FB', 3), 'RB': ('3_FB', 3), 'LB5': ('3_FB', 3), 'RB5': ('3_FB', 3),
+        'LWB': ('3_FB', 3), 'RWB': ('3_FB', 3),
+        'CMF': ('4_CM', 4), 'LCMF': ('4_CM', 4), 'RCMF': ('4_CM', 4),
+        'LCMF3': ('4_CM', 4), 'RCMF3': ('4_CM', 4),
+        'DMF': ('4_CM', 4), 'LDMF': ('4_CM', 4), 'RDMF': ('4_CM', 4),
+        'AMF': ('5_AM', 5),
+        'LW': ('6_WG', 6), 'RW': ('6_WG', 6), 'LWF': ('6_WG', 6), 'RWF': ('6_WG', 6),
+        'LAMF': ('6_WG', 6), 'RAMF': ('6_WG', 6),
+        'LMF': ('6_WG', 6), 'RMF': ('6_WG', 6),
+        'CF': ('7_ST', 7), 'SS': ('7_ST', 7),
+    }
+
     buf = io.BytesIO()
-    n = len(export_df)
     rendered = 0
     skipped = []
 
+    # ---- Pre-compute (bucket, score, best_role, eligible) per player ----
+    plan = []  # list of (bucket_label, bucket_order, -score, player_row, primary_pos, best_role, eligible_roles)
+    for _, player_row in export_df.iterrows():
+        player_name = str(player_row.get('playerName', '?'))
+        primary_pos = player_row.get('primaryPosition', None)
+        if primary_pos is None or pd.isna(primary_pos) or str(primary_pos) in ('Unknown', 'N/A', ''):
+            skipped.append((player_name, 'missing primary position'))
+            continue
+
+        eligible_roles = [r for r in WEIGHTS
+                           if primary_pos in POSITION_GROUPS.get(r, [])]
+        if not eligible_roles:
+            skipped.append((player_name, f'no role template for {primary_pos}'))
+            continue
+
+        best_role = max(
+            eligible_roles,
+            key=lambda r: float(player_row.get(f'{r}_Score', 0) or 0)
+        )
+        score = float(player_row.get(f'{best_role}_Score', 0) or 0)
+        bucket_label, bucket_order = _RAW_TO_BUCKET.get(
+            str(primary_pos), (f'9_{primary_pos}', 9)
+        )
+        plan.append((bucket_label, bucket_order, -score, player_row,
+                      primary_pos, best_role, eligible_roles))
+
+    # Sort: position bucket ascending, then score descending (negated above).
+    plan.sort(key=lambda t: (t[1], t[2], str(t[3].get('playerName', ''))))
+
+    n = len(plan)
+    bucket_rank: dict = {}  # bucket_label -> running rank counter
+
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for i, (_, player_row) in enumerate(export_df.iterrows()):
+        for i, (bucket_label, _bucket_order, neg_score, player_row,
+                 primary_pos, best_role, eligible_roles) in enumerate(plan):
             player_name = str(player_row.get('playerName', f'player_{i}'))
             try:
-                # Primary position — same field shown in the player profile
-                # header (`primaryPosition` from the stats DataFrame). Each
-                # exported radar uses this and only this position; the role
-                # template is the best-fit among templates that cover it.
-                primary_pos = player_row.get('primaryPosition', None)
-                if primary_pos is None or pd.isna(primary_pos) or str(primary_pos) in ('Unknown', 'N/A', ''):
-                    skipped.append((player_name, 'missing primary position'))
-                    continue
-
-                # Eligible role templates: only those whose position group
-                # contains the player's primary position.
-                eligible_roles = [r for r in WEIGHTS
-                                   if primary_pos in POSITION_GROUPS.get(r, [])]
-                if not eligible_roles:
-                    skipped.append((player_name, f'no role template for {primary_pos}'))
-                    continue
-
-                # Best role: highest existing _Score among eligible templates.
-                best_role = max(
-                    eligible_roles,
-                    key=lambda r: float(player_row.get(f'{r}_Score', 0) or 0)
-                )
+                bucket_rank[bucket_label] = bucket_rank.get(bucket_label, 0) + 1
+                rank = bucket_rank[bucket_label]
 
                 # Population for distributions: same position group.
                 pop_pos_group = POSITION_GROUPS.get(best_role, [primary_pos])
@@ -3295,11 +3326,14 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
 
                 safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
                 safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
-                fname = f"{safe_name}__{safe_role}.png"
+                # Filename prefix encodes bucket + rank within bucket so the
+                # ZIP listing sorts by position group then score-desc.
+                # e.g. 1_GK_01_Júlio_Neiva__Shot_Stopper.png
+                fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}.png"
                 # Avoid filename collisions for repeated names
                 if fname in zf.namelist():
                     pid = player_row.get('playerId', i)
-                    fname = f"{safe_name}__{safe_role}__{pid}.png"
+                    fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}__{pid}.png"
                 zf.writestr(fname, img_buf.getvalue())
                 rendered += 1
             except Exception as exc:
