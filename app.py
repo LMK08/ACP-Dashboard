@@ -3205,6 +3205,114 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
     return fig
 
+
+def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
+                        season_label='All Seasons', progress_cb=None):
+    """Render one radar PNG per player in `export_df` and return a ZIP byte
+    string. Each player's radar uses their best-fit role template against the
+    same-position-group population in `full_pop_df`.
+
+    Args:
+        export_df: DataFrame of players to export (must have playerId,
+            playerName, primaryPosition, totalMinutes, and the per-90 metrics
+            + role _Score columns produced by calculate_player_percentiles_and_scores).
+        full_pop_df: full qualifying-population DataFrame used as the
+            distribution sample (typically the same-position group of
+            player_stats_with_scores_df).
+        radar_mode: 'percentile' or 'raw'.
+        season_label: string passed through to the chart for the header.
+        progress_cb: optional callable(i, n, name) for progress updates.
+
+    Returns:
+        bytes: the ZIP file as a byte string.
+    """
+    import io
+    import re
+    import zipfile
+
+    buf = io.BytesIO()
+    n = len(export_df)
+    rendered = 0
+    skipped = []
+
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for i, (_, player_row) in enumerate(export_df.iterrows()):
+            player_name = str(player_row.get('playerName', f'player_{i}'))
+            try:
+                raw_pos = player_row.get('primaryPosition', None)
+                if raw_pos is None or pd.isna(raw_pos):
+                    skipped.append((player_name, 'missing primary position'))
+                    continue
+
+                # Eligible role templates for the player's raw position
+                eligible_roles = [r for r in WEIGHTS
+                                   if raw_pos in POSITION_GROUPS.get(r, [])]
+                if not eligible_roles:
+                    skipped.append((player_name, f'no role template for {raw_pos}'))
+                    continue
+
+                # Best role: highest existing _Score among eligible templates.
+                best_role = max(
+                    eligible_roles,
+                    key=lambda r: float(player_row.get(f'{r}_Score', 0) or 0)
+                )
+
+                # Population for distributions: same position group.
+                pop_pos_group = POSITION_GROUPS.get(best_role, [raw_pos])
+                final_population = full_pop_df[full_pop_df['primaryPosition'].isin(pop_pos_group)]
+                if len(final_population) < 5:
+                    final_population = full_pop_df
+
+                # Metrics for the chart (filter out hidden + unavailable).
+                metrics_to_plot = [m for m in WEIGHTS[best_role].keys()
+                                    if m in player_row.index
+                                    and m not in RADAR_HIDDEN_METRICS]
+                if not metrics_to_plot:
+                    skipped.append((player_name, 'no metrics resolved'))
+                    continue
+
+                player_data_row = pd.DataFrame([player_row])
+
+                fig = create_radar_with_distributions(
+                    player_data_row,
+                    metrics_to_plot,
+                    best_role,
+                    eligible_roles,
+                    all_position_data=final_population,
+                    full_df_for_ranking=full_pop_df,
+                    season_label=season_label,
+                    radar_mode=radar_mode,
+                )
+
+                img_buf = io.BytesIO()
+                fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=110)
+                plt.close(fig)
+
+                safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
+                safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
+                fname = f"{safe_name}__{safe_role}.png"
+                # Avoid filename collisions for repeated names
+                if fname in zf.namelist():
+                    pid = player_row.get('playerId', i)
+                    fname = f"{safe_name}__{safe_role}__{pid}.png"
+                zf.writestr(fname, img_buf.getvalue())
+                rendered += 1
+            except Exception as exc:
+                skipped.append((player_name, f'render failed: {exc}'))
+                try:
+                    plt.close('all')
+                except Exception:
+                    pass
+
+            if progress_cb is not None:
+                try:
+                    progress_cb(i + 1, n, player_name)
+                except Exception:
+                    pass
+
+    return buf.getvalue(), rendered, skipped
+
+
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
     """
     Creates a 2-player comparison radar styled to replicate the user-provided image.
@@ -6962,6 +7070,91 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             step=5,
             key="player_analysis_num_players"
         )
+
+        # --- Bulk Radar Export ---
+        st.sidebar.markdown("---")
+        with st.sidebar.expander("📥 Bulk Export Radars", expanded=False):
+            _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
+            _bulk_groups = st.multiselect(
+                "Position groups:",
+                _bulk_groups_default,
+                default=_bulk_groups_default,
+                key="bulk_export_groups",
+            )
+            _bulk_mode_label = st.radio(
+                "Radar style:",
+                ["Percentile", "Raw (mean ± 2σ)"],
+                key="bulk_export_mode",
+            )
+            _bulk_min_mins = st.number_input(
+                "Min minutes:",
+                min_value=0,
+                max_value=int(max_minutes) if max_minutes else 5000,
+                value=int(min_minutes_filter),
+                step=45,
+                key="bulk_export_min_mins",
+                help="Default uses the Minimum Minutes Played slider above."
+            )
+            _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
+
+            if _bulk_generate:
+                # Resolve the multi-select group labels to raw position codes.
+                _bulk_raw_codes = set()
+                for _grp in _bulk_groups:
+                    for _role in _TEMPLATE_GROUPS.get(_grp, []):
+                        if _role in POSITION_GROUPS:
+                            _bulk_raw_codes.update(POSITION_GROUPS[_role])
+
+                _export_df = player_stats_with_scores_df[
+                    (pd.to_numeric(player_stats_with_scores_df['totalMinutes'], errors='coerce').fillna(0) >= _bulk_min_mins) &
+                    (player_stats_with_scores_df['primaryPosition'].isin(_bulk_raw_codes))
+                ].copy()
+
+                if _export_df.empty:
+                    st.warning("No players match the selection.")
+                else:
+                    _n_total = len(_export_df)
+                    _progress = st.progress(0.0, text=f"Rendering 0/{_n_total} radars…")
+
+                    def _on_progress(i, n, name):
+                        _progress.progress(i / max(n, 1), text=f"Rendering {i}/{n}: {name}")
+
+                    _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
+                    _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+
+                    _zip_bytes, _rendered, _skipped = bulk_export_radars(
+                        _export_df,
+                        player_stats_with_scores_df,
+                        radar_mode=_radar_mode,
+                        season_label=_season_lbl,
+                        progress_cb=_on_progress,
+                    )
+                    _progress.empty()
+
+                    st.session_state['_bulk_zip_bytes'] = _zip_bytes
+                    st.session_state['_bulk_zip_rendered'] = _rendered
+                    st.session_state['_bulk_zip_skipped'] = _skipped
+                    st.session_state['_bulk_zip_label'] = f"{_season_lbl}__{_radar_mode}"
+
+            if '_bulk_zip_bytes' in st.session_state:
+                _rendered = st.session_state.get('_bulk_zip_rendered', 0)
+                _skipped = st.session_state.get('_bulk_zip_skipped', [])
+                _label = st.session_state.get('_bulk_zip_label', 'export')
+                st.success(f"Rendered {_rendered} radars" + (f" ({len(_skipped)} skipped)" if _skipped else ""))
+                st.download_button(
+                    label="⬇️ Download ZIP",
+                    data=st.session_state['_bulk_zip_bytes'],
+                    file_name=f"radars__{_label}.zip",
+                    mime="application/zip",
+                    key="bulk_export_dl",
+                    use_container_width=True,
+                )
+                if _skipped:
+                    with st.popover(f"View skipped ({len(_skipped)})"):
+                        for _name, _reason in _skipped[:50]:
+                            st.caption(f"• **{_name}** — {_reason}")
+                        if len(_skipped) > 50:
+                            st.caption(f"…and {len(_skipped) - 50} more")
 
         # Apply minutes filter
         filtered_df = player_stats_with_scores_df[
