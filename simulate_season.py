@@ -33,6 +33,35 @@ FIRST_STAGE_POSITION_OVERRIDES = {
     'Lusitano Évora 1911': 6,
 }
 
+# Reserve / B teams ineligible for promotion. They keep their league standings
+# but the playoff qualification slot drops to the next eligible team.
+PROMOTION_INELIGIBLE_TEAMS = {
+    'FC Alverca II',
+    'Vitória Guimarães II',
+    'Sporting Braga II',
+}
+
+
+def is_promotion_eligible(team_name: str) -> bool:
+    """Whether this team can be promoted (excludes reserve / B teams)."""
+    if team_name in PROMOTION_INELIGIBLE_TEAMS:
+        return False
+    # Heuristic fallback for teams ending in " II" or " B" not on the list above.
+    s = team_name.strip()
+    return not (s.endswith(' II') or s.endswith(' B'))
+
+
+def top_n_eligible(standings_in_order, n=2):
+    """Pick the top n teams from an ordered standings list, skipping any
+    team that isn't promotion-eligible (reserve / B teams)."""
+    out = []
+    for t in standings_in_order:
+        if is_promotion_eligible(t):
+            out.append(t)
+            if len(out) >= n:
+                break
+    return out
+
 
 # ── Replicated helpers from app.py ────────────────────────────────────────────
 
@@ -282,7 +311,20 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
     print("=" * 60)
 
     played_matches = matches_df[matches_df['status'] == 'Played']
-    groups = detect_campeonato_groups(played_matches)
+    # Separate first-stage matches (the largest round) from promotion-playoff
+    # matches so first-stage group detection and standings aren't polluted by
+    # cross-group playoff fixtures.
+    if 'roundId' in played_matches.columns and played_matches['roundId'].nunique() > 1:
+        first_stage_round = played_matches['roundId'].value_counts().idxmax()
+        first_stage_played = played_matches[played_matches['roundId'] == first_stage_round]
+        playoff_played = played_matches[played_matches['roundId'] != first_stage_round]
+        print(f"\nFirst-stage round: {first_stage_round} ({len(first_stage_played)} matches)")
+        print(f"Playoff matches detected: {len(playoff_played)}")
+    else:
+        first_stage_played = played_matches
+        playoff_played = played_matches.iloc[0:0]
+
+    groups = detect_campeonato_groups(first_stage_played)
     print(f"\nDetected {len(groups)} groups")
 
     results = {}
@@ -296,14 +338,14 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
         print(f"\n{'─' * 60}")
         print(f"Processing: {group_name} ({len(group_teams)} teams)")
 
-        current_table = calculate_league_table(played_matches, group_teams)
+        current_table = calculate_league_table(first_stage_played, group_teams)
         print(f"  Played matches: {current_table['P'].sum() // 2}")
 
         # Full double round-robin fixtures
         full_fixtures = [(h, a) for h, a in product(group_teams, group_teams) if h != a]
 
         played = set()
-        for _, m in played_matches.iterrows():
+        for _, m in first_stage_played.iterrows():
             h, a = m['homeTeamName'], m['awayTeamName']
             if h in group_teams and a in group_teams:
                 played.add((h, a))
@@ -417,13 +459,14 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
         }
 
     # ── Phase 2: Promotion playoff simulation ──
-    # Playoff pairings: Série A + Série B → Playoff Group 1, Série C + Série D → Playoff Group 2
-    # Top 2 from each série qualify; top 2 from each playoff group get promoted
+    # Playoff pairings (FPF 2025/26): Série A + Série C → Playoff Group 1,
+    # Série B + Série D → Playoff Group 2. Top 2 promotion-eligible teams
+    # from each série qualify; top 2 from each playoff group get promoted.
     playoff_pairings = []
     if len(group_names_sorted) >= 4:
         playoff_pairings = [
-            (group_names_sorted[0], group_names_sorted[1]),  # Série A + B
-            (group_names_sorted[2], group_names_sorted[3]),  # Série C + D
+            (group_names_sorted[0], group_names_sorted[2]),  # Série A + C
+            (group_names_sorted[1], group_names_sorted[3]),  # Série B + D
         ]
     elif len(group_names_sorted) == 2:
         playoff_pairings = [(group_names_sorted[0], group_names_sorted[1])]
@@ -470,8 +513,9 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
             for group_a_name, group_b_name in playoff_pairings:
                 standings_a = group_sim_data[group_a_name][sim]
                 standings_b = group_sim_data[group_b_name][sim]
-                top2_a = standings_a[:2]
-                top2_b = standings_b[:2]
+                # Skip ineligible (reserve) teams; the slot drops to the next.
+                top2_a = top_n_eligible(standings_a, 2)
+                top2_b = top_n_eligible(standings_b, 2)
 
                 # Track playoff qualification
                 for t in top2_a + top2_b:
@@ -527,6 +571,246 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
                 pp = promotion_counts[t] / N_SIMULATIONS
                 if pq > 0.005:
                     print(f"    {t:30s}  Playoff: {pq:6.1%}  Promotion: {pp:6.1%}")
+
+    # ── Phase 3: actual promotion-playoff group simulation ───────────────
+    # Once playoff matches start, use real fixtures + results rather than
+    # the séries-based projection. Adds 'Promotion Playoff Group N' entries
+    # to results.
+    canonical_playoff_groups: list[list[str]] = []
+    if playoff_pairings:
+        for ga, gb in playoff_pairings:
+            # Final first-stage standings determine the qualifiers.
+            final_a = list(results[ga]['current_standings']['Team'])
+            final_b = list(results[gb]['current_standings']['Team'])
+            qualifiers = top_n_eligible(final_a, 2) + top_n_eligible(final_b, 2)
+            if len(qualifiers) == 4:
+                canonical_playoff_groups.append(qualifiers)
+
+    playoff_groups = simulate_promotion_playoff(
+        matches_df, model, scaler, team_stats,
+        prior_season_stats, league_avg_stats,
+        first_stage_round=(first_stage_played['roundId'].iloc[0]
+                            if 'roundId' in first_stage_played.columns and len(first_stage_played) > 0
+                            else None),
+        canonical_groups=canonical_playoff_groups,
+    )
+    results.update(playoff_groups)
+
+    return results
+
+
+def simulate_promotion_playoff(matches_df, model, scaler, team_stats,
+                                 prior_season_stats, league_avg_stats,
+                                 first_stage_round=None,
+                                 canonical_groups=None):
+    """Detect Campeonato promotion-playoff matches in `matches_df` and
+    simulate the remaining 4-team round-robin per playoff group.
+
+    `canonical_groups` (optional): pre-computed list of [team_a, team_b,
+    team_c, team_d] for each playoff group, derived from the final
+    first-stage standings. If supplied, used directly; otherwise the
+    grouping is inferred from played playoff matches via adjacency.
+
+    A "playoff" match is any match in this season's data whose roundId
+    is not the main first-stage round. Returns a dict keyed by
+    'Promotion Playoff Group {N}' (empty if no playoff matches yet)."""
+    if 'roundId' not in matches_df.columns:
+        return {}
+    if first_stage_round is None:
+        first_stage_round = matches_df['roundId'].value_counts().idxmax()
+
+    playoff_all = matches_df[matches_df['roundId'] != first_stage_round].copy()
+    if playoff_all.empty:
+        return {}
+
+    played = playoff_all[playoff_all['status'] == 'Played'].copy()
+    if played.empty:
+        # Playoff round exists in fixture list but nothing played yet —
+        # don't try to guess groups. Return empty so the séries-based
+        # projection above remains the source of truth.
+        return {}
+
+    print(f"\n{'=' * 60}")
+    print("Promotion Playoff (actual matches) Simulation")
+    print(f"{'=' * 60}")
+    print(f"  Played playoff matches: {len(played)}  Total playoff fixtures: {len(playoff_all)}")
+
+    # Prefer caller-supplied canonical groups (4 teams each, derived from
+    # final séries standings + reserve-team filter). Preserve the supplied
+    # group order (A+C → Group 1, B+D → Group 2 for the Campeonato).
+    components = None
+    if canonical_groups:
+        components = [sorted(g) for g in canonical_groups if len(g) == 4]
+        canonical_supplied = bool(components)
+    else:
+        canonical_supplied = False
+
+    if not components:
+        # Fall back to adjacency-based detection
+        adj = defaultdict(set)
+        teams_seen = set()
+        for _, m in played.iterrows():
+            h, a = m['homeTeamName'], m['awayTeamName']
+            if pd.isna(h) or pd.isna(a):
+                continue
+            adj[h].add(a); adj[a].add(h)
+            teams_seen.add(h); teams_seen.add(a)
+
+        components = []
+        visited = set()
+        for t in sorted(teams_seen):
+            if t in visited:
+                continue
+            comp = set(); queue = [t]
+            while queue:
+                x = queue.pop(0)
+                if x in comp:
+                    continue
+                comp.add(x)
+                queue.extend(adj[x] - comp)
+            components.append(sorted(comp))
+            visited |= comp
+
+        # If still too small, fall through to the full-fixture adjacency
+        if any(len(c) < 4 for c in components):
+            full_adj = defaultdict(set)
+            for _, m in playoff_all.iterrows():
+                h, a = m['homeTeamName'], m['awayTeamName']
+                if pd.isna(h) or pd.isna(a):
+                    continue
+                full_adj[h].add(a); full_adj[a].add(h)
+            merged_components = []
+            merged_visited = set()
+            for t in sorted(full_adj):
+                if t in merged_visited:
+                    continue
+                comp = set(); queue = [t]
+                while queue:
+                    x = queue.pop(0)
+                    if x in comp:
+                        continue
+                    comp.add(x)
+                    queue.extend(full_adj[x] - comp)
+                merged_components.append(sorted(comp))
+                merged_visited |= comp
+            components = merged_components
+
+    if not canonical_supplied:
+        components.sort()
+    if not components:
+        return {}
+
+    results = {}
+    for idx, group_teams in enumerate(components, 1):
+        group_name = f'Promotion Playoff Group {idx}'
+        n_teams = len(group_teams)
+        print(f"\n  {group_name}: {group_teams}")
+
+        # Current standings within group, only counting group-internal matches
+        group_played = played[
+            played['homeTeamName'].isin(group_teams)
+            & played['awayTeamName'].isin(group_teams)
+        ]
+        current_table = calculate_league_table(group_played, group_teams)
+
+        # Remaining fixtures = full double round-robin minus already-played
+        # matches. (FPF Campeonato playoff format is double round-robin: each
+        # team plays every other in the group home and away.) If the schedule
+        # parquet later includes unplayed fixtures we'd rather rely on those,
+        # but with the current data we don't have unplayed playoff fixtures
+        # listed as separate rows, so a constructive DRR is the correct
+        # default once any playoff match has been played.
+        played_pairs = set(zip(group_played['homeTeamName'], group_played['awayTeamName']))
+        full_fixtures = [(h, a) for h, a in product(group_teams, group_teams) if h != a]
+        scheduled_unplayed = playoff_all[
+            playoff_all['homeTeamName'].isin(group_teams)
+            & playoff_all['awayTeamName'].isin(group_teams)
+            & (playoff_all['status'] != 'Played')
+        ]
+        if not scheduled_unplayed.empty:
+            scheduled_pairs = set(zip(scheduled_unplayed['homeTeamName'],
+                                        scheduled_unplayed['awayTeamName']))
+            remaining_fixtures = [
+                f for f in full_fixtures
+                if f in scheduled_pairs and f not in played_pairs
+            ]
+        else:
+            remaining_fixtures = [f for f in full_fixtures if f not in played_pairs]
+
+        # Match probabilities
+        match_probs = {}
+        for h, a in remaining_fixtures:
+            home_cum = team_stats.get(h); away_cum = team_stats.get(a)
+            if not home_cum or not away_cum:
+                match_probs[(h, a)] = np.array([0.25, 0.45, 0.30])
+                continue
+            home_prior = home_cum.get('prior_stats') or prior_season_stats.get(h)
+            away_prior = away_cum.get('prior_stats') or prior_season_stats.get(a)
+            home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
+            away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
+            fv = build_feature_vector(home_feats, away_feats)
+            X = scaler.transform([fv])
+            match_probs[(h, a)] = model.predict_proba(X)[0]
+
+        # Starting points/GD/GF from current_table
+        starting_pts = {}; starting_gd = {}; starting_gf = {}
+        for _, row in current_table.iterrows():
+            t = row['Team']
+            starting_pts[t] = row['Pts']
+            starting_gd[t] = row['GD']
+            starting_gf[t] = row['GF']
+
+        position_counts = {t: np.zeros(n_teams, dtype=int) for t in group_teams}
+        promo_counts = {t: 0 for t in group_teams}
+        rng = np.random.default_rng(seed=2026 + idx)
+
+        if remaining_fixtures:
+            prob_matrix = np.array([match_probs[f] for f in remaining_fixtures])
+            cumulative_probs = np.cumsum(prob_matrix, axis=1)
+        else:
+            cumulative_probs = np.array([])
+
+        for sim in range(N_SIMULATIONS):
+            pts = dict(starting_pts); gd = dict(starting_gd); gf = dict(starting_gf)
+            if len(remaining_fixtures) > 0:
+                rand_vals = rng.random(len(remaining_fixtures))
+                for i, (h, a) in enumerate(remaining_fixtures):
+                    r = rand_vals[i]; cp = cumulative_probs[i]
+                    if r < cp[0]:
+                        pts[h] += 1; pts[a] += 1; gf[h] += 1; gf[a] += 1
+                    elif r < cp[1]:
+                        pts[h] += 3; gd[h] += 1; gd[a] -= 1; gf[h] += 2; gf[a] += 1
+                    else:
+                        pts[a] += 3; gd[a] += 1; gd[h] -= 1; gf[a] += 2; gf[h] += 1
+            final = sorted(group_teams, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
+            for pos, t in enumerate(final):
+                position_counts[t][pos] += 1
+            for t in final[:2]:
+                promo_counts[t] += 1
+
+        pos_prob_df = pd.DataFrame(
+            {t: position_counts[t] / N_SIMULATIONS for t in group_teams}
+        ).T
+        pos_prob_df.columns = [f'{i+1}' for i in range(n_teams)]
+        pos_prob_df.index.name = 'Team'
+        pos_prob_df['expected_pos'] = sum((i + 1) * pos_prob_df[f'{i+1}'] for i in range(n_teams))
+        pos_prob_df = pos_prob_df.sort_values('expected_pos').drop(columns='expected_pos')
+
+        results[group_name] = {
+            'teams': group_teams,
+            'position_probabilities': pos_prob_df,
+            'current_standings': current_table,
+            'matches_remaining': len(remaining_fixtures),
+            'bonus_points': {},
+            'promotion_pct': {t: promo_counts[t] / N_SIMULATIONS for t in group_teams},
+        }
+
+        # Print summary
+        for t in pos_prob_df.index:
+            pp = promo_counts[t] / N_SIMULATIONS
+            print(f"    {t:30s}  P {current_table.loc[current_table['Team']==t,'P'].iloc[0]:>2}  "
+                  f"Pts {current_table.loc[current_table['Team']==t,'Pts'].iloc[0]:>2}  "
+                  f"Promo {pp:6.1%}")
 
     return results
 

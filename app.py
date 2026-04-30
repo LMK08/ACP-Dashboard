@@ -7721,6 +7721,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     n_teams = len(prob_df)
                     pos_cols = [str(i+1) for i in range(n_teams)]
                     is_serie = group_name.startswith('Série')
+                    is_playoff_group = group_name.startswith('Promotion Playoff')
 
                     # Build lookup for points and matches played from current standings
                     standings_lookup = {}
@@ -7744,6 +7745,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         if group_name == 'Promotion':
                             html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
                             html += '<th style="padding:6px 8px;">Playoff %</th>'
+                        elif is_playoff_group:
+                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
                         elif is_serie:
                             html += '<th style="padding:6px 8px;border-left:2px solid #444;">Playoff %</th>'
                             html += '<th style="padding:6px 8px;">Promo %</th>'
@@ -7774,6 +7777,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                     elif pos_num == 3:
                                         intensity = min(val * 1.2, 1.0)
                                         bg = f'background-color:rgba(241,196,15,{intensity:.2f});'
+                                elif is_playoff_group:
+                                    if pos_num <= 2:
+                                        intensity = min(val * 1.2, 1.0)
+                                        bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
                                 elif is_serie:
                                     if pos_num <= 2:
                                         # Green for playoff qualification positions
@@ -7799,6 +7806,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 po_bg = f'background-color:rgba(241,196,15,{min(po_pct * 1.2, 1.0):.2f});'
                                 html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{promo_bg}">{promo_pct:.1%}</td>'
                                 html += f'<td style="padding:6px 8px;font-weight:bold;{po_bg}">{po_pct:.1%}</td>'
+                            elif is_playoff_group:
+                                team_promo = promotion_pct.get(team, 0) if promotion_pct else 0
+                                promo_bg = f'background-color:rgba(46,204,113,{min(team_promo * 1.2, 1.0):.2f});'
+                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{promo_bg}">{team_promo:.1%}</td>'
                             elif is_serie:
                                 # Playoff % = chance of finishing top 2 in série
                                 team_playoff = playoff_pct.get(team, 0) if playoff_pct else 0
@@ -7841,7 +7852,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.markdown(f"#### {comp_name}")
 
                     for group_name, g in sim_groups.items():
-                        expanded = group_name == 'Promotion' or (comp_id == 702 and group_name == list(sim_groups.keys())[0])
+                        expanded = (
+                            group_name == 'Promotion'
+                            or group_name.startswith('Promotion Playoff')
+                            or (comp_id == 702 and group_name == list(sim_groups.keys())[0])
+                        )
                         render_probability_table(
                             group_name, g['position_probabilities'], g['matches_remaining'],
                             bonus_points=g.get('bonus_points'), expanded=expanded,
