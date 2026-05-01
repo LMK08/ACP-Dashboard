@@ -59,9 +59,17 @@ def initialize_team_stats():
         'clean_sheets': 0, 'last_5_results': [], 'last_5_xG': []
     }
 
-# Process current season matches
-print("\nProcessing current season matches...")
-matches = current_matches.sort_values('dateutc' if 'dateutc' in current_matches.columns else 'matchId').copy()
+# Process current season matches.
+# Hard cut to current-season matches only — at this tier roster turnover and
+# cross-tier moves between seasons make prior-season stats unreliable, so we
+# rebuild team strength from this year's matches alone. Prior-season blending
+# is handled separately (and now decays out fast) in simulate_season.py.
+from league_config import COMPETITIONS
+CURRENT_SEASON_IDS = {comp["current_season"] for comp in COMPETITIONS.values()}
+print(f"\nProcessing current-season matches only (seasonIds: {sorted(CURRENT_SEASON_IDS)})...")
+matches = current_matches[current_matches['seasonId'].isin(CURRENT_SEASON_IDS)].copy()
+matches = matches.sort_values('dateutc' if 'dateutc' in matches.columns else 'matchId')
+print(f"  filtered: {len(matches)} matches in scope (was {len(current_matches)} total)")
 
 team_stats = defaultdict(initialize_team_stats)
 

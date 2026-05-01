@@ -117,11 +117,20 @@ def calculate_league_table(matches_df, team_list):
     return table_df
 
 
-def get_decay_weight(matches_played, decay_rate=0.15):
+# Decay rate for the league-average prior. At rate 0.30, prior weight drops
+# to 22% after 5 matches, 5% after 10, ~1% after 15, ~0.04% after 26. This
+# reflects that at this tier (Campeonato / Liga 3) heavy roster turnover and
+# cross-tier moves make prior-season data unreliable, so the start-of-season
+# baseline is league-average and current-season form takes over within ~10
+# matches.
+DEFAULT_DECAY_RATE = 0.30
+
+
+def get_decay_weight(matches_played, decay_rate=DEFAULT_DECAY_RATE):
     return np.exp(-decay_rate * matches_played)
 
 
-def get_blended_stat(current_value, current_matches, prior_per_game, decay_rate=0.15, default_prior=None):
+def get_blended_stat(current_value, current_matches, prior_per_game, decay_rate=DEFAULT_DECAY_RATE, default_prior=None):
     if current_matches == 0:
         return prior_per_game if prior_per_game is not None else (default_prior if default_prior else 0.0)
     current_per_game = current_value / current_matches
@@ -136,40 +145,24 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
     curr = team_stats
     m = curr['matches']
 
-    if prior_stats and prior_stats.get('matches', 0) > 0:
-        pm = prior_stats['matches']
-        prior_ppg = prior_stats['points'] / pm
-        prior_gpg = prior_stats['goals_for'] / pm
-        prior_gapg = prior_stats['goals_against'] / pm
-        prior_xgpg = prior_stats['xG_for'] / pm if prior_stats['xG_for'] > 0 else 1.0
-        prior_xgapg = prior_stats['xG_against'] / pm if prior_stats['xG_against'] > 0 else 1.0
-        prior_winrate = prior_stats['wins'] / pm
-        prior_csrate = prior_stats['clean_sheets'] / pm
-        prior_shot_conv = prior_stats['goals_for'] / max(prior_stats['shots_for'], 1)
-        prior_sot_rate = prior_stats['sot_for'] / max(prior_stats['shots_for'], 1)
-        if is_home and prior_stats['home_matches'] > 0:
-            prior_venue_wr = prior_stats['home_wins'] / prior_stats['home_matches']
-            prior_venue_gpg = prior_stats['home_goals'] / prior_stats['home_matches']
-        elif not is_home and prior_stats['away_matches'] > 0:
-            prior_venue_wr = prior_stats['away_wins'] / prior_stats['away_matches']
-            prior_venue_gpg = prior_stats['away_goals'] / prior_stats['away_matches']
-        else:
-            prior_venue_wr = prior_winrate
-            prior_venue_gpg = prior_gpg
-    else:
-        prior_ppg = league_avg.get('ppg', 1.0) * 0.85
-        prior_gpg = league_avg.get('gpg', 1.0) * 0.85
-        prior_gapg = league_avg.get('gapg', 1.0) * 1.15
-        prior_xgpg = league_avg.get('xgpg', 1.0) * 0.85
-        prior_xgapg = league_avg.get('xgapg', 1.0) * 1.15
-        prior_winrate = 0.28
-        prior_csrate = league_avg.get('csrate', 0.25) * 0.85
-        prior_shot_conv = league_avg.get('shot_conv', 0.1) * 0.9
-        prior_sot_rate = league_avg.get('sot_rate', 0.35) * 0.95
-        prior_venue_wr = 0.28
-        prior_venue_gpg = prior_gpg
+    # League-average prior baseline. We deliberately do NOT use the team's
+    # prior_stats: at this tier the data is too unreliable (different
+    # competition, year-old, heavy roster turnover). Instead every team
+    # starts the season anchored to a slight-below-average baseline and the
+    # decay below pulls in current-season form quickly.
+    prior_ppg = league_avg.get('ppg', 1.0) * 0.85
+    prior_gpg = league_avg.get('gpg', 1.0) * 0.85
+    prior_gapg = league_avg.get('gapg', 1.0) * 1.15
+    prior_xgpg = league_avg.get('xgpg', 1.0) * 0.85
+    prior_xgapg = league_avg.get('xgapg', 1.0) * 1.15
+    prior_winrate = 0.28
+    prior_csrate = league_avg.get('csrate', 0.25) * 0.85
+    prior_shot_conv = league_avg.get('shot_conv', 0.1) * 0.9
+    prior_sot_rate = league_avg.get('sot_rate', 0.35) * 0.95
+    prior_venue_wr = 0.28
+    prior_venue_gpg = prior_gpg
 
-    decay_rate = 0.15
+    decay_rate = DEFAULT_DECAY_RATE
     ppg = get_blended_stat(curr['points'], m, prior_ppg, decay_rate)
     gpg = get_blended_stat(curr['goals_for'], m, prior_gpg, decay_rate)
     gapg = get_blended_stat(curr['goals_against'], m, prior_gapg, decay_rate)
