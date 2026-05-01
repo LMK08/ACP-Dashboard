@@ -52,7 +52,11 @@ jobs:
           # data file from the external GPA model project, included here so the
           # Value-based radar metrics work on HF. Refreshed manually via
           # `python src/export_to_dashboard.py` in the GPA repo.
-          for f in *.py requirements.txt config.yaml league_config.py Dockerfile gpa_player_season_values.parquet; do
+          # season_simulation.pkl is small (~30KB) and tightly coupled to
+          # simulate_season.py — when we ship a code change that alters the
+          # simulation output structure, the pickle must ship alongside it
+          # rather than waiting for the next scheduled data refresh.
+          for f in *.py requirements.txt config.yaml league_config.py Dockerfile gpa_player_season_values.parquet season_simulation.pkl; do
             if [ -f "$f" ]; then
               cp "$f" ../hf-repo/
             fi
