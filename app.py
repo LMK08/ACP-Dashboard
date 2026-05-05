@@ -6474,26 +6474,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Plot
             _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
             _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
-
-            # DIAGNOSTIC — surface exactly what numeric value the radar is
-            # using for each plotted metric. If goalsConceded shows here as
-            # ~0.5–1.5 it's per-90 (correct); if ~10–30 it's a season total.
-            with st.expander("🔍 Radar data diagnostic (debug)", expanded=False):
-                _diag_rows = []
-                for _m in metrics_to_plot:
-                    if _m in radar_player_data_row.columns:
-                        try:
-                            _diag_rows.append({
-                                'Metric': _m,
-                                'Value passed to radar': float(radar_player_data_row[_m].values[0]),
-                            })
-                        except Exception:
-                            pass
-                if _diag_rows:
-                    st.dataframe(pd.DataFrame(_diag_rows), use_container_width=True, hide_index=True)
-                _tm = float(radar_player_data_row['totalMinutes'].values[0]) if 'totalMinutes' in radar_player_data_row.columns else 0
-                st.caption(f"totalMinutes used by radar: {_tm:.0f}  ·  STATS_CACHE_VERSION = {STATS_CACHE_VERSION}")
-
             fig_radar = create_radar_with_distributions(
                 radar_player_data_row,
                 metrics_to_plot,
