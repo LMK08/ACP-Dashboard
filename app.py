@@ -408,7 +408,7 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v11'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v12'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -2100,10 +2100,25 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         if os.path.exists(cache_path):
             cached = pd.read_parquet(cache_path)
             if _REQUIRED_STAT_COLS.issubset(cached.columns):
-                print(f"Loading cached player stats for season {season_id}")
-                if cached.index.name == 'playerId':
-                    cached = cached.reset_index()
-                return cached
+                # Sanity check: goalsConceded should always be per-90 (typical
+                # GK rate ≈ 0.5–1.5). If the cached value looks like a season
+                # total (≥ 5 means we've got tens of goals, almost certainly a
+                # raw count), invalidate the cache and recompute.
+                if 'goalsConceded' in cached.columns and 'totalMinutes' in cached.columns:
+                    _gk_rows = cached[cached['goalsConceded'] > 0]
+                    if not _gk_rows.empty and float(_gk_rows['goalsConceded'].max()) >= 5:
+                        print(f"Cache has goalsConceded as totals (max={_gk_rows['goalsConceded'].max():.1f}); invalidating and recomputing")
+                        os.remove(cache_path)
+                    else:
+                        print(f"Loading cached player stats for season {season_id}")
+                        if cached.index.name == 'playerId':
+                            cached = cached.reset_index()
+                        return cached
+                else:
+                    print(f"Loading cached player stats for season {season_id}")
+                    if cached.index.name == 'playerId':
+                        cached = cached.reset_index()
+                    return cached
             else:
                 print(f"Cache outdated (missing columns), recomputing stats for season {season_id}")
                 os.remove(cache_path)
