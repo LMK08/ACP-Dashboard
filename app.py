@@ -6543,6 +6543,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
             total_stats = per_90_stats.copy()
             rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col.lower() or 'index' in col or 'Percentage' in col]
+            # goalsConceded is conceptually a defensive rate (goals against per 90)
+            # rather than a count — it stays per-90 even in season-totals mode,
+            # the same way 'goalsPrevented' / xG family already do.
+            if 'goalsConceded' in total_stats.index and 'goalsConceded' not in rate_cols:
+                rate_cols.append('goalsConceded')
             
             for col in total_stats.index:
                 if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
