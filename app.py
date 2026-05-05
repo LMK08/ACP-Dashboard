@@ -6573,30 +6573,69 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         player_is_gk = (per_90_stats.get('primaryPosition', 'N/A') == 'GK')
 
+        # ── Build positional-peer population for percentile comparisons ──
+        # Union of all raw positions that share at least one role template
+        # with the player's primary position; filter to 500+ minutes.
+        _primary_pos = player_per_90_stats.get('primaryPosition', None)
+        _peer_pop = pd.DataFrame()
+        if _primary_pos and _primary_pos not in ('N/A', 'Unknown', None, ''):
+            _peer_positions = set()
+            for _role, _positions in POSITION_GROUPS.items():
+                if _primary_pos in _positions:
+                    _peer_positions.update(_positions)
+            if not _peer_positions:
+                _peer_positions = {_primary_pos}
+            _peer_pop = radar_stats_df[radar_stats_df['primaryPosition'].isin(_peer_positions)]
+            if 'totalMinutes' in _peer_pop.columns:
+                _peer_pop = _peer_pop[
+                    pd.to_numeric(_peer_pop['totalMinutes'], errors='coerce').fillna(0) >= 500
+                ]
+
+        def _percentile_for(metric_name, p90_value):
+            """Percentile of this player's per-90 value against same-position peers (≥500 min)."""
+            if _peer_pop.empty or metric_name not in _peer_pop.columns:
+                return None
+            if pd.isna(p90_value):
+                return None
+            pop_vals = pd.to_numeric(_peer_pop[metric_name], errors='coerce').dropna()
+            if len(pop_vals) < 5 or pop_vals.std() == 0:
+                return None
+            pct = scipy.stats.percentileofscore(pop_vals, p90_value, kind='weak')
+            if metric_name in INVERT_METRICS:
+                pct = 100.0 - pct
+            return float(pct)
+
+        def _percentile_color(p):
+            """Red (0) → yellow (50) → green (100) HSL gradient."""
+            if p is None or pd.isna(p):
+                return ''
+            p_clamped = max(0.0, min(100.0, float(p)))
+            hue = (p_clamped / 100.0) * 120.0   # 0=red, 60=yellow, 120=green
+            return f'background-color: hsl({hue:.0f}, 65%, 72%); color: black;'
+
         for group_name, group_metrics in stat_groups.items():
-            
+
             if player_is_gk and group_name != 'Goalkeeping':
-                continue 
+                continue
             if not player_is_gk and group_name == 'Goalkeeping':
                 continue
-                
+
             if player_is_gk and group_name == 'Goalkeeping':
                 group_metrics = GOALKEEPING_METRICS + ['GK Passes successful %', 'GK Long passes successful %']
-                
+
             metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
-            
+
             if metrics_to_show:
-                default_expanded = (group_name == 'Output') 
+                default_expanded = (group_name == 'Output')
                 with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
-                    
+
                     stats_subset_series = stats_to_display[metrics_to_show]
                     stats_subset_series = stats_subset_series[stats_subset_series != 0]
-                    
+
                     if stats_subset_series.empty:
                         st.text("No data for this category.")
                         continue
-                        
-                    stats_subset = stats_subset_series.to_frame(name='Value')
+
                     def _fmt_stat(metric_name, x):
                         if not isinstance(x, (int, float)):
                             return str(x)
@@ -6605,8 +6644,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         if np.round(x) == x and '%' not in str(x):
                             return f"{x:.0f}"
                         return f"{x:.2f}"
-                    stats_subset['Value'] = [_fmt_stat(m, v) for m, v in zip(stats_subset.index, stats_subset['Value'])]
-                    st.dataframe(stats_subset, use_container_width=True)
+
+                    # Build display DataFrame: Value (formatted str) + Percentile (numeric)
+                    _rows = []
+                    for _metric in stats_subset_series.index:
+                        _disp_val = stats_subset_series[_metric]
+                        _p90_val = per_90_stats.get(_metric, np.nan)
+                        _pct = _percentile_for(_metric, _p90_val)
+                        _rows.append({
+                            'Metric': _metric,
+                            'Value': _fmt_stat(_metric, _disp_val),
+                            'Percentile': _pct,
+                        })
+                    stats_subset = pd.DataFrame(_rows).set_index('Metric')
+
+                    _styled = (
+                        stats_subset.style
+                        .applymap(_percentile_color, subset=['Percentile'])
+                        .format({'Percentile': lambda v: f"{int(round(v))}" if pd.notna(v) else '—'})
+                    )
+                    st.dataframe(_styled, use_container_width=True)
         
         st.divider()
         
