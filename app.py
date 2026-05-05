@@ -408,7 +408,7 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v12'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v13'  # Bump this when adding/removing stat columns to invalidate old caches
 
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
@@ -2830,9 +2830,39 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     cols_to_drop = [col for col in base_df.columns if 'player.id' in str(col)]
     if 'playerId' in base_df.columns and 'player.id' in cols_to_drop:
         cols_to_drop.remove('player.id') # Keep the real one
-        
+
     base_df = base_df.drop(columns=cols_to_drop, errors='ignore')
-    
+
+    # ── Defensive per-90 normalization for goalsConceded ────────────────
+    # The main normalization loop above SHOULD handle this, but production
+    # has reproducibly shown goalsConceded slipping through as a season
+    # total in the radar (e.g. 27 instead of 0.82) while every other GK
+    # metric in the same row is correct. Rather than keep chasing the
+    # root cause, force per-90 here as a final safety net. The threshold
+    # `>= 5` cleanly distinguishes a per-90 rate (typically 0.5–1.5) from
+    # a season total (typically 10–40); we only renormalize when the
+    # value looks unmistakably like a total.
+    if 'goalsConceded' in base_df.columns and 'totalMinutes' in base_df.columns:
+        _gc = pd.to_numeric(base_df['goalsConceded'], errors='coerce').fillna(0)
+        _mins = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
+        if (_mins > 0).any():
+            _max_with_mins = float(_gc[_mins > 0].max())
+            if _max_with_mins >= 5:
+                print(f"  ⚠️ goalsConceded slipped through main normalization (max={_max_with_mins:.1f}); forcing per-90")
+                base_df['goalsConceded'] = np.where(_mins > 0, _gc * 90 / _mins, 0)
+    # Same defensive normalization for other GK count-style metrics that
+    # share the same data path. (psxG_faced is an xG sum so a "looks like
+    # total" check uses a higher threshold.)
+    for _col, _total_threshold in [('shotsOnTargetAgainst', 20), ('exits', 20), ('psxG_faced', 5)]:
+        if _col in base_df.columns and 'totalMinutes' in base_df.columns:
+            _v = pd.to_numeric(base_df[_col], errors='coerce').fillna(0)
+            _mins = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
+            if (_mins > 0).any():
+                _max_v = float(_v[_mins > 0].max())
+                if _max_v >= _total_threshold:
+                    print(f"  ⚠️ {_col} slipped through main normalization (max={_max_v:.1f}); forcing per-90")
+                    base_df[_col] = np.where(_mins > 0, _v * 90 / _mins, 0)
+
     print("--- FINISHED: New All-Player-Stats Calculation ---")
     result = base_df.fillna(0).reset_index()
 
