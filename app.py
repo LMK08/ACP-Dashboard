@@ -5526,9 +5526,13 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
     per['n_dd'] = per['n_dd'].fillna(0); per['n_dd_won'] = per['n_dd_won'].fillna(0)
 
     # Opponent stats for each row: self-join on matchId, swap team.
-    per_opp = per.rename(columns={
+    # Drop match-level shared columns from per_opp so the merge doesn't
+    # double them (else pandas suffixes them _x/_y and downstream lookups
+    # by `match_minutes` fail).
+    _shared_match_cols = ('matchId', 'team.name', 'match_total_s', 'match_minutes')
+    per_opp = per.drop(columns=['match_total_s', 'match_minutes']).rename(columns={
         'team.name': '_opp_name',
-        **{c: f'opp_{c}' for c in per.columns if c not in ('matchId', 'team.name', 'match_total_s', 'match_minutes')}
+        **{c: f'opp_{c}' for c in per.columns if c not in _shared_match_cols}
     })
     merged = per.merge(per_opp, left_on='matchId', right_on='matchId', how='left')
     merged = merged[merged['team.name'] != merged['_opp_name']].copy()
