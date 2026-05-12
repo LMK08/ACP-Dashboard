@@ -5471,10 +5471,11 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
         _loc_x=loc_x, _loc_y=loc_y, _shot_xg=shot_xg,
     )
 
-    # Match minutes: max event timestamp per match, divided by 60
-    period_offset = ev['matchPeriod'].map({'1H': 0, '2H': 45*60, '1E': 90*60, '2E': 105*60}).fillna(0)
-    ev['_t_s'] = period_offset + pd.to_numeric(ev['minute'], errors='coerce').fillna(0)*60 \
-                  + pd.to_numeric(ev['second'], errors='coerce').fillna(0)
+    # Match minutes: max event timestamp per match, divided by 60.
+    # Wyscout's `minute` is cumulative since match start (0 → 90+), so no
+    # half-offset is needed. raw_events.parquet doesn't carry matchPeriod.
+    ev['_t_s'] = (pd.to_numeric(ev['minute'], errors='coerce').fillna(0) * 60
+                   + pd.to_numeric(ev['second'], errors='coerce').fillna(0))
     match_total_s = ev.groupby('matchId')['_t_s'].max().rename('match_total_s')
 
     # ── Per-(matchId, team) aggregates ────────────────────────────────
