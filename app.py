@@ -5718,83 +5718,147 @@ def _fmt_metric_value(key: str, value) -> str:
 
 
 def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
-                                dimension_name: str) -> "plt.Figure":
-    """Render the multi-metric horizontal dot-plot for one of the 7 dimensions.
+                                dimension_name: str):
+    """Interactive Plotly dot-plot for one of the 7 dimensions.
 
     Each metric becomes one row: every team plotted as a small green dot at
-    its value position, the selected team plotted as a white hexagon. Metric
-    name + selected team's value is shown above each row."""
+    its value position, the selected team plotted as a white hexagon. Hover
+    over any dot to see the team name and its raw value."""
+    import plotly.graph_objects as go
+
     dim = SEASON_REPORT_DIMENSIONS.get(dimension_name)
     if dim is None:
         return None
+
     if team_metrics_df is None or team_metrics_df.empty:
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.text(0.5, 0.5, "No data for the current selection", ha='center', va='center',
-                transform=ax.transAxes, color='#888')
-        ax.axis('off')
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data for the current selection",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color='#888'),
+        )
+        fig.update_layout(height=220, xaxis=dict(visible=False),
+                           yaxis=dict(visible=False),
+                           margin=dict(l=20, r=20, t=20, b=20))
         return fig
 
     metrics = [m for m in dim['metrics'] if m[0] in team_metrics_df.columns]
     n_metrics = len(metrics)
     if n_metrics == 0:
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.text(0.5, 0.5, "No metrics available for this dimension yet", ha='center', va='center',
-                transform=ax.transAxes, color='#888')
-        ax.axis('off')
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No metrics available for this dimension",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color='#888'),
+        )
+        fig.update_layout(height=220, xaxis=dict(visible=False),
+                           yaxis=dict(visible=False))
         return fig
 
-    fig_h = max(2.2, 0.85 * n_metrics + 0.8)
-    fig, ax = plt.subplots(figsize=(10, fig_h))
-    ax.set_xlim(-0.05, 1.05)
-    ax.set_ylim(-0.5, n_metrics - 0.5)
-    ax.invert_yaxis()
-    ax.axis('off')
+    fig = go.Figure()
+    y_labels: list = []
 
     for i, (key, direction, label) in enumerate(metrics):
         col = pd.to_numeric(team_metrics_df[key], errors='coerce').dropna()
         if col.empty:
+            y_labels.append(label)
             continue
         vmin, vmax = float(col.min()), float(col.max())
         rng = (vmax - vmin) if (vmax - vmin) > 1e-9 else 1.0
         normed = (col - vmin) / rng
 
-        # All teams as small green dots
-        for _, v in normed.items():
-            ax.plot(v, i, 'o', markersize=6, color='#3a8a3a', alpha=0.55,
-                    markeredgecolor='#1f4f1f', markeredgewidth=0.6, zorder=2)
+        teams = col.index.tolist()
+        values = col.values.tolist()
+        hover_texts = [
+            f"<b>{t}</b><br>{label}: {_fmt_metric_value(key, v)}"
+            for t, v in zip(teams, values)
+        ]
 
-        # Highlight selected team
+        # Baseline rail
+        fig.add_shape(
+            type="line", x0=0, x1=1, y0=i, y1=i,
+            line=dict(color="#bbb", width=0.5), layer="below",
+        )
+
+        # All teams as green dots (excluding selected)
+        other_idx = [j for j, t in enumerate(teams) if t != team_name]
+        if other_idx:
+            fig.add_trace(go.Scatter(
+                x=[float(normed.iloc[j]) for j in other_idx],
+                y=[i] * len(other_idx),
+                mode='markers',
+                marker=dict(size=11, color='#3a8a3a', opacity=0.65,
+                             line=dict(width=1, color='#1f4f1f')),
+                hovertext=[hover_texts[j] for j in other_idx],
+                hoverinfo='text',
+                showlegend=False,
+                name='',
+            ))
+
+        # Selected team as white hexagon
         if team_name in col.index:
-            t_val = (col.loc[team_name] - vmin) / rng
-            ax.scatter(t_val, i, marker='H', s=170, color='white',
-                        edgecolor='#0a0a0a', linewidth=1.4, zorder=4)
+            sel_idx = teams.index(team_name)
+            fig.add_trace(go.Scatter(
+                x=[float(normed.iloc[sel_idx])],
+                y=[i],
+                mode='markers',
+                marker=dict(size=18, color='white', symbol='hexagon',
+                             line=dict(width=2, color='#0a0a0a')),
+                hovertext=[hover_texts[sel_idx]],
+                hoverinfo='text',
+                showlegend=False,
+                name='',
+            ))
 
-        # Metric label above the row; right-aligned value
-        team_val_str = "—" if team_name not in col.index else _fmt_metric_value(key, col.loc[team_name])
-        ax.text(0, i - 0.42, label, ha='left', va='bottom',
-                fontsize=10, color='#222', fontweight='bold')
-        ax.text(1.0, i - 0.42, team_val_str, ha='right', va='bottom',
-                fontsize=10, color='#0077b6', fontweight='bold')
+        # Right-side annotation: selected team's raw value
+        team_val_str = "—" if team_name not in col.index \
+            else _fmt_metric_value(key, col.loc[team_name])
+        fig.add_annotation(
+            xref="x", yref="y", x=1.05, y=i,
+            text=f"<b>{team_val_str}</b>",
+            showarrow=False, font=dict(size=11, color='#0077b6'),
+            xanchor='left', yanchor='middle',
+        )
 
-        # ← Worse / Better → depending on direction
-        if direction == 'lower_better':
-            left_lbl, right_lbl = "Better", "Worse"
-        elif direction == 'higher_better':
-            left_lbl, right_lbl = "Worse", "Better"
-        else:
-            left_lbl, right_lbl = "Less", "More"
-        # Axis baseline
-        ax.plot([0, 1], [i, i], color='#bbb', linewidth=0.4, zorder=1)
+        y_labels.append(label)
 
-    # Footer arrows
-    ax.text(0, n_metrics - 0.05, "←", ha='left', va='top', fontsize=10, color='#666')
-    ax.text(1, n_metrics - 0.05, "→", ha='right', va='top', fontsize=10, color='#666')
+    # Direction arrows beneath the bottom row
+    fig.add_annotation(xref="x", yref="paper", x=0, y=-0.04,
+                       text="← Worse", showarrow=False,
+                       font=dict(size=10, color='#666'),
+                       xanchor='left', yanchor='top')
+    fig.add_annotation(xref="x", yref="paper", x=1, y=-0.04,
+                       text="Better →", showarrow=False,
+                       font=dict(size=10, color='#666'),
+                       xanchor='right', yanchor='top')
 
-    fig.suptitle(f"{dimension_name}", fontsize=13, fontweight='bold',
-                  color='#0a0a0a', x=0.02, ha='left')
-    fig.text(0.02, 0.92, dim.get('subtitle', ''), fontsize=10.5,
-              color='#666', ha='left')
-    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    fig.update_layout(
+        title=dict(
+            text=(f"<b style='font-size:14px'>{dimension_name}</b>"
+                  f"<br><span style='font-size:11px; color:#666'>"
+                  f"{dim.get('subtitle','')}</span>"),
+            x=0.0, xanchor='left', y=0.97, yanchor='top',
+        ),
+        xaxis=dict(
+            visible=False,
+            range=[-0.05, 1.15],
+            fixedrange=True,
+        ),
+        yaxis=dict(
+            tickmode='array',
+            tickvals=list(range(n_metrics)),
+            ticktext=y_labels,
+            autorange='reversed',
+            showgrid=False, zeroline=False,
+            fixedrange=True,
+            tickfont=dict(size=11),
+        ),
+        height=max(230, 55 * n_metrics + 90),
+        margin=dict(l=200, r=70, t=70, b=40),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        hovermode='closest',
+    )
     return fig
 
 
@@ -5818,8 +5882,12 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
         with cols[i % 2]:
             fig = render_dimension_dot_plot(team_metrics_df, team_name, dim_name)
             if fig is not None:
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={'displayModeBar': False},
+                    key=f"sr_dim_{team_name}_{dim_name}",
+                )
 
 
 # ==============================================================================
