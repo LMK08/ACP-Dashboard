@@ -5292,6 +5292,531 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
             pass
     return result_df
 
+
+# ==============================================================================
+# 4B. SEASON REPORT — 7-dimension performance & style dot plots
+# ==============================================================================
+# Replicates the structure of Twelve.football's per-team season report:
+# each dimension is a set of 5-8 metrics rendered as a horizontal dot-plot
+# of every team in the league/stage, with the selected team highlighted.
+
+# Per-dimension metric definitions. "direction" controls colour interpretation
+# only; values are always plotted at their raw position. "label" is the
+# display name; "key" matches a column produced by compute_team_season_metrics.
+SEASON_REPORT_DIMENSIONS = {
+    'Defence': {
+        'subtitle': 'How well the team prevents opponents from creating chances',
+        'metrics': [
+            ('PPDA',                            'lower_better', 'PPDA'),
+            ('def_intensity',                   'higher_better','Defensive intensity'),
+            ('def_action_height',               'higher_better','Defensive action height (m)'),
+            ('def_duels_won_pct',               'higher_better','Defensive duels won %'),
+            ('opp_xg_per_match',                'lower_better', 'Opp. xG per match'),
+            ('opp_goals_per_match',             'lower_better', 'Opp. Goals per match'),
+        ],
+    },
+    'Defensive Transition': {
+        'subtitle': 'How quickly the team re-organises after losing the ball',
+        'metrics': [
+            ('turnovers_per90',                 'lower_better', 'Turnovers / 90'),
+            ('recoveries_per90',                'higher_better','Recoveries / 90'),
+            ('final_third_recoveries_pct',      'higher_better','Final-third recoveries %'),
+            ('recovery_line_height',            'higher_better','Recovery line height (m)'),
+            ('counter_press_recoveries_per90',  'higher_better','Counter-press recoveries / 90'),
+        ],
+    },
+    'Opposition Chance Creation': {
+        'subtitle': 'Volume and quality of opposition chances faced',
+        'metrics': [
+            ('opp_shots_per90',                 'lower_better', 'Opp. Shots / 90'),
+            ('opp_sot_per90',                   'lower_better', 'Opp. Shots on target / 90'),
+            ('opp_xg_per90',                    'lower_better', 'Opp. xG / 90'),
+            ('opp_xg_per_shot',                 'lower_better', 'Opp. xG per shot'),
+            ('opp_box_touches_per90',           'lower_better', 'Opp. Box touches / 90'),
+            ('opp_high_opp_shots_per90',        'lower_better', 'Opp. High-opportunity shots / 90'),
+        ],
+    },
+    'Attacking Transition': {
+        'subtitle': 'Threat generated immediately after winning the ball back',
+        'metrics': [
+            ('recoveries_per90',                'higher_better','Recoveries / 90'),
+            ('recovery_line_height',            'higher_better','Recovery line height (m)'),
+            ('final_third_recoveries_pct',      'higher_better','Final-third recoveries %'),
+            ('counter_press_recoveries_per90',  'higher_better','Counter-press recoveries / 90'),
+            ('long_passes_succ_per90',          'higher_better','Successful long passes / 90'),
+        ],
+    },
+    'Attack': {
+        'subtitle': 'Ball control and territorial dominance in the attacking half',
+        'metrics': [
+            ('ball_possession_pct',             'higher_better','Ball possession %'),
+            ('field_tilt_pct',                  'higher_better','Field tilt %'),
+            ('pass_tempo',                      'higher_better','Pass tempo (passes / min of poss.)'),
+            ('long_ball_pct',                   'neutral',      'Long ball %'),
+            ('passes_per90',                    'higher_better','Passes / 90'),
+            ('progressive_passes_per90',        'higher_better','Progressive passes / 90'),
+        ],
+    },
+    'Chance Creation': {
+        'subtitle': 'Volume and quality of own chances generated',
+        'metrics': [
+            ('shots_per90',                     'higher_better','Shots / 90'),
+            ('high_opp_shots_per90',            'higher_better','High-opportunity shots / 90'),
+            ('xg_per90',                        'higher_better','xG / 90'),
+            ('goals_per90',                     'higher_better','Goals / 90'),
+            ('xg_per_shot',                     'higher_better','xG per shot'),
+            ('box_touches_per90',               'higher_better','Box touches / 90'),
+            ('sot_per90',                       'higher_better','Shots on target / 90'),
+        ],
+    },
+    'Outcome': {
+        'subtitle': 'Points won vs. expected; goal difference and field control',
+        'metrics': [
+            ('points_per_match',                'higher_better','Points / match'),
+            ('xpoints_per_match',               'higher_better','xPoints / match'),
+            ('points_minus_xpoints',            'higher_better','Points − xPoints'),
+            ('goals_per_match',                 'higher_better','Goals / match'),
+            ('opp_goals_per_match',             'lower_better', 'Opp. Goals / match'),
+            ('xg_per_match',                    'higher_better','xG / match'),
+            ('opp_xg_per_match',                'lower_better', 'Opp. xG / match'),
+            ('field_tilt_pct',                  'higher_better','Field tilt %'),
+        ],
+    },
+}
+
+
+def _xpoints_from_xg(home_xg: float, away_xg: float, max_goals: int = 8) -> tuple:
+    """Expected points for both sides from a single match xG pair, using a
+    Poisson model. Returns (home_xPts, away_xPts).
+
+    P(home_goals=h, away_goals=a) = Pois(home_xg, h) * Pois(away_xg, a).
+    xPts = 3*P(win) + 1*P(draw)."""
+    if home_xg < 0: home_xg = 0
+    if away_xg < 0: away_xg = 0
+    if home_xg == 0 and away_xg == 0:
+        return (1.0, 1.0)
+    from math import exp, factorial
+    h_xpts = 0.0; a_xpts = 0.0
+    for h in range(max_goals + 1):
+        ph = (home_xg ** h) * exp(-home_xg) / factorial(h)
+        for a in range(max_goals + 1):
+            pa = (away_xg ** a) * exp(-away_xg) / factorial(a)
+            p = ph * pa
+            if h > a:
+                h_xpts += 3 * p
+            elif h < a:
+                a_xpts += 3 * p
+            else:
+                h_xpts += p
+                a_xpts += p
+    return (h_xpts, a_xpts)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
+    """Build per-team aggregate metrics across all 7 season-report dimensions.
+
+    cache_key: an arbitrary string that uniquely identifies the
+    (competition, season, stage) combination — used to scope Streamlit's
+    in-memory cache. The events/matches DataFrames are passed by reference;
+    cache_key changes when the filter changes.
+
+    Returns a DataFrame indexed by team name."""
+    if _events_df is None or _events_df.empty or 'team.name' not in _events_df.columns:
+        return pd.DataFrame()
+
+    ev = _events_df.copy()
+    matches = _matches_df.copy() if _matches_df is not None else pd.DataFrame()
+
+    # ── Per-event flags ────────────────────────────────────────────────
+    def _has_tag(row, tag):
+        s = row
+        return isinstance(s, (list, np.ndarray)) and tag in s
+
+    has_recovery        = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
+                              lambda x: isinstance(x, (list, np.ndarray)) and 'recovery' in x)
+    has_counter_press   = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
+                              lambda x: isinstance(x, (list, np.ndarray)) and 'counterpressing_recovery' in x)
+    has_loss            = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
+                              lambda x: isinstance(x, (list, np.ndarray)) and 'loss' in x)
+    has_long_pass       = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
+                              lambda x: isinstance(x, (list, np.ndarray)) and 'long_pass' in x)
+    has_progressive_pass= ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
+                              lambda x: isinstance(x, (list, np.ndarray)) and 'progressive_pass' in x)
+
+    tp = ev['type.primary']
+    is_pass        = tp == 'pass'
+    is_shot        = tp == 'shot'  # excludes penalty (different type.primary)
+    is_def_action  = tp.isin(['interception', 'clearance']) | (tp == 'duel') | (tp == 'tackle')
+    is_foul        = tp == 'infraction'
+    is_goal        = ev.get('shot.isGoal', False).fillna(False).astype(bool)
+    is_sot         = ev.get('shot.onTarget', False).fillna(False).astype(bool) & is_shot
+
+    loc_x = pd.to_numeric(ev['location.x'], errors='coerce')
+    loc_y = pd.to_numeric(ev['location.y'], errors='coerce')
+    in_box = (loc_x >= 83) & (loc_y >= 21) & (loc_y <= 79)
+    in_final_third = loc_x >= 66
+    pass_acc = ev.get('pass.accurate', False).fillna(False).astype(bool)
+    shot_xg = pd.to_numeric(ev.get('shot.xg'), errors='coerce').fillna(0)
+    is_high_opp = is_shot & (shot_xg >= 0.25)
+
+    ev = ev.assign(
+        _is_pass=is_pass, _is_shot=is_shot, _is_def=is_def_action, _is_foul=is_foul,
+        _is_goal=is_goal, _is_sot=is_sot, _is_box_touch=in_box, _is_final_third=in_final_third,
+        _is_recovery=has_recovery, _is_counterpress=has_counter_press,
+        _is_loss=has_loss, _is_long_pass=has_long_pass, _is_progpass=has_progressive_pass,
+        _is_long_pass_succ=has_long_pass & pass_acc,
+        _is_high_opp=is_high_opp,
+        _is_final_third_recovery=has_recovery & in_final_third,
+        _loc_x=loc_x, _loc_y=loc_y, _shot_xg=shot_xg,
+    )
+
+    # Match minutes: max event timestamp per match, divided by 60
+    period_offset = ev['matchPeriod'].map({'1H': 0, '2H': 45*60, '1E': 90*60, '2E': 105*60}).fillna(0)
+    ev['_t_s'] = period_offset + pd.to_numeric(ev['minute'], errors='coerce').fillna(0)*60 \
+                  + pd.to_numeric(ev['second'], errors='coerce').fillna(0)
+    match_total_s = ev.groupby('matchId')['_t_s'].max().rename('match_total_s')
+
+    # ── Per-(matchId, team) aggregates ────────────────────────────────
+    g = ev.groupby(['matchId', 'team.name'], sort=False)
+    per = g.agg(
+        n_events=('_t_s', 'size'),
+        n_passes=('_is_pass', 'sum'),
+        n_pass_acc=('_is_pass', lambda s: int((s & ev.loc[s.index].get('pass.accurate', False).fillna(False)).sum())),
+        n_long_pass=('_is_long_pass', 'sum'),
+        n_long_pass_succ=('_is_long_pass_succ', 'sum'),
+        n_progressive_pass=('_is_progpass', 'sum'),
+        n_shots=('_is_shot', 'sum'),
+        n_sot=('_is_sot', 'sum'),
+        n_goals=('_is_goal', 'sum'),
+        n_def_action=('_is_def', 'sum'),
+        n_foul=('_is_foul', 'sum'),
+        n_recovery=('_is_recovery', 'sum'),
+        n_counter_press=('_is_counterpress', 'sum'),
+        n_turnover=('_is_loss', 'sum'),
+        n_box_touch=('_is_box_touch', 'sum'),
+        n_final_third_touch=('_is_final_third', 'sum'),
+        n_final_third_recovery=('_is_final_third_recovery', 'sum'),
+        n_high_opp_shot=('_is_high_opp', 'sum'),
+        sum_xg=('_shot_xg', 'sum'),
+        avg_def_y=('_loc_y', lambda s: s[ev.loc[s.index, '_is_def']].mean() if ev.loc[s.index, '_is_def'].any() else np.nan),
+        avg_recovery_y=('_loc_y', lambda s: s[ev.loc[s.index, '_is_recovery']].mean() if ev.loc[s.index, '_is_recovery'].any() else np.nan),
+    ).reset_index()
+    per = per.merge(match_total_s, on='matchId', how='left')
+    # Approximate per-match minutes-played for each team (use match total).
+    per['match_minutes'] = per['match_total_s'] / 60.0
+
+    # Defensive duels won %
+    if 'type.secondary' in ev.columns:
+        d_def = ev[ev['type.secondary'].apply(lambda x: isinstance(x, (list, np.ndarray))
+                                                 and 'defensive_duel' in x)]
+        if 'groundDuel.recoveredPossession' in d_def.columns or 'groundDuel.stoppedProgress' in d_def.columns:
+            won = (d_def.get('groundDuel.recoveredPossession', False).fillna(False)
+                   | d_def.get('groundDuel.stoppedProgress', False).fillna(False))
+            ddw = d_def.assign(_won=won).groupby(['matchId', 'team.name']).agg(
+                n_dd=('_won', 'size'),
+                n_dd_won=('_won', 'sum'),
+            ).reset_index()
+            per = per.merge(ddw, on=['matchId', 'team.name'], how='left')
+        else:
+            per['n_dd'] = 0; per['n_dd_won'] = 0
+    else:
+        per['n_dd'] = 0; per['n_dd_won'] = 0
+    per['n_dd'] = per['n_dd'].fillna(0); per['n_dd_won'] = per['n_dd_won'].fillna(0)
+
+    # Opponent stats for each row: self-join on matchId, swap team.
+    per_opp = per.rename(columns={
+        'team.name': '_opp_name',
+        **{c: f'opp_{c}' for c in per.columns if c not in ('matchId', 'team.name', 'match_total_s', 'match_minutes')}
+    })
+    merged = per.merge(per_opp, left_on='matchId', right_on='matchId', how='left')
+    merged = merged[merged['team.name'] != merged['_opp_name']].copy()
+
+    # Points & xPoints per (matchId, team) — derived from final scores in matches_df.
+    if not matches.empty and 'score' in matches.columns:
+        score_split = matches['score'].fillna('').astype(str).str.split('-', expand=True)
+        matches['_home_goals'] = pd.to_numeric(score_split.get(0), errors='coerce')
+        matches['_away_goals'] = pd.to_numeric(score_split.get(1), errors='coerce')
+
+        # xG totals per match-team for xPoints
+        per_xg = per.groupby(['matchId', 'team.name'])['sum_xg'].sum().reset_index()
+        match_xg = per_xg.merge(matches[['matchId', 'homeTeamName', 'awayTeamName',
+                                          '_home_goals', '_away_goals']],
+                                 on='matchId', how='left')
+        per_team_points: dict = {}
+        per_team_xpoints: dict = {}
+        for mid, mrow in matches.iterrows():
+            mid_val = mrow['matchId']; hg = mrow['_home_goals']; ag = mrow['_away_goals']
+            h_name = mrow['homeTeamName']; a_name = mrow['awayTeamName']
+            if pd.isna(hg) or pd.isna(ag) or pd.isna(h_name) or pd.isna(a_name):
+                continue
+            # Points
+            if hg > ag:   pts_h, pts_a = 3, 0
+            elif hg < ag: pts_h, pts_a = 0, 3
+            else:         pts_h, pts_a = 1, 1
+            per_team_points.setdefault(mid_val, {})[h_name] = pts_h
+            per_team_points.setdefault(mid_val, {})[a_name] = pts_a
+            # xPoints
+            h_xg = float(match_xg[(match_xg['matchId']==mid_val) & (match_xg['team.name']==h_name)]['sum_xg'].sum())
+            a_xg = float(match_xg[(match_xg['matchId']==mid_val) & (match_xg['team.name']==a_name)]['sum_xg'].sum())
+            h_xp, a_xp = _xpoints_from_xg(h_xg, a_xg)
+            per_team_xpoints.setdefault(mid_val, {})[h_name] = h_xp
+            per_team_xpoints.setdefault(mid_val, {})[a_name] = a_xp
+
+        merged['points']  = merged.apply(
+            lambda r: per_team_points.get(r['matchId'], {}).get(r['team.name'], np.nan), axis=1)
+        merged['xpoints'] = merged.apply(
+            lambda r: per_team_xpoints.get(r['matchId'], {}).get(r['team.name'], np.nan), axis=1)
+    else:
+        merged['points'] = np.nan; merged['xpoints'] = np.nan
+
+    # ── Per-team aggregation: mean across that team's matches ──────────
+    teams = sorted(merged['team.name'].dropna().unique())
+    out_rows: list = []
+    for t in teams:
+        sub = merged[merged['team.name'] == t]
+        if sub.empty:
+            continue
+        n_matches = sub['matchId'].nunique()
+        total_minutes = float(sub.drop_duplicates('matchId')['match_minutes'].sum()) or 1.0
+        per90 = lambda col: float(sub[col].sum()) * 90.0 / total_minutes
+        per90_opp = lambda col: float(sub[col].sum()) * 90.0 / total_minutes  # same denom (per match total mins)
+
+        # PPDA: opposition passes in their own attacking half / our defensive actions in our defensive half.
+        # We approximate with: opp's total passes / our total defensive actions.
+        our_def = float(sub['n_def_action'].sum())
+        opp_passes = float(sub['opp_n_passes'].sum())
+        ppda = (opp_passes / our_def) if our_def > 0 else np.nan
+
+        # Defensive intensity: our defensive actions / 90.
+        def_intensity = per90('n_def_action')
+
+        # Defensive duels won %
+        n_dd = float(sub['n_dd'].sum())
+        n_dd_won = float(sub['n_dd_won'].sum())
+        dd_pct = (n_dd_won / n_dd * 100.0) if n_dd > 0 else np.nan
+
+        # Defensive action height (m): avg location.y of defensive actions across matches.
+        # Wyscout y goes 0-100; we'll convert to ~m by scaling to pitch length 105m via x semantics,
+        # but the PDF uses meters from the goal line — easier: report y*(pitch length)/100. We use 105 m.
+        avg_def_y_match = sub['avg_def_y'].dropna()
+        def_action_height = float(avg_def_y_match.mean()) * 1.05 if not avg_def_y_match.empty else np.nan
+
+        # Recovery line height (m)
+        avg_recovery_y_match = sub['avg_recovery_y'].dropna()
+        recovery_line_height = float(avg_recovery_y_match.mean()) * 1.05 if not avg_recovery_y_match.empty else np.nan
+
+        # Final-third recoveries %
+        total_rec = float(sub['n_recovery'].sum())
+        final_third_rec = float(sub['n_final_third_recovery'].sum())
+        ft_rec_pct = (final_third_rec / total_rec * 100.0) if total_rec > 0 else np.nan
+
+        # Pass tempo: passes per minute when we have possession. We don't track
+        # possession-time per team here, so approximate by passes / ball-possession-minutes.
+        # Without true possession minutes, use passes / (match_minutes * possession_pct).
+        # Final fallback: passes / match_minutes.
+        ball_possession_pct = (float(sub['n_passes'].sum())
+                                / max(float(sub['n_passes'].sum() + sub['opp_n_passes'].sum()), 1)) * 100.0
+        poss_minutes = total_minutes * (ball_possession_pct / 100.0) if ball_possession_pct > 0 else total_minutes
+        pass_tempo = float(sub['n_passes'].sum()) / max(poss_minutes, 1)
+
+        # Field tilt %: % of attacking-third touches that are ours.
+        our_ft = float(sub['n_final_third_touch'].sum())
+        opp_ft = float(sub['opp_n_final_third_touch'].sum())
+        field_tilt_pct = (our_ft / (our_ft + opp_ft) * 100.0) if (our_ft + opp_ft) > 0 else np.nan
+
+        # Long ball %
+        n_passes = float(sub['n_passes'].sum())
+        long_ball_pct = (float(sub['n_long_pass'].sum()) / n_passes * 100.0) if n_passes > 0 else np.nan
+
+        # Outcome metrics from points/xpoints
+        pts_series = sub['points'].dropna()
+        xpts_series = sub['xpoints'].dropna()
+        points_per_match = float(pts_series.mean()) if not pts_series.empty else np.nan
+        xpoints_per_match = float(xpts_series.mean()) if not xpts_series.empty else np.nan
+        points_minus_xp = points_per_match - xpoints_per_match if not (np.isnan(points_per_match) or np.isnan(xpoints_per_match)) else np.nan
+
+        goals_per_match = float(sub['n_goals'].sum()) / max(n_matches, 1)
+        opp_goals_per_match = float(sub['opp_n_goals'].sum()) / max(n_matches, 1)
+        xg_per_match = float(sub['sum_xg'].sum()) / max(n_matches, 1)
+        opp_xg_per_match = float(sub['opp_sum_xg'].sum()) / max(n_matches, 1)
+
+        # xG per shot
+        ts = float(sub['n_shots'].sum())
+        xg_per_shot = (float(sub['sum_xg'].sum()) / ts) if ts > 0 else np.nan
+        opp_ts = float(sub['opp_n_shots'].sum())
+        opp_xg_per_shot = (float(sub['opp_sum_xg'].sum()) / opp_ts) if opp_ts > 0 else np.nan
+
+        out_rows.append({
+            'team_name': t,
+            'n_matches': n_matches,
+            'total_minutes': total_minutes,
+            # Defence
+            'PPDA': ppda,
+            'def_intensity': def_intensity,
+            'def_action_height': def_action_height,
+            'def_duels_won_pct': dd_pct,
+            'opp_xg_per_match': opp_xg_per_match,
+            'opp_goals_per_match': opp_goals_per_match,
+            # Defensive Transition
+            'turnovers_per90': per90('n_turnover'),
+            'recoveries_per90': per90('n_recovery'),
+            'final_third_recoveries_pct': ft_rec_pct,
+            'recovery_line_height': recovery_line_height,
+            'counter_press_recoveries_per90': per90('n_counter_press'),
+            # Opposition Chance Creation
+            'opp_shots_per90': per90_opp('opp_n_shots'),
+            'opp_sot_per90': per90_opp('opp_n_sot'),
+            'opp_xg_per90': per90_opp('opp_sum_xg'),
+            'opp_xg_per_shot': opp_xg_per_shot,
+            'opp_box_touches_per90': per90_opp('opp_n_box_touch'),
+            'opp_high_opp_shots_per90': per90_opp('opp_n_high_opp_shot'),
+            # Attack
+            'ball_possession_pct': ball_possession_pct,
+            'field_tilt_pct': field_tilt_pct,
+            'pass_tempo': pass_tempo,
+            'long_ball_pct': long_ball_pct,
+            'passes_per90': per90('n_passes'),
+            'progressive_passes_per90': per90('n_progressive_pass'),
+            'long_passes_succ_per90': per90('n_long_pass_succ'),
+            # Chance Creation
+            'shots_per90': per90('n_shots'),
+            'high_opp_shots_per90': per90('n_high_opp_shot'),
+            'xg_per90': per90('sum_xg'),
+            'goals_per90': per90('n_goals'),
+            'xg_per_shot': xg_per_shot,
+            'box_touches_per90': per90('n_box_touch'),
+            'sot_per90': per90('n_sot'),
+            # Outcome
+            'points_per_match': points_per_match,
+            'xpoints_per_match': xpoints_per_match,
+            'points_minus_xpoints': points_minus_xp,
+            'goals_per_match': goals_per_match,
+            'xg_per_match': xg_per_match,
+        })
+    return pd.DataFrame(out_rows).set_index('team_name')
+
+
+def _fmt_metric_value(key: str, value) -> str:
+    """Format metric value for display in the dot-plot."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "—"
+    if key in ('PPDA', 'xg_per_shot', 'opp_xg_per_shot', 'pass_tempo'):
+        return f"{value:.2f}"
+    if key in ('points_minus_xpoints',):
+        return f"{value:+.2f}"
+    if 'pct' in key:
+        return f"{value:.0f}%"
+    if 'per_match' in key or 'per90' in key or 'xg' in key or 'xpoints' in key or 'points' in key:
+        return f"{value:.2f}"
+    return f"{value:.1f}"
+
+
+def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
+                                dimension_name: str) -> "plt.Figure":
+    """Render the multi-metric horizontal dot-plot for one of the 7 dimensions.
+
+    Each metric becomes one row: every team plotted as a small green dot at
+    its value position, the selected team plotted as a white hexagon. Metric
+    name + selected team's value is shown above each row."""
+    dim = SEASON_REPORT_DIMENSIONS.get(dimension_name)
+    if dim is None:
+        return None
+    if team_metrics_df is None or team_metrics_df.empty:
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.text(0.5, 0.5, "No data for the current selection", ha='center', va='center',
+                transform=ax.transAxes, color='#888')
+        ax.axis('off')
+        return fig
+
+    metrics = [m for m in dim['metrics'] if m[0] in team_metrics_df.columns]
+    n_metrics = len(metrics)
+    if n_metrics == 0:
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.text(0.5, 0.5, "No metrics available for this dimension yet", ha='center', va='center',
+                transform=ax.transAxes, color='#888')
+        ax.axis('off')
+        return fig
+
+    fig_h = max(2.2, 0.85 * n_metrics + 0.8)
+    fig, ax = plt.subplots(figsize=(10, fig_h))
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.5, n_metrics - 0.5)
+    ax.invert_yaxis()
+    ax.axis('off')
+
+    for i, (key, direction, label) in enumerate(metrics):
+        col = pd.to_numeric(team_metrics_df[key], errors='coerce').dropna()
+        if col.empty:
+            continue
+        vmin, vmax = float(col.min()), float(col.max())
+        rng = (vmax - vmin) if (vmax - vmin) > 1e-9 else 1.0
+        normed = (col - vmin) / rng
+
+        # All teams as small green dots
+        for _, v in normed.items():
+            ax.plot(v, i, 'o', markersize=6, color='#3a8a3a', alpha=0.55,
+                    markeredgecolor='#1f4f1f', markeredgewidth=0.6, zorder=2)
+
+        # Highlight selected team
+        if team_name in col.index:
+            t_val = (col.loc[team_name] - vmin) / rng
+            ax.scatter(t_val, i, marker='H', s=170, color='white',
+                        edgecolor='#0a0a0a', linewidth=1.4, zorder=4)
+
+        # Metric label above the row; right-aligned value
+        team_val_str = "—" if team_name not in col.index else _fmt_metric_value(key, col.loc[team_name])
+        ax.text(0, i - 0.42, label, ha='left', va='bottom',
+                fontsize=10, color='#222', fontweight='bold')
+        ax.text(1.0, i - 0.42, team_val_str, ha='right', va='bottom',
+                fontsize=10, color='#0077b6', fontweight='bold')
+
+        # ← Worse / Better → depending on direction
+        if direction == 'lower_better':
+            left_lbl, right_lbl = "Better", "Worse"
+        elif direction == 'higher_better':
+            left_lbl, right_lbl = "Worse", "Better"
+        else:
+            left_lbl, right_lbl = "Less", "More"
+        # Axis baseline
+        ax.plot([0, 1], [i, i], color='#bbb', linewidth=0.4, zorder=1)
+
+    # Footer arrows
+    ax.text(0, n_metrics - 0.05, "←", ha='left', va='top', fontsize=10, color='#666')
+    ax.text(1, n_metrics - 0.05, "→", ha='right', va='top', fontsize=10, color='#666')
+
+    fig.suptitle(f"{dimension_name}", fontsize=13, fontweight='bold',
+                  color='#0a0a0a', x=0.02, ha='left')
+    fig.text(0.02, 0.92, dim.get('subtitle', ''), fontsize=10.5,
+              color='#666', ha='left')
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    return fig
+
+
+def render_season_report_section(team_events_df, team_matches_df, team_name,
+                                   cache_key=None):
+    """Render the 7-dimension season report for one team."""
+    with st.spinner("Computing season-report metrics for every team…"):
+        team_metrics_df = compute_team_season_metrics(
+            team_events_df, team_matches_df, cache_key=cache_key,
+        )
+    if team_metrics_df is None or team_metrics_df.empty:
+        st.info("Not enough data to build the season report for this stage / season.")
+        return
+
+    if team_name not in team_metrics_df.index:
+        st.info(f"No matches found for {team_name} in the current stage / season.")
+        return
+
+    cols = st.columns(2)
+    for i, dim_name in enumerate(SEASON_REPORT_DIMENSIONS.keys()):
+        with cols[i % 2]:
+            fig = render_dimension_dot_plot(team_metrics_df, team_name, dim_name)
+            if fig is not None:
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+
+
 # ==============================================================================
 # 5. STREAMLIT APP UI
 # ==============================================================================
@@ -5801,6 +6326,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.info("Set piece data not available for this team.")
         else:
             st.warning(f"Could not find calculated radar statistics for {selected_team_t}.")
+
+        # ── Season Report (7-dimension dot plots, replicates the Twelve format) ─
+        st.divider()
+        with st.expander("📊 Season Report — performance across 7 dimensions",
+                          expanded=False):
+            st.caption(
+                "Each row shows every team in the current league/stage as a green dot, "
+                f"with **{selected_team_t}** highlighted as a white hexagon. "
+                "Values are the team's raw per-match / per-90 numbers."
+            )
+            _sr_cache_key = (
+                f"sr_{','.join(map(str, selected_comp_ids))}"
+                f"_{active_season_ids if not isinstance(active_season_ids, list) else ','.join(map(str, active_season_ids))}"
+                f"_{selected_stage or 'all'}"
+            )
+            render_season_report_section(
+                team_events_df, team_matches_df, selected_team_t,
+                cache_key=_sr_cache_key,
+            )
 
         # Primary Formation XI Graphic
         st.subheader("Primary Formation")
