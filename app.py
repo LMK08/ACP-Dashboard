@@ -5454,11 +5454,41 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
 
     loc_x = pd.to_numeric(ev['location.x'], errors='coerce')
     loc_y = pd.to_numeric(ev['location.y'], errors='coerce')
+    # In Wyscout coordinates, location.x = 0 at own goal, 100 at opponent
+    # goal (longitudinal); location.y = lateral position.
     in_box = (loc_x >= 83) & (loc_y >= 21) & (loc_y <= 79)
     in_final_third = loc_x >= 66
     pass_acc = ev.get('pass.accurate', False).fillna(False).astype(bool)
     shot_xg = pd.to_numeric(ev.get('shot.xg'), errors='coerce').fillna(0)
     is_high_opp = is_shot & (shot_xg >= 0.25)
+
+    # PPDA zone definitions (Wyscout / StatsBomb convention):
+    #   numerator   = opp passes in the opponent's own defensive 60%
+    #                 = opp events where their location.x ≤ 60
+    #   denominator = our defensive actions in the opp's defensive 60%
+    #                 = our events where our location.x ≥ 40
+    # Both are encoded against the acting team's own coordinate system.
+    is_press_pass = is_pass & (loc_x <= 60)         # used by opponent's view
+    is_press_def  = is_def_action & (loc_x >= 40)   # used by our view
+
+    # Pre-compute defensive-duel won flag so the agg below avoids a
+    # row-level lambda that can break if columns are missing.
+    has_def_duel = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
+        lambda x: isinstance(x, (list, np.ndarray)) and 'defensive_duel' in x)
+    _rec_pos = ev.get('groundDuel.recoveredPossession',
+                       pd.Series(False, index=ev.index)).fillna(False).astype(bool) \
+        if 'groundDuel.recoveredPossession' in ev.columns \
+        else pd.Series(False, index=ev.index)
+    _stp_prog = ev.get('groundDuel.stoppedProgress',
+                        pd.Series(False, index=ev.index)).fillna(False).astype(bool) \
+        if 'groundDuel.stoppedProgress' in ev.columns \
+        else pd.Series(False, index=ev.index)
+    has_def_duel_won = has_def_duel & (_rec_pos | _stp_prog)
+
+    # Pre-compute conditional values for axis-filtered means so the agg
+    # can use plain 'mean' rather than fragile lambdas.
+    def_x_for_def_only      = loc_x.where(is_def_action)        # used for def action height
+    recovery_x_for_rec_only = loc_x.where(has_recovery)         # used for recovery line height
 
     ev = ev.assign(
         _is_pass=is_pass, _is_shot=is_shot, _is_def=is_def_action, _is_foul=is_foul,
@@ -5468,6 +5498,11 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
         _is_long_pass_succ=has_long_pass & pass_acc,
         _is_high_opp=is_high_opp,
         _is_final_third_recovery=has_recovery & in_final_third,
+        _is_press_pass=is_press_pass, _is_press_def=is_press_def,
+        _is_def_duel=has_def_duel, _is_def_duel_won=has_def_duel_won,
+        _pass_acc=pass_acc,
+        _def_x_for_def=def_x_for_def_only,
+        _rec_x_for_rec=recovery_x_for_rec_only,
         _loc_x=loc_x, _loc_y=loc_y, _shot_xg=shot_xg,
     )
 
@@ -5483,7 +5518,7 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
     per = g.agg(
         n_events=('_t_s', 'size'),
         n_passes=('_is_pass', 'sum'),
-        n_pass_acc=('_is_pass', lambda s: int((s & ev.loc[s.index].get('pass.accurate', False).fillna(False)).sum())),
+        n_pass_acc=('_pass_acc', 'sum'),
         n_long_pass=('_is_long_pass', 'sum'),
         n_long_pass_succ=('_is_long_pass_succ', 'sum'),
         n_progressive_pass=('_is_progpass', 'sum'),
@@ -5500,30 +5535,20 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
         n_final_third_recovery=('_is_final_third_recovery', 'sum'),
         n_high_opp_shot=('_is_high_opp', 'sum'),
         sum_xg=('_shot_xg', 'sum'),
-        avg_def_y=('_loc_y', lambda s: s[ev.loc[s.index, '_is_def']].mean() if ev.loc[s.index, '_is_def'].any() else np.nan),
-        avg_recovery_y=('_loc_y', lambda s: s[ev.loc[s.index, '_is_recovery']].mean() if ev.loc[s.index, '_is_recovery'].any() else np.nan),
+        # PPDA zone counts
+        n_press_pass=('_is_press_pass', 'sum'),
+        n_press_def=('_is_press_def', 'sum'),
+        # Defensive duels (vectorised — no lambdas)
+        n_dd=('_is_def_duel', 'sum'),
+        n_dd_won=('_is_def_duel_won', 'sum'),
+        # Avg longitudinal location of defensive actions / recoveries
+        # (NaN-respecting mean over the pre-masked _loc_x series)
+        avg_def_x=('_def_x_for_def', 'mean'),
+        avg_recovery_x=('_rec_x_for_rec', 'mean'),
     ).reset_index()
     per = per.merge(match_total_s, on='matchId', how='left')
     # Approximate per-match minutes-played for each team (use match total).
     per['match_minutes'] = per['match_total_s'] / 60.0
-
-    # Defensive duels won %
-    if 'type.secondary' in ev.columns:
-        d_def = ev[ev['type.secondary'].apply(lambda x: isinstance(x, (list, np.ndarray))
-                                                 and 'defensive_duel' in x)]
-        if 'groundDuel.recoveredPossession' in d_def.columns or 'groundDuel.stoppedProgress' in d_def.columns:
-            won = (d_def.get('groundDuel.recoveredPossession', False).fillna(False)
-                   | d_def.get('groundDuel.stoppedProgress', False).fillna(False))
-            ddw = d_def.assign(_won=won).groupby(['matchId', 'team.name']).agg(
-                n_dd=('_won', 'size'),
-                n_dd_won=('_won', 'sum'),
-            ).reset_index()
-            per = per.merge(ddw, on=['matchId', 'team.name'], how='left')
-        else:
-            per['n_dd'] = 0; per['n_dd_won'] = 0
-    else:
-        per['n_dd'] = 0; per['n_dd_won'] = 0
-    per['n_dd'] = per['n_dd'].fillna(0); per['n_dd_won'] = per['n_dd_won'].fillna(0)
 
     # Opponent stats for each row: self-join on matchId, swap team.
     # Drop match-level shared columns from per_opp so the merge doesn't
@@ -5587,11 +5612,14 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
         per90 = lambda col: float(sub[col].sum()) * 90.0 / total_minutes
         per90_opp = lambda col: float(sub[col].sum()) * 90.0 / total_minutes  # same denom (per match total mins)
 
-        # PPDA: opposition passes in their own attacking half / our defensive actions in our defensive half.
-        # We approximate with: opp's total passes / our total defensive actions.
-        our_def = float(sub['n_def_action'].sum())
-        opp_passes = float(sub['opp_n_passes'].sum())
-        ppda = (opp_passes / our_def) if our_def > 0 else np.nan
+        # PPDA (Wyscout / StatsBomb convention):
+        #   numerator   = opp passes in opp's own defensive 60% (opp's loc.x ≤ 60)
+        #   denominator = our defensive actions in opp's defensive 60% (our loc.x ≥ 40)
+        # Both are pre-flagged at the event level; we aggregate from the
+        # self-joined opp row for the numerator.
+        our_press_def = float(sub['n_press_def'].sum())
+        opp_press_passes = float(sub['opp_n_press_pass'].sum())
+        ppda = (opp_press_passes / our_press_def) if our_press_def > 0 else np.nan
 
         # Defensive intensity: our defensive actions / 90.
         def_intensity = per90('n_def_action')
@@ -5601,15 +5629,14 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
         n_dd_won = float(sub['n_dd_won'].sum())
         dd_pct = (n_dd_won / n_dd * 100.0) if n_dd > 0 else np.nan
 
-        # Defensive action height (m): avg location.y of defensive actions across matches.
-        # Wyscout y goes 0-100; we'll convert to ~m by scaling to pitch length 105m via x semantics,
-        # but the PDF uses meters from the goal line — easier: report y*(pitch length)/100. We use 105 m.
-        avg_def_y_match = sub['avg_def_y'].dropna()
-        def_action_height = float(avg_def_y_match.mean()) * 1.05 if not avg_def_y_match.empty else np.nan
+        # Defensive action height (m): avg LONGITUDINAL location of defensive
+        # actions across matches × pitch length (105 m / Wyscout's 0-100 scale).
+        avg_def_x_match = sub['avg_def_x'].dropna()
+        def_action_height = float(avg_def_x_match.mean()) * 1.05 if not avg_def_x_match.empty else np.nan
 
         # Recovery line height (m)
-        avg_recovery_y_match = sub['avg_recovery_y'].dropna()
-        recovery_line_height = float(avg_recovery_y_match.mean()) * 1.05 if not avg_recovery_y_match.empty else np.nan
+        avg_recovery_x_match = sub['avg_recovery_x'].dropna()
+        recovery_line_height = float(avg_recovery_x_match.mean()) * 1.05 if not avg_recovery_x_match.empty else np.nan
 
         # Final-third recoveries %
         total_rec = float(sub['n_recovery'].sum())
