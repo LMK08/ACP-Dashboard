@@ -5877,15 +5877,19 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
         st.info(f"No matches found for {team_name} in the current stage / season.")
         return
 
-    cols = st.columns(2)
-    for i, dim_name in enumerate(SEASON_REPORT_DIMENSIONS.keys()):
-        with cols[i % 2]:
+    # Tabs instead of a 2-column grid: only one Plotly figure mounts at a
+    # time, eliminating the layout jitter caused by all 7 charts loading
+    # simultaneously inside an expander.
+    dim_names = list(SEASON_REPORT_DIMENSIONS.keys())
+    tabs = st.tabs(dim_names)
+    for tab, dim_name in zip(tabs, dim_names):
+        with tab:
             fig = render_dimension_dot_plot(team_metrics_df, team_name, dim_name)
             if fig is not None:
                 st.plotly_chart(
                     fig,
                     use_container_width=True,
-                    config={'displayModeBar': False},
+                    config={'displayModeBar': False, 'responsive': True},
                     key=f"sr_dim_{team_name}_{dim_name}",
                 )
 
