@@ -5412,9 +5412,61 @@ def _xpoints_from_xg(home_xg: float, away_xg: float, max_goals: int = 8) -> tupl
     return (h_xpts, a_xpts)
 
 
+def _load_wyscout_overlay(season_ids):
+    """Load Wyscout published per-match averages from team_advanced_stats
+    for the given seasons. Returns a DataFrame indexed by team name, or
+    None if Wyscout data is unavailable / matches no row.
+
+    Values in team_advanced_stats are **per-match averages** for the
+    season (e.g. shots=10.42 means 10.42 shots per match), which match the
+    season-report's expected scale (per-90 ≈ per-match)."""
+    df = load_team_advanced_stats()
+    if df is None or df.empty:
+        return None
+    if season_ids is not None:
+        sids = list(season_ids) if isinstance(season_ids, (list, tuple, set)) else [season_ids]
+        df = df[df['seasonId'].isin(sids)]
+    if df.empty:
+        return None
+    # For multi-season selections, average across seasons (each team plays
+    # ~26 matches per season — close to equal weighting).
+    agg = df.groupby('team_name').mean(numeric_only=True).reset_index()
+    return agg.set_index('team_name')
+
+
+# Map our season-report column → Wyscout's per-match column name.
+# Values in team_advanced_stats are per-match averages, so per-match and
+# per-90 columns map to the same Wyscout source.
+_WYSCOUT_DIRECT_OVERLAY = {
+    'PPDA':                  'ppda',
+    'ball_possession_pct':   'possession_percent',
+    'def_duels_won_pct':     'defensive_duels_won_pct',
+    'goals_per_match':       'goals',
+    'opp_goals_per_match':   'conceded_goals',
+    'xg_per_match':          'xg',
+    'opp_xg_per_match':      'xg_shot_against',
+    'goals_per90':           'goals',
+    'xg_per90':              'xg',
+    'opp_xg_per90':          'xg_shot_against',
+    'shots_per90':           'shots',
+    'opp_shots_per90':       'shots_against',
+    'passes_per90':          'passes',
+    'box_touches_per90':     'touch_in_box',
+}
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
+def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
+                                  use_wyscout=True, cache_key=None):
     """Build per-team aggregate metrics across all 7 season-report dimensions.
+
+    Priority for each metric:
+      1. Wyscout's published per-match value from team_advanced_stats
+         (only when use_wyscout=True and the team-season exists there).
+      2. Events-based formula matching Wyscout's documented method
+         (PPDA's press-zone definition, etc.) — used when use_wyscout is
+         off (e.g. stage filter active) or for metrics Wyscout doesn't
+         publish (recovery line height, counter-press recoveries, …).
 
     cache_key: an arbitrary string that uniquely identifies the
     (competition, season, stage) combination — used to scope Streamlit's
@@ -5726,7 +5778,37 @@ def compute_team_season_metrics(_events_df, _matches_df, cache_key=None):
             'goals_per_match': goals_per_match,
             'xg_per_match': xg_per_match,
         })
-    return pd.DataFrame(out_rows).set_index('team_name')
+    result = pd.DataFrame(out_rows).set_index('team_name')
+
+    # ── Overlay with Wyscout's published per-match values ──────────────
+    # When the user hasn't applied a stage filter (i.e. use_wyscout=True),
+    # take Wyscout's own season-aggregated numbers as the source of truth
+    # for any metric where they publish a direct match. Events-based
+    # computations stay as a fallback for stage-filtered views and for
+    # metrics Wyscout doesn't expose.
+    if use_wyscout:
+        wyscout = _load_wyscout_overlay(season_ids)
+        if wyscout is not None:
+            for team in result.index:
+                if team not in wyscout.index:
+                    continue
+                wrow = wyscout.loc[team]
+                # Direct one-to-one overlays.
+                for our_col, w_col in _WYSCOUT_DIRECT_OVERLAY.items():
+                    if w_col in wrow.index and our_col in result.columns:
+                        v = wrow[w_col]
+                        if pd.notna(v):
+                            result.loc[team, our_col] = float(v)
+                # Derived: xG per shot, opp xG per shot.
+                if 'shots' in wrow.index and 'xg' in wrow.index \
+                        and pd.notna(wrow['shots']) and float(wrow['shots']) > 0:
+                    result.loc[team, 'xg_per_shot'] = float(wrow['xg']) / float(wrow['shots'])
+                if 'shots_against' in wrow.index and 'xg_shot_against' in wrow.index \
+                        and pd.notna(wrow['shots_against']) and float(wrow['shots_against']) > 0:
+                    result.loc[team, 'opp_xg_per_shot'] = (
+                        float(wrow['xg_shot_against']) / float(wrow['shots_against'])
+                    )
+    return result
 
 
 def _fmt_metric_value(key: str, value) -> str:
@@ -5890,15 +5972,38 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
 
 
 def render_season_report_section(team_events_df, team_matches_df, team_name,
-                                   cache_key=None):
-    """Render the 7-dimension season report for one team."""
+                                   season_ids=None, stage=None, cache_key=None):
+    """Render the 7-dimension season report for one team.
+
+    Uses Wyscout's published per-match averages as the metric source when
+    no stage filter is active; falls back to events-based formulas
+    (Wyscout-aligned) otherwise."""
+    use_wyscout = stage in (STAGE_ALL, None)
     with st.spinner("Computing season-report metrics for every team…"):
+        # Normalise season_ids → tuple for stable cache key
+        sids_key = tuple(sorted(season_ids)) if isinstance(season_ids, (list, tuple, set)) \
+            else (int(season_ids),) if season_ids is not None else None
         team_metrics_df = compute_team_season_metrics(
-            team_events_df, team_matches_df, cache_key=cache_key,
+            team_events_df, team_matches_df,
+            season_ids=sids_key,
+            use_wyscout=use_wyscout,
+            cache_key=cache_key,
         )
     if team_metrics_df is None or team_metrics_df.empty:
         st.info("Not enough data to build the season report for this stage / season.")
         return
+    if use_wyscout:
+        st.caption(
+            "Metric source: **Wyscout team_advanced_stats** (season averages) "
+            "for every metric Wyscout publishes; events-based fallback for the rest. "
+            "Apply a stage filter to switch to events-only for that subset of matches."
+        )
+    else:
+        st.caption(
+            "Stage filter active — metrics computed from match events using "
+            "Wyscout-aligned formulas. Numbers may differ from Wyscout's "
+            "season-aggregated totals."
+        )
 
     if team_name not in team_metrics_df.index:
         st.info(f"No matches found for {team_name} in the current stage / season.")
@@ -6447,6 +6552,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             )
             render_season_report_section(
                 team_events_df, team_matches_df, selected_team_t,
+                season_ids=active_season_ids,
+                stage=selected_stage,
                 cache_key=_sr_cache_key,
             )
 
