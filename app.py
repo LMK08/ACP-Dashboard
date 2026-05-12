@@ -924,6 +924,148 @@ def season_selector(section_key, include_all_seasons=False, comp_ids=None):
     # Fallback
     return list(available_seasons.keys())[0] if available_seasons else CURRENT_SEASON_ID
 
+
+# ==============================================================================
+# 2C. STAGE DETECTION + FILTERING
+# ==============================================================================
+# Liga 3 has Regular (1st stage) + Promotion + Maintenance (combined N+S).
+# Campeonato has Regular (1st stage) + Promotion playoff.
+# Detection is dynamic by roundId: the largest round per competition-season is
+# the first stage. Remaining rounds are classified by team count (Liga 3) or
+# by being any non-first-stage round (Campeonato).
+
+STAGE_ALL = "All Stages"
+STAGE_REGULAR = "Regular (1st stage)"
+STAGE_PROMOTION = "Promotion (2nd stage)"
+STAGE_MAINTENANCE = "Maintenance"
+STAGE_PLAYOFF = "Promotion playoff"
+_STAGE_ORDER = {
+    STAGE_REGULAR: 0,
+    STAGE_PROMOTION: 1,
+    STAGE_PLAYOFF: 1,
+    STAGE_MAINTENANCE: 2,
+}
+
+
+@st.cache_data
+def compute_stage_map(matches_summary_df, comp_id, season_id):
+    """For a single (competition, season), return {roundId: stage_label}.
+
+    The first-stage round is the one with the most matches. Remaining rounds
+    are classified by competition and team count:
+      Liga 3 (43324): ≤ 9 teams → Promotion, more → Maintenance.
+      Campeonato (702): anything not first-stage → Promotion playoff.
+    """
+    if matches_summary_df is None or matches_summary_df.empty:
+        return {}
+    sub = matches_summary_df[
+        (matches_summary_df.get('competitionId') == comp_id)
+        & (matches_summary_df.get('seasonId') == season_id)
+    ]
+    if sub.empty or 'roundId' not in sub.columns:
+        return {}
+
+    counts = sub.groupby('roundId').size()
+    if len(counts) == 0:
+        return {}
+    first_stage = counts.idxmax()
+    out: dict = {int(first_stage): STAGE_REGULAR}
+
+    for rid in counts.index:
+        if rid == first_stage:
+            continue
+        rid_matches = sub[sub['roundId'] == rid]
+        teams = set(rid_matches['homeTeamName'].dropna().tolist()
+                    + rid_matches['awayTeamName'].dropna().tolist())
+        if comp_id == 43324:  # Liga 3
+            if len(teams) <= 9:
+                out[int(rid)] = STAGE_PROMOTION
+            else:
+                out[int(rid)] = STAGE_MAINTENANCE
+        elif comp_id == 702:  # Campeonato
+            out[int(rid)] = STAGE_PLAYOFF
+        else:
+            out[int(rid)] = f"Stage {rid}"
+    return out
+
+
+def _coerce_comp_season(comp_ids, season_ids):
+    """Normalise selection inputs into lists of ints."""
+    if comp_ids is None:
+        cids = []
+    elif isinstance(comp_ids, (list, tuple, set)):
+        cids = [int(c) for c in comp_ids if c is not None]
+    else:
+        cids = [int(comp_ids)]
+    if season_ids is None:
+        sids = []
+    elif isinstance(season_ids, (list, tuple, set)):
+        sids = [int(s) for s in season_ids if s is not None]
+    else:
+        sids = [int(season_ids)]
+    return cids, sids
+
+
+def get_available_stages(matches_summary_df, comp_ids, season_ids):
+    """Return an ordered list of stage labels available for the current
+    competition/season selection. Used to populate the stage selector."""
+    cids, sids = _coerce_comp_season(comp_ids, season_ids)
+    seen: list[str] = []
+    for cid in cids:
+        for sid in sids:
+            stage_map = compute_stage_map(matches_summary_df, cid, sid)
+            for lbl in stage_map.values():
+                if lbl not in seen:
+                    seen.append(lbl)
+    seen.sort(key=lambda s: _STAGE_ORDER.get(s, 99))
+    return seen
+
+
+def stage_selector(section_key, matches_summary_df, comp_ids, season_ids):
+    """Sidebar stage selector. Returns the selected stage label, or
+    STAGE_ALL when there's only one stage available (selector hidden)."""
+    stages = get_available_stages(matches_summary_df, comp_ids, season_ids)
+    if len(stages) <= 1:
+        return STAGE_ALL
+    options = [STAGE_ALL] + stages
+    return st.sidebar.selectbox(
+        "Stage:",
+        options,
+        index=0,
+        key=f"{section_key}_stage_selector",
+    )
+
+
+def filter_by_stage(events_df, matches_df, matches_summary_df,
+                     comp_ids, season_ids, stage_label):
+    """Filter events and matches to the chosen stage.
+
+    Returns (events_df, matches_df) unchanged when STAGE_ALL is selected.
+    For a specific stage, aggregates target roundIds across every
+    (comp_id, season_id) pair in the selection."""
+    if stage_label in (STAGE_ALL, None) or events_df is None:
+        return events_df, matches_df
+
+    cids, sids = _coerce_comp_season(comp_ids, season_ids)
+    target_rounds: set = set()
+    for cid in cids:
+        for sid in sids:
+            stage_map = compute_stage_map(matches_summary_df, cid, sid)
+            for rid, lbl in stage_map.items():
+                if lbl == stage_label:
+                    target_rounds.add(int(rid))
+    if not target_rounds:
+        return events_df, matches_df
+
+    new_matches = matches_df[matches_df['roundId'].astype('Int64').isin(target_rounds)].copy() \
+        if 'roundId' in matches_df.columns else matches_df
+    if 'matchId' in events_df.columns and not new_matches.empty:
+        new_events = events_df[events_df['matchId'].isin(new_matches['matchId'])].copy()
+    else:
+        new_events = events_df
+    return new_events, new_matches
+
+
 def _calculate_age(birth_date):
     """Helper function to calculate age from birth_date string."""
     if not birth_date or pd.isna(birth_date):
@@ -5538,14 +5680,36 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_season_id = season_selector("team_analysis", comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
         season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown") if isinstance(selected_season_id, int) else "Unknown"
+        # Stage selector (Regular / Promotion / Maintenance / Promotion playoff)
+        selected_stage = stage_selector(
+            "team_analysis",
+            matches_summary_df,
+            selected_comp_ids,
+            active_season_ids,
+        )
         team_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
         team_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
+        # Apply stage filter — narrows the working set to the chosen stage's matches.
+        team_events_df, team_matches_df = filter_by_stage(
+            team_events_df, team_matches_df, matches_summary_df,
+            selected_comp_ids, active_season_ids, selected_stage,
+        )
         team_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
         team_season_stats = get_season_team_stats(season_team_stats, active_season_ids, comp_ids=selected_comp_ids)
 
         all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
         selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
-        st.header(f"Team Report: {selected_team_t}")
+        _stage_suffix = "" if selected_stage in (STAGE_ALL, None) else f" — {selected_stage}"
+        st.header(f"Team Report: {selected_team_t}{_stage_suffix}")
+        if selected_stage not in (STAGE_ALL, None):
+            _n_team_matches = team_matches_df[
+                (team_matches_df['homeTeamName'] == selected_team_t)
+                | (team_matches_df['awayTeamName'] == selected_team_t)
+            ].shape[0]
+            st.caption(
+                f"Filtered to **{selected_stage}** — {len(team_matches_df)} matches in scope, "
+                f"{_n_team_matches} for {selected_team_t}."
+            )
 
         # Load player details for roster table
         player_details_df = load_player_details()
