@@ -5485,21 +5485,30 @@ def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
         s = row
         return isinstance(s, (list, np.ndarray)) and tag in s
 
-    has_recovery        = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
-                              lambda x: isinstance(x, (list, np.ndarray)) and 'recovery' in x)
-    has_counter_press   = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
-                              lambda x: isinstance(x, (list, np.ndarray)) and 'counterpressing_recovery' in x)
-    has_loss            = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
-                              lambda x: isinstance(x, (list, np.ndarray)) and 'loss' in x)
-    has_long_pass       = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
-                              lambda x: isinstance(x, (list, np.ndarray)) and 'long_pass' in x)
-    has_progressive_pass= ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
-                              lambda x: isinstance(x, (list, np.ndarray)) and 'progressive_pass' in x)
+    sec = ev.get('type.secondary', pd.Series([[]]*len(ev)))
+    def _tag(name):
+        return sec.apply(lambda x: isinstance(x, (list, np.ndarray)) and name in x)
+    has_recovery         = _tag('recovery')
+    has_counter_press    = _tag('counterpressing_recovery')
+    has_loss             = _tag('loss')
+    has_long_pass        = _tag('long_pass')
+    has_progressive_pass = _tag('progressive_pass')
+    has_defensive_duel   = _tag('defensive_duel')
+    has_sliding_tackle   = _tag('sliding_tackle')
 
     tp = ev['type.primary']
     is_pass        = tp == 'pass'
     is_shot        = tp == 'shot'  # excludes penalty (different type.primary)
-    is_def_action  = tp.isin(['interception', 'clearance']) | (tp == 'duel') | (tp == 'tackle')
+    # Defensive actions (Wyscout-aligned): interceptions + clearances +
+    # defensive duels + sliding tackles. Previously included ALL `duel`
+    # events (offensive + aerial + loose-ball duels too) which inflated
+    # the denominator and crashed PPDA to ~1.3.
+    is_def_action  = (
+        (tp == 'interception')
+        | (tp == 'clearance')
+        | has_defensive_duel
+        | has_sliding_tackle
+    )
     is_foul        = tp == 'infraction'
     is_goal        = ev.get('shot.isGoal', False).fillna(False).astype(bool)
     is_sot         = ev.get('shot.onTarget', False).fillna(False).astype(bool) & is_shot
@@ -5523,10 +5532,7 @@ def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
     is_press_pass = is_pass & (loc_x <= 60)         # used by opponent's view
     is_press_def  = is_def_action & (loc_x >= 40)   # used by our view
 
-    # Pre-compute defensive-duel won flag so the agg below avoids a
-    # row-level lambda that can break if columns are missing.
-    has_def_duel = ev.get('type.secondary', pd.Series([[]]*len(ev))).apply(
-        lambda x: isinstance(x, (list, np.ndarray)) and 'defensive_duel' in x)
+    # Defensive-duel won flag (reuses has_defensive_duel from above).
     _rec_pos = ev.get('groundDuel.recoveredPossession',
                        pd.Series(False, index=ev.index)).fillna(False).astype(bool) \
         if 'groundDuel.recoveredPossession' in ev.columns \
@@ -5535,7 +5541,7 @@ def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
                         pd.Series(False, index=ev.index)).fillna(False).astype(bool) \
         if 'groundDuel.stoppedProgress' in ev.columns \
         else pd.Series(False, index=ev.index)
-    has_def_duel_won = has_def_duel & (_rec_pos | _stp_prog)
+    has_def_duel_won = has_defensive_duel & (_rec_pos | _stp_prog)
 
     # Pre-compute conditional values for axis-filtered means so the agg
     # can use plain 'mean' rather than fragile lambdas.
@@ -5551,7 +5557,7 @@ def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
         _is_high_opp=is_high_opp,
         _is_final_third_recovery=has_recovery & in_final_third,
         _is_press_pass=is_press_pass, _is_press_def=is_press_def,
-        _is_def_duel=has_def_duel, _is_def_duel_won=has_def_duel_won,
+        _is_def_duel=has_defensive_duel, _is_def_duel_won=has_def_duel_won,
         _pass_acc=pass_acc,
         _def_x_for_def=def_x_for_def_only,
         _rec_x_for_rec=recovery_x_for_rec_only,
