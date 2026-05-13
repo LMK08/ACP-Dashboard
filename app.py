@@ -3723,24 +3723,36 @@ def load_team_advanced_stats():
         return None
 
 @st.cache_data
-def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season_id=None):
+def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season_id=None,
+                                       force_events=False):
     """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars.
-    Uses Wyscout team advanced stats if available, otherwise falls back to event-based calculation.
-    season_id filters the Wyscout stats to compare within a single season."""
+
+    Source priority:
+      1. Wyscout team advanced stats — when force_events is False (default).
+      2. Event-based calculation against the (possibly stage-filtered)
+         season_events_df — when force_events is True or Wyscout data
+         doesn't cover enough teams.
+
+    Pass force_events=True when a stage filter is active so the radars
+    reflect that subset of matches; Wyscout's table is season-aggregated
+    and would otherwise leak full-season numbers into a stage view."""
 
     # Count how many teams are in the events data for comparison
     event_teams = set()
     if 'team.name' in season_events_df.columns:
         event_teams = set(season_events_df['team.name'].dropna().unique())
 
-    wyscout_stats = load_team_advanced_stats()
-    if wyscout_stats is not None:
-        raw_df, pct_df = _build_radars_from_wyscout(wyscout_stats, season_id=season_id)
-        # Only use Wyscout stats if they cover at least half the teams in the events
-        if not raw_df.empty and (not event_teams or len(raw_df) >= len(event_teams) * 0.5):
-            print(f"Using Wyscout team advanced stats for radars ({len(raw_df)} teams)...")
-            return raw_df, pct_df
-        print(f"Wyscout stats insufficient ({len(raw_df)} of {len(event_teams)} teams), falling back to events...")
+    if not force_events:
+        wyscout_stats = load_team_advanced_stats()
+        if wyscout_stats is not None:
+            raw_df, pct_df = _build_radars_from_wyscout(wyscout_stats, season_id=season_id)
+            # Only use Wyscout stats if they cover at least half the teams in the events
+            if not raw_df.empty and (not event_teams or len(raw_df) >= len(event_teams) * 0.5):
+                print(f"Using Wyscout team advanced stats for radars ({len(raw_df)} teams)...")
+                return raw_df, pct_df
+            print(f"Wyscout stats insufficient ({len(raw_df)} of {len(event_teams)} teams), falling back to events...")
+    else:
+        print("Stage filter active — forcing events-based radar stats")
 
     print("Calculating radar stats from events...")
     return _calculate_radars_from_events(season_events_df, matches_summary_df)
@@ -6454,7 +6466,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Load player details for roster table
         player_details_df = load_player_details()
 
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(team_events_df, team_matches_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
+        # When a stage filter is active, force events-based radars so they
+        # reflect only the matches in that stage (Wyscout's table is
+        # season-aggregated and would otherwise leak full-season numbers).
+        _stage_active = selected_stage not in (STAGE_ALL, None)
+        _radar_cache_key = (active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
+        if _stage_active:
+            _radar_cache_key = f"{_radar_cache_key}_{selected_stage}"
+        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(
+            team_events_df, team_matches_df,
+            season_id=_radar_cache_key,
+            force_events=_stage_active,
+        )
 
         # Compute set piece radar data (all rate metrics — higher = better, no inversions)
         sp_df_raw = None
@@ -6661,7 +6684,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- Rolling xG History ---
         with st.expander("Rolling xG (5-Game Average)", expanded=False):
             try:
-                rolling_xg_data_for_plot = calculate_xg_history_data(raw_events_df, matches_summary_df)
+                # Use the stage-filtered events/matches so the rolling
+                # series only covers matches in the active stage.
+                rolling_xg_data_for_plot = calculate_xg_history_data(team_events_df, team_matches_df)
                 if not rolling_xg_data_for_plot.empty:
                     fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
                     st.pyplot(fig_rolling_xg, use_container_width=True)
@@ -6685,6 +6710,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.subheader("Season-Long Stats")
         if selected_team_t in team_season_stats and 'corners' in team_season_stats[selected_team_t]:
             st.markdown("**Corner Kick Summary**")
+            if selected_stage not in (STAGE_ALL, None):
+                st.caption(
+                    f"⚠️ Showing full-season aggregates; this table is pre-computed "
+                    f"and doesn't filter to the **{selected_stage}** stage."
+                )
             st.dataframe(team_season_stats[selected_team_t]['corners'])
         else:
             st.write("No season-long stats available for this team.")
