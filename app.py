@@ -3495,10 +3495,22 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
         out_dir = output_path
         os.makedirs(out_dir, exist_ok=True)
         seen_fnames: set = set()
+        # Pre-scan existing PNGs so we can resume an interrupted render:
+        # the plan ordering is deterministic, so any PNG already on disk
+        # corresponds to a player we'd otherwise be about to re-render.
+        # We compute the same fname during the loop and short-circuit
+        # the expensive matplotlib work for any that already exist.
+        try:
+            existing_pngs = {f for f in os.listdir(out_dir) if f.endswith('.png')}
+        except Exception:
+            existing_pngs = set()
+        resumed_count = 0
     else:
         # In-memory ZIP path — used only by callers that want bytes
         # back directly (no streaming to disk).
         seen_fnames = set()
+        existing_pngs = set()
+        resumed_count = 0
         zf_mem = zipfile.ZipFile(zip_target, 'w', zipfile.ZIP_DEFLATED, compresslevel=1)
 
     try:
@@ -3508,6 +3520,29 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
             try:
                 bucket_rank[bucket_label] = bucket_rank.get(bucket_label, 0) + 1
                 rank = bucket_rank[bucket_label]
+
+                # Compute the target filename BEFORE doing any expensive
+                # rendering, so resume can short-circuit instantly.
+                safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
+                safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
+                # Filename prefix encodes bucket + rank within bucket so the
+                # final ZIP sorts by position group then score-desc.
+                # e.g. 1_GK_01_Júlio_Neiva__Shot_Stopper.png
+                fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}.png"
+                if fname in seen_fnames:
+                    pid = player_row.get('playerId', i)
+                    fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}__{pid}.png"
+
+                # Resume short-circuit: PNG already on disk from a prior
+                # interrupted run with the same filter set. Skip the
+                # expensive matplotlib work but still register the
+                # bucket rank + seen name so downstream collisions and
+                # bucket ranks line up with a fresh run.
+                if output_path is not None and fname in existing_pngs:
+                    seen_fnames.add(fname)
+                    rendered += 1
+                    resumed_count += 1
+                    continue
 
                 # Population for distributions: same position group.
                 pop_pos_group = POSITION_GROUPS.get(best_role, [primary_pos])
@@ -3535,16 +3570,6 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                     season_label=season_label,
                     radar_mode=radar_mode,
                 )
-
-                safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
-                safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
-                # Filename prefix encodes bucket + rank within bucket so the
-                # final ZIP sorts by position group then score-desc.
-                # e.g. 1_GK_01_Júlio_Neiva__Shot_Stopper.png
-                fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}.png"
-                if fname in seen_fnames:
-                    pid = player_row.get('playerId', i)
-                    fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}__{pid}.png"
 
                 if output_path is not None:
                     # Write PNG directly to disk — fully committed
@@ -3577,7 +3602,13 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
 
             if progress_cb is not None:
                 try:
-                    progress_cb(i + 1, n, player_name)
+                    progress_cb(i + 1, n, player_name, resumed_count)
+                except TypeError:
+                    # Back-compat: callers with the old 3-arg signature.
+                    try:
+                        progress_cb(i + 1, n, player_name)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
     finally:
@@ -3589,9 +3620,12 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
             except Exception:
                 pass
 
+    # Attach resume metadata as an attribute on the returned tuple so
+    # the caller can show "resumed X / rendered Y new" status without
+    # changing the return signature.
     if output_path is not None:
-        return output_path, rendered, skipped
-    return zip_target.getvalue(), rendered, skipped
+        return output_path, rendered, skipped, resumed_count
+    return zip_target.getvalue(), rendered, skipped, resumed_count
 
 
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
@@ -8371,8 +8405,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _n_total = len(_export_df)
                     _progress = st.progress(0.0, text=f"Rendering 0/{_n_total} radars…")
 
-                    def _on_progress(i, n, name):
-                        _progress.progress(i / max(n, 1), text=f"Rendering {i}/{n}: {name}")
+                    def _on_progress(i, n, name, resumed=0):
+                        if resumed:
+                            _progress.progress(
+                                i / max(n, 1),
+                                text=f"Rendering {i}/{n} (resumed {resumed}): {name}"
+                            )
+                        else:
+                            _progress.progress(
+                                i / max(n, 1),
+                                text=f"Rendering {i}/{n}: {name}"
+                            )
 
                     _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
                     _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
@@ -8403,7 +8446,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                    f"{type(_sentinel_exc).__name__}: {_sentinel_exc}")
 
                     try:
-                        _result_path, _rendered, _skipped = bulk_export_radars(
+                        _result_path, _rendered, _skipped, _resumed = bulk_export_radars(
                             _export_df,
                             player_stats_with_scores_df,
                             radar_mode=_radar_mode,
@@ -8417,6 +8460,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                     'status': 'complete',
                                     'rendered': _rendered,
                                     'skipped': _skipped,
+                                    'resumed': _resumed,
                                     'label': f"{_season_lbl}__{_radar_mode}",
                                     'season': _season_lbl,
                                     'mode': _radar_mode,
@@ -8428,10 +8472,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                        f"write failed: {type(_meta_exc).__name__}: "
                                        f"{_meta_exc}")
                         _progress.empty()
+                        _new_count = _rendered - _resumed
+                        _resume_note = (f" (resumed {_resumed}, rendered {_new_count} new)"
+                                         if _resumed else "")
                         st.success(
-                            f"Rendered {_rendered} radars to disk"
-                            + (f" ({len(_skipped)} skipped)" if _skipped else "")
-                            + ". Use the Download button below."
+                            f"Rendered {_rendered} radars to disk{_resume_note}"
+                            + (f" · {len(_skipped)} skipped" if _skipped else "")
+                            + ". Use the Prepare ZIP button below."
                         )
                     except Exception as _gen_exc:
                         _progress.empty()
