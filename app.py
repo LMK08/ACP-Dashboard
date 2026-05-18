@@ -8383,7 +8383,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _progress.empty()
                         import traceback as _tb
                         st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
-                        with st.expander("Traceback (for debugging)"):
+                        # popover instead of expander — Streamlit forbids
+                        # nesting expanders inside expanders.
+                        with st.popover("Traceback (for debugging)", use_container_width=True):
                             st.code(_tb.format_exc())
 
             # --- Cached ZIPs section — always shown, regardless of state. ---
@@ -8449,8 +8451,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         if len(_sk) > 50:
                             st.caption(f"…and {len(_sk) - 50} more")
 
-            # --- Diagnostics expander: surfaces the actual on-disk state ---
-            with st.expander("🔍 Diagnostics", expanded=False):
+            # --- Diagnostics: surfaces the actual on-disk state ---
+            # popover instead of expander — Streamlit forbids nested expanders.
+            with st.popover("🔍 Diagnostics", use_container_width=True):
                 st.caption(f"Cache dir: `{_BULK_CACHE_DIR}`")
                 if _BULK_CACHE_ERROR:
                     st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
