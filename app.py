@@ -3396,9 +3396,9 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                         season_label='All Seasons', progress_cb=None,
                         output_path=None):
-    """Render one radar PNG per player in `export_df` and stream them into
-    a ZIP. Each player's radar uses their best-fit role template against the
-    same-position-group population in `full_pop_df`.
+    """Render one radar PNG per player in `export_df`. Each player's
+    radar uses their best-fit role template against the same-position-
+    group population in `full_pop_df`.
 
     Args:
         export_df: DataFrame of players to export (must have playerId,
@@ -3410,16 +3410,18 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
         radar_mode: 'percentile' or 'raw'.
         season_label: string passed through to the chart for the header.
         progress_cb: optional callable(i, n, name) for progress updates.
-        output_path: if given, stream the ZIP to this filesystem path
-            instead of building it in memory. This is the resilient path —
-            partial progress survives container OOM-kills, and the final
-            file lives on disk regardless of session_state. When omitted,
-            falls back to the legacy in-memory path for callers that
-            expect bytes returned.
+        output_path: if given, treat as a DIRECTORY and write each PNG
+            individually as it's rendered. This is the resilient path —
+            every completed radar is committed before the next one
+            starts, so a process kill leaves an immediately-usable set
+            of PNGs on disk. The caller is responsible for ZIPing the
+            directory at download time. When omitted, falls back to
+            the legacy in-memory ZIP-bytes path.
 
     Returns:
-        tuple: (result, rendered, skipped) where result is either the ZIP
-        bytes (legacy path) or the output_path string (streaming path).
+        tuple: (result, rendered, skipped) where result is either the
+        output_path directory (when output_path given) or the
+        in-memory ZIP bytes (legacy path).
     """
     import io
     import re
@@ -3445,12 +3447,9 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
         'CF': ('7_ST', 7), 'SS': ('7_ST', 7),
     }
 
-    # Pick the ZIP destination. Streaming to disk is the resilient path;
-    # in-memory is the legacy fallback for callers that want bytes.
-    if output_path is not None:
-        zip_target = output_path
-    else:
-        zip_target = io.BytesIO()
+    # In-memory ZIP target — only used when caller wants bytes back
+    # directly (no streaming to disk).
+    zip_target = io.BytesIO() if output_path is None else None
     rendered = 0
     skipped = []
 
@@ -3486,10 +3485,23 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
     n = len(plan)
     bucket_rank: dict = {}  # bucket_label -> running rank counter
 
-    # ZIP_DEFLATED with low compresslevel (1) instead of default 6 — PNGs
-    # are already compressed so deeper levels burn CPU + memory for almost
-    # zero size benefit, and on HF the CPU/memory cost is what kills us.
-    with zipfile.ZipFile(zip_target, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+    # If a directory output is requested, render each PNG as an individual
+    # file on disk. That avoids the ZIP-format crash-recovery problem
+    # entirely: there's no central directory that can be truncated when
+    # the process is killed — every successfully rendered radar is its
+    # own committed PNG. The caller is responsible for ZIPing the
+    # directory at download time.
+    if output_path is not None:
+        out_dir = output_path
+        os.makedirs(out_dir, exist_ok=True)
+        seen_fnames: set = set()
+    else:
+        # In-memory ZIP path — used only by callers that want bytes
+        # back directly (no streaming to disk).
+        seen_fnames = set()
+        zf_mem = zipfile.ZipFile(zip_target, 'w', zipfile.ZIP_DEFLATED, compresslevel=1)
+
+    try:
         for i, (bucket_label, _bucket_order, neg_score, player_row,
                  primary_pos, best_role, eligible_roles) in enumerate(plan):
             player_name = str(player_row.get('playerName', f'player_{i}'))
@@ -3524,29 +3536,37 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                     radar_mode=radar_mode,
                 )
 
-                img_buf = io.BytesIO()
-                fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
+                safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
+                safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
+                # Filename prefix encodes bucket + rank within bucket so the
+                # final ZIP sorts by position group then score-desc.
+                # e.g. 1_GK_01_Júlio_Neiva__Shot_Stopper.png
+                fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}.png"
+                if fname in seen_fnames:
+                    pid = player_row.get('playerId', i)
+                    fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}__{pid}.png"
+
+                if output_path is not None:
+                    # Write PNG directly to disk — fully committed
+                    # before we move to the next player, so crash here
+                    # leaves a valid PNG on disk and a recoverable run.
+                    png_path = os.path.join(out_dir, fname)
+                    fig.savefig(png_path, format='png', bbox_inches='tight', dpi=100)
+                else:
+                    img_buf = io.BytesIO()
+                    fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
+                    zf_mem.writestr(fname, img_buf.getvalue())
+
                 plt.close(fig)
-                # Aggressive cleanup — matplotlib leaks state across savefig
-                # calls and the bulk export builds dozens of figures in a row.
-                # On HF Spaces a slow accumulation will OOM-kill the process
-                # part-way through, killing the in-memory ZIP and the download
-                # button along with it.
+                # Aggressive cleanup — matplotlib leaks state across
+                # savefig calls and the bulk export builds dozens of
+                # figures in a row. On HF Spaces a slow accumulation
+                # OOM-kills the process partway through.
                 plt.close('all')
                 if (i + 1) % 10 == 0:
                     gc.collect()
 
-                safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
-                safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
-                # Filename prefix encodes bucket + rank within bucket so the
-                # ZIP listing sorts by position group then score-desc.
-                # e.g. 1_GK_01_Júlio_Neiva__Shot_Stopper.png
-                fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}.png"
-                # Avoid filename collisions for repeated names
-                if fname in zf.namelist():
-                    pid = player_row.get('playerId', i)
-                    fname = f"{bucket_label}_{rank:02d}_{safe_name}__{safe_role}__{pid}.png"
-                zf.writestr(fname, img_buf.getvalue())
+                seen_fnames.add(fname)
                 rendered += 1
             except Exception as exc:
                 skipped.append((player_name, f'render failed: {exc}'))
@@ -3560,9 +3580,15 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                     progress_cb(i + 1, n, player_name)
                 except Exception:
                     pass
+    finally:
+        # Close the in-memory ZIP cleanly. Directory output has no
+        # finalization step — each PNG already committed.
+        if output_path is None:
+            try:
+                zf_mem.close()
+            except Exception:
+                pass
 
-    # Streaming path: return the on-disk path; caller reads bytes lazily.
-    # Legacy path: return the in-memory bytes.
     if output_path is not None:
         return output_path, rendered, skipped
     return zip_target.getvalue(), rendered, skipped
@@ -8203,17 +8229,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- Bulk Radar Export ---
         st.sidebar.markdown("---")
-        # Disk-streamed ZIPs — bytes never live entirely in memory and the
-        # file on disk is the source of truth. The sidebar lists EVERY
-        # .zip file in the cache directory (even incomplete ones from
-        # crashed runs) so a download is never hidden by failed metadata.
-        import os as _os, time as _time, pickle as _pickle, hashlib as _hashlib, json as _json
+        # Per-radar PNG files in a render directory — each completed
+        # radar is independently committed to disk, so a kill mid-render
+        # leaves a directory of valid PNGs the user can still download
+        # as a ZIP. The ZIP is built lazily at download time, never
+        # streamed/written during render → no central-directory
+        # truncation problem.
+        import os as _os, io as _io, time as _time, pickle as _pickle
+        import hashlib as _hashlib, json as _json, zipfile as _zipfile
         _BULK_CACHE_DIR = "/tmp/dashboard_bulk_export"
         _BULK_CACHE_ERROR = None
         try:
             _os.makedirs(_BULK_CACHE_DIR, exist_ok=True)
-            # Probe writability so we know early whether the disk-cache
-            # strategy is viable in this runtime.
             _probe = _os.path.join(_BULK_CACHE_DIR, '.writable_probe')
             with open(_probe, 'w') as _pf:
                 _pf.write('ok')
@@ -8230,31 +8257,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             }, sort_keys=True)
             return _hashlib.md5(payload.encode("utf-8")).hexdigest()[:12]
 
-        def _bulk_cache_paths(key):
-            return (_os.path.join(_BULK_CACHE_DIR, f"radars__{key}.zip"),
-                    _os.path.join(_BULK_CACHE_DIR, f"radars__{key}.meta.pkl"))
+        def _bulk_render_dir(key):
+            return _os.path.join(_BULK_CACHE_DIR, f"radars__{key}")
 
-        def _list_cached_zips():
-            """Return one entry per .zip file in the cache dir, regardless
-            of whether a .meta.pkl exists. Missing metadata is filled in
-            with a placeholder dict so the download is never hidden."""
+        def _bulk_meta_path(key):
+            return _os.path.join(_bulk_render_dir(key), 'meta.pkl')
+
+        def _list_cached_renders():
+            """Return one entry per render directory under the cache
+            dir, regardless of meta state. Each entry surfaces the PNG
+            count, total bytes on disk, and last-modified time so
+            partial/crashed runs are still visible and downloadable."""
             entries = []
             try:
                 names = _os.listdir(_BULK_CACHE_DIR)
-            except FileNotFoundError:
-                return entries
-            except Exception:
+            except (FileNotFoundError, Exception):
                 return entries
             for name in names:
-                if not name.endswith('.zip'):
+                full = _os.path.join(_BULK_CACHE_DIR, name)
+                if not _os.path.isdir(full):
                     continue
-                zip_path = _os.path.join(_BULK_CACHE_DIR, name)
-                meta_path = zip_path[:-4] + '.meta.pkl'
                 try:
-                    size = _os.path.getsize(zip_path)
-                    mtime = _os.path.getmtime(zip_path)
+                    pngs = [f for f in _os.listdir(full) if f.endswith('.png')]
                 except Exception:
                     continue
+                if not pngs:
+                    continue
+                meta_path = _os.path.join(full, 'meta.pkl')
                 meta = None
                 if _os.path.exists(meta_path):
                     try:
@@ -8263,11 +8292,38 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     except Exception:
                         meta = None
                 if meta is None:
-                    meta = {'status': 'incomplete', 'label': name[:-4]}
-                entries.append({'path': zip_path, 'meta': meta,
-                                'mtime': mtime, 'size': size})
+                    meta = {'status': 'incomplete', 'label': name}
+                try:
+                    total_bytes = sum(_os.path.getsize(_os.path.join(full, f))
+                                       for f in pngs)
+                    mtime = max((_os.path.getmtime(_os.path.join(full, f))
+                                  for f in pngs), default=0)
+                except Exception:
+                    total_bytes, mtime = 0, 0
+                entries.append({
+                    'path': full,
+                    'meta': meta,
+                    'mtime': mtime,
+                    'size': total_bytes,
+                    'png_count': len(pngs),
+                })
             entries.sort(key=lambda e: e['mtime'], reverse=True)
             return entries
+
+        def _build_zip_from_dir(render_dir):
+            """Build a ZIP byte-string on the fly from every PNG in the
+            render directory. Memory cost is proportional to ZIP size at
+            click time only — not held during rendering."""
+            buf = _io.BytesIO()
+            with _zipfile.ZipFile(buf, 'w', _zipfile.ZIP_DEFLATED,
+                                   compresslevel=1) as _zf:
+                for fn in sorted(_os.listdir(render_dir)):
+                    if not fn.endswith('.png'):
+                        continue
+                    _fp = _os.path.join(render_dir, fn)
+                    with open(_fp, 'rb') as _ff:
+                        _zf.writestr(fn, _ff.read())
+            return buf.getvalue()
 
         # Always keep the expander open on the Player Analysis page so the
         # Cached ZIPs section, debug info, and any errors are unmissable.
@@ -8321,13 +8377,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
                     _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
 
-                    # Stream ZIP straight to disk via output_path. Write a
-                    # sentinel meta.pkl FIRST so even crashed/killed runs
-                    # show up in the Cached ZIPs list — the user can then
-                    # download whatever partial bytes did make it to disk.
+                    # Write each PNG into a per-render directory; the
+                    # download ZIP is built lazily at click time. Sentinel
+                    # meta.pkl is written first so even crashed runs
+                    # appear in the Cached list.
                     _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
-                    _zip_path, _meta_path = _bulk_cache_paths(_cache_key)
+                    _render_dir = _bulk_render_dir(_cache_key)
+                    _meta_path = _bulk_meta_path(_cache_key)
                     try:
+                        _os.makedirs(_render_dir, exist_ok=True)
                         with open(_meta_path, 'wb') as _f:
                             _pickle.dump({
                                 'status': 'running',
@@ -8351,9 +8409,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             radar_mode=_radar_mode,
                             season_label=_season_lbl,
                             progress_cb=_on_progress,
-                            output_path=_zip_path,
+                            output_path=_render_dir,
                         )
-                        # Replace sentinel with completion metadata.
                         try:
                             with open(_meta_path, 'wb') as _f:
                                 _pickle.dump({
@@ -8367,42 +8424,37 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                     'min_mins': int(_bulk_min_mins),
                                 }, _f)
                         except Exception as _meta_exc:
-                            st.warning(f"⚠️ ZIP rendered but completion-meta "
+                            st.warning(f"⚠️ Render finished but completion-meta "
                                        f"write failed: {type(_meta_exc).__name__}: "
                                        f"{_meta_exc}")
                         _progress.empty()
-                        try:
-                            _final_mb = _os.path.getsize(_zip_path) / (1024*1024)
-                        except Exception:
-                            _final_mb = 0.0
                         st.success(
-                            f"Rendered {_rendered} radars · {_final_mb:.1f} MB"
+                            f"Rendered {_rendered} radars to disk"
                             + (f" ({len(_skipped)} skipped)" if _skipped else "")
+                            + ". Use the Download button below."
                         )
                     except Exception as _gen_exc:
                         _progress.empty()
                         import traceback as _tb
                         st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
-                        # popover instead of expander — Streamlit forbids
-                        # nesting expanders inside expanders.
                         with st.popover("Traceback (for debugging)", use_container_width=True):
                             st.code(_tb.format_exc())
 
-            # --- Cached ZIPs section — always shown, regardless of state. ---
+            # --- Cached Renders section — always shown. ---
             st.markdown("---")
-            _cached = _list_cached_zips()
+            _cached = _list_cached_renders()
             if _BULK_CACHE_ERROR:
                 st.error(f"⚠️ Cache directory unusable: {_BULK_CACHE_ERROR}. "
-                         f"Generated ZIPs will not survive the page render. "
+                         f"Generated renders will not survive the page render. "
                          f"This usually means /tmp/ is not writable in this runtime.")
             if not _cached:
-                st.caption("💾 No cached ZIPs yet. Run Generate ZIP to create one.")
+                st.caption("💾 No cached renders yet. Run Generate ZIP to create one.")
             else:
-                st.caption(f"💾 Cached ZIPs ({len(_cached)})")
+                st.caption(f"💾 Cached renders ({len(_cached)})")
             _now = _time.time()
             for _idx, _entry in enumerate(_cached):
                 _meta = _entry['meta']
-                _zp = _entry['path']
+                _rd = _entry['path']
                 _age = _now - _entry['mtime']
                 _age_str = (f"{int(_age)}s ago" if _age < 60 else
                             f"{int(_age/60)} min ago" if _age < 3600 else
@@ -8410,39 +8462,51 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             f"{int(_age/86400)} d ago")
                 _size_mb = _entry['size'] / (1024 * 1024)
                 _status = _meta.get('status', 'complete')
-                _n_rendered = _meta.get('rendered', '?')
+                _png_count = _entry['png_count']
                 _season = _meta.get('season', '?')
                 _mode = _meta.get('mode', '?')
                 _mm = _meta.get('min_mins', '?')
                 _ngroups = len(_meta.get('groups', []) or [])
                 _badge = ""
                 if _status == 'running':
-                    _badge = " · 🟡 in progress / interrupted"
+                    _badge = " · 🟡 interrupted (partial download still works)"
                 elif _status == 'incomplete':
-                    _badge = " · 🟠 metadata missing (download may still work)"
+                    _badge = " · 🟠 metadata missing (download still works)"
                 st.markdown(
                     f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min{_badge}  \n"
-                    f"<span style='color:#888;font-size:0.85em'>{_n_rendered} radars · "
-                    f"{_size_mb:.1f} MB · {_age_str}</span>",
+                    f"<span style='color:#888;font-size:0.85em'>{_png_count} radars · "
+                    f"{_size_mb:.1f} MB on disk · {_age_str}</span>",
                     unsafe_allow_html=True,
                 )
-                # Read bytes from disk just-in-time so st.download_button
-                # always serves the current on-disk file. Even partial
-                # ZIPs are downloadable — they unzip whatever entries
-                # made it to disk before the process died.
-                try:
-                    with open(_zp, 'rb') as _f:
-                        _zip_bytes = _f.read()
+                # Build ZIP lazily from the directory contents. This is
+                # the moment we pay the in-memory cost for the ZIP, not
+                # during render. Even if the render was interrupted,
+                # every PNG that made it to disk gets bundled cleanly.
+                _zip_btn_key = f"bulk_export_dl_{_idx}"
+                _prep_key = f"bulk_export_prep_{_idx}"
+                _zip_bytes_key = f"bulk_export_bytes_{_idx}"
+                # Two-stage UX: first click prepares the ZIP, second
+                # serves the download. Keeps a 300-400 MB ZIP from
+                # being built on every script rerun.
+                if _zip_bytes_key in st.session_state:
                     st.download_button(
-                        label="⬇️ Download",
-                        data=_zip_bytes,
+                        label=f"⬇️ Download ({_size_mb:.0f} MB)",
+                        data=st.session_state[_zip_bytes_key],
                         file_name=f"radars__{_meta.get('label', 'export')}.zip",
                         mime="application/zip",
-                        key=f"bulk_export_dl_{_idx}",
+                        key=_zip_btn_key,
                         use_container_width=True,
                     )
-                except Exception as _read_exc:
-                    st.caption(f"⚠️ Cannot read {_os.path.basename(_zp)}: {_read_exc}")
+                else:
+                    if st.button(f"📦 Prepare ZIP ({_png_count} files, ~{_size_mb:.0f} MB)",
+                                  key=_prep_key, use_container_width=True):
+                        try:
+                            with st.spinner("Building ZIP from rendered PNGs…"):
+                                st.session_state[_zip_bytes_key] = _build_zip_from_dir(_rd)
+                            st.rerun()
+                        except Exception as _zip_exc:
+                            st.error(f"ZIP build failed: "
+                                     f"{type(_zip_exc).__name__}: {_zip_exc}")
                 if _meta.get('skipped'):
                     _sk = _meta['skipped']
                     with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
@@ -8458,24 +8522,42 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if _BULK_CACHE_ERROR:
                     st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
                 try:
-                    _all_files = sorted(_os.listdir(_BULK_CACHE_DIR))
-                    if not _all_files:
+                    _entries = sorted(_os.listdir(_BULK_CACHE_DIR))
+                    if not _entries:
                         st.caption("Directory is empty.")
                     else:
                         _rows = []
-                        for _fn in _all_files:
-                            _fp = _os.path.join(_BULK_CACHE_DIR, _fn)
+                        for _en in _entries:
+                            _ep = _os.path.join(_BULK_CACHE_DIR, _en)
                             try:
-                                _sz = _os.path.getsize(_fp)
-                                _mt = _os.path.getmtime(_fp)
+                                if _os.path.isdir(_ep):
+                                    _png = [f for f in _os.listdir(_ep)
+                                             if f.endswith('.png')]
+                                    _sz = sum(_os.path.getsize(_os.path.join(_ep, f))
+                                               for f in _os.listdir(_ep))
+                                    _mt = _os.path.getmtime(_ep)
+                                    _rows.append({
+                                        'entry': _en + '/',
+                                        'type': 'dir',
+                                        'pngs': len(_png),
+                                        'size_MB': f"{_sz/(1024*1024):.2f}",
+                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
+                                                                _time.localtime(_mt)),
+                                    })
+                                else:
+                                    _sz = _os.path.getsize(_ep)
+                                    _mt = _os.path.getmtime(_ep)
+                                    _rows.append({
+                                        'entry': _en,
+                                        'type': 'file',
+                                        'pngs': 0,
+                                        'size_MB': f"{_sz/(1024*1024):.2f}",
+                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
+                                                                _time.localtime(_mt)),
+                                    })
                             except Exception:
-                                _sz, _mt = 0, 0
-                            _rows.append({
-                                'file': _fn,
-                                'size_MB': f"{_sz/(1024*1024):.2f}",
-                                'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
-                                                        _time.localtime(_mt)) if _mt else 'n/a',
-                            })
+                                _rows.append({'entry': _en, 'type': '?',
+                                              'pngs': 0, 'size_MB': '?', 'mtime': '?'})
                         st.dataframe(pd.DataFrame(_rows),
                                      use_container_width=True, hide_index=True)
                 except Exception as _diag_exc:
