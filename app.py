@@ -8203,18 +8203,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- Bulk Radar Export ---
         st.sidebar.markdown("---")
-        # Disk-streamed ZIPs — the bytes never live entirely in memory and
-        # the file on disk is the source of truth, so a WebSocket drop or
-        # session_state reset on HF Spaces can't strand the download. The
-        # sidebar lists every cached ZIP that's still on disk so the user
-        # can grab any prior export, not just the one matching current
-        # widget state.
+        # Disk-streamed ZIPs — bytes never live entirely in memory and the
+        # file on disk is the source of truth. The sidebar lists EVERY
+        # .zip file in the cache directory (even incomplete ones from
+        # crashed runs) so a download is never hidden by failed metadata.
         import os as _os, time as _time, pickle as _pickle, hashlib as _hashlib, json as _json
         _BULK_CACHE_DIR = "/tmp/dashboard_bulk_export"
+        _BULK_CACHE_ERROR = None
         try:
             _os.makedirs(_BULK_CACHE_DIR, exist_ok=True)
-        except Exception:
-            pass
+            # Probe writability so we know early whether the disk-cache
+            # strategy is viable in this runtime.
+            _probe = _os.path.join(_BULK_CACHE_DIR, '.writable_probe')
+            with open(_probe, 'w') as _pf:
+                _pf.write('ok')
+            _os.unlink(_probe)
+        except Exception as _cache_dir_exc:
+            _BULK_CACHE_ERROR = f"{type(_cache_dir_exc).__name__}: {_cache_dir_exc}"
 
         def _bulk_cache_key(season_lbl, groups, mode, min_mins):
             payload = _json.dumps({
@@ -8230,36 +8235,43 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _os.path.join(_BULK_CACHE_DIR, f"radars__{key}.meta.pkl"))
 
         def _list_cached_zips():
-            """Return list of (zip_path, meta_dict, mtime) for every cached
-            ZIP on disk that still has a readable .meta.pkl alongside it."""
+            """Return one entry per .zip file in the cache dir, regardless
+            of whether a .meta.pkl exists. Missing metadata is filled in
+            with a placeholder dict so the download is never hidden."""
             entries = []
             try:
-                for name in _os.listdir(_BULK_CACHE_DIR):
-                    if not name.endswith('.zip'):
-                        continue
-                    zip_path = _os.path.join(_BULK_CACHE_DIR, name)
-                    meta_path = zip_path[:-4] + '.meta.pkl'
-                    if not _os.path.exists(meta_path):
-                        continue
+                names = _os.listdir(_BULK_CACHE_DIR)
+            except FileNotFoundError:
+                return entries
+            except Exception:
+                return entries
+            for name in names:
+                if not name.endswith('.zip'):
+                    continue
+                zip_path = _os.path.join(_BULK_CACHE_DIR, name)
+                meta_path = zip_path[:-4] + '.meta.pkl'
+                try:
+                    size = _os.path.getsize(zip_path)
+                    mtime = _os.path.getmtime(zip_path)
+                except Exception:
+                    continue
+                meta = None
+                if _os.path.exists(meta_path):
                     try:
                         with open(meta_path, 'rb') as _f:
                             meta = _pickle.load(_f)
-                        mtime = _os.path.getmtime(zip_path)
-                        size = _os.path.getsize(zip_path)
-                        entries.append({'path': zip_path, 'meta': meta,
-                                         'mtime': mtime, 'size': size})
                     except Exception:
-                        continue
-            except FileNotFoundError:
-                pass
-            # Newest first
+                        meta = None
+                if meta is None:
+                    meta = {'status': 'incomplete', 'label': name[:-4]}
+                entries.append({'path': zip_path, 'meta': meta,
+                                'mtime': mtime, 'size': size})
             entries.sort(key=lambda e: e['mtime'], reverse=True)
             return entries
 
-        # Keep expander open whenever there's at least one cached ZIP, so
-        # the download list is visible without the user having to expand.
-        _cached_zips_for_open_check = _list_cached_zips()
-        _bulk_expander_open = bool(_cached_zips_for_open_check)
+        # Always keep the expander open on the Player Analysis page so the
+        # Cached ZIPs section, debug info, and any errors are unmissable.
+        _bulk_expander_open = True
         with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
             _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
             _bulk_groups = st.multiselect(
@@ -8309,13 +8321,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
                     _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
 
-                    # Stream ZIP straight to disk via output_path. Final file
-                    # is on disk regardless of session_state, so even if
-                    # rendering or the post-render Streamlit run gets
-                    # interrupted, the file is recoverable on the next
-                    # script run.
+                    # Stream ZIP straight to disk via output_path. Write a
+                    # sentinel meta.pkl FIRST so even crashed/killed runs
+                    # show up in the Cached ZIPs list — the user can then
+                    # download whatever partial bytes did make it to disk.
                     _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
                     _zip_path, _meta_path = _bulk_cache_paths(_cache_key)
+                    try:
+                        with open(_meta_path, 'wb') as _f:
+                            _pickle.dump({
+                                'status': 'running',
+                                'rendered': 0,
+                                'skipped': [],
+                                'label': f"{_season_lbl}__{_radar_mode}",
+                                'season': _season_lbl,
+                                'mode': _radar_mode,
+                                'groups': list(_bulk_groups),
+                                'min_mins': int(_bulk_min_mins),
+                                'started_at': _time.time(),
+                            }, _f)
+                    except Exception as _sentinel_exc:
+                        st.warning(f"⚠️ Could not write sentinel meta: "
+                                   f"{type(_sentinel_exc).__name__}: {_sentinel_exc}")
+
                     try:
                         _result_path, _rendered, _skipped = bulk_export_radars(
                             _export_df,
@@ -8325,77 +8353,156 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             progress_cb=_on_progress,
                             output_path=_zip_path,
                         )
-                        # Write metadata last — its presence is the marker
-                        # that this ZIP is a complete export and not a
-                        # partial file from a crashed run.
-                        with open(_meta_path, 'wb') as _f:
-                            _pickle.dump({
-                                'rendered': _rendered,
-                                'skipped': _skipped,
-                                'label': f"{_season_lbl}__{_radar_mode}",
-                                'season': _season_lbl,
-                                'mode': _radar_mode,
-                                'groups': list(_bulk_groups),
-                                'min_mins': int(_bulk_min_mins),
-                            }, _f)
+                        # Replace sentinel with completion metadata.
+                        try:
+                            with open(_meta_path, 'wb') as _f:
+                                _pickle.dump({
+                                    'status': 'complete',
+                                    'rendered': _rendered,
+                                    'skipped': _skipped,
+                                    'label': f"{_season_lbl}__{_radar_mode}",
+                                    'season': _season_lbl,
+                                    'mode': _radar_mode,
+                                    'groups': list(_bulk_groups),
+                                    'min_mins': int(_bulk_min_mins),
+                                }, _f)
+                        except Exception as _meta_exc:
+                            st.warning(f"⚠️ ZIP rendered but completion-meta "
+                                       f"write failed: {type(_meta_exc).__name__}: "
+                                       f"{_meta_exc}")
                         _progress.empty()
+                        try:
+                            _final_mb = _os.path.getsize(_zip_path) / (1024*1024)
+                        except Exception:
+                            _final_mb = 0.0
                         st.success(
-                            f"Rendered {_rendered} radars · "
-                            f"{_os.path.getsize(_zip_path) / (1024*1024):.1f} MB"
+                            f"Rendered {_rendered} radars · {_final_mb:.1f} MB"
                             + (f" ({len(_skipped)} skipped)" if _skipped else "")
                         )
                     except Exception as _gen_exc:
                         _progress.empty()
-                        st.error(f"Render failed: {_gen_exc}")
+                        import traceback as _tb
+                        st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
+                        with st.expander("Traceback (for debugging)"):
+                            st.code(_tb.format_exc())
 
             # --- Cached ZIPs section — always shown, regardless of state. ---
+            st.markdown("---")
             _cached = _list_cached_zips()
-            if _cached:
-                st.markdown("---")
+            if _BULK_CACHE_ERROR:
+                st.error(f"⚠️ Cache directory unusable: {_BULK_CACHE_ERROR}. "
+                         f"Generated ZIPs will not survive the page render. "
+                         f"This usually means /tmp/ is not writable in this runtime.")
+            if not _cached:
+                st.caption("💾 No cached ZIPs yet. Run Generate ZIP to create one.")
+            else:
                 st.caption(f"💾 Cached ZIPs ({len(_cached)})")
-                _now = _time.time()
-                for _idx, _entry in enumerate(_cached):
-                    _meta = _entry['meta']
-                    _zp = _entry['path']
-                    _age = _now - _entry['mtime']
-                    _age_str = (f"{int(_age)}s ago" if _age < 60 else
-                                f"{int(_age/60)} min ago" if _age < 3600 else
-                                f"{int(_age/3600)} h ago" if _age < 86400 else
-                                f"{int(_age/86400)} d ago")
-                    _size_mb = _entry['size'] / (1024 * 1024)
-                    _n_rendered = _meta.get('rendered', '?')
-                    _season = _meta.get('season', '?')
-                    _mode = _meta.get('mode', '?')
-                    _mm = _meta.get('min_mins', '?')
-                    _ngroups = len(_meta.get('groups', []) or [])
-                    st.markdown(
-                        f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min  \n"
-                        f"<span style='color:#888;font-size:0.85em'>{_n_rendered} radars · "
-                        f"{_size_mb:.1f} MB · {_age_str}</span>",
-                        unsafe_allow_html=True,
+            _now = _time.time()
+            for _idx, _entry in enumerate(_cached):
+                _meta = _entry['meta']
+                _zp = _entry['path']
+                _age = _now - _entry['mtime']
+                _age_str = (f"{int(_age)}s ago" if _age < 60 else
+                            f"{int(_age/60)} min ago" if _age < 3600 else
+                            f"{int(_age/3600)} h ago" if _age < 86400 else
+                            f"{int(_age/86400)} d ago")
+                _size_mb = _entry['size'] / (1024 * 1024)
+                _status = _meta.get('status', 'complete')
+                _n_rendered = _meta.get('rendered', '?')
+                _season = _meta.get('season', '?')
+                _mode = _meta.get('mode', '?')
+                _mm = _meta.get('min_mins', '?')
+                _ngroups = len(_meta.get('groups', []) or [])
+                _badge = ""
+                if _status == 'running':
+                    _badge = " · 🟡 in progress / interrupted"
+                elif _status == 'incomplete':
+                    _badge = " · 🟠 metadata missing (download may still work)"
+                st.markdown(
+                    f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min{_badge}  \n"
+                    f"<span style='color:#888;font-size:0.85em'>{_n_rendered} radars · "
+                    f"{_size_mb:.1f} MB · {_age_str}</span>",
+                    unsafe_allow_html=True,
+                )
+                # Read bytes from disk just-in-time so st.download_button
+                # always serves the current on-disk file. Even partial
+                # ZIPs are downloadable — they unzip whatever entries
+                # made it to disk before the process died.
+                try:
+                    with open(_zp, 'rb') as _f:
+                        _zip_bytes = _f.read()
+                    st.download_button(
+                        label="⬇️ Download",
+                        data=_zip_bytes,
+                        file_name=f"radars__{_meta.get('label', 'export')}.zip",
+                        mime="application/zip",
+                        key=f"bulk_export_dl_{_idx}",
+                        use_container_width=True,
                     )
-                    # Read bytes from disk just-in-time so st.download_button
-                    # always serves the current on-disk file.
-                    try:
-                        with open(_zp, 'rb') as _f:
-                            _zip_bytes = _f.read()
-                        st.download_button(
-                            label="⬇️ Download",
-                            data=_zip_bytes,
-                            file_name=f"radars__{_meta.get('label', 'export')}.zip",
-                            mime="application/zip",
-                            key=f"bulk_export_dl_{_idx}",
-                            use_container_width=True,
-                        )
-                    except Exception as _read_exc:
-                        st.caption(f"⚠️ Cannot read {_os.path.basename(_zp)}: {_read_exc}")
-                    if _meta.get('skipped'):
-                        _sk = _meta['skipped']
-                        with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
-                            for _name, _reason in _sk[:50]:
-                                st.caption(f"• **{_name}** — {_reason}")
-                            if len(_sk) > 50:
-                                st.caption(f"…and {len(_sk) - 50} more")
+                except Exception as _read_exc:
+                    st.caption(f"⚠️ Cannot read {_os.path.basename(_zp)}: {_read_exc}")
+                if _meta.get('skipped'):
+                    _sk = _meta['skipped']
+                    with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
+                        for _name, _reason in _sk[:50]:
+                            st.caption(f"• **{_name}** — {_reason}")
+                        if len(_sk) > 50:
+                            st.caption(f"…and {len(_sk) - 50} more")
+
+            # --- Diagnostics expander: surfaces the actual on-disk state ---
+            with st.expander("🔍 Diagnostics", expanded=False):
+                st.caption(f"Cache dir: `{_BULK_CACHE_DIR}`")
+                if _BULK_CACHE_ERROR:
+                    st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
+                try:
+                    _all_files = sorted(_os.listdir(_BULK_CACHE_DIR))
+                    if not _all_files:
+                        st.caption("Directory is empty.")
+                    else:
+                        _rows = []
+                        for _fn in _all_files:
+                            _fp = _os.path.join(_BULK_CACHE_DIR, _fn)
+                            try:
+                                _sz = _os.path.getsize(_fp)
+                                _mt = _os.path.getmtime(_fp)
+                            except Exception:
+                                _sz, _mt = 0, 0
+                            _rows.append({
+                                'file': _fn,
+                                'size_MB': f"{_sz/(1024*1024):.2f}",
+                                'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
+                                                        _time.localtime(_mt)) if _mt else 'n/a',
+                            })
+                        st.dataframe(pd.DataFrame(_rows),
+                                     use_container_width=True, hide_index=True)
+                except Exception as _diag_exc:
+                    st.error(f"Cannot list cache dir: "
+                             f"{type(_diag_exc).__name__}: {_diag_exc}")
+                # Disk usage info — useful if /tmp/ is filling up
+                try:
+                    import shutil as _shutil
+                    _du = _shutil.disk_usage(_BULK_CACHE_DIR if _os.path.exists(_BULK_CACHE_DIR) else '/tmp')
+                    st.caption(
+                        f"`/tmp/` disk: total {_du.total/(1024**3):.1f} GB · "
+                        f"used {_du.used/(1024**3):.1f} GB · "
+                        f"free {_du.free/(1024**3):.1f} GB"
+                    )
+                except Exception as _du_exc:
+                    st.caption(f"disk_usage error: {_du_exc}")
+                # Process RAM, if psutil is available — early-warning for OOM
+                try:
+                    import psutil as _psutil
+                    _proc = _psutil.Process()
+                    _rss = _proc.memory_info().rss / (1024**3)
+                    _vmem = _psutil.virtual_memory()
+                    st.caption(
+                        f"Process RSS: {_rss:.2f} GB · "
+                        f"system RAM: {_vmem.used/(1024**3):.1f} GB used / "
+                        f"{_vmem.total/(1024**3):.1f} GB total "
+                        f"({_vmem.percent:.0f}%)"
+                    )
+                except Exception:
+                    pass
 
         # Apply minutes filter
         filtered_df = player_stats_with_scores_df[
