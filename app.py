@@ -3394,9 +3394,10 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
 
 
 def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
-                        season_label='All Seasons', progress_cb=None):
-    """Render one radar PNG per player in `export_df` and return a ZIP byte
-    string. Each player's radar uses their best-fit role template against the
+                        season_label='All Seasons', progress_cb=None,
+                        output_path=None):
+    """Render one radar PNG per player in `export_df` and stream them into
+    a ZIP. Each player's radar uses their best-fit role template against the
     same-position-group population in `full_pop_df`.
 
     Args:
@@ -3409,9 +3410,16 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
         radar_mode: 'percentile' or 'raw'.
         season_label: string passed through to the chart for the header.
         progress_cb: optional callable(i, n, name) for progress updates.
+        output_path: if given, stream the ZIP to this filesystem path
+            instead of building it in memory. This is the resilient path —
+            partial progress survives container OOM-kills, and the final
+            file lives on disk regardless of session_state. When omitted,
+            falls back to the legacy in-memory path for callers that
+            expect bytes returned.
 
     Returns:
-        bytes: the ZIP file as a byte string.
+        tuple: (result, rendered, skipped) where result is either the ZIP
+        bytes (legacy path) or the output_path string (streaming path).
     """
     import io
     import re
@@ -3437,7 +3445,12 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
         'CF': ('7_ST', 7), 'SS': ('7_ST', 7),
     }
 
-    buf = io.BytesIO()
+    # Pick the ZIP destination. Streaming to disk is the resilient path;
+    # in-memory is the legacy fallback for callers that want bytes.
+    if output_path is not None:
+        zip_target = output_path
+    else:
+        zip_target = io.BytesIO()
     rendered = 0
     skipped = []
 
@@ -3473,7 +3486,10 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
     n = len(plan)
     bucket_rank: dict = {}  # bucket_label -> running rank counter
 
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+    # ZIP_DEFLATED with low compresslevel (1) instead of default 6 — PNGs
+    # are already compressed so deeper levels burn CPU + memory for almost
+    # zero size benefit, and on HF the CPU/memory cost is what kills us.
+    with zipfile.ZipFile(zip_target, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         for i, (bucket_label, _bucket_order, neg_score, player_row,
                  primary_pos, best_role, eligible_roles) in enumerate(plan):
             player_name = str(player_row.get('playerName', f'player_{i}'))
@@ -3545,7 +3561,11 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                 except Exception:
                     pass
 
-    return buf.getvalue(), rendered, skipped
+    # Streaming path: return the on-disk path; caller reads bytes lazily.
+    # Legacy path: return the in-memory bytes.
+    if output_path is not None:
+        return output_path, rendered, skipped
+    return zip_target.getvalue(), rendered, skipped
 
 
 def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
@@ -8183,12 +8203,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- Bulk Radar Export ---
         st.sidebar.markdown("---")
-        # Disk cache for ZIPs — survives WebSocket reconnects and sidebar
-        # collapses, so the user can still grab the download if Streamlit's
-        # session_state gets cleared on HF Spaces mid-render.
-        import os as _os, json as _json, pickle as _pickle, hashlib as _hashlib
+        # Disk-streamed ZIPs — the bytes never live entirely in memory and
+        # the file on disk is the source of truth, so a WebSocket drop or
+        # session_state reset on HF Spaces can't strand the download. The
+        # sidebar lists every cached ZIP that's still on disk so the user
+        # can grab any prior export, not just the one matching current
+        # widget state.
+        import os as _os, time as _time, pickle as _pickle, hashlib as _hashlib, json as _json
         _BULK_CACHE_DIR = "/tmp/dashboard_bulk_export"
-        _os.makedirs(_BULK_CACHE_DIR, exist_ok=True)
+        try:
+            _os.makedirs(_BULK_CACHE_DIR, exist_ok=True)
+        except Exception:
+            pass
 
         def _bulk_cache_key(season_lbl, groups, mode, min_mins):
             payload = _json.dumps({
@@ -8203,33 +8229,37 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             return (_os.path.join(_BULK_CACHE_DIR, f"radars__{key}.zip"),
                     _os.path.join(_BULK_CACHE_DIR, f"radars__{key}.meta.pkl"))
 
-        # On every script run, look for a cached ZIP that matches the current
-        # widget state and rehydrate session_state from it. This is what makes
-        # the download button reappear after a tab reload / WS drop.
-        _restore_label_season = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-        _restore_mode = 'raw' if st.session_state.get('bulk_export_mode', 'Percentile').startswith('Raw') else 'percentile'
-        _restore_groups = st.session_state.get('bulk_export_groups', list(_TEMPLATE_GROUPS.keys()))
-        _restore_min_mins = int(st.session_state.get('bulk_export_min_mins', int(min_minutes_filter)))
-        _restore_key = _bulk_cache_key(_restore_label_season, _restore_groups, _restore_mode, _restore_min_mins)
-        _restore_zip_path, _restore_meta_path = _bulk_cache_paths(_restore_key)
-        if ('_bulk_zip_bytes' not in st.session_state
-                and _os.path.exists(_restore_zip_path)
-                and _os.path.exists(_restore_meta_path)):
+        def _list_cached_zips():
+            """Return list of (zip_path, meta_dict, mtime) for every cached
+            ZIP on disk that still has a readable .meta.pkl alongside it."""
+            entries = []
             try:
-                with open(_restore_zip_path, 'rb') as _f:
-                    st.session_state['_bulk_zip_bytes'] = _f.read()
-                with open(_restore_meta_path, 'rb') as _f:
-                    _meta = _pickle.load(_f)
-                st.session_state['_bulk_zip_rendered'] = _meta.get('rendered', 0)
-                st.session_state['_bulk_zip_skipped']  = _meta.get('skipped', [])
-                st.session_state['_bulk_zip_label']    = _meta.get('label', _restore_key)
-                st.session_state['_bulk_zip_recovered'] = True
-            except Exception:
+                for name in _os.listdir(_BULK_CACHE_DIR):
+                    if not name.endswith('.zip'):
+                        continue
+                    zip_path = _os.path.join(_BULK_CACHE_DIR, name)
+                    meta_path = zip_path[:-4] + '.meta.pkl'
+                    if not _os.path.exists(meta_path):
+                        continue
+                    try:
+                        with open(meta_path, 'rb') as _f:
+                            meta = _pickle.load(_f)
+                        mtime = _os.path.getmtime(zip_path)
+                        size = _os.path.getsize(zip_path)
+                        entries.append({'path': zip_path, 'meta': meta,
+                                         'mtime': mtime, 'size': size})
+                    except Exception:
+                        continue
+            except FileNotFoundError:
                 pass
+            # Newest first
+            entries.sort(key=lambda e: e['mtime'], reverse=True)
+            return entries
 
-        # Keep the expander open whenever there's a ZIP ready — otherwise the
-        # collapsed-section path was eating the download button.
-        _bulk_expander_open = ('_bulk_zip_bytes' in st.session_state)
+        # Keep expander open whenever there's at least one cached ZIP, so
+        # the download list is visible without the user having to expand.
+        _cached_zips_for_open_check = _list_cached_zips()
+        _bulk_expander_open = bool(_cached_zips_for_open_check)
         with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
             _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
             _bulk_groups = st.multiselect(
@@ -8255,12 +8285,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
 
             if _bulk_generate:
-                # Fresh generate — drop any stale ZIP state so the download
-                # button below doesn't briefly show an older file.
-                for _k in ('_bulk_zip_bytes', '_bulk_zip_rendered', '_bulk_zip_skipped',
-                           '_bulk_zip_label', '_bulk_zip_recovered'):
-                    st.session_state.pop(_k, None)
-
                 # Resolve the multi-select group labels to raw position codes.
                 _bulk_raw_codes = set()
                 for _grp in _bulk_groups:
@@ -8285,63 +8309,93 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
                     _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
 
-                    _zip_bytes, _rendered, _skipped = bulk_export_radars(
-                        _export_df,
-                        player_stats_with_scores_df,
-                        radar_mode=_radar_mode,
-                        season_label=_season_lbl,
-                        progress_cb=_on_progress,
-                    )
-                    _progress.empty()
-
-                    st.session_state['_bulk_zip_bytes'] = _zip_bytes
-                    st.session_state['_bulk_zip_rendered'] = _rendered
-                    st.session_state['_bulk_zip_skipped'] = _skipped
-                    st.session_state['_bulk_zip_label'] = f"{_season_lbl}__{_radar_mode}"
-
-                    # Persist to disk so the download survives a WebSocket
-                    # drop / page reload / sidebar collapse. Keyed on the
-                    # current widget state so the rehydration block above
-                    # only restores the matching ZIP.
+                    # Stream ZIP straight to disk via output_path. Final file
+                    # is on disk regardless of session_state, so even if
+                    # rendering or the post-render Streamlit run gets
+                    # interrupted, the file is recoverable on the next
+                    # script run.
+                    _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
+                    _zip_path, _meta_path = _bulk_cache_paths(_cache_key)
                     try:
-                        _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
-                        _zip_path, _meta_path = _bulk_cache_paths(_cache_key)
-                        with open(_zip_path, 'wb') as _f:
-                            _f.write(_zip_bytes)
+                        _result_path, _rendered, _skipped = bulk_export_radars(
+                            _export_df,
+                            player_stats_with_scores_df,
+                            radar_mode=_radar_mode,
+                            season_label=_season_lbl,
+                            progress_cb=_on_progress,
+                            output_path=_zip_path,
+                        )
+                        # Write metadata last — its presence is the marker
+                        # that this ZIP is a complete export and not a
+                        # partial file from a crashed run.
                         with open(_meta_path, 'wb') as _f:
                             _pickle.dump({
                                 'rendered': _rendered,
                                 'skipped': _skipped,
                                 'label': f"{_season_lbl}__{_radar_mode}",
+                                'season': _season_lbl,
+                                'mode': _radar_mode,
+                                'groups': list(_bulk_groups),
+                                'min_mins': int(_bulk_min_mins),
                             }, _f)
-                    except Exception as _persist_exc:
-                        st.caption(f"⚠️ Could not cache ZIP to disk: {_persist_exc}")
+                        _progress.empty()
+                        st.success(
+                            f"Rendered {_rendered} radars · "
+                            f"{_os.path.getsize(_zip_path) / (1024*1024):.1f} MB"
+                            + (f" ({len(_skipped)} skipped)" if _skipped else "")
+                        )
+                    except Exception as _gen_exc:
+                        _progress.empty()
+                        st.error(f"Render failed: {_gen_exc}")
 
-            if '_bulk_zip_bytes' in st.session_state:
-                _rendered = st.session_state.get('_bulk_zip_rendered', 0)
-                _skipped = st.session_state.get('_bulk_zip_skipped', [])
-                _label = st.session_state.get('_bulk_zip_label', 'export')
-                _zip_size_mb = len(st.session_state['_bulk_zip_bytes']) / (1024 * 1024)
-                _recovered = st.session_state.get('_bulk_zip_recovered', False)
-                _status_prefix = "Recovered" if _recovered else "Rendered"
-                st.success(
-                    f"{_status_prefix} {_rendered} radars · {_zip_size_mb:.1f} MB"
-                    + (f" ({len(_skipped)} skipped)" if _skipped else "")
-                )
-                st.download_button(
-                    label="⬇️ Download ZIP",
-                    data=st.session_state['_bulk_zip_bytes'],
-                    file_name=f"radars__{_label}.zip",
-                    mime="application/zip",
-                    key="bulk_export_dl",
-                    use_container_width=True,
-                )
-                if _skipped:
-                    with st.popover(f"View skipped ({len(_skipped)})"):
-                        for _name, _reason in _skipped[:50]:
-                            st.caption(f"• **{_name}** — {_reason}")
-                        if len(_skipped) > 50:
-                            st.caption(f"…and {len(_skipped) - 50} more")
+            # --- Cached ZIPs section — always shown, regardless of state. ---
+            _cached = _list_cached_zips()
+            if _cached:
+                st.markdown("---")
+                st.caption(f"💾 Cached ZIPs ({len(_cached)})")
+                _now = _time.time()
+                for _idx, _entry in enumerate(_cached):
+                    _meta = _entry['meta']
+                    _zp = _entry['path']
+                    _age = _now - _entry['mtime']
+                    _age_str = (f"{int(_age)}s ago" if _age < 60 else
+                                f"{int(_age/60)} min ago" if _age < 3600 else
+                                f"{int(_age/3600)} h ago" if _age < 86400 else
+                                f"{int(_age/86400)} d ago")
+                    _size_mb = _entry['size'] / (1024 * 1024)
+                    _n_rendered = _meta.get('rendered', '?')
+                    _season = _meta.get('season', '?')
+                    _mode = _meta.get('mode', '?')
+                    _mm = _meta.get('min_mins', '?')
+                    _ngroups = len(_meta.get('groups', []) or [])
+                    st.markdown(
+                        f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min  \n"
+                        f"<span style='color:#888;font-size:0.85em'>{_n_rendered} radars · "
+                        f"{_size_mb:.1f} MB · {_age_str}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    # Read bytes from disk just-in-time so st.download_button
+                    # always serves the current on-disk file.
+                    try:
+                        with open(_zp, 'rb') as _f:
+                            _zip_bytes = _f.read()
+                        st.download_button(
+                            label="⬇️ Download",
+                            data=_zip_bytes,
+                            file_name=f"radars__{_meta.get('label', 'export')}.zip",
+                            mime="application/zip",
+                            key=f"bulk_export_dl_{_idx}",
+                            use_container_width=True,
+                        )
+                    except Exception as _read_exc:
+                        st.caption(f"⚠️ Cannot read {_os.path.basename(_zp)}: {_read_exc}")
+                    if _meta.get('skipped'):
+                        _sk = _meta['skipped']
+                        with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
+                            for _name, _reason in _sk[:50]:
+                                st.caption(f"• **{_name}** — {_reason}")
+                            if len(_sk) > 50:
+                                st.caption(f"…and {len(_sk) - 50} more")
 
         # Apply minutes filter
         filtered_df = player_stats_with_scores_df[
