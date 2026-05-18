@@ -3415,6 +3415,7 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
     """
     import io
     import re
+    import gc
     import zipfile
 
     # Position-bucket ordering: GK → CB → FB → CM → AM → WG → ST. Used to
@@ -3508,8 +3509,16 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                 )
 
                 img_buf = io.BytesIO()
-                fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=110)
+                fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
                 plt.close(fig)
+                # Aggressive cleanup — matplotlib leaks state across savefig
+                # calls and the bulk export builds dozens of figures in a row.
+                # On HF Spaces a slow accumulation will OOM-kill the process
+                # part-way through, killing the in-memory ZIP and the download
+                # button along with it.
+                plt.close('all')
+                if (i + 1) % 10 == 0:
+                    gc.collect()
 
                 safe_name = re.sub(r'[^\w-]+', '_', player_name).strip('_') or f'player_{i}'
                 safe_role = re.sub(r'[^\w-]+', '_', str(best_role)).strip('_')
@@ -8174,7 +8183,54 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         # --- Bulk Radar Export ---
         st.sidebar.markdown("---")
-        with st.sidebar.expander("📥 Bulk Export Radars", expanded=False):
+        # Disk cache for ZIPs — survives WebSocket reconnects and sidebar
+        # collapses, so the user can still grab the download if Streamlit's
+        # session_state gets cleared on HF Spaces mid-render.
+        import os as _os, json as _json, pickle as _pickle, hashlib as _hashlib
+        _BULK_CACHE_DIR = "/tmp/dashboard_bulk_export"
+        _os.makedirs(_BULK_CACHE_DIR, exist_ok=True)
+
+        def _bulk_cache_key(season_lbl, groups, mode, min_mins):
+            payload = _json.dumps({
+                "season": str(season_lbl),
+                "groups": sorted([str(g) for g in groups]),
+                "mode": str(mode),
+                "min_mins": int(min_mins),
+            }, sort_keys=True)
+            return _hashlib.md5(payload.encode("utf-8")).hexdigest()[:12]
+
+        def _bulk_cache_paths(key):
+            return (_os.path.join(_BULK_CACHE_DIR, f"radars__{key}.zip"),
+                    _os.path.join(_BULK_CACHE_DIR, f"radars__{key}.meta.pkl"))
+
+        # On every script run, look for a cached ZIP that matches the current
+        # widget state and rehydrate session_state from it. This is what makes
+        # the download button reappear after a tab reload / WS drop.
+        _restore_label_season = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+        _restore_mode = 'raw' if st.session_state.get('bulk_export_mode', 'Percentile').startswith('Raw') else 'percentile'
+        _restore_groups = st.session_state.get('bulk_export_groups', list(_TEMPLATE_GROUPS.keys()))
+        _restore_min_mins = int(st.session_state.get('bulk_export_min_mins', int(min_minutes_filter)))
+        _restore_key = _bulk_cache_key(_restore_label_season, _restore_groups, _restore_mode, _restore_min_mins)
+        _restore_zip_path, _restore_meta_path = _bulk_cache_paths(_restore_key)
+        if ('_bulk_zip_bytes' not in st.session_state
+                and _os.path.exists(_restore_zip_path)
+                and _os.path.exists(_restore_meta_path)):
+            try:
+                with open(_restore_zip_path, 'rb') as _f:
+                    st.session_state['_bulk_zip_bytes'] = _f.read()
+                with open(_restore_meta_path, 'rb') as _f:
+                    _meta = _pickle.load(_f)
+                st.session_state['_bulk_zip_rendered'] = _meta.get('rendered', 0)
+                st.session_state['_bulk_zip_skipped']  = _meta.get('skipped', [])
+                st.session_state['_bulk_zip_label']    = _meta.get('label', _restore_key)
+                st.session_state['_bulk_zip_recovered'] = True
+            except Exception:
+                pass
+
+        # Keep the expander open whenever there's a ZIP ready — otherwise the
+        # collapsed-section path was eating the download button.
+        _bulk_expander_open = ('_bulk_zip_bytes' in st.session_state)
+        with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
             _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
             _bulk_groups = st.multiselect(
                 "Position groups:",
@@ -8199,6 +8255,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
 
             if _bulk_generate:
+                # Fresh generate — drop any stale ZIP state so the download
+                # button below doesn't briefly show an older file.
+                for _k in ('_bulk_zip_bytes', '_bulk_zip_rendered', '_bulk_zip_skipped',
+                           '_bulk_zip_label', '_bulk_zip_recovered'):
+                    st.session_state.pop(_k, None)
+
                 # Resolve the multi-select group labels to raw position codes.
                 _bulk_raw_codes = set()
                 for _grp in _bulk_groups:
@@ -8237,11 +8299,35 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.session_state['_bulk_zip_skipped'] = _skipped
                     st.session_state['_bulk_zip_label'] = f"{_season_lbl}__{_radar_mode}"
 
+                    # Persist to disk so the download survives a WebSocket
+                    # drop / page reload / sidebar collapse. Keyed on the
+                    # current widget state so the rehydration block above
+                    # only restores the matching ZIP.
+                    try:
+                        _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
+                        _zip_path, _meta_path = _bulk_cache_paths(_cache_key)
+                        with open(_zip_path, 'wb') as _f:
+                            _f.write(_zip_bytes)
+                        with open(_meta_path, 'wb') as _f:
+                            _pickle.dump({
+                                'rendered': _rendered,
+                                'skipped': _skipped,
+                                'label': f"{_season_lbl}__{_radar_mode}",
+                            }, _f)
+                    except Exception as _persist_exc:
+                        st.caption(f"⚠️ Could not cache ZIP to disk: {_persist_exc}")
+
             if '_bulk_zip_bytes' in st.session_state:
                 _rendered = st.session_state.get('_bulk_zip_rendered', 0)
                 _skipped = st.session_state.get('_bulk_zip_skipped', [])
                 _label = st.session_state.get('_bulk_zip_label', 'export')
-                st.success(f"Rendered {_rendered} radars" + (f" ({len(_skipped)} skipped)" if _skipped else ""))
+                _zip_size_mb = len(st.session_state['_bulk_zip_bytes']) / (1024 * 1024)
+                _recovered = st.session_state.get('_bulk_zip_recovered', False)
+                _status_prefix = "Recovered" if _recovered else "Rendered"
+                st.success(
+                    f"{_status_prefix} {_rendered} radars · {_zip_size_mb:.1f} MB"
+                    + (f" ({len(_skipped)} skipped)" if _skipped else "")
+                )
                 st.download_button(
                     label="⬇️ Download ZIP",
                     data=st.session_state['_bulk_zip_bytes'],
