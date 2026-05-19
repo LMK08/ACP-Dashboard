@@ -8532,12 +8532,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 _zip_btn_key = f"bulk_export_dl_{_idx}"
                 _prep_key = f"bulk_export_prep_{_idx}"
                 _zip_bytes_key = f"bulk_export_bytes_{_idx}"
-                # Two-stage UX: first click prepares the ZIP, second
-                # serves the download. Keeps a 300-400 MB ZIP from
-                # being built on every script rerun.
-                if _zip_bytes_key in st.session_state:
+                _zip_fp_key = f"bulk_export_fp_{_idx}"
+                # Fingerprint the on-disk state so a previously-built
+                # ZIP gets invalidated when the directory has grown
+                # (e.g. after a resume run). Without this the download
+                # button would happily serve stale bytes.
+                _current_fp = f"{_png_count}_{int(_entry['size'])}"
+                _cached_fp = st.session_state.get(_zip_fp_key)
+                if (_zip_bytes_key in st.session_state
+                        and _cached_fp == _current_fp):
+                    _cached_size_mb = len(st.session_state[_zip_bytes_key]) / (1024*1024)
                     st.download_button(
-                        label=f"⬇️ Download ({_size_mb:.0f} MB)",
+                        label=f"⬇️ Download ({_cached_size_mb:.0f} MB)",
                         data=st.session_state[_zip_bytes_key],
                         file_name=f"radars__{_meta.get('label', 'export')}.zip",
                         mime="application/zip",
@@ -8545,11 +8551,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         use_container_width=True,
                     )
                 else:
+                    # If we have stale cached bytes, surface that so the
+                    # user understands why the prepare button is back.
+                    if _zip_bytes_key in st.session_state and _cached_fp:
+                        try:
+                            _stale_count = int(_cached_fp.split('_')[0])
+                            st.caption(f"⚠️ Cached ZIP is stale "
+                                       f"({_stale_count} files vs {_png_count} on disk). "
+                                       f"Re-prepare to refresh.")
+                        except Exception:
+                            pass
                     if st.button(f"📦 Prepare ZIP ({_png_count} files, ~{_size_mb:.0f} MB)",
                                   key=_prep_key, use_container_width=True):
                         try:
                             with st.spinner("Building ZIP from rendered PNGs…"):
                                 st.session_state[_zip_bytes_key] = _build_zip_from_dir(_rd)
+                                st.session_state[_zip_fp_key] = _current_fp
                             st.rerun()
                         except Exception as _zip_exc:
                             st.error(f"ZIP build failed: "
