@@ -31,7 +31,7 @@ jobs:
           # Clone the EXISTING HF repo so we preserve all data files (raw_events.parquet, etc.)
           # This avoids the "wipe and replace" problem of git init + force-push.
           GIT_LFS_SKIP_SMUDGE=1 git clone \
-            https://LMK08:${HF_TOKEN}@huggingface.co/spaces/LMK08/ACP-Dashboard \
+            https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard \
             hf-repo || {
               echo "HF repo doesn't exist yet — creating fresh"
               mkdir -p hf-repo && cd hf-repo && git init -b main
