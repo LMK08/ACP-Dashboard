@@ -8839,12 +8839,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         elif _selected_view == "Individual Metric":
             # --- Individual Metric mode (preserved from original) ---
+            # Set-piece metrics — the four GPA action-value columns
+            # ("Set Piece Value" = sum of the other three) plus the
+            # set-piece-only flavors of xA and xT. xASP/xTSP also live
+            # in OUTPUT_METRICS but are duplicated here so users can
+            # find every set-piece metric in one place.
+            SET_PIECE_METRICS = [
+                'Set Piece Value', 'Corner Value', 'Free Kick Value',
+                'Throw-In Value', 'xASP', 'xTSP',
+            ]
             metric_categories = {
                 "Output": OUTPUT_METRICS,
                 "Passing": PASSING_METRICS,
                 "Defensive": DEFENSIVE_METRICS,
                 "Dribbling": DRIBBLING_METRICS,
-                "Goalkeeping": GOALKEEPING_METRICS
+                "Goalkeeping": GOALKEEPING_METRICS,
+                "Set Pieces": SET_PIECE_METRICS,
             }
 
             selected_category = st.sidebar.selectbox(
@@ -8898,6 +8908,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 related_metrics = ['Dribbles', 'Dribbles successful %', 'Progressive runs']
             elif selected_metric in GOALKEEPING_METRICS:
                 related_metrics = ['goalsPrevented', 'savePercentage', 'exits']
+            elif selected_metric in SET_PIECE_METRICS:
+                # Show the other set-piece value flavors + the set-
+                # piece xA/xT pair so you can see, e.g., which corner
+                # specialists are also creating high-xT deliveries.
+                related_metrics = ['Set Piece Value', 'Corner Value',
+                                    'Free Kick Value', 'Throw-In Value',
+                                    'xASP', 'xTSP']
 
             related_metrics = [m for m in related_metrics if m in sorted_df.columns and m != selected_metric][:4]
 
