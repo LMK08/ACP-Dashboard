@@ -7306,6 +7306,133 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
 
+        # --- 4b. Career Trajectory ----------------------------------------
+        # Per-season summary of the player's appearances across every
+        # season we have data for, plus a small chart of their total
+        # GPA action value /90 vs age (or minutes if GPA not available
+        # for that season). Lives BEFORE the radar so the radar is
+        # contextualized by where in the career arc this season sits.
+        st.subheader("Career Trajectory")
+
+        def _age_at_season_label(birth: str | None, season_label: str) -> float | None:
+            """Estimate age at season midpoint. Season labels look like
+            '2025/26' or '2025/2026'; pick the start year and add 0.5
+            so the player's age reflects the middle of the campaign."""
+            if not birth or pd.isna(birth):
+                return None
+            try:
+                from datetime import datetime
+                bd = pd.to_datetime(birth, errors='coerce')
+                if pd.isna(bd):
+                    return None
+                # Extract start year from label.
+                start_year = int(str(season_label).split('/')[0])
+                mid_season = datetime(start_year, 12, 31)
+                return round((mid_season - bd.to_pydatetime()).days / 365.25, 1)
+            except Exception:
+                return None
+
+        # Walk player_minutes_data (dict of seasonId -> DataFrame). We
+        # collect one row per (season, team) appearance for the player.
+        career_rows = []
+        birth = player_bio.get('birthDate') if isinstance(player_bio, pd.Series) else None
+        for _sid, _pm_df in player_minutes_data.items():
+            if not isinstance(_pm_df, pd.DataFrame) or _pm_df.empty:
+                continue
+            if 'playerId' not in _pm_df.columns:
+                continue
+            sub = _pm_df[_pm_df['playerId'] == player_id]
+            if sub.empty:
+                continue
+            for _, row in sub.iterrows():
+                _comp_id = competition_for_season(_sid)
+                _season_label = SEASON_ID_MAP.get(_sid, str(_sid))
+                _comp_name = (COMPETITIONS.get(_comp_id, {}).get('name')
+                               if _comp_id else 'Other')
+                career_rows.append({
+                    'Season': _season_label,
+                    '_seasonId': _sid,
+                    'Competition': _comp_name or 'Other',
+                    '_compId': _comp_id,
+                    'Team': row.get('teamName', 'N/A'),
+                    'Position': row.get('primaryPosition', 'N/A'),
+                    'Minutes': int(row.get('totalMinutes', 0) or 0),
+                    'Age': _age_at_season_label(birth, _season_label),
+                })
+
+        if not career_rows:
+            st.caption("No multi-season history available for this player.")
+        else:
+            career_df = pd.DataFrame(career_rows).sort_values(['_seasonId'])
+
+            # Merge in total GPA action value /90 per season where available.
+            try:
+                _gpa_full = load_gpa_values()
+                if _gpa_full is not None and not _gpa_full.empty \
+                        and 'playerId' in _gpa_full.columns:
+                    _gpa_player = _gpa_full[_gpa_full['playerId'] == player_id].copy()
+                    if not _gpa_player.empty:
+                        _val_col = 'total_v_per_90' if 'total_v_per_90' in _gpa_player.columns else None
+                        if _val_col:
+                            career_df = career_df.merge(
+                                _gpa_player[['seasonId', _val_col]]
+                                    .rename(columns={'seasonId': '_seasonId',
+                                                      _val_col: 'Action V/90'})
+                                    .drop_duplicates('_seasonId'),
+                                on='_seasonId', how='left'
+                            )
+            except Exception:
+                # GPA dataset optional — silently fall back to minutes-only.
+                pass
+
+            # Display the per-season table.
+            display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
+            if 'Action V/90' in display_career.columns:
+                display_career['Action V/90'] = display_career['Action V/90'].round(3)
+            st.dataframe(display_career, use_container_width=True, hide_index=True)
+
+            # Trajectory chart: x=Age (or season if age missing), y=Action V/90
+            # (or Minutes if GPA unavailable), color=Competition.
+            chart_y = 'Action V/90' if 'Action V/90' in career_df.columns \
+                                       and career_df['Action V/90'].notna().any() else 'Minutes'
+            chart_x_candidate = career_df['Age'].dropna()
+            chart_x = 'Age' if not chart_x_candidate.empty else 'Season'
+
+            if chart_x == 'Age':
+                chart_df = career_df.dropna(subset=['Age', chart_y]).sort_values('Age')
+            else:
+                chart_df = career_df.dropna(subset=[chart_y]).sort_values('_seasonId')
+
+            if not chart_df.empty:
+                _fig = go.Figure()
+                # One trace per competition so the legend toggles cleanly.
+                for _comp, _grp in chart_df.groupby('Competition'):
+                    _fig.add_trace(go.Scatter(
+                        x=_grp[chart_x], y=_grp[chart_y],
+                        mode='lines+markers',
+                        name=_comp,
+                        hovertemplate=(
+                            "<b>%{customdata[0]}</b> · %{customdata[1]}<br>"
+                            "Team: %{customdata[2]}<br>"
+                            "Minutes: %{customdata[3]}<br>"
+                            f"{chart_y}: " + "%{y}<extra></extra>"
+                        ),
+                        customdata=_grp[['Season', 'Competition', 'Team', 'Minutes']].values,
+                    ))
+                _fig.update_layout(
+                    title=f"{chart_y} by {chart_x.lower()}",
+                    xaxis_title=chart_x,
+                    yaxis_title=chart_y,
+                    height=360,
+                    margin=dict(t=40, b=40, l=40, r=20),
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                )
+                st.plotly_chart(_fig, use_container_width=True)
+            else:
+                st.caption("No trajectory data plottable (missing ages or values).")
+
+        st.divider()
+
        # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
 
@@ -8883,6 +9010,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 key="player_analysis_position_filter"
             )
 
+            # --- Age-adjusted lens ---
+            # When on, re-rank by the player's percentile WITHIN their own
+            # age band. Band rule: ±1 year for ages 20-32 (development plateau),
+            # ±2 years for ≤19 and ≥33 (sparser cohorts at the extremes).
+            # Hard floor of n=15: if a cohort is too small the band auto-widens
+            # by +1 year until it clears, with a caveat caption.
+            age_adjusted = st.sidebar.checkbox(
+                "Compare vs same-age peers",
+                value=False,
+                key="player_analysis_age_adjusted",
+                help="Re-rank players by their percentile within their own "
+                     "age cohort (±1 yr for ages 20-32, ±2 yr for ≤19 and ≥33). "
+                     "Useful for finding young over-performers and "
+                     "age-appropriate veterans."
+            )
+
             if position_filter:
                 metric_filtered_df = filtered_df[filtered_df['primaryPosition'].isin(position_filter)]
             else:
@@ -8892,8 +9035,92 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.warning("No players found with current filters.")
                 st.stop()
 
-            _sort_ascending = selected_metric in INVERT_METRICS
-            sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
+            # ---- Age-band helper (used only when the toggle is on) -----------
+            def _age_band(age: float | int | None) -> tuple[int, int] | None:
+                """(low, high) inclusive age range to use as the peer cohort.
+                ±1 yr for prime (20-32), ±2 yr for tails (≤19 and ≥33)."""
+                if age is None or pd.isna(age):
+                    return None
+                a = int(age)
+                if a <= 19:
+                    return a - 2, a + 2
+                if a >= 33:
+                    return a - 2, a + 2
+                return a - 1, a + 1
+
+            _saa_caption = None   # set when age-adjusted is on (cohort sizes)
+
+            if age_adjusted and not analysis_player_details_df.empty \
+                    and 'birthDate' in analysis_player_details_df.columns:
+                # Compute age for every player in the FULL pool (we need the
+                # full pool to find each player's same-age peers — the position-
+                # filtered metric_filtered_df is the eligible-comparison set).
+                _ages = metric_filtered_df['playerId'].map(
+                    lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
+                    if pid in analysis_player_details_df.index else None
+                )
+                metric_filtered_df = metric_filtered_df.assign(_age=_ages.values)
+
+                # For each player, compute their percentile-within-cohort.
+                # We sort the cohort by the metric (respecting INVERT_METRICS)
+                # and percentile = (better-or-equal peers) / cohort_size.
+                _metric_vals = metric_filtered_df[selected_metric]
+                _percentiles: list[float | None] = []
+                _cohort_sizes: list[int | None] = []
+                _ascending = selected_metric in INVERT_METRICS
+
+                for _idx, _row in metric_filtered_df.iterrows():
+                    band = _age_band(_row['_age'])
+                    if band is None:
+                        _percentiles.append(None)
+                        _cohort_sizes.append(None)
+                        continue
+                    lo, hi = band
+                    # Cohort = same-age-band players in metric_filtered_df
+                    # (auto-widen by +1 year per side until cohort ≥ 15).
+                    cohort = pd.DataFrame()
+                    for widen in range(0, 6):
+                        _lo, _hi = lo - widen, hi + widen
+                        cohort = metric_filtered_df[
+                            (metric_filtered_df['_age'] >= _lo)
+                            & (metric_filtered_df['_age'] <= _hi)
+                            & metric_filtered_df[selected_metric].notna()
+                        ]
+                        if len(cohort) >= 15:
+                            break
+                    if cohort.empty or pd.isna(_row[selected_metric]):
+                        _percentiles.append(None)
+                        _cohort_sizes.append(len(cohort) if not cohort.empty else 0)
+                        continue
+                    val = _row[selected_metric]
+                    if _ascending:
+                        # Lower-is-better metric — invert.
+                        rank = (cohort[selected_metric] <= val).sum()
+                    else:
+                        rank = (cohort[selected_metric] >= val).sum()
+                    # Convert "rank from top" → percentile.
+                    pct = 100.0 * (1.0 - (rank - 1) / max(len(cohort), 1))
+                    _percentiles.append(round(pct, 1))
+                    _cohort_sizes.append(len(cohort))
+                metric_filtered_df = metric_filtered_df.assign(
+                    _SameAgePct=_percentiles,
+                    _CohortSize=_cohort_sizes,
+                )
+                # Re-rank by the same-age percentile (highest = best).
+                sorted_df = (metric_filtered_df
+                             .sort_values(by='_SameAgePct', ascending=False, na_position='last')
+                             .head(num_players))
+                median_cohort = (pd.Series(_cohort_sizes).dropna().median()
+                                  if any(c is not None for c in _cohort_sizes) else None)
+                if median_cohort is not None:
+                    _saa_caption = (
+                        f"Same-age peer cohort: median {int(median_cohort)} players. "
+                        f"Band ±1 yr for ages 20-32, ±2 yr for ≤19 and ≥33; "
+                        f"auto-widens if n<15."
+                    )
+            else:
+                _sort_ascending = selected_metric in INVERT_METRICS
+                sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
 
             st.subheader(f"Top Players by {selected_metric} (per 90)")
 
@@ -8939,14 +9166,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
                 ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
 
+            # When the age-adjusted toggle is on, surface the same-age
+            # percentile + cohort size next to the selected metric so the
+            # user can tell rank-by-peer apart from raw value.
+            if age_adjusted and '_SameAgePct' in sorted_df.columns:
+                _metric_idx = display_df.columns.get_loc(selected_metric)
+                display_df.insert(_metric_idx + 1, 'Same-age %ile',
+                                   sorted_df['_SameAgePct'].values)
+                display_df.insert(_metric_idx + 2, 'Cohort n',
+                                   pd.Series(sorted_df['_CohortSize'].values).astype('Int64'))
+
             for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age']:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age', 'Cohort n']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
             player_ids = sorted_df['playerId'].tolist()
 
+            if _saa_caption:
+                st.caption(_saa_caption)
             st.caption("Click on a row to view that player's profile")
             selection = st.dataframe(
                 display_df.set_index('Rank'),
