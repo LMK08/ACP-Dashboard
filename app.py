@@ -604,6 +604,147 @@ def load_gpa_values():
         return pd.DataFrame()
 
 
+# ============================================================================
+# Cross-tier translation factors (Liga 3 ↔ Campeonato)
+# ----------------------------------------------------------------------------
+# Two sources for "translate this player's metric to the other tier":
+#   1. Opta Power Rankings → uniform multiplier based on league-average strength
+#      (data: opta_ratings.parquet, refreshed by fetch_opta_ratings.py)
+#   2. Empirical median ratios → from players who actually played ≥500 min in
+#      both leagues across our 7 covered seasons (data: derived on-demand from
+#      raw_events + complete_player_minutes)
+#
+# Both return a scalar multiplier (applied uniformly across all metrics for
+# the Opta source; per-metric for the empirical source).
+# ============================================================================
+@st.cache_data(ttl=3600)
+def load_opta_ratings():
+    """Load opta_ratings.parquet. Returns empty DF if missing."""
+    path = os.path.join(os.path.dirname(__file__), 'opta_ratings.parquet')
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(path)
+    except Exception as e:
+        logger.error(f"Failed to load opta_ratings.parquet: {e}")
+        return pd.DataFrame()
+
+
+# Map our internal competition IDs to Opta's domesticLeagueName strings.
+OPTA_LEAGUE_NAME_BY_COMP = {
+    43324: 'Liga 3',
+    702:   'Campeonato de Portugal Prio',
+}
+
+
+def opta_league_strength(comp_id: int) -> float | None:
+    """Mean current Opta rating of all clubs in the given league."""
+    name = OPTA_LEAGUE_NAME_BY_COMP.get(int(comp_id))
+    if not name:
+        return None
+    df = load_opta_ratings()
+    if df.empty or 'domesticLeagueName' not in df.columns:
+        return None
+    sub = df[df['domesticLeagueName'] == name]
+    if sub.empty:
+        return None
+    return float(sub['currentRating'].mean())
+
+
+def opta_translation_multiplier(source_comp_id: int, target_comp_id: int) -> float | None:
+    """Multiplier to apply to per-90 metrics when translating from source
+    league to target league via Opta strength. None if data is missing.
+
+    Interpretation: target_strength / source_strength. Above 1.0 means the
+    target league is stronger; below 1.0 means weaker. We MULTIPLY a
+    player's source-league per-90 by this to estimate target-league per-90
+    — i.e. a player in a weaker league has their numbers SCALED DOWN when
+    projected into a stronger one. (User-facing semantics: the projection
+    asks "how would this player's output translate if the opposition were
+    of target-league strength?")
+    """
+    src = opta_league_strength(source_comp_id)
+    tgt = opta_league_strength(target_comp_id)
+    if src is None or tgt is None or src == 0:
+        return None
+    return tgt / src
+
+
+@st.cache_data(ttl=3600)
+def compute_empirical_translation_factors(
+    _raw_events_df, _player_minutes_data,
+    source_comp_id: int, target_comp_id: int,
+    min_minutes: int = 500,
+) -> pd.DataFrame:
+    """Empirical per-metric translation ratios from cross-tier movers.
+
+    Strategy: for every player who has ≥min_minutes total minutes in BOTH
+    source_comp_id and target_comp_id across all our covered seasons,
+    compute their per-90 stats in each league, then take the median
+    (target_per_90 / source_per_90) ratio per metric.
+
+    Returns a DataFrame with columns:
+        metric, n_movers, median_ratio
+    indexed by metric name. Returns empty if not enough movers.
+    """
+    # Get season IDs per comp.
+    src_seasons = list(COMPETITIONS.get(source_comp_id, {}).get('seasons', {}).keys())
+    tgt_seasons = list(COMPETITIONS.get(target_comp_id, {}).get('seasons', {}).keys())
+    if not src_seasons or not tgt_seasons:
+        return pd.DataFrame(columns=['metric', 'n_movers', 'median_ratio'])
+
+    # Aggregate per-90 stats per league.
+    def _stats_for(season_ids, comp_id):
+        from_seasons = get_season_player_minutes(
+            _player_minutes_data, season_ids, comp_ids=[comp_id]
+        )
+        events = filter_by_league(get_season_events(_raw_events_df, season_ids), [comp_id])
+        if from_seasons.empty or events.empty:
+            return pd.DataFrame()
+        return calculate_all_player_stats(events, from_seasons, season_id=None,
+                                           cache_version=STATS_CACHE_VERSION)
+
+    src_stats = _stats_for(src_seasons, source_comp_id)
+    tgt_stats = _stats_for(tgt_seasons, target_comp_id)
+    if src_stats.empty or tgt_stats.empty:
+        return pd.DataFrame(columns=['metric', 'n_movers', 'median_ratio'])
+
+    # Filter to players with ≥min_minutes in BOTH leagues.
+    src_eligible = src_stats[src_stats.get('totalMinutes', 0) >= min_minutes].copy()
+    tgt_eligible = tgt_stats[tgt_stats.get('totalMinutes', 0) >= min_minutes].copy()
+    common = set(src_eligible['playerId']) & set(tgt_eligible['playerId'])
+    if len(common) < 30:
+        # Too few movers to trust per-metric medians.
+        return pd.DataFrame(columns=['metric', 'n_movers', 'median_ratio'])
+
+    src_kept = src_eligible[src_eligible['playerId'].isin(common)].set_index('playerId')
+    tgt_kept = tgt_eligible[tgt_eligible['playerId'].isin(common)].set_index('playerId')
+
+    # For each numeric column present in BOTH frames, compute the
+    # per-player ratio and median across movers.
+    rows = []
+    common_cols = set(src_kept.columns) & set(tgt_kept.columns)
+    for col in common_cols:
+        if not pd.api.types.is_numeric_dtype(src_kept[col]) \
+                or not pd.api.types.is_numeric_dtype(tgt_kept[col]):
+            continue
+        if col in ('playerId', 'totalMinutes', 'posMinutes'):
+            continue
+        a = src_kept[col].astype(float)
+        b = tgt_kept[col].astype(float)
+        # Ratio per player, dropping zeros and NaNs in the denominator.
+        ratios = (b / a.where(a > 0)).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(ratios) < 30:
+            continue
+        rows.append({
+            'metric': col,
+            'n_movers': int(len(ratios)),
+            'median_ratio': float(ratios.median()),
+        })
+    out = pd.DataFrame(rows).set_index('metric').sort_index()
+    return out
+
+
 def get_gpa_values_filtered(gpa_df, season_ids=None, comp_ids=None):
     """Return GPA values filtered by active season + competition selection.
 
@@ -9026,6 +9167,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      "age-appropriate veterans."
             )
 
+            # --- Cross-tier translation ---
+            # Only sensible when exactly one of Liga 3 / Campeonato is selected.
+            # When ON, applies a multiplier to the selected metric value so
+            # the user can see what the players would look like in the OTHER
+            # tier. Two methods available:
+            #   • Opta strength → uniform multiplier from league-average
+            #     Opta ratings (66.98 vs 61.06 → ~1.10× moving Camp → Liga 3)
+            #   • Empirical median → per-metric median ratio from players
+            #     who actually played ≥500 min in both leagues
+            cross_tier_modes = ['Off']
+            _trans_src_comp = _trans_tgt_comp = None
+            if selected_comp_ids and len(selected_comp_ids) == 1:
+                _src = int(selected_comp_ids[0])
+                if _src in (43324, 702):
+                    _trans_src_comp = _src
+                    _trans_tgt_comp = 702 if _src == 43324 else 43324
+                    cross_tier_modes = ['Off', 'Opta strength', 'Empirical median']
+            cross_tier_mode = st.sidebar.radio(
+                "Translate to other tier:",
+                cross_tier_modes,
+                key="player_analysis_cross_tier",
+                horizontal=False,
+                help="Project each player's selected-metric value into the "
+                     "OTHER league. Available when exactly one of Liga 3 or "
+                     "Campeonato is selected."
+            ) if len(cross_tier_modes) > 1 else 'Off'
+
             if position_filter:
                 metric_filtered_df = filtered_df[filtered_df['primaryPosition'].isin(position_filter)]
             else:
@@ -9176,6 +9344,54 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 display_df.insert(_metric_idx + 2, 'Cohort n',
                                    pd.Series(sorted_df['_CohortSize'].values).astype('Int64'))
 
+            # Cross-tier translation: insert a "Translated" column next
+            # to the selected metric. Multiplier depends on the chosen
+            # method (Opta uniform vs empirical per-metric median).
+            _tier_caption = None
+            if cross_tier_mode != 'Off' and _trans_src_comp and _trans_tgt_comp:
+                _src_name = COMPETITIONS.get(_trans_src_comp, {}).get('name', str(_trans_src_comp))
+                _tgt_name = COMPETITIONS.get(_trans_tgt_comp, {}).get('name', str(_trans_tgt_comp))
+                _multiplier = None
+                _n_movers = None
+                if cross_tier_mode == 'Opta strength':
+                    _multiplier = opta_translation_multiplier(_trans_src_comp, _trans_tgt_comp)
+                    _src_strength = opta_league_strength(_trans_src_comp)
+                    _tgt_strength = opta_league_strength(_trans_tgt_comp)
+                    if _multiplier is not None:
+                        _tier_caption = (
+                            f"Opta league-strength translation: "
+                            f"{_src_name} avg {_src_strength:.2f} → "
+                            f"{_tgt_name} avg {_tgt_strength:.2f} = "
+                            f"**×{_multiplier:.3f}**"
+                        )
+                elif cross_tier_mode == 'Empirical median':
+                    with st.spinner("Computing cross-tier translation factors…"):
+                        _factors = compute_empirical_translation_factors(
+                            raw_events_df, player_minutes_data,
+                            _trans_src_comp, _trans_tgt_comp,
+                        )
+                    if not _factors.empty and selected_metric in _factors.index:
+                        _multiplier = float(_factors.loc[selected_metric, 'median_ratio'])
+                        _n_movers = int(_factors.loc[selected_metric, 'n_movers'])
+                        _tier_caption = (
+                            f"Empirical translation ({_src_name} → {_tgt_name}): "
+                            f"median ratio from {_n_movers} cross-tier movers "
+                            f"with ≥500 min in both = **×{_multiplier:.3f}**"
+                        )
+
+                if _multiplier is not None:
+                    _metric_idx_t = display_df.columns.get_loc(selected_metric)
+                    _translated_vals = sorted_df[selected_metric].astype(float) * _multiplier
+                    display_df.insert(
+                        _metric_idx_t + 1,
+                        f"→ {_tgt_name}",
+                        _translated_vals.values,
+                    )
+                elif cross_tier_mode == 'Empirical median':
+                    st.caption(f"⚠️ No empirical translation available for "
+                                f"{selected_metric} ({_src_name} → {_tgt_name}) — "
+                                f"cohort below n=30 threshold.")
+
             for col in display_df.columns:
                 if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age', 'Cohort n']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
@@ -9186,6 +9402,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             if _saa_caption:
                 st.caption(_saa_caption)
+            if _tier_caption:
+                st.markdown(_tier_caption)
             st.caption("Click on a row to view that player's profile")
             selection = st.dataframe(
                 display_df.set_index('Rank'),
