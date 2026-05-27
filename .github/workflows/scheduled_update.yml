@@ -85,6 +85,13 @@ jobs:
           WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
         run: python fetch_team_stats.py
 
+      - name: Fetch Opta Power Rankings (Portugal)
+        # Scrapes dataviz.theanalyst.com/opta-power-rankings/index.js,
+        # extracts the embedded Portuguese clubs, writes opta_ratings.parquet.
+        # Used by the dashboard for league-strength translation toggles.
+        # Cheap (~16 MB download + parse, runs in <10s) so it runs every refresh.
+        run: python fetch_opta_ratings.py
+
       - name: Update prediction model
         run: python update_model.py
 
@@ -97,7 +104,7 @@ jobs:
           git config --global user.email 'github-actions-bot@users.noreply.github.com'
 
           # Add all data files EXCEPT raw_events.parquet (too large for GitHub, lives on HF only)
-          git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet
+          git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet opta_ratings.parquet
           git add -f *.pkl
 
           if [ -n "$(git status --porcelain)" ]; then
