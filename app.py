@@ -9728,6 +9728,339 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 st.warning(f"No players found for {selected_template} template with current filters.")
 
+        # ===== Distribution violins (appended below either Overview or
+        # template table). Skips Individual Metric because that view is
+        # already a per-metric leaderboard. =====
+        if _selected_view != "Individual Metric":
+            st.markdown("---")
+
+            from plotly.subplots import make_subplots as _make_subplots
+
+            def _pos_to_group_full(pos):
+                """primaryPosition → top-level position-group label
+                (matches _TEMPLATE_GROUPS keys)."""
+                if pos is None or pd.isna(pos):
+                    return None
+                p = str(pos)
+                if p == 'GK': return 'Goalkeepers'
+                if p in ('CB','LCB','RCB','LCB3','RCB3'): return 'Center Backs'
+                if p in ('LB','RB','LB5','RB5','LWB','RWB'): return 'Full Backs'
+                if p in ('CMF','LCMF','RCMF','LCMF3','RCMF3',
+                         'DMF','LDMF','RDMF'): return 'Central Midfielders'
+                if p in ('AMF','LAMF','RAMF','LMF','RMF',
+                         'LW','RW','LWF','RWF'): return 'Attacking Mids / Wingers'
+                if p in ('CF','SS'): return 'Forwards'
+                return None
+
+            def _best_fit_in_group(row, group_roles):
+                """Best Role_Score among the templates in this group."""
+                vals = []
+                for r in group_roles:
+                    col = f"{r}_Score"
+                    if col in row.index:
+                        v = row.get(col)
+                        if v is not None and not pd.isna(v):
+                            vals.append(float(v))
+                return max(vals) if vals else None
+
+            def _add_strip(fig, row_idx, col_idx, values, names, teams,
+                            metric_label, y_lo, y_hi, scaled_w, sid):
+                """Append a violin + jittered dots to the (row, col)
+                subplot. Hover on a dot shows player + team + value."""
+                if len(values) < 3:
+                    return
+                # 1) Violin shape
+                fig.add_trace(go.Violin(
+                    x=np.zeros(len(values)),
+                    y=values,
+                    points=False,
+                    box_visible=False,
+                    meanline_visible=False,
+                    side='both',
+                    width=scaled_w,
+                    line_color='rgba(80,80,80,0.55)',
+                    fillcolor='rgba(140,140,140,0.18)',
+                    showlegend=False,
+                    hoverinfo='skip',
+                    name='',
+                ), row=row_idx, col=col_idx)
+                # 2) Colored jittered dots with rich hover text
+                _rng = np.random.default_rng(seed=int(sid) & 0xFFFFFFFF)
+                _half = max(0.06, scaled_w / 2 - 0.04)
+                _jit = _rng.uniform(-_half, _half, size=len(values))
+                _custom = np.array(list(zip(names, teams)), dtype=object)
+                fig.add_trace(go.Scatter(
+                    x=_jit, y=values,
+                    mode='markers',
+                    marker=dict(
+                        size=6,
+                        color=values,
+                        colorscale='RdYlGn',
+                        cmin=y_lo, cmax=y_hi,
+                        opacity=0.7,
+                        line=dict(width=0),
+                        showscale=False,
+                    ),
+                    customdata=_custom,
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>"
+                        "Team: %{customdata[1]}<br>"
+                        f"{metric_label}: " + "%{y:.3f}<extra></extra>"
+                    ),
+                    showlegend=False,
+                    name='',
+                ), row=row_idx, col=col_idx)
+                fig.update_xaxes(
+                    type='linear', showticklabels=False, zeroline=False,
+                    range=[-0.5, 0.5], row=row_idx, col=col_idx,
+                )
+
+            def _build_panel_for_group(group_name, source_df, metric_key):
+                """Return (values, names, teams) for the panel at this
+                position group. metric_key ∈ {'action_v', 'best_fit'}."""
+                grp_pop = source_df[
+                    source_df['primaryPosition'].map(_pos_to_group_full)
+                    == group_name
+                ]
+                if grp_pop.empty:
+                    return np.array([]), [], []
+                if metric_key == 'action_v':
+                    col = next((c for c in ('Total Value', 'total_v_per_90')
+                                  if c in grp_pop.columns), None)
+                    if col is None:
+                        return np.array([]), [], []
+                    sub = grp_pop[grp_pop[col].notna()]
+                    return (sub[col].astype(float).values,
+                             sub.get('playerName', sub.index).astype(str).tolist(),
+                             sub.get('teamName', pd.Series([''] * len(sub))).fillna('').astype(str).tolist())
+                # best_fit
+                group_roles = _TEMPLATE_GROUPS.get(group_name, [])
+                if not group_roles:
+                    return np.array([]), [], []
+                _scores = grp_pop.apply(_best_fit_in_group, axis=1,
+                                          args=(group_roles,))
+                mask = _scores.notna()
+                vals = _scores[mask].astype(float).values
+                names = grp_pop.loc[mask].get('playerName',
+                            grp_pop.loc[mask].index).astype(str).tolist()
+                teams = grp_pop.loc[mask].get(
+                    'teamName', pd.Series([''] * mask.sum())
+                ).fillna('').astype(str).tolist()
+                return vals, names, teams
+
+            # --- View-dependent rendering ---
+            if _selected_view == "Overview":
+                st.subheader("Distribution by Position Group")
+                _viz_metric = st.radio(
+                    "Distribution metric:",
+                    ["Action V/90", "Best-fit Rating"],
+                    horizontal=True,
+                    key="player_analysis_viz_metric_overview",
+                )
+                _metric_key = 'action_v' if _viz_metric == 'Action V/90' else 'best_fit'
+
+                _groups = ['Goalkeepers', 'Center Backs', 'Full Backs',
+                            'Central Midfielders',
+                            'Attacking Mids / Wingers', 'Forwards']
+                _panels = []
+                for g in _groups:
+                    vals, names, teams = _build_panel_for_group(
+                        g, filtered_df, _metric_key
+                    )
+                    if len(vals) >= 5:
+                        _panels.append({
+                            'label': f"{g}<br><span style='font-size:0.85em;color:#777'>n={len(vals)}</span>",
+                            'group': g,
+                            'values': vals,
+                            'names': names,
+                            'teams': teams,
+                        })
+
+                if not _panels:
+                    st.caption(
+                        f"No {_viz_metric} data available for any position "
+                        f"group in the current selection."
+                    )
+                else:
+                    _pop_concat = np.concatenate([p['values'] for p in _panels])
+                    _y_lo = float(np.nanmin(_pop_concat))
+                    _y_hi = float(np.nanmax(_pop_concat))
+                    _y_pad = 0.05 * (_y_hi - _y_lo or 1.0)
+                    _max_n = max(len(p['values']) for p in _panels) or 1
+                    _fig = _make_subplots(
+                        rows=1, cols=len(_panels),
+                        shared_yaxes=True,
+                        subplot_titles=[p['label'] for p in _panels],
+                        horizontal_spacing=0.01,
+                    )
+                    for _i, _p in enumerate(_panels, start=1):
+                        _scaled_w = 0.85 * (len(_p['values']) / _max_n) ** 0.5
+                        # Use a stable per-group seed for jitter (so layout
+                        # doesn't dance on rerun).
+                        _seed = abs(hash(_p['group'])) & 0xFFFFFFFF
+                        _add_strip(
+                            _fig, 1, _i,
+                            _p['values'], _p['names'], _p['teams'],
+                            _viz_metric, _y_lo, _y_hi, _scaled_w, _seed,
+                        )
+                    _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
+                    _fig.update_layout(
+                        title=(f"{_viz_metric} distribution by position "
+                                f"group · ≥{min_minutes_filter:.0f} min"),
+                        height=460,
+                        margin=dict(t=70, b=30, l=40, r=20),
+                        showlegend=False,
+                    )
+                    for _ann in _fig['layout']['annotations']:
+                        _ann['font'] = dict(size=11)
+                    st.plotly_chart(_fig, use_container_width=True)
+
+            else:
+                # Template view — one panel per season for that template's
+                # position group. We compute role scores for each season
+                # (cached), filter to the template's eligible positions,
+                # and use THAT template's Role_Score as the y-value.
+                _template = _selected_view
+                _eligible_positions = POSITION_GROUPS.get(_template, [])
+                if not _eligible_positions:
+                    st.caption(f"No position list defined for template '{_template}'.")
+                else:
+                    st.subheader(f"{_template} distribution across seasons")
+                    _viz_metric = st.radio(
+                        "Distribution metric:",
+                        ["Action V/90", "Best-fit Rating"],
+                        horizontal=True,
+                        key="player_analysis_viz_metric_template",
+                    )
+
+                    # Iterate over every season we have data for, sorted
+                    # chronologically by parsed start year.
+                    def _season_start_year(label):
+                        try: return int(str(label).split('/')[0])
+                        except: return None
+                    _season_panels = []
+                    _all_sids = sorted(
+                        [int(s) for s in SEASON_ID_MAP.keys()],
+                        key=lambda s: (
+                            _season_start_year(SEASON_ID_MAP.get(s, '')) or 0,
+                            competition_for_season(s) or 0,
+                            s,
+                        ),
+                    )
+
+                    with st.spinner(f"Computing {_template} distributions across "
+                                     f"{len(_all_sids)} seasons…"):
+                        for _sid in _all_sids:
+                            _evs = get_season_events(raw_events_df, [_sid])
+                            _mins = player_minutes_data.get(_sid)
+                            if _evs.empty or _mins is None or _mins.empty:
+                                continue
+                            if _viz_metric == 'Action V/90':
+                                # GPA path: filter by season + position
+                                if 'load_gpa_values' in globals():
+                                    _gpa_all = load_gpa_values()
+                                else:
+                                    _gpa_all = None
+                                if _gpa_all is None or _gpa_all.empty:
+                                    continue
+                                _val_col = next((c for c in ('Total Value',
+                                                  'total_v_per_90')
+                                                  if c in _gpa_all.columns), None)
+                                if _val_col is None:
+                                    continue
+                                _sub = _gpa_all[
+                                    (_gpa_all['seasonId'] == _sid)
+                                    & (_gpa_all.get('mins_played', 0)
+                                       >= min_minutes_filter)
+                                    & (_gpa_all.get('position', '').astype(str)
+                                       .isin(_eligible_positions))
+                                ]
+                                _sub = _sub[_sub[_val_col].notna()]
+                                vals = _sub[_val_col].astype(float).values
+                                names = _sub.get('name', pd.Series([''] * len(_sub))).astype(str).tolist()
+                                # GPA doesn't carry teamName — leave blank
+                                teams = [''] * len(_sub)
+                            else:
+                                # Best-fit (this template's specific Role_Score)
+                                _stats = calculate_all_player_stats(
+                                    _evs, _mins, season_id=_sid
+                                )
+                                if _stats.empty:
+                                    continue
+                                _scored = calculate_player_percentiles_and_scores(
+                                    _stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
+                                    min_minutes=int(min_minutes_filter),
+                                    season_id=_sid,
+                                )
+                                if _scored.empty:
+                                    continue
+                                _score_col = f"{_template}_Score"
+                                if _score_col not in _scored.columns:
+                                    continue
+                                _sub = _scored[
+                                    _scored['primaryPosition'].isin(_eligible_positions)
+                                    & _scored[_score_col].notna()
+                                    & (_scored.get('totalMinutes', 0)
+                                       >= min_minutes_filter)
+                                ]
+                                vals = _sub[_score_col].astype(float).values
+                                names = _sub.get('playerName',
+                                            pd.Series([''] * len(_sub))).astype(str).tolist()
+                                teams = _sub.get('teamName',
+                                            pd.Series([''] * len(_sub))).fillna('').astype(str).tolist()
+
+                            if len(vals) < 5:
+                                continue
+                            _comp = competition_for_season(_sid)
+                            _comp_short = ('L3' if _comp == 43324
+                                            else 'CP' if _comp == 702
+                                            else (COMPETITIONS.get(_comp, {}).get('name', '') or '')[:6])
+                            _season_panels.append({
+                                'sid': _sid,
+                                'label': (f"{SEASON_ID_MAP.get(_sid, str(_sid))}<br>"
+                                           f"<span style='font-size:0.85em;color:#777'>"
+                                           f"{_comp_short} · n={len(vals)}</span>"),
+                                'values': vals,
+                                'names': names,
+                                'teams': teams,
+                            })
+
+                    if not _season_panels:
+                        st.caption(
+                            f"No {_viz_metric} data available across seasons "
+                            f"for the {_template} template."
+                        )
+                    else:
+                        _pop_concat = np.concatenate([p['values'] for p in _season_panels])
+                        _y_lo = float(np.nanmin(_pop_concat))
+                        _y_hi = float(np.nanmax(_pop_concat))
+                        _y_pad = 0.05 * (_y_hi - _y_lo or 1.0)
+                        _max_n = max(len(p['values']) for p in _season_panels) or 1
+                        _fig = _make_subplots(
+                            rows=1, cols=len(_season_panels),
+                            shared_yaxes=True,
+                            subplot_titles=[p['label'] for p in _season_panels],
+                            horizontal_spacing=0.01,
+                        )
+                        for _i, _p in enumerate(_season_panels, start=1):
+                            _scaled_w = 0.85 * (len(_p['values']) / _max_n) ** 0.5
+                            _add_strip(
+                                _fig, 1, _i,
+                                _p['values'], _p['names'], _p['teams'],
+                                _viz_metric, _y_lo, _y_hi, _scaled_w, _p['sid'],
+                            )
+                        _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
+                        _fig.update_layout(
+                            title=(f"{_template} · {_viz_metric} distribution "
+                                    f"by season · ≥{min_minutes_filter:.0f} min"),
+                            height=460,
+                            margin=dict(t=70, b=30, l=40, r=20),
+                            showlegend=False,
+                        )
+                        for _ann in _fig['layout']['annotations']:
+                            _ann['font'] = dict(size=11)
+                        st.plotly_chart(_fig, use_container_width=True)
+
     elif analysis_type == 'Match Predictor':
         selected_comp_ids = league_selector("match_predictor")
         st.markdown("Predict the outcome of upcoming matches based on team performance data with season-specific priors.")
