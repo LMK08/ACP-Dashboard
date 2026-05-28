@@ -7447,197 +7447,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
 
-        # --- 4b. Career Trajectory ----------------------------------------
-        # Per-season summary of the player's appearances across every
-        # season we have data for, plus a small chart of their total
-        # GPA action value /90 vs age (or minutes if GPA not available
-        # for that season). Lives BEFORE the radar so the radar is
-        # contextualized by where in the career arc this season sits.
-        st.subheader("Career Trajectory")
-
-        def _age_at_season_label(birth: str | None, season_label: str) -> float | None:
-            """Estimate age at season midpoint. Season labels look like
-            '2025/26' or '2025/2026'; pick the start year and add 0.5
-            so the player's age reflects the middle of the campaign."""
-            if not birth or pd.isna(birth):
-                return None
-            try:
-                from datetime import datetime
-                bd = pd.to_datetime(birth, errors='coerce')
-                if pd.isna(bd):
-                    return None
-                # Extract start year from label.
-                start_year = int(str(season_label).split('/')[0])
-                mid_season = datetime(start_year, 12, 31)
-                return round((mid_season - bd.to_pydatetime()).days / 365.25, 1)
-            except Exception:
-                return None
-
-        # Walk player_minutes_data (dict of seasonId -> DataFrame). We
-        # collect one row per (season, team) appearance for the player.
-        career_rows = []
-        birth = player_bio.get('birthDate') if isinstance(player_bio, pd.Series) else None
-        for _sid, _pm_df in player_minutes_data.items():
-            if not isinstance(_pm_df, pd.DataFrame) or _pm_df.empty:
-                continue
-            if 'playerId' not in _pm_df.columns:
-                continue
-            sub = _pm_df[_pm_df['playerId'] == player_id]
-            if sub.empty:
-                continue
-            for _, row in sub.iterrows():
-                _comp_id = competition_for_season(_sid)
-                _season_label = SEASON_ID_MAP.get(_sid, str(_sid))
-                _comp_name = (COMPETITIONS.get(_comp_id, {}).get('name')
-                               if _comp_id else 'Other')
-                career_rows.append({
-                    'Season': _season_label,
-                    '_seasonId': _sid,
-                    'Competition': _comp_name or 'Other',
-                    '_compId': _comp_id,
-                    'Team': row.get('teamName', 'N/A'),
-                    'Position': row.get('primaryPosition', 'N/A'),
-                    'Minutes': int(row.get('totalMinutes', 0) or 0),
-                    'Age': _age_at_season_label(birth, _season_label),
-                })
-
-        if not career_rows:
-            st.caption("No multi-season history available for this player.")
-        else:
-            career_df = pd.DataFrame(career_rows).sort_values(['_seasonId'])
-
-            # Merge in total GPA action value /90 per season where available.
-            # The per-90 column in the GPA parquet is "Total Value" (display
-            # name); the raw lifetime sum is "total_v". We want per-90.
-            try:
-                _gpa_full = load_gpa_values()
-                if _gpa_full is not None and not _gpa_full.empty \
-                        and 'playerId' in _gpa_full.columns:
-                    _gpa_player = _gpa_full[_gpa_full['playerId'] == player_id].copy()
-                    if not _gpa_player.empty:
-                        _val_col = None
-                        for _candidate in ('Total Value', 'total_v_per_90'):
-                            if _candidate in _gpa_player.columns:
-                                _val_col = _candidate
-                                break
-                        if _val_col:
-                            career_df = career_df.merge(
-                                _gpa_player[['seasonId', _val_col]]
-                                    .rename(columns={'seasonId': '_seasonId',
-                                                      _val_col: 'Action V/90'})
-                                    .drop_duplicates('_seasonId'),
-                                on='_seasonId', how='left'
-                            )
-            except Exception:
-                # GPA dataset optional — silently fall back to ratings-only.
-                pass
-
-            # ---- Per-season best-fit role rating ----
-            # For each season the player has appearances, compute their
-            # role-fit composite (the same Role_Score columns used by the
-            # radar) and pick their best-fit role's score. Cached helpers
-            # mean this runs once per (season) per session.
-            _role_rating_by_season: dict[int, float] = {}
-            _role_name_by_season: dict[int, str] = {}
-            try:
-                for _sid in career_df['_seasonId'].unique():
-                    _events_sid = get_season_events(raw_events_df, [_sid])
-                    _minutes_sid = player_minutes_data.get(_sid)
-                    if _events_sid.empty or _minutes_sid is None or _minutes_sid.empty:
-                        continue
-                    _stats_sid = calculate_all_player_stats(
-                        _events_sid, _minutes_sid, season_id=_sid
-                    )
-                    if _stats_sid.empty:
-                        continue
-                    _scores_sid = calculate_player_percentiles_and_scores(
-                        _stats_sid, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
-                        min_minutes=500, season_id=_sid
-                    )
-                    if _scores_sid.empty:
-                        continue
-                    _player_row = _scores_sid[_scores_sid['playerId'] == player_id]
-                    if _player_row.empty:
-                        continue
-                    _player_row = _player_row.iloc[0]
-                    _pos = _player_row.get('primaryPosition')
-                    _eligible = [r for r in WEIGHTS
-                                  if _pos in POSITION_GROUPS.get(r, [])]
-                    _scored = [(r, float(_player_row.get(f"{r}_Score", 0) or 0))
-                                for r in _eligible
-                                if f"{r}_Score" in _player_row.index]
-                    if not _scored:
-                        continue
-                    _best_role, _best_score = max(_scored, key=lambda t: t[1])
-                    _role_rating_by_season[int(_sid)] = round(_best_score, 1)
-                    _role_name_by_season[int(_sid)] = _best_role
-            except Exception as _exc:
-                logger.warning(f"Could not compute per-season role ratings: {_exc}")
-
-            if _role_rating_by_season:
-                career_df['Best-fit Rating'] = career_df['_seasonId'].map(_role_rating_by_season)
-                career_df['Best-fit Role']   = career_df['_seasonId'].map(_role_name_by_season)
-
-            # Display the per-season table.
-            display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
-            for _round_col in ('Action V/90',):
-                if _round_col in display_career.columns:
-                    display_career[_round_col] = display_career[_round_col].round(3)
-            st.dataframe(display_career, use_container_width=True, hide_index=True)
-
-            # ---- Trajectory chart ----
-            # Let the user choose what to plot. Default to whichever metric
-            # actually has data; never fall back to Minutes (per user request).
-            _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
-                                    if m in career_df.columns
-                                    and career_df[m].notna().any()]
-            if not _chart_y_candidates:
-                st.caption(
-                    "No GPA action-value or role-fit ratings available across "
-                    "this player's seasons — chart suppressed. (Check that "
-                    "gpa_player_season_values.parquet covers this player's "
-                    "seasons and that role scoring succeeded.)"
-                )
-            else:
-                chart_y = st.radio(
-                    "Trajectory metric:",
-                    _chart_y_candidates,
-                    horizontal=True,
-                    key=f"_traj_metric_{player_id}",
-                )
-                chart_x = 'Age' if career_df['Age'].notna().any() else 'Season'
-                if chart_x == 'Age':
-                    chart_df = career_df.dropna(subset=['Age', chart_y]).sort_values('Age')
-                else:
-                    chart_df = career_df.dropna(subset=[chart_y]).sort_values('_seasonId')
-                if chart_df.empty:
-                    st.caption(f"No {chart_y} data plottable for this player.")
-                else:
-                    _fig = go.Figure()
-                    for _comp, _grp in chart_df.groupby('Competition'):
-                        _fig.add_trace(go.Scatter(
-                            x=_grp[chart_x], y=_grp[chart_y],
-                            mode='lines+markers',
-                            name=_comp,
-                            hovertemplate=(
-                                "<b>%{customdata[0]}</b> · %{customdata[1]}<br>"
-                                "Team: %{customdata[2]}<br>"
-                                "Minutes: %{customdata[3]}<br>"
-                                f"{chart_y}: " + "%{y}<extra></extra>"
-                            ),
-                            customdata=_grp[['Season', 'Competition', 'Team', 'Minutes']].values,
-                        ))
-                    _fig.update_layout(
-                        title=f"{chart_y} by {chart_x.lower()}",
-                        xaxis_title=chart_x,
-                        yaxis_title=chart_y,
-                        height=360,
-                        margin=dict(t=40, b=40, l=40, r=20),
-                        legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                    )
-                    st.plotly_chart(_fig, use_container_width=True)
-
-        st.divider()
+        # --- Career Trajectory moved to just above Overall Season Stats ---
 
        # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
@@ -7951,6 +7761,312 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
             except Exception as e:
                 print(f"Warning: Could not compute outlier stats: {e}")
+
+        st.divider()
+
+        # --- 5b. Career Trajectory ----------------------------------------
+        # Per-season summary of the player's appearances + per-season
+        # strip plots of the chosen metric (Action V/90 or Best-fit
+        # Rating) showing the full league-wide distribution with the
+        # selected player highlighted. Lives just above Overall Season
+        # Stats so the trajectory context flows into the per-season
+        # breakdown right below it.
+        st.subheader("Career Trajectory")
+
+        from plotly.subplots import make_subplots as _make_subplots
+
+        def _season_start_year(season_label: str) -> int | None:
+            """Parse a season label like '2025/26' or '2025/2026' and
+            return the start year. Used to sort seasons chronologically
+            because raw seasonIds aren't comparable across competitions
+            (e.g. Camp 23/24 seasonId 190230 sorts AFTER Liga 3 24/25
+            seasonId 190090 by numeric value)."""
+            try:
+                return int(str(season_label).split('/')[0])
+            except (ValueError, AttributeError, IndexError):
+                return None
+
+        def _age_at_season_label(birth, season_label) -> float | None:
+            """Age at midpoint of the season (start year + 0.5)."""
+            if not birth or pd.isna(birth):
+                return None
+            try:
+                from datetime import datetime
+                bd = pd.to_datetime(birth, errors='coerce')
+                if pd.isna(bd):
+                    return None
+                start_year = _season_start_year(season_label)
+                if start_year is None:
+                    return None
+                mid_season = datetime(start_year, 12, 31)
+                return round((mid_season - bd.to_pydatetime()).days / 365.25, 1)
+            except Exception:
+                return None
+
+        # ---- 1) Walk player_minutes_data to build per-season rows ----
+        career_rows = []
+        birth = player_bio.get('birthDate') if isinstance(player_bio, pd.Series) else None
+        for _sid, _pm_df in player_minutes_data.items():
+            if not isinstance(_pm_df, pd.DataFrame) or _pm_df.empty:
+                continue
+            if 'playerId' not in _pm_df.columns:
+                continue
+            sub = _pm_df[_pm_df['playerId'] == player_id]
+            if sub.empty:
+                continue
+            for _, row in sub.iterrows():
+                _comp_id = competition_for_season(_sid)
+                _season_label = SEASON_ID_MAP.get(_sid, str(_sid))
+                _comp_name = (COMPETITIONS.get(_comp_id, {}).get('name')
+                               if _comp_id else 'Other')
+                career_rows.append({
+                    'Season': _season_label,
+                    '_seasonId': _sid,
+                    '_startYear': _season_start_year(_season_label) or 0,
+                    'Competition': _comp_name or 'Other',
+                    '_compId': _comp_id,
+                    'Team': row.get('teamName', 'N/A'),
+                    'Position': row.get('primaryPosition', 'N/A'),
+                    'Minutes': int(row.get('totalMinutes', 0) or 0),
+                    'Age': _age_at_season_label(birth, _season_label),
+                })
+
+        if not career_rows:
+            st.caption("No multi-season history available for this player.")
+        else:
+            # Chronological sort: by parsed start year, then by competition
+            # id as a stable tiebreaker (so Liga 3 23/24 + Camp 23/24
+            # land next to each other deterministically).
+            career_df = (pd.DataFrame(career_rows)
+                          .sort_values(['_startYear', '_compId', '_seasonId']))
+
+            # ---- 2) Merge in GPA Total Value per season for the player ----
+            _gpa_full = None
+            try:
+                _gpa_full = load_gpa_values()
+                if _gpa_full is not None and not _gpa_full.empty \
+                        and 'playerId' in _gpa_full.columns:
+                    _gpa_player = _gpa_full[_gpa_full['playerId'] == player_id].copy()
+                    if not _gpa_player.empty:
+                        _val_col = next((c for c in ('Total Value', 'total_v_per_90')
+                                          if c in _gpa_player.columns), None)
+                        if _val_col:
+                            career_df = career_df.merge(
+                                _gpa_player[['seasonId', _val_col]]
+                                    .rename(columns={'seasonId': '_seasonId',
+                                                      _val_col: 'Action V/90'})
+                                    .drop_duplicates('_seasonId'),
+                                on='_seasonId', how='left'
+                            )
+            except Exception:
+                pass
+
+            # ---- 3) Per-season best-fit rating + per-season population ----
+            # For each season the player has data in, also collect the
+            # FULL league-wide distribution of the metric so we can plot
+            # a violin per season with the player highlighted.
+            _role_rating_by_season: dict[int, float] = {}
+            _role_name_by_season:   dict[int, str]   = {}
+            _rating_population: dict[int, np.ndarray] = {}  # sid -> array of all players' best-fit scores
+
+            def _best_fit_score(row, _weights, _groups):
+                pos = row.get('primaryPosition')
+                if pd.isna(pos):
+                    return None
+                eligible = [r for r in _weights if pos in _groups.get(r, [])]
+                vals = [row.get(f"{r}_Score") for r in eligible
+                         if f"{r}_Score" in row.index]
+                vals = [float(v) for v in vals if v is not None and not pd.isna(v)]
+                return max(vals) if vals else None
+
+            try:
+                for _sid in career_df['_seasonId'].unique():
+                    _events_sid = get_season_events(raw_events_df, [_sid])
+                    _minutes_sid = player_minutes_data.get(_sid)
+                    if _events_sid.empty or _minutes_sid is None or _minutes_sid.empty:
+                        continue
+                    _stats_sid = calculate_all_player_stats(
+                        _events_sid, _minutes_sid, season_id=_sid
+                    )
+                    if _stats_sid.empty:
+                        continue
+                    _scores_sid = calculate_player_percentiles_and_scores(
+                        _stats_sid, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
+                        min_minutes=500, season_id=_sid
+                    )
+                    if _scores_sid.empty:
+                        continue
+                    # Per-player best-fit role score (vectorized via apply).
+                    _scores_sid = _scores_sid.copy()
+                    _scores_sid['_best_fit'] = _scores_sid.apply(
+                        _best_fit_score, axis=1,
+                        args=(WEIGHTS, POSITION_GROUPS),
+                    )
+                    # Population for violin = all qualifying players this season.
+                    _pop = _scores_sid['_best_fit'].dropna().values
+                    if len(_pop) > 0:
+                        _rating_population[int(_sid)] = _pop
+                    # The selected player's row.
+                    _player_rows = _scores_sid[_scores_sid['playerId'] == player_id]
+                    if _player_rows.empty:
+                        continue
+                    _player_row = _player_rows.iloc[0]
+                    _pos = _player_row.get('primaryPosition')
+                    _eligible = [r for r in WEIGHTS
+                                  if _pos in POSITION_GROUPS.get(r, [])]
+                    _scored = [(r, float(_player_row.get(f"{r}_Score", 0) or 0))
+                                for r in _eligible
+                                if f"{r}_Score" in _player_row.index]
+                    if not _scored:
+                        continue
+                    _best_role, _best_score = max(_scored, key=lambda t: t[1])
+                    _role_rating_by_season[int(_sid)] = round(_best_score, 1)
+                    _role_name_by_season[int(_sid)] = _best_role
+            except Exception as _exc:
+                logger.warning(f"Could not compute per-season role ratings: {_exc}")
+
+            if _role_rating_by_season:
+                career_df['Best-fit Rating'] = career_df['_seasonId'].map(_role_rating_by_season)
+                career_df['Best-fit Role']   = career_df['_seasonId'].map(_role_name_by_season)
+
+            # ---- 4) Display per-season table ----
+            _display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
+            if 'Action V/90' in _display_career.columns:
+                _display_career['Action V/90'] = _display_career['Action V/90'].round(3)
+            st.dataframe(_display_career, use_container_width=True, hide_index=True)
+
+            # ---- 5) Per-season strip plots with player highlighted ----
+            _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
+                                    if m in career_df.columns
+                                    and career_df[m].notna().any()]
+            if not _chart_y_candidates:
+                st.caption(
+                    "No Action V/90 or Best-fit Rating data available across "
+                    "this player's seasons — chart suppressed."
+                )
+            else:
+                chart_y = st.radio(
+                    "Trajectory metric:",
+                    _chart_y_candidates,
+                    horizontal=True,
+                    key=f"_traj_metric_{player_id}",
+                )
+                # Build (season, label, population, player_value) list in
+                # chronological order. Skip seasons where the player has
+                # no value for the chosen metric — the violin without a
+                # highlighted dot is just visual noise.
+                _panels = []
+                _seen_sids = set()
+                for _, _row in career_df.iterrows():
+                    _sid = int(_row['_seasonId'])
+                    if _sid in _seen_sids:
+                        continue  # de-dupe rows where player had multi teams
+                    _seen_sids.add(_sid)
+                    _pv = _row.get(chart_y)
+                    if pd.isna(_pv):
+                        continue
+                    if chart_y == 'Action V/90' and _gpa_full is not None:
+                        _val_col = next((c for c in ('Total Value', 'total_v_per_90')
+                                          if c in _gpa_full.columns), None)
+                        if _val_col:
+                            _pop = (_gpa_full.loc[_gpa_full['seasonId'] == _sid, _val_col]
+                                              .dropna().values)
+                        else:
+                            _pop = np.array([])
+                    else:
+                        _pop = _rating_population.get(_sid, np.array([]))
+                    if len(_pop) < 5:
+                        continue
+                    _age_str = (f" · age {_row['Age']:.0f}"
+                                 if pd.notna(_row.get('Age')) else "")
+                    _comp_short = ('L3' if _row.get('_compId') == 43324
+                                    else 'CP' if _row.get('_compId') == 702
+                                    else (_row.get('Competition') or '')[:6])
+                    _panels.append({
+                        'sid': _sid,
+                        'label': f"{_row['Season']}<br>{_comp_short}{_age_str}",
+                        'population': _pop,
+                        'player_value': float(_pv),
+                        'team': _row.get('Team', ''),
+                    })
+
+                if not _panels:
+                    st.caption(
+                        f"No seasons have both a {chart_y} value for this "
+                        f"player AND a comparable population to plot."
+                    )
+                else:
+                    # One subplot per season, shared y-axis so the player's
+                    # trajectory is easy to follow across seasons.
+                    _fig = _make_subplots(
+                        rows=1, cols=len(_panels),
+                        shared_yaxes=True,
+                        subplot_titles=[p['label'] for p in _panels],
+                        horizontal_spacing=0.01,
+                    )
+                    # Common y-range across all panels for fair comparison.
+                    _all_vals = np.concatenate([p['population'] for p in _panels]
+                                                + [[p['player_value']] for p in _panels])
+                    _y_lo = float(np.nanmin(_all_vals))
+                    _y_hi = float(np.nanmax(_all_vals))
+                    _y_pad = 0.05 * (_y_hi - _y_lo if _y_hi > _y_lo else 1.0)
+                    for _i, _p in enumerate(_panels, start=1):
+                        # Violin: jittered population, colored by y-value.
+                        _fig.add_trace(go.Violin(
+                            y=_p['population'],
+                            box_visible=False,
+                            meanline_visible=False,
+                            points='all',
+                            pointpos=0,
+                            jitter=0.45,
+                            scalemode='count',
+                            side='both',
+                            line_color='rgba(120,120,120,0.35)',
+                            fillcolor='rgba(120,120,120,0.05)',
+                            marker=dict(
+                                size=4,
+                                color=_p['population'],
+                                colorscale='RdYlGn',
+                                cmin=_y_lo, cmax=_y_hi,
+                                opacity=0.55,
+                                showscale=False,
+                                line=dict(width=0),
+                            ),
+                            showlegend=False,
+                            hoverinfo='y',
+                        ), row=1, col=_i)
+                        # Highlight: the selected player's point on top.
+                        _fig.add_trace(go.Scatter(
+                            y=[_p['player_value']],
+                            x=[0],
+                            mode='markers',
+                            marker=dict(
+                                size=14,
+                                color='#FFD24A',
+                                line=dict(color='black', width=1.5),
+                                symbol='circle',
+                            ),
+                            showlegend=False,
+                            hovertemplate=(
+                                f"<b>{selected_player_name}</b><br>"
+                                f"Team: {_p['team']}<br>"
+                                f"{chart_y}: %{{y:.2f}}<extra></extra>"
+                            ),
+                        ), row=1, col=_i)
+                        _fig.update_xaxes(showticklabels=False,
+                                           zeroline=False, row=1, col=_i)
+                    _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
+                    _fig.update_layout(
+                        title=f"{chart_y} by season (gold dot = {selected_player_name})",
+                        height=420,
+                        margin=dict(t=70, b=30, l=40, r=20),
+                        showlegend=False,
+                    )
+                    # Make subplot titles smaller so they fit when there
+                    # are 5+ panels.
+                    for _ann in _fig['layout']['annotations']:
+                        _ann['font'] = dict(size=10)
+                    st.plotly_chart(_fig, use_container_width=True)
 
         st.divider()
 
