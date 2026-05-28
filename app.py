@@ -651,6 +651,55 @@ def opta_league_strength(comp_id: int) -> float | None:
     return float(sub['currentRating'].mean())
 
 
+def _opta_norm_key(s):
+    """Normalize a team name for fuzzy lookup against Opta clubName."""
+    import re as _re
+    return _re.sub(r'[^a-z0-9]+', '', str(s).lower().strip())
+
+
+@st.cache_data(ttl=3600)
+def build_opta_team_strength_map() -> dict:
+    """Return a dict: {normalized_name OR raw_name → currentRating}.
+    Cached; the caller wraps it in a lookup function via
+    make_opta_team_strength_lookup() to keep the cached value picklable.
+    """
+    df = load_opta_ratings()
+    if df.empty or 'clubName' not in df.columns or 'currentRating' not in df.columns:
+        return {}
+    out = {}
+    for _, row in df.iterrows():
+        nm = row.get('clubName')
+        rt = row.get('currentRating')
+        if pd.isna(nm) or pd.isna(rt):
+            continue
+        out[str(nm)] = float(rt)
+        out[_opta_norm_key(nm)] = float(rt)
+    return out
+
+
+def make_opta_team_strength_lookup():
+    """Return a callable team_name → float Opta rating (or None).
+    Uses the cached map; tries raw + normalized name variants since
+    Opta and Wyscout spell some clubs slightly differently."""
+    m = build_opta_team_strength_map()
+    def _lookup(team_name):
+        if team_name is None:
+            return None
+        try:
+            if pd.isna(team_name):
+                return None
+        except (TypeError, ValueError):
+            pass
+        v = m.get(str(team_name))
+        if v is not None:
+            return v
+        try:
+            return m.get(_opta_norm_key(team_name))
+        except Exception:
+            return None
+    return _lookup
+
+
 def opta_translation_multiplier(source_comp_id: int, target_comp_id: int) -> float | None:
     """Multiplier to apply to per-90 metrics when translating from source
     league to target league via Opta strength. None if data is missing.
@@ -1690,6 +1739,230 @@ WEIGHTS = {
     'Pressing Forward': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 1.0, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 2, 'Dribbles': 2, 'Dribbles successful %': 2, 'Loss index': 5, 'Aerial duels': 1.0, 'Aerial duels successful %': 1.0, 'Defensive duels successful': 1.0, 'Interceptions': 8, 'Recoveries': 10, 'Counterpressing Recoveries': 4}
 }
 INVERT_METRICS = ['Loss index', 'goalsConceded']
+
+# ==============================================================================
+# Composite Value Index (CVI) — v1 parameters
+# ==============================================================================
+# CVI is a single 0–~150 score combining performance, age-value premium,
+# sample reliability, and league strength. The parameters below are
+# literature-informed PLACEHOLDERS — they'll be re-fit against
+# Transfermarkt/ZeroZero/reported market values once that data is
+# scraped (see Transfermarkt scraping infrastructure task).
+#
+# Formula:
+#   CVI = PerformanceQuality
+#       × AgeValueMultiplier
+#       × ReliabilityWeight
+#       × LeagueMultiplier
+#
+# Each component is documented inline below.
+
+# Position-tuned blend of Role_Score percentile and Action V percentile
+# for PerformanceQuality. GKs lean hard on Role_Score (Action V is a
+# weak signal for shot-stopping); forwards lean closer to balanced
+# (Action V directly measures goal contribution via xG buildup).
+CVI_PERF_WEIGHTS = {
+    'GK':    (0.80, 0.20),   # (role, action_v)
+    'CB':    (0.75, 0.25),
+    'FB':    (0.65, 0.35),
+    'CM':    (0.60, 0.40),
+    'AM_WG': (0.55, 0.45),
+    'ST':    (0.50, 0.50),
+}
+
+# AgeValueMultiplier(age, position) — Gaussian peak + a 0.4 floor so
+# the multiplier never collapses to zero. Peak ages and σ values
+# encode "youth premium" by position. Explosive positions (wingers,
+# forwards) have a tighter, more youth-tilted curve; GKs have a wider
+# and later-peaking curve. To be calibrated from MV data.
+#
+#   AgeValueMultiplier(A, P) = floor + (max_mult - floor) × exp(-(A - peak)² / (2σ²))
+CVI_AGE_VALUE_PARAMS = {
+    'GK':    {'peak': 25, 'sigma': 4.0, 'max_mult': 1.30, 'floor': 0.40},
+    'CB':    {'peak': 23, 'sigma': 3.0, 'max_mult': 1.40, 'floor': 0.40},
+    'FB':    {'peak': 22, 'sigma': 2.5, 'max_mult': 1.50, 'floor': 0.40},
+    'CM':    {'peak': 23, 'sigma': 3.0, 'max_mult': 1.40, 'floor': 0.40},
+    'AM_WG': {'peak': 22, 'sigma': 2.0, 'max_mult': 1.60, 'floor': 0.40},
+    'ST':    {'peak': 22, 'sigma': 2.5, 'max_mult': 1.55, 'floor': 0.40},
+}
+
+# Reliability ceiling — full credit at this minutes threshold; linear
+# pro-rate below. 1800 min ≈ 20 full matches, ~"regular starter".
+CVI_RELIABILITY_CEILING = 1800
+
+# League strength reference — Liga 3 average Opta team rating (so a
+# Liga 3 player at avg team gets LeagueMultiplier = 1.0). Re-derive
+# from opta_ratings.parquet when refreshing.
+CVI_LEAGUE_REFERENCE = 67.0
+
+
+def _cvi_position_group(primary_position):
+    """Map Wyscout primaryPosition to a CVI position-group key
+    (matches keys in CVI_PERF_WEIGHTS / CVI_AGE_VALUE_PARAMS)."""
+    if primary_position is None:
+        return None
+    try:
+        if pd.isna(primary_position):
+            return None
+    except (TypeError, ValueError):
+        pass
+    p = str(primary_position)
+    if p == 'GK': return 'GK'
+    if p in ('CB', 'LCB', 'RCB', 'LCB3', 'RCB3'): return 'CB'
+    if p in ('LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'): return 'FB'
+    if p in ('CMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3',
+             'DMF', 'LDMF', 'RDMF'): return 'CM'
+    if p in ('AMF', 'LAMF', 'RAMF', 'LMF', 'RMF',
+             'LW', 'RW', 'LWF', 'RWF'): return 'AM_WG'
+    if p in ('CF', 'SS'): return 'ST'
+    return None
+
+
+def _cvi_age_value_multiplier(age, position_group):
+    """Gaussian-with-floor age-value curve. Returns 1.0 if inputs
+    can't be evaluated (so missing age doesn't tank the CVI)."""
+    if age is None or position_group not in CVI_AGE_VALUE_PARAMS:
+        return 1.0
+    try:
+        a = float(age)
+        if pd.isna(a):
+            return 1.0
+    except (TypeError, ValueError):
+        return 1.0
+    p = CVI_AGE_VALUE_PARAMS[position_group]
+    import math
+    bell = math.exp(-((a - p['peak']) ** 2) / (2 * p['sigma'] ** 2))
+    return p['floor'] + (p['max_mult'] - p['floor']) * bell
+
+
+def compute_cvi_columns(player_stats_df, *, age_lookup, opta_team_strength_lookup,
+                         team_col='teamName'):
+    """Compute CVI + its components for every row in player_stats_df.
+
+    Args:
+        player_stats_df: DataFrame from calculate_player_percentiles_and_scores
+            (must have primaryPosition, totalMinutes, all {role}_Score
+            columns, and 'Total Value' from GPA merge).
+        age_lookup: callable playerId -> age in years (or None).
+        opta_team_strength_lookup: callable teamName -> Opta rating (or None).
+        team_col: column in player_stats_df with the team name.
+
+    Returns:
+        DataFrame with the same index as input plus columns:
+            _CVI            — final composite (0–~150 typical)
+            _CVI_perf       — PerformanceQuality (0-100)
+            _CVI_age        — AgeValueMultiplier (0.4-1.6)
+            _CVI_reliab     — ReliabilityWeight (0-1)
+            _CVI_league     — LeagueMultiplier (~0.85-1.10)
+            _CVI_trajectory — perf - same-age-position-median (a "+30
+                              flag" surfaced separately, NOT applied)
+    """
+    if player_stats_df is None or player_stats_df.empty:
+        return pd.DataFrame()
+
+    df = player_stats_df.copy()
+    # Map position to CVI group + age
+    df['_cvi_group'] = df['primaryPosition'].map(_cvi_position_group)
+    df['_cvi_age'] = df['playerId'].map(age_lookup)
+
+    # ---- PerformanceQuality ----
+    # Role_Score percentile = the player's best-fit Role_Score among
+    # roles eligible for their position group. Role_Score is already
+    # 0-100 normalized within its template's eligible position set, so
+    # we treat the value itself as the percentile.
+    def _best_role_score(row):
+        pos = row.get('primaryPosition')
+        eligible = [r for r in WEIGHTS if pos in POSITION_GROUPS.get(r, [])]
+        vals = []
+        for r in eligible:
+            v = row.get(f"{r}_Score")
+            try:
+                if v is not None and not pd.isna(v):
+                    vals.append(float(v))
+            except Exception:
+                pass
+        return max(vals) if vals else None
+
+    df['_cvi_role_score'] = df.apply(_best_role_score, axis=1)
+
+    # Action V percentile within position group — rank Total Value
+    # within same _cvi_group so a 0.05 V/90 striker isn't compared
+    # against a 0.005 V/90 CB.
+    val_col = 'Total Value' if 'Total Value' in df.columns else None
+    if val_col:
+        df['_cvi_av_pct'] = (df.groupby('_cvi_group')[val_col]
+                              .rank(pct=True, method='average') * 100.0)
+    else:
+        df['_cvi_av_pct'] = None
+
+    def _perf_quality(row):
+        g = row.get('_cvi_group')
+        if g not in CVI_PERF_WEIGHTS:
+            return None
+        w_role, w_av = CVI_PERF_WEIGHTS[g]
+        role = row.get('_cvi_role_score')
+        av = row.get('_cvi_av_pct')
+        # Fall back gracefully when Action V is missing — re-weight
+        # so the score still uses Role_Score at full weight.
+        if (av is None or pd.isna(av)):
+            return role if role is not None and not pd.isna(role) else None
+        if (role is None or pd.isna(role)):
+            return av
+        return w_role * float(role) + w_av * float(av)
+
+    df['_CVI_perf'] = df.apply(_perf_quality, axis=1)
+
+    # ---- AgeValueMultiplier ----
+    df['_CVI_age'] = df.apply(
+        lambda r: _cvi_age_value_multiplier(r.get('_cvi_age'), r.get('_cvi_group')),
+        axis=1,
+    )
+
+    # ---- ReliabilityWeight ----
+    if 'totalMinutes' in df.columns:
+        df['_CVI_reliab'] = (df['totalMinutes'].fillna(0).clip(upper=CVI_RELIABILITY_CEILING)
+                              / CVI_RELIABILITY_CEILING)
+    else:
+        df['_CVI_reliab'] = 1.0
+
+    # ---- LeagueMultiplier ----
+    if team_col in df.columns:
+        team_strength = df[team_col].map(opta_team_strength_lookup)
+        df['_CVI_league'] = (team_strength.fillna(CVI_LEAGUE_REFERENCE)
+                              / CVI_LEAGUE_REFERENCE)
+    else:
+        df['_CVI_league'] = 1.0
+
+    # ---- Final composite ----
+    df['_CVI'] = (df['_CVI_perf']
+                   * df['_CVI_age']
+                   * df['_CVI_reliab']
+                   * df['_CVI_league'])
+
+    # ---- Trajectory flag (separate, NOT multiplied into CVI) ----
+    # Median PerformanceQuality among same-position-group same-age-band
+    # players. ±2 yr band for stability at the extremes.
+    def _expected_perf(row):
+        g = row.get('_cvi_group')
+        a = row.get('_cvi_age')
+        if g is None or a is None or pd.isna(a):
+            return None
+        peers = df[
+            (df['_cvi_group'] == g)
+            & (df['_cvi_age'].between(a - 2, a + 2))
+            & df['_CVI_perf'].notna()
+        ]
+        if len(peers) < 10:
+            return None
+        return float(peers['_CVI_perf'].median())
+
+    df['_cvi_expected_perf'] = df.apply(_expected_perf, axis=1)
+    df['_CVI_trajectory'] = df['_CVI_perf'] - df['_cvi_expected_perf']
+
+    return df[['_CVI', '_CVI_perf', '_CVI_age', '_CVI_reliab',
+                '_CVI_league', '_CVI_trajectory']]
+
+
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
@@ -9337,15 +9610,69 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     f"{_tgt_strength:.2f} = ratings × {_rating_multiplier:.3f}"
                 )
 
+        # --- CVI (Composite Value Index) toggle -----------------------
+        # When ON, a CVI column is appended to the right of the Rating
+        # column in Overview + per-template tables, and (optionally) the
+        # ranking re-sorts by CVI. Currently uses placeholder parameters
+        # (see CVI_AGE_VALUE_PARAMS); will be calibrated against TM/ZZ
+        # market values in v2.
+        show_cvi = st.sidebar.checkbox(
+            "Show Composite Value Index (CVI)",
+            value=False,
+            key="player_analysis_show_cvi",
+            help="A 0-150 scout-facing index blending performance "
+                 "(position-tuned Role + Action V), age-value premium, "
+                 "sample reliability, and league strength. "
+                 "Currently uses literature-informed defaults — to be "
+                 "calibrated against scraped market values.",
+        )
+        sort_by_cvi = False
+        if show_cvi:
+            sort_by_cvi = st.sidebar.checkbox(
+                "Sort by CVI",
+                value=False,
+                key="player_analysis_sort_by_cvi",
+                help="Replace the Rating-based sort with a CVI sort.",
+            )
+
         # Pre-compute age column for the full filtered pool — used by
-        # the same-age peer computation inside _build_template_table.
-        if age_adjusted and not analysis_player_details_df.empty \
-                and 'birthDate' in analysis_player_details_df.columns:
+        # the same-age peer computation inside _build_template_table
+        # AND by CVI's age-value lookup.
+        _has_age = (not analysis_player_details_df.empty
+                     and 'birthDate' in analysis_player_details_df.columns)
+        if (age_adjusted or show_cvi) and _has_age:
             _filtered_age = filtered_df['playerId'].map(
                 lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
                 if pid in analysis_player_details_df.index else None
             )
             filtered_df = filtered_df.assign(_age=_filtered_age.values)
+
+        # Pre-compute CVI columns once for the full filtered_df. The
+        # helper does its own position-grouped percentile internally;
+        # we slice the result per-template inside _build_template_table.
+        if show_cvi:
+            try:
+                _age_map = (filtered_df.set_index('playerId')['_age'].to_dict()
+                             if '_age' in filtered_df.columns else {})
+                _opta_lookup = (make_opta_team_strength_lookup()
+                                 if 'make_opta_team_strength_lookup' in globals()
+                                 else lambda _t: None)
+                _cvi_block = compute_cvi_columns(
+                    filtered_df,
+                    age_lookup=lambda pid: _age_map.get(pid),
+                    opta_team_strength_lookup=_opta_lookup,
+                )
+                if not _cvi_block.empty:
+                    filtered_df = pd.concat(
+                        [filtered_df.reset_index(drop=True),
+                         _cvi_block.reset_index(drop=True)],
+                        axis=1,
+                    )
+            except Exception as _cvi_exc:
+                st.sidebar.warning(f"CVI compute failed: "
+                                    f"{type(_cvi_exc).__name__}: {_cvi_exc}")
+                show_cvi = False
+                sort_by_cvi = False
 
         def _age_band_pair(age):
             """(low, high) inclusive age range. ±1 yr for ages 20-32,
@@ -9416,6 +9743,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 _sort_col = score_col
 
+            # CVI overrides the sort if "Sort by CVI" is on.
+            if show_cvi and sort_by_cvi and '_CVI' in tdf.columns:
+                _sort_col = '_CVI'
+
             sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
 
             if compact:
@@ -9470,6 +9801,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     display.insert(_r_idx + 1, 'Same-age %ile', adj.round(1))
                     display.insert(_r_idx + 2, 'Cohort n', cohort)
 
+            # CVI: insert next to Rating in both compact and full
+            # modes. In full mode also surface the Trajectory flag
+            # (perf - same-age-position median) — bumps a value-
+            # focused row with a "+30 vs age peer" callout when the
+            # player is meaningfully ahead of their age cohort.
+            if show_cvi and '_CVI' in sorted_tdf.columns:
+                cvi_vals = pd.Series(sorted_tdf['_CVI'].values, index=display.index).round(1)
+                _r_idx = display.columns.get_loc('Rating')
+                display.insert(_r_idx + 1, 'CVI', cvi_vals)
+                if not compact and '_CVI_trajectory' in sorted_tdf.columns:
+                    traj_vals = pd.Series(sorted_tdf['_CVI_trajectory'].values,
+                                           index=display.index).round(0)
+                    display.insert(_r_idx + 2, 'Traj vs age',
+                                    traj_vals.apply(
+                                        lambda v: (f"{int(v):+d}" if pd.notna(v) else '')
+                                    ))
+
             # Add Pos. Minutes
             if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
                 display.insert(display.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_tdf['posMinutes'].astype(int).values)
@@ -9508,8 +9856,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 'Forwards', 'Attacking Mids / Wingers', 'Central Midfielders',
                 'Full Backs', 'Center Backs', 'Goalkeepers',
             ]
-            # Collect per-template data as lists aligned by rank
-            template_columns = {}  # {template_name: [(player, team, minutes, rating), ...]}
+            # Collect per-template data as lists aligned by rank.
+            # When CVI is on, append it as a 5th sub-column per template.
+            _sub_cols = ['Player', 'Team', 'Min', 'Rating']
+            if show_cvi:
+                _sub_cols.append('CVI')
+            template_columns = {}
             for group_name in _OVERVIEW_ORDER:
                 group_templates = _TEMPLATE_GROUPS.get(group_name, [])
                 for tmpl in [t for t in group_templates if t in POSITION_GROUPS]:
@@ -9517,7 +9869,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     if display_df is not None and not display_df.empty:
                         rows = []
                         for _, row in display_df.iterrows():
-                            rows.append((row.get('Player', ''), row.get('Team', ''), int(row.get('Minutes', 0)), round(float(row.get('Rating', 0)), 1)))
+                            tup = [
+                                row.get('Player', ''),
+                                row.get('Team', ''),
+                                int(row.get('Minutes', 0)),
+                                round(float(row.get('Rating', 0)), 1),
+                            ]
+                            if show_cvi:
+                                _cvi_v = row.get('CVI')
+                                tup.append(round(float(_cvi_v), 1) if pd.notna(_cvi_v) else '')
+                            rows.append(tuple(tup))
                         template_columns[tmpl] = rows
 
             if template_columns:
@@ -9526,7 +9887,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 col_tuples = []
                 data_dict = {}
                 for tmpl in template_columns:
-                    for sub in ['Player', 'Team', 'Min', 'Rating']:
+                    for sub in _sub_cols:
                         col_tuples.append((tmpl, sub))
                         data_dict[(tmpl, sub)] = []
 
@@ -9534,16 +9895,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     for tmpl in template_columns:
                         rows = template_columns[tmpl]
                         if rank_idx < len(rows):
-                            player, team, mins, rating = rows[rank_idx]
-                            data_dict[(tmpl, 'Player')].append(player)
-                            data_dict[(tmpl, 'Team')].append(team)
-                            data_dict[(tmpl, 'Min')].append(mins)
-                            data_dict[(tmpl, 'Rating')].append(rating)
+                            tup = rows[rank_idx]
+                            for sub, val in zip(_sub_cols, tup):
+                                data_dict[(tmpl, sub)].append(val)
                         else:
-                            data_dict[(tmpl, 'Player')].append('')
-                            data_dict[(tmpl, 'Team')].append('')
-                            data_dict[(tmpl, 'Min')].append('')
-                            data_dict[(tmpl, 'Rating')].append('')
+                            for sub in _sub_cols:
+                                data_dict[(tmpl, sub)].append('')
 
                 multi_idx = pd.MultiIndex.from_tuples(col_tuples)
                 overview_df = pd.DataFrame(data_dict, columns=multi_idx)
@@ -9559,6 +9916,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     )
                 if _rating_caption:
                     st.caption(f"🟧 {_rating_caption}")
+                if show_cvi:
+                    st.caption(
+                        "🟩 CVI = composite scout-facing value (0-150). "
+                        "Performance × age-value × reliability × league strength. "
+                        "Currently uses placeholder parameters; will be calibrated "
+                        "against Transfermarkt/ZeroZero market values."
+                        + (" Sort is by CVI." if sort_by_cvi else "")
+                    )
                 st.dataframe(overview_df, use_container_width=True)
             else:
                 st.warning("No players match current filters.")
@@ -9704,6 +10069,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     )
                 if _rating_caption:
                     st.caption(f"🟧 {_rating_caption}")
+                if show_cvi:
+                    st.caption(
+                        "🟩 CVI = composite scout-facing value · 'Traj vs age' = "
+                        "performance vs same-position-same-age median "
+                        "(e.g. '+25' = 25pt ahead of age peer median). "
+                        "Currently uses placeholder parameters; will be calibrated "
+                        "against scraped market values."
+                        + (" Sort is by CVI." if sort_by_cvi else "")
+                    )
                 st.caption("Click on a row to view that player's profile")
                 selection = st.dataframe(
                     display_df.set_index('Rank'),
