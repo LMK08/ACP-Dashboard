@@ -8007,12 +8007,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                           if c in _gpa_full.columns), None)
                         if _val_col:
                             # Filter to ≥500-min sample so the population
-                            # represents proper regular-rotation players
-                            # rather than every player who featured once.
+                            # represents proper regular-rotation players.
                             _gpa_season = _gpa_full.loc[
                                 (_gpa_full['seasonId'] == _sid)
                                 & (_gpa_full.get('mins_played', 0) >= 500)
                             ]
+                            # Filter to same position group as the
+                            # selected player in this season. Prefer
+                            # GPA's own position_group column (source-
+                            # of-truth for this dataset); fall back to
+                            # deriving from the `position` column via
+                            # _position_group_of if missing.
+                            _player_pg = None
+                            _gpa_player_row = _gpa_full[
+                                (_gpa_full['playerId'] == player_id)
+                                & (_gpa_full['seasonId'] == _sid)
+                            ]
+                            if not _gpa_player_row.empty:
+                                if 'position_group' in _gpa_player_row.columns:
+                                    _v = _gpa_player_row['position_group'].iloc[0]
+                                    if pd.notna(_v):
+                                        _player_pg = str(_v)
+                                if _player_pg is None and 'position' in _gpa_player_row.columns:
+                                    _player_pg = _position_group_of(
+                                        _gpa_player_row['position'].iloc[0]
+                                    )
+                            if _player_pg:
+                                if 'position_group' in _gpa_season.columns:
+                                    _gpa_season = _gpa_season[
+                                        _gpa_season['position_group'] == _player_pg
+                                    ]
+                                elif 'position' in _gpa_season.columns:
+                                    _gpa_season = _gpa_season[
+                                        _gpa_season['position'].map(_position_group_of)
+                                        == _player_pg
+                                    ]
                             _pop = _gpa_season[_val_col].dropna().values
                         else:
                             _pop = np.array([])
