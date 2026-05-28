@@ -7879,6 +7879,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 vals = [float(v) for v in vals if v is not None and not pd.isna(v)]
                 return max(vals) if vals else None
 
+            def _position_group_of(pos):
+                """Map a Wyscout primaryPosition to its top-level position
+                group (GK/CB/FB/CM/AM/WG/ST). Best-fit Rating is a
+                position-specific composite, so the per-season violin
+                should compare against same-position peers only — not
+                fullbacks vs centerbacks vs forwards."""
+                if pos is None or pd.isna(pos):
+                    return None
+                p = str(pos)
+                if p == 'GK': return 'GK'
+                if p in ('CB', 'LCB', 'RCB', 'LCB3', 'RCB3'): return 'CB'
+                if p in ('LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'): return 'FB'
+                if p in ('CMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3',
+                          'DMF', 'LDMF', 'RDMF'): return 'CM'
+                if p in ('AMF', 'LAMF', 'RAMF', 'LMF', 'RMF'): return 'AM'
+                if p in ('LW', 'RW', 'LWF', 'RWF'): return 'WG'
+                if p in ('CF', 'SS'): return 'ST'
+                return None
+
             try:
                 for _sid in career_df['_seasonId'].unique():
                     _events_sid = get_season_events(raw_events_df, [_sid])
@@ -7902,9 +7921,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _best_fit_score, axis=1,
                         args=(WEIGHTS, POSITION_GROUPS),
                     )
-                    # Population for violin = players who hit the ≥500-min
-                    # sample-size threshold for this season. Match the same
-                    # cutoff applied below for Action V/90.
+                    # The selected player's row — needed up-front so we
+                    # can filter the population to same-position peers.
+                    _player_rows = _scores_sid[_scores_sid['playerId'] == player_id]
+                    if _player_rows.empty:
+                        continue
+                    _player_row = _player_rows.iloc[0]
+                    _pos = _player_row.get('primaryPosition')
+                    _player_pos_group = _position_group_of(_pos)
+
+                    # Population for violin = ≥500-min players in the
+                    # SAME position group as the selected player this
+                    # season. Best-fit Rating is position-specific so
+                    # comparing a CB to wingers isn't meaningful.
                     if 'totalMinutes' in _scores_sid.columns:
                         _qualified = _scores_sid[
                             (_scores_sid['totalMinutes'].fillna(0) >= 500)
@@ -7912,15 +7941,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         ]
                     else:
                         _qualified = _scores_sid[_scores_sid['_best_fit'].notna()]
+                    if _player_pos_group and 'primaryPosition' in _qualified.columns:
+                        _qualified = _qualified[
+                            _qualified['primaryPosition'].map(_position_group_of)
+                            == _player_pos_group
+                        ]
                     _pop = _qualified['_best_fit'].values
                     if len(_pop) > 0:
                         _rating_population[int(_sid)] = _pop
-                    # The selected player's row.
-                    _player_rows = _scores_sid[_scores_sid['playerId'] == player_id]
-                    if _player_rows.empty:
-                        continue
-                    _player_row = _player_rows.iloc[0]
-                    _pos = _player_row.get('primaryPosition')
                     _eligible = [r for r in WEIGHTS
                                   if _pos in POSITION_GROUPS.get(r, [])]
                     _scored = [(r, float(_player_row.get(f"{r}_Score", 0) or 0))
