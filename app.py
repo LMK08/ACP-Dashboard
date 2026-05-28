@@ -1996,6 +1996,182 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
                 '_CVI_league', '_CVI_trajectory']]
 
 
+# ==============================================================================
+# Market-context features (consumed by the v2 EUR regression)
+# ==============================================================================
+# These are NOT inputs to CVI — they're signals that shift how the MARKET
+# prices a player at a given quality level. Nationality drives sell-on
+# premiums, team success drives visibility, xG over/underperformance
+# captures finishing skill the market rewards/discounts. Computed
+# per-(player, season) and surfaced alongside CVI in the Player Profile.
+def compute_market_features(player_id, season_id, *,
+                              raw_events_df, matches_summary_df,
+                              player_details_df,
+                              player_minutes_data,
+                              team_name=None,
+                              opta_team_lookup=None):
+    """Per-(player, season) bundle of market-context features for the
+    v2 transfer-value regression.
+
+    Returns dict with:
+        xg_residual_season        goals - xG, non-pen, this season
+        xg_residual_career        goals - xG, non-pen, all seasons
+        xg_residual_per90_season  same /90
+        ass_residual_season       assists - xA proxy
+        ass_residual_career       same career-cumulative
+        passport_nationality      str (e.g. 'Portugal', 'Brazil')
+        birth_nationality         str
+        team_opta_rating          float (current team strength)
+        team_ppm_season           team's points-per-match this season
+        team_league_position      1-N rank within the season (NaN if unknown)
+        positions_played_career   count of distinct primaryPositions across career
+        seasons_played            count of distinct seasons in our data
+    """
+    out = {
+        'xg_residual_season': None, 'xg_residual_career': None,
+        'xg_residual_per90_season': None,
+        'ass_residual_season': None, 'ass_residual_career': None,
+        'passport_nationality': None, 'birth_nationality': None,
+        'team_opta_rating': None, 'team_ppm_season': None,
+        'team_league_position': None,
+        'positions_played_career': None, 'seasons_played': None,
+    }
+
+    # ---- xG over/under (non-penalty) ----
+    try:
+        ev = raw_events_df[
+            (raw_events_df['player.id'] == player_id)
+            & raw_events_df['shot.xg'].notna()
+            & (raw_events_df['type.primary'] != 'penalty')
+        ]
+        if not ev.empty:
+            goals_c = ev['shot.isGoal'].fillna(False).astype(bool).sum()
+            xg_c = float(ev['shot.xg'].sum())
+            out['xg_residual_career'] = float(goals_c) - xg_c
+            ev_s = ev[ev['seasonId'] == season_id] if 'seasonId' in ev.columns else ev
+            if not ev_s.empty:
+                goals_s = ev_s['shot.isGoal'].fillna(False).astype(bool).sum()
+                xg_s = float(ev_s['shot.xg'].sum())
+                out['xg_residual_season'] = float(goals_s) - xg_s
+                # Use the player's totalMinutes for the season for /90
+                pm = player_minutes_data.get(season_id) if isinstance(player_minutes_data, dict) else None
+                mins = None
+                if pm is not None and 'playerId' in pm.columns:
+                    sub = pm[pm['playerId'] == player_id]
+                    if not sub.empty:
+                        mins = float(sub['totalMinutes'].sum())
+                if mins and mins > 0:
+                    out['xg_residual_per90_season'] = (out['xg_residual_season']
+                                                         / mins * 90.0)
+    except Exception:
+        pass
+
+    # ---- xA proxy: count of 'shot_assist'-tagged passes by player → xG of the shot they assisted ----
+    try:
+        # Player's shot-assist events
+        sa_mask = (raw_events_df['player.id'] == player_id) & (
+            raw_events_df.get('type.secondary', pd.Series(dtype='object'))
+                          .apply(lambda x: isinstance(x, (list, np.ndarray))
+                                  and 'shot_assist' in x)
+        )
+        sa = raw_events_df[sa_mask]
+        # Approximate: next event in same match with non-null shot.xg = shot they assisted
+        if not sa.empty and 'matchId' in raw_events_df.columns:
+            # Lookup shot xG of the next event in the same match for each assist event
+            ev_sorted = (raw_events_df[['matchId', 'matchTimestamp',
+                                          'shot.xg', 'shot.isGoal', 'player.id']]
+                          .sort_values(['matchId', 'matchTimestamp'])
+                          .reset_index(drop=True))
+            ev_sorted['next_xg'] = ev_sorted.groupby('matchId')['shot.xg'].shift(-1)
+            ev_sorted['next_goal'] = ev_sorted.groupby('matchId')['shot.isGoal'].shift(-1)
+            joined = sa.reset_index().merge(
+                ev_sorted[['matchId', 'matchTimestamp', 'next_xg', 'next_goal']],
+                on=['matchId', 'matchTimestamp'], how='left',
+            )
+            xa_c = joined['next_xg'].dropna().sum()
+            assists_c = joined['next_goal'].fillna(False).sum()
+            out['ass_residual_career'] = float(assists_c) - float(xa_c)
+            jl_s = joined[joined.get('seasonId') == season_id] if 'seasonId' in joined.columns else joined
+            if not jl_s.empty:
+                xa_s = jl_s['next_xg'].dropna().sum()
+                assists_s = jl_s['next_goal'].fillna(False).sum()
+                out['ass_residual_season'] = float(assists_s) - float(xa_s)
+    except Exception:
+        pass
+
+    # ---- Nationality ----
+    try:
+        if (player_details_df is not None and not player_details_df.empty
+                and player_id in player_details_df.index):
+            row = player_details_df.loc[player_id]
+            out['passport_nationality'] = row.get('passportArea')
+            out['birth_nationality'] = row.get('birthArea')
+    except Exception:
+        pass
+
+    # ---- Team Opta rating ----
+    try:
+        if opta_team_lookup and team_name:
+            out['team_opta_rating'] = opta_team_lookup(team_name)
+    except Exception:
+        pass
+
+    # ---- Team PPM + league position this season ----
+    try:
+        if team_name and matches_summary_df is not None and season_id is not None:
+            sm = matches_summary_df[matches_summary_df['seasonId'] == season_id].copy()
+            # Parse scores
+            def _parse_score(s):
+                try:
+                    if pd.isna(s) or '-' not in str(s): return (None, None)
+                    h, a = str(s).split('-')
+                    return (int(h.strip()), int(a.strip()))
+                except Exception:
+                    return (None, None)
+            sm[['h_g','a_g']] = sm['score'].apply(_parse_score).apply(pd.Series)
+            sm = sm.dropna(subset=['h_g','a_g'])
+            # Points per team
+            from collections import defaultdict
+            pts = defaultdict(int); games = defaultdict(int)
+            for _, m in sm.iterrows():
+                h, a = m['homeTeamName'], m['awayTeamName']
+                hg, ag = m['h_g'], m['a_g']
+                games[h] += 1; games[a] += 1
+                if hg > ag: pts[h] += 3
+                elif ag > hg: pts[a] += 3
+                else: pts[h] += 1; pts[a] += 1
+            if team_name in games and games[team_name] > 0:
+                out['team_ppm_season'] = pts[team_name] / games[team_name]
+                # League position
+                ppm_all = {t: pts[t]/games[t] for t in games if games[t] > 0}
+                ranked = sorted(ppm_all.items(), key=lambda kv: -kv[1])
+                for rank, (t, _) in enumerate(ranked, start=1):
+                    if t == team_name:
+                        out['team_league_position'] = rank
+                        break
+    except Exception:
+        pass
+
+    # ---- Position versatility + seasons played (career) ----
+    try:
+        if isinstance(player_minutes_data, dict):
+            pos_set = set(); seasons_set = set()
+            for sid, _pm in player_minutes_data.items():
+                if not isinstance(_pm, pd.DataFrame) or 'playerId' not in _pm.columns:
+                    continue
+                sub = _pm[_pm['playerId'] == player_id]
+                if sub.empty: continue
+                seasons_set.add(sid)
+                if 'primaryPosition' in sub.columns:
+                    pos_set.update(p for p in sub['primaryPosition'].dropna().unique())
+            out['positions_played_career'] = len(pos_set) if pos_set else None
+            out['seasons_played'] = len(seasons_set) if seasons_set else None
+    except Exception:
+        pass
+
+    return out
+
+
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
 DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
@@ -7879,6 +8055,92 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
                 # Delta — placeholder
                 st.caption("Δ (projected − true): pending v2 model")
+
+            # --- Market Context features (inputs to v2 regression) ---
+            st.markdown("##### Market Context")
+            try:
+                # Get the player's current team for this season
+                _tv_team = (str(_tv_player_row.get('teamName'))
+                             if _tv_player_row is not None
+                             and pd.notna(_tv_player_row.get('teamName'))
+                             else None)
+                _opta_fn = (make_opta_team_strength_lookup()
+                             if 'make_opta_team_strength_lookup' in globals()
+                             else (lambda _t: None))
+                _mc = compute_market_features(
+                    player_id=player_id,
+                    season_id=selected_season_id,
+                    raw_events_df=raw_events_df,
+                    matches_summary_df=matches_summary_df,
+                    player_details_df=player_details_df,
+                    player_minutes_data=player_minutes_data,
+                    team_name=_tv_team,
+                    opta_team_lookup=_opta_fn,
+                )
+                # 4-col compact layout
+                _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
+                def _fmt_resid(v, n_dec=1, sign=True):
+                    if v is None or pd.isna(v): return "—"
+                    return f"{v:+.{n_dec}f}" if sign else f"{v:.{n_dec}f}"
+
+                _mc_c1.metric("xG O/U (season)",
+                                _fmt_resid(_mc['xg_residual_season']),
+                                help="Goals minus xG, non-penalty, this season. "
+                                     "Positive = outperforming xG (clinical "
+                                     "finishing or variance); negative = "
+                                     "underperforming.")
+                _mc_c1.metric("xG O/U (career)",
+                                _fmt_resid(_mc['xg_residual_career']),
+                                help="Cumulative across all seasons in our "
+                                     "data. More stable than single-season "
+                                     "residuals.")
+                _mc_c2.metric("xA O/U (season)",
+                                _fmt_resid(_mc['ass_residual_season']),
+                                help="Assists minus xA proxy (sum of xG of "
+                                     "shots the player set up).")
+                _mc_c2.metric("xA O/U (career)",
+                                _fmt_resid(_mc['ass_residual_career']))
+
+                _nat_p = _mc.get('passport_nationality') or '—'
+                _nat_b = _mc.get('birth_nationality') or '—'
+                _mc_c3.metric("Nationality (passport)", _nat_p)
+                if _nat_b != _nat_p:
+                    _mc_c3.metric("Birthplace", _nat_b)
+
+                _team_opta = _mc.get('team_opta_rating')
+                _team_ppm = _mc.get('team_ppm_season')
+                _team_pos = _mc.get('team_league_position')
+                _mc_c4.metric(
+                    "Team Opta",
+                    f"{_team_opta:.1f}" if _team_opta is not None else "—",
+                    help="Current team's Opta Power Ranking — proxy for "
+                         "scouting visibility and tier-internal team strength.",
+                )
+                _mc_c4.metric(
+                    "Team this season",
+                    (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
+                    + (f" · {_team_pos}." if _team_pos is not None else ""),
+                    help="Points per match + league position from parsed scores. "
+                         "Successful-team players typically carry a market premium.",
+                )
+
+                # Versatility footnote
+                _ver = _mc.get('positions_played_career')
+                _sea = _mc.get('seasons_played')
+                if _ver is not None or _sea is not None:
+                    _bits = []
+                    if _ver is not None:
+                        _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
+                    if _sea is not None:
+                        _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
+                    st.caption("· ".join(_bits))
+                st.caption(
+                    "📌 These features feed the v2 EUR regression "
+                    "(currently pending). They don't change CVI itself."
+                )
+            except Exception as _mc_exc:
+                st.caption(f"Market Context error: "
+                            f"{type(_mc_exc).__name__}: {_mc_exc}")
         except Exception as _tv_exc:
             st.caption(f"Transfer Value section error: "
                         f"{type(_tv_exc).__name__}: {_tv_exc}")
