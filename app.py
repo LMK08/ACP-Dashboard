@@ -7902,12 +7902,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _best_fit_score, axis=1,
                         args=(WEIGHTS, POSITION_GROUPS),
                     )
-                    # Population for violin = players who hit the ≥900-min
+                    # Population for violin = players who hit the ≥500-min
                     # sample-size threshold for this season. Match the same
                     # cutoff applied below for Action V/90.
                     if 'totalMinutes' in _scores_sid.columns:
                         _qualified = _scores_sid[
-                            (_scores_sid['totalMinutes'].fillna(0) >= 900)
+                            (_scores_sid['totalMinutes'].fillna(0) >= 500)
                             & _scores_sid['_best_fit'].notna()
                         ]
                     else:
@@ -7978,12 +7978,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _val_col = next((c for c in ('Total Value', 'total_v_per_90')
                                           if c in _gpa_full.columns), None)
                         if _val_col:
-                            # Filter to ≥900-min sample so the population
+                            # Filter to ≥500-min sample so the population
                             # represents proper regular-rotation players
                             # rather than every player who featured once.
                             _gpa_season = _gpa_full.loc[
                                 (_gpa_full['seasonId'] == _sid)
-                                & (_gpa_full.get('mins_played', 0) >= 900)
+                                & (_gpa_full.get('mins_played', 0) >= 500)
                             ]
                             _pop = _gpa_season[_val_col].dropna().values
                         else:
@@ -8019,7 +8019,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         subplot_titles=[p['label'] for p in _panels],
                         horizontal_spacing=0.01,
                     )
-                    # Common y-range — driven by the ≥900-min POPULATION
+                    # Common y-range — driven by the ≥500-min POPULATION
                     # only (per user request). If the highlighted player
                     # is outside that range we extend slightly so the gold
                     # dot is still visible, but the scale is anchored to
@@ -8034,7 +8034,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _player_vals = [p['player_value'] for p in _panels]
                     _y_lo = min(_y_lo, float(np.nanmin(_player_vals)) - _y_pad)
                     _y_hi = max(_y_hi, float(np.nanmax(_player_vals)) + _y_pad)
-                    # Width scaling: seasons with more ≥900-min players get
+                    # Width scaling: seasons with more ≥500-min players get
                     # visibly wider violins so the user can tell apart a
                     # 200-player Liga 3 season from a 600-player Camp
                     # season. Use a power < 1 so small samples don't
