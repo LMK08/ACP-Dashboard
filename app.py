@@ -9042,6 +9042,115 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.warning(f"No players found who played at {pos_label} with current filters.")
                         st.stop()
 
+        # --- Global rating-adjustment toggles ----------------------------
+        # These adjustments operate on the Rating column (Role_Score) used
+        # in Overview + per-template views. They are intentionally NOT
+        # offered on Individual Metric (per user — they only make sense
+        # for overall profile ratings, not per-metric leaderboards).
+        st.sidebar.markdown("---")
+        st.sidebar.caption("**Rating adjustments** (Overview / per-template only)")
+        age_adjusted = st.sidebar.checkbox(
+            "Compare vs same-age peers",
+            value=False,
+            key="player_analysis_age_adjusted",
+            help="Re-rank players by their percentile within their own age "
+                 "cohort (±1 yr for ages 20-32, ±2 yr for ≤19 and ≥33). "
+                 "Useful for finding young over-performers and "
+                 "age-appropriate veterans. Applies to the Rating column.",
+        )
+
+        # Cross-tier translation — Opta strength multiplier only. The
+        # empirical-median variant is per-metric, so it doesn't apply
+        # to a composite Role_Score.
+        cross_tier_modes = ['Off']
+        _trans_src_comp = _trans_tgt_comp = None
+        if selected_comp_ids and len(selected_comp_ids) == 1:
+            _src = int(selected_comp_ids[0])
+            if _src in (43324, 702):
+                _trans_src_comp = _src
+                _trans_tgt_comp = 702 if _src == 43324 else 43324
+                cross_tier_modes = ['Off', 'Opta strength']
+        cross_tier_mode = st.sidebar.radio(
+            "Translate to other tier:",
+            cross_tier_modes,
+            key="player_analysis_cross_tier",
+            horizontal=False,
+            help="Project the Rating column into the OTHER league using "
+                 "the Opta league-strength multiplier (e.g. Camp → Liga 3 "
+                 "≈ ×0.91). Available when exactly one of Liga 3 or "
+                 "Campeonato is selected.",
+        ) if len(cross_tier_modes) > 1 else 'Off'
+
+        # Pre-compute the cross-tier multiplier + caption so we don't
+        # recompute per-template.
+        _rating_multiplier = None
+        _rating_caption = None
+        if cross_tier_mode == 'Opta strength' and _trans_src_comp and _trans_tgt_comp:
+            _rating_multiplier = opta_translation_multiplier(_trans_src_comp, _trans_tgt_comp)
+            if _rating_multiplier is not None:
+                _src_name = COMPETITIONS.get(_trans_src_comp, {}).get('name', str(_trans_src_comp))
+                _tgt_name = COMPETITIONS.get(_trans_tgt_comp, {}).get('name', str(_trans_tgt_comp))
+                _src_strength = opta_league_strength(_trans_src_comp)
+                _tgt_strength = opta_league_strength(_trans_tgt_comp)
+                _rating_caption = (
+                    f"Cross-tier translation: {_src_name} avg "
+                    f"{_src_strength:.2f} → {_tgt_name} avg "
+                    f"{_tgt_strength:.2f} = ratings × {_rating_multiplier:.3f}"
+                )
+
+        # Pre-compute age column for the full filtered pool — used by
+        # the same-age peer computation inside _build_template_table.
+        if age_adjusted and not analysis_player_details_df.empty \
+                and 'birthDate' in analysis_player_details_df.columns:
+            _filtered_age = filtered_df['playerId'].map(
+                lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
+                if pid in analysis_player_details_df.index else None
+            )
+            filtered_df = filtered_df.assign(_age=_filtered_age.values)
+
+        def _age_band_pair(age):
+            """(low, high) inclusive age range. ±1 yr for ages 20-32,
+            ±2 yr for ≤19 and ≥33."""
+            if age is None or pd.isna(age):
+                return None
+            a = int(age)
+            if a <= 19 or a >= 33:
+                return a - 2, a + 2
+            return a - 1, a + 1
+
+        def _apply_age_adjustment(tdf, score_col):
+            """Return tdf with an extra '_AdjRating' column = same-age-band
+            percentile of score_col, plus '_CohortSize'. Cohort auto-widens
+            +1 yr per side until ≥15 players."""
+            if '_age' not in tdf.columns:
+                return tdf
+            pcts, sizes = [], []
+            for _, row in tdf.iterrows():
+                band = _age_band_pair(row.get('_age'))
+                if band is None or pd.isna(row.get(score_col)):
+                    pcts.append(None); sizes.append(None)
+                    continue
+                lo, hi = band
+                cohort = pd.DataFrame()
+                for widen in range(0, 6):
+                    _lo, _hi = lo - widen, hi + widen
+                    cohort = tdf[
+                        (tdf['_age'] >= _lo)
+                        & (tdf['_age'] <= _hi)
+                        & tdf[score_col].notna()
+                    ]
+                    if len(cohort) >= 15:
+                        break
+                if cohort.empty:
+                    pcts.append(None); sizes.append(0)
+                    continue
+                val = row[score_col]
+                rank = (cohort[score_col] >= val).sum()
+                pct = 100.0 * (1.0 - (rank - 1) / max(len(cohort), 1))
+                pcts.append(round(pct, 1))
+                sizes.append(len(cohort))
+            return tdf.assign(_AdjRating=pcts, _CohortSize=sizes)
+
         # --- Helper: build a display table for a given template ---
         def _build_template_table(template_name, source_df, n_players, compact=False):
             """Build a display DataFrame for a template. Returns (display_df, player_ids) or (None, [])."""
@@ -9058,7 +9167,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if tdf.empty:
                 return None, []
 
-            sorted_tdf = tdf.sort_values(by=score_col, ascending=False).head(n_players)
+            # Apply age adjustment to Rating BEFORE sorting + slicing.
+            # The peer cohort is the position-eligible pool (tdf), not
+            # the full filtered df — that way a 19-year-old CB is
+            # compared to other 19yo CBs, not 19yo wingers.
+            if age_adjusted and '_age' in tdf.columns:
+                tdf = _apply_age_adjustment(tdf, score_col)
+                _sort_col = '_AdjRating'
+            else:
+                _sort_col = score_col
+
+            sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
 
             if compact:
                 # Overview mode: Rank, Player, Team, Position, Minutes, Age, Rating
@@ -9084,6 +9203,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             })
             display['Rating'] = display['Rating'].round(1)
             display['Minutes'] = display['Minutes'].astype(int)
+
+            # Cross-tier translation: multiply Rating by the league-
+            # strength factor and surface the translated value. In
+            # compact mode REPLACE the Rating column (overview is
+            # already wide); in full mode INSERT alongside.
+            if _rating_multiplier is not None:
+                _tgt_label = COMPETITIONS.get(_trans_tgt_comp, {}).get('name', '→')
+                _tgt_short = 'Liga 3' if _trans_tgt_comp == 43324 else 'Camp'
+                translated = (display['Rating'] * _rating_multiplier).round(1)
+                if compact:
+                    display['Rating'] = translated
+                else:
+                    _r_idx = display.columns.get_loc('Rating')
+                    display.insert(_r_idx + 1, f"→ {_tgt_short}", translated)
+
+            # Age-adjusted: replace Rating with same-age percentile in
+            # compact mode (overview is too wide for a second column);
+            # in full mode show both side-by-side with cohort size.
+            if age_adjusted and '_AdjRating' in sorted_tdf.columns:
+                adj = pd.Series(sorted_tdf['_AdjRating'].values, index=display.index)
+                cohort = pd.Series(sorted_tdf['_CohortSize'].values, index=display.index).astype('Int64')
+                if compact:
+                    display['Rating'] = adj.round(1)
+                else:
+                    _r_idx = display.columns.get_loc('Rating')
+                    display.insert(_r_idx + 1, 'Same-age %ile', adj.round(1))
+                    display.insert(_r_idx + 2, 'Cohort n', cohort)
 
             # Add Pos. Minutes
             if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
@@ -9166,6 +9312,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 overview_df.index.name = 'Rank'
 
                 st.subheader("Player Overview")
+                if age_adjusted:
+                    st.caption(
+                        "🟦 Rating column = same-age peer percentile "
+                        "(±1 yr for ages 20-32, ±2 yr otherwise; "
+                        "cohort auto-widens until ≥15)."
+                    )
+                if _rating_caption:
+                    st.caption(f"🟧 {_rating_caption}")
                 st.dataframe(overview_df, use_container_width=True)
             else:
                 st.warning("No players match current filters.")
@@ -9216,49 +9370,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 key="player_analysis_position_filter"
             )
 
-            # --- Age-adjusted lens ---
-            # When on, re-rank by the player's percentile WITHIN their own
-            # age band. Band rule: ±1 year for ages 20-32 (development plateau),
-            # ±2 years for ≤19 and ≥33 (sparser cohorts at the extremes).
-            # Hard floor of n=15: if a cohort is too small the band auto-widens
-            # by +1 year until it clears, with a caveat caption.
-            age_adjusted = st.sidebar.checkbox(
-                "Compare vs same-age peers",
-                value=False,
-                key="player_analysis_age_adjusted",
-                help="Re-rank players by their percentile within their own "
-                     "age cohort (±1 yr for ages 20-32, ±2 yr for ≤19 and ≥33). "
-                     "Useful for finding young over-performers and "
-                     "age-appropriate veterans."
-            )
-
-            # --- Cross-tier translation ---
-            # Only sensible when exactly one of Liga 3 / Campeonato is selected.
-            # When ON, applies a multiplier to the selected metric value so
-            # the user can see what the players would look like in the OTHER
-            # tier. Two methods available:
-            #   • Opta strength → uniform multiplier from league-average
-            #     Opta ratings (66.98 vs 61.06 → ~1.10× moving Camp → Liga 3)
-            #   • Empirical median → per-metric median ratio from players
-            #     who actually played ≥500 min in both leagues
-            cross_tier_modes = ['Off']
-            _trans_src_comp = _trans_tgt_comp = None
-            if selected_comp_ids and len(selected_comp_ids) == 1:
-                _src = int(selected_comp_ids[0])
-                if _src in (43324, 702):
-                    _trans_src_comp = _src
-                    _trans_tgt_comp = 702 if _src == 43324 else 43324
-                    cross_tier_modes = ['Off', 'Opta strength', 'Empirical median']
-            cross_tier_mode = st.sidebar.radio(
-                "Translate to other tier:",
-                cross_tier_modes,
-                key="player_analysis_cross_tier",
-                horizontal=False,
-                help="Project each player's selected-metric value into the "
-                     "OTHER league. Available when exactly one of Liga 3 or "
-                     "Campeonato is selected."
-            ) if len(cross_tier_modes) > 1 else 'Off'
-
             if position_filter:
                 metric_filtered_df = filtered_df[filtered_df['primaryPosition'].isin(position_filter)]
             else:
@@ -9268,92 +9379,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.warning("No players found with current filters.")
                 st.stop()
 
-            # ---- Age-band helper (used only when the toggle is on) -----------
-            def _age_band(age: float | int | None) -> tuple[int, int] | None:
-                """(low, high) inclusive age range to use as the peer cohort.
-                ±1 yr for prime (20-32), ±2 yr for tails (≤19 and ≥33)."""
-                if age is None or pd.isna(age):
-                    return None
-                a = int(age)
-                if a <= 19:
-                    return a - 2, a + 2
-                if a >= 33:
-                    return a - 2, a + 2
-                return a - 1, a + 1
-
-            _saa_caption = None   # set when age-adjusted is on (cohort sizes)
-
-            if age_adjusted and not analysis_player_details_df.empty \
-                    and 'birthDate' in analysis_player_details_df.columns:
-                # Compute age for every player in the FULL pool (we need the
-                # full pool to find each player's same-age peers — the position-
-                # filtered metric_filtered_df is the eligible-comparison set).
-                _ages = metric_filtered_df['playerId'].map(
-                    lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
-                    if pid in analysis_player_details_df.index else None
-                )
-                metric_filtered_df = metric_filtered_df.assign(_age=_ages.values)
-
-                # For each player, compute their percentile-within-cohort.
-                # We sort the cohort by the metric (respecting INVERT_METRICS)
-                # and percentile = (better-or-equal peers) / cohort_size.
-                _metric_vals = metric_filtered_df[selected_metric]
-                _percentiles: list[float | None] = []
-                _cohort_sizes: list[int | None] = []
-                _ascending = selected_metric in INVERT_METRICS
-
-                for _idx, _row in metric_filtered_df.iterrows():
-                    band = _age_band(_row['_age'])
-                    if band is None:
-                        _percentiles.append(None)
-                        _cohort_sizes.append(None)
-                        continue
-                    lo, hi = band
-                    # Cohort = same-age-band players in metric_filtered_df
-                    # (auto-widen by +1 year per side until cohort ≥ 15).
-                    cohort = pd.DataFrame()
-                    for widen in range(0, 6):
-                        _lo, _hi = lo - widen, hi + widen
-                        cohort = metric_filtered_df[
-                            (metric_filtered_df['_age'] >= _lo)
-                            & (metric_filtered_df['_age'] <= _hi)
-                            & metric_filtered_df[selected_metric].notna()
-                        ]
-                        if len(cohort) >= 15:
-                            break
-                    if cohort.empty or pd.isna(_row[selected_metric]):
-                        _percentiles.append(None)
-                        _cohort_sizes.append(len(cohort) if not cohort.empty else 0)
-                        continue
-                    val = _row[selected_metric]
-                    if _ascending:
-                        # Lower-is-better metric — invert.
-                        rank = (cohort[selected_metric] <= val).sum()
-                    else:
-                        rank = (cohort[selected_metric] >= val).sum()
-                    # Convert "rank from top" → percentile.
-                    pct = 100.0 * (1.0 - (rank - 1) / max(len(cohort), 1))
-                    _percentiles.append(round(pct, 1))
-                    _cohort_sizes.append(len(cohort))
-                metric_filtered_df = metric_filtered_df.assign(
-                    _SameAgePct=_percentiles,
-                    _CohortSize=_cohort_sizes,
-                )
-                # Re-rank by the same-age percentile (highest = best).
-                sorted_df = (metric_filtered_df
-                             .sort_values(by='_SameAgePct', ascending=False, na_position='last')
-                             .head(num_players))
-                median_cohort = (pd.Series(_cohort_sizes).dropna().median()
-                                  if any(c is not None for c in _cohort_sizes) else None)
-                if median_cohort is not None:
-                    _saa_caption = (
-                        f"Same-age peer cohort: median {int(median_cohort)} players. "
-                        f"Band ±1 yr for ages 20-32, ±2 yr for ≤19 and ≥33; "
-                        f"auto-widens if n<15."
-                    )
-            else:
-                _sort_ascending = selected_metric in INVERT_METRICS
-                sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
+            # Individual Metric mode intentionally does NOT apply the
+            # age-adjusted / cross-tier-translation toggles — those are
+            # for overall profile ratings only (Overview + per-template).
+            _sort_ascending = selected_metric in INVERT_METRICS
+            sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
 
             st.subheader(f"Top Players by {selected_metric} (per 90)")
 
@@ -9399,76 +9429,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
                 ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
 
-            # When the age-adjusted toggle is on, surface the same-age
-            # percentile + cohort size next to the selected metric so the
-            # user can tell rank-by-peer apart from raw value.
-            if age_adjusted and '_SameAgePct' in sorted_df.columns:
-                _metric_idx = display_df.columns.get_loc(selected_metric)
-                display_df.insert(_metric_idx + 1, 'Same-age %ile',
-                                   sorted_df['_SameAgePct'].values)
-                display_df.insert(_metric_idx + 2, 'Cohort n',
-                                   pd.Series(sorted_df['_CohortSize'].values).astype('Int64'))
-
-            # Cross-tier translation: insert a "Translated" column next
-            # to the selected metric. Multiplier depends on the chosen
-            # method (Opta uniform vs empirical per-metric median).
-            _tier_caption = None
-            if cross_tier_mode != 'Off' and _trans_src_comp and _trans_tgt_comp:
-                _src_name = COMPETITIONS.get(_trans_src_comp, {}).get('name', str(_trans_src_comp))
-                _tgt_name = COMPETITIONS.get(_trans_tgt_comp, {}).get('name', str(_trans_tgt_comp))
-                _multiplier = None
-                _n_movers = None
-                if cross_tier_mode == 'Opta strength':
-                    _multiplier = opta_translation_multiplier(_trans_src_comp, _trans_tgt_comp)
-                    _src_strength = opta_league_strength(_trans_src_comp)
-                    _tgt_strength = opta_league_strength(_trans_tgt_comp)
-                    if _multiplier is not None:
-                        _tier_caption = (
-                            f"Opta league-strength translation: "
-                            f"{_src_name} avg {_src_strength:.2f} → "
-                            f"{_tgt_name} avg {_tgt_strength:.2f} = "
-                            f"**×{_multiplier:.3f}**"
-                        )
-                elif cross_tier_mode == 'Empirical median':
-                    with st.spinner("Computing cross-tier translation factors…"):
-                        _factors = compute_empirical_translation_factors(
-                            raw_events_df, player_minutes_data,
-                            _trans_src_comp, _trans_tgt_comp,
-                        )
-                    if not _factors.empty and selected_metric in _factors.index:
-                        _multiplier = float(_factors.loc[selected_metric, 'median_ratio'])
-                        _n_movers = int(_factors.loc[selected_metric, 'n_movers'])
-                        _tier_caption = (
-                            f"Empirical translation ({_src_name} → {_tgt_name}): "
-                            f"median ratio from {_n_movers} cross-tier movers "
-                            f"with ≥500 min in both = **×{_multiplier:.3f}**"
-                        )
-
-                if _multiplier is not None:
-                    _metric_idx_t = display_df.columns.get_loc(selected_metric)
-                    _translated_vals = sorted_df[selected_metric].astype(float) * _multiplier
-                    display_df.insert(
-                        _metric_idx_t + 1,
-                        f"→ {_tgt_name}",
-                        _translated_vals.values,
-                    )
-                elif cross_tier_mode == 'Empirical median':
-                    st.caption(f"⚠️ No empirical translation available for "
-                                f"{selected_metric} ({_src_name} → {_tgt_name}) — "
-                                f"cohort below n=30 threshold.")
-
+            # Individual Metric no longer applies the cross-tier / age
+            # toggles — those are now scoped to overall ratings only.
             for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age', 'Cohort n']:
+                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age']:
                     decimals = 3 if col in THOUSANDTHS_METRICS else 2
                     display_df[col] = display_df[col].round(decimals)
 
             display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
             player_ids = sorted_df['playerId'].tolist()
 
-            if _saa_caption:
-                st.caption(_saa_caption)
-            if _tier_caption:
-                st.markdown(_tier_caption)
             st.caption("Click on a row to view that player's profile")
             selection = st.dataframe(
                 display_df.set_index('Rank'),
@@ -9487,6 +9457,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             display_df, player_ids = _build_template_table(selected_template, filtered_df, num_players, compact=False)
 
             if display_df is not None and not display_df.empty:
+                if age_adjusted:
+                    st.caption(
+                        "🟦 'Same-age %ile' column = player's percentile vs same-position "
+                        "same-age cohort. ±1 yr for ages 20-32, ±2 yr otherwise; "
+                        "cohort auto-widens until ≥15."
+                    )
+                if _rating_caption:
+                    st.caption(f"🟧 {_rating_caption}")
                 st.caption("Click on a row to view that player's profile")
                 selection = st.dataframe(
                     display_df.set_index('Rank'),
