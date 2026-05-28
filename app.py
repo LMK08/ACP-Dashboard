@@ -8010,30 +8010,31 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _y_lo = float(np.nanmin(_all_vals))
                     _y_hi = float(np.nanmax(_all_vals))
                     _y_pad = 0.05 * (_y_hi - _y_lo if _y_hi > _y_lo else 1.0)
+                    # Build the strip plot per season using plain Scatter
+                    # rather than go.Violin — Violin.marker.color must be
+                    # a single value, but we want each dot tinted by its
+                    # own y-value (RdYlGn gradient).
                     for _i, _p in enumerate(_panels, start=1):
-                        # Violin: jittered population, colored by y-value.
-                        _fig.add_trace(go.Violin(
+                        # Deterministic jitter so the layout doesn't shift
+                        # on rerun (seed by season id).
+                        _rng = np.random.default_rng(seed=int(_p['sid']) & 0xFFFFFFFF)
+                        _jitter = _rng.uniform(-0.32, 0.32, size=len(_p['population']))
+                        _fig.add_trace(go.Scatter(
+                            x=_jitter,
                             y=_p['population'],
-                            box_visible=False,
-                            meanline_visible=False,
-                            points='all',
-                            pointpos=0,
-                            jitter=0.45,
-                            scalemode='count',
-                            side='both',
-                            line_color='rgba(120,120,120,0.35)',
-                            fillcolor='rgba(120,120,120,0.05)',
+                            mode='markers',
                             marker=dict(
-                                size=4,
+                                size=5,
                                 color=_p['population'],
                                 colorscale='RdYlGn',
                                 cmin=_y_lo, cmax=_y_hi,
                                 opacity=0.55,
-                                showscale=False,
                                 line=dict(width=0),
+                                showscale=False,
                             ),
                             showlegend=False,
                             hoverinfo='y',
+                            name='',
                         ), row=1, col=_i)
                         # Highlight: the selected player's point on top.
                         _fig.add_trace(go.Scatter(
@@ -8052,9 +8053,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 f"Team: {_p['team']}<br>"
                                 f"{chart_y}: %{{y:.2f}}<extra></extra>"
                             ),
+                            name='',
                         ), row=1, col=_i)
-                        _fig.update_xaxes(showticklabels=False,
-                                           zeroline=False, row=1, col=_i)
+                        # Lock x-axis range so jitter stays contained.
+                        _fig.update_xaxes(
+                            showticklabels=False, zeroline=False,
+                            range=[-0.5, 0.5], row=1, col=_i,
+                        )
                     _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
                     _fig.update_layout(
                         title=f"{chart_y} by season (gold dot = {selected_player_name})",
