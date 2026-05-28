@@ -1786,9 +1786,100 @@ CVI_AGE_VALUE_PARAMS = {
     'ST':    {'peak': 22, 'sigma': 2.5, 'max_mult': 1.55, 'floor': 0.40},
 }
 
-# Reliability ceiling — full credit at this minutes threshold; linear
-# pro-rate below. 1800 min ≈ 20 full matches, ~"regular starter".
-CVI_RELIABILITY_CEILING = 1800
+# ---- ReliabilityWeight ----
+# Replaces the naive `min(mins/1800, 1.0)` ramp from CVI v1.
+#
+# Grounded in the empirical per-position stability table from the GPA
+# v2 explainer (reports/gpa_explainer.pdf, Part VI; raw data at
+# models/validation/stability_by_minutes.csv). The headline finding:
+# within-position YoY r for Total Value differs by ~5× across positions
+# at the same sample size:
+#
+#   pos      within-pos YoY r @ 900 min (Total Value)
+#   ─────    ────────────────────────────────────────
+#   CM       0.64    ← most stable outfield position
+#   FB       0.41
+#   STRIKER  0.32
+#   AM_WG    ~0.20   (winger 0.13, attmid sparse sample)
+#   CB       0.19
+#   GK       0.12    ← V-metrics need ~2 seasons per explainer Part VII
+#
+# Two implications a single linear ramp can't capture:
+#  1. ASYMPTOTIC CEILING differs by position. A CB rated on event-only V
+#     metrics has a structural noise floor (defensive valuation is hard
+#     per Visual 4). No amount of minutes makes CB Total Value as
+#     reliable as CM Total Value. The ceiling reflects that.
+#  2. TIME-TO-CEILING differs by position. GK needs ~2 full seasons
+#     for shot-stopping / handling / sweeping to stabilize. Outfielders
+#     reach near-ceiling around 1500-1800 min.
+#
+# These ceilings ARE NOT raw YoY r values — they're translated into
+# 0-1 weights via the psychometric convention also used in the explainer:
+#   r ≥ 0.7 ≈ trustworthy standalone (weight = 1.0)
+#   r ≈ 0.5 ≈ useful as composite input (weight ≈ 0.7)
+#   r < 0.3 ≈ noise floor (weight ≈ 0.2)
+# Then bumped upward by the Spearman-Brown effect of CVI being a
+# composite (Role_Score blends 15-25 weighted metrics; n_eff ≈ 3
+# accounting for inter-metric correlation), which lifts a within-pos
+# r=0.45 composite-input into an effective ~0.71 — putting a typical
+# outfielder near ceiling=0.95 once they have full minutes.
+CVI_RELIAB_CEILING_BY_POS = {
+    'GK':    0.70,   # event-V can't fully measure shot-stopping; need 2 seasons
+    'CB':    0.85,   # defensive valuation hard (explainer Visual 4 hybrid)
+    'AM_WG': 0.90,
+    'FB':    0.92,
+    'ST':    0.92,
+    'CM':    0.95,   # most metrics in the role composite are stable
+}
+CVI_RELIAB_CEILING_DEFAULT = 0.85
+
+# Minutes at which we approximately reach the position's ceiling
+# (≈95% there; the curve smoothly saturates above this).
+CVI_RELIAB_MINS_TO_CEILING = {
+    'GK':    3600,   # ~2 full seasons per explainer Part VII
+    'CB':    2100,
+    'AM_WG': 1800,
+    'FB':    1800,
+    'ST':    1800,
+    'CM':    1500,
+}
+CVI_RELIAB_MINS_TO_CEILING_DEFAULT = 1800
+
+# Very-short-sample floor — players below 270 min (~3 matches) still
+# get *some* weight rather than collapsing to 0, but heavily discounted.
+# This avoids the v1 behavior where a 200-min cup-game player's CVI
+# went to ~0 even if their Role_Score was strong.
+CVI_RELIAB_MIN_FLOOR_MINS = 270
+CVI_RELIAB_FLOOR = 0.15
+
+# ---- Shrinkage prior ----
+# When reliability is low, we don't shrink the rating to ZERO — we
+# shrink it toward a "replacement-level" prior (the freely-available
+# player a club could sign tomorrow). Statistically this is empirical
+# Bayes: with low sample, weight the prior more; with high sample,
+# weight the observation more.
+#
+#   shrunk_perf = reliab × raw_perf + (1 − reliab) × replacement_perf
+#
+# Why 40 on the 0-100 scale? PerformanceQuality is a within-position
+# percentile blend, so "40" literally means "≈40th-percentile player
+# within this position group" — a marginal starter / quality bench
+# player at this tier. That's the conventional sabermetric definition
+# of replacement level (the worst player a competitive team would
+# field), borrowed from Baseball Prospectus's VORP and FanGraphs' WAR.
+#
+# Effect on the math:
+#   • A 70-rated CB with 300 min (reliab=0.27):
+#       shrunk = 0.27×70 + 0.73×40 = 48.1
+#       (vs old: CVI_perf×reliab = 70×0.27 = 18.9 — punished too hard)
+#   • A 70-rated CB with 1800 min (reliab=0.79):
+#       shrunk = 0.79×70 + 0.21×40 = 63.7
+#       (already close to the observed rating)
+#   • A 25-rated player with 300 min (reliab=0.27):
+#       shrunk = 0.27×25 + 0.73×40 = 35.9
+#       (low ratings ALSO pulled toward replacement — we don't
+#       overreact to a small sample of bad performances either)
+CVI_REPLACEMENT_PERF = 40.0
 
 # Pure tier-level league multipliers, anchored to the empirical
 # mover-based cross-tier ratio from the cross-tier analysis (see
@@ -1830,6 +1921,48 @@ def _cvi_position_group(primary_position):
              'LW', 'RW', 'LWF', 'RWF'): return 'AM_WG'
     if p in ('CF', 'SS'): return 'ST'
     return None
+
+
+def _cvi_reliability_weight(mins, position_group):
+    """Position-aware reliability weight grounded in within-position
+    YoY r data from the GPA explainer (Part VI).
+
+    Shape:
+      mins < 270:        linear ramp 0 → FLOOR (0.15)
+      mins ≥ 270:        ceiling(pos) × (1 − exp(−3 × mins / mins_to_ceiling(pos)))
+                          which reaches ~95% of ceiling at mins_to_ceiling
+                          and asymptotes toward ceiling above that
+
+    Returns a tuple (weight, breakdown_dict) where breakdown_dict has the
+    raw ceiling, sample_factor (the 0..1 saturating curve value before
+    multiplying by ceiling), and mins_to_ceiling — for surfacing in the
+    UI so users can audit why a player got 0.65 vs 1.0.
+    """
+    import math
+    if mins is None:
+        return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
+    try:
+        if pd.isna(mins):
+            return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
+        mins = float(mins)
+    except Exception:
+        return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
+    if mins <= 0:
+        return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
+    ceiling = CVI_RELIAB_CEILING_BY_POS.get(position_group, CVI_RELIAB_CEILING_DEFAULT)
+    mins_full = CVI_RELIAB_MINS_TO_CEILING.get(position_group,
+                                                  CVI_RELIAB_MINS_TO_CEILING_DEFAULT)
+    if mins < CVI_RELIAB_MIN_FLOOR_MINS:
+        # Linear ramp from 0 to FLOOR across [0, 270]
+        w = CVI_RELIAB_FLOOR * (mins / CVI_RELIAB_MIN_FLOOR_MINS)
+        return w, {'ceiling': ceiling, 'sample_factor': mins / CVI_RELIAB_MIN_FLOOR_MINS,
+                    'mins_to_ceiling': mins_full,
+                    'note': f'short sample (<{CVI_RELIAB_MIN_FLOOR_MINS} min)'}
+    # Saturating curve
+    sample_factor = 1.0 - math.exp(-3.0 * mins / mins_full)
+    weight = ceiling * sample_factor
+    return weight, {'ceiling': ceiling, 'sample_factor': sample_factor,
+                     'mins_to_ceiling': mins_full}
 
 
 def _cvi_age_value_multiplier(age, position_group):
@@ -1874,20 +2007,58 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
     Returns:
         DataFrame with the same index as input plus columns:
             _CVI            — final composite (0–~150 typical)
-            _CVI_perf       — PerformanceQuality (0-100)
+            _CVI_perf       — raw PerformanceQuality (0-100)
+            _CVI_perf_shrunk — shrunk toward replacement-level prior
+                              (this is what actually feeds into CVI)
             _CVI_age        — AgeValueMultiplier (0.4-1.6)
-            _CVI_reliab     — ReliabilityWeight (0-1)
+            _CVI_reliab     — ReliabilityWeight (0-1), position-aware;
+                              this is the *shrinkage weight*, not a
+                              multiplier on perf anymore
+            _CVI_reliab_ceiling          — asymptotic max for this pos
+            _CVI_reliab_sample_factor    — 0..1 sample-driven curve value
+            _CVI_reliab_mins_to_ceiling  — min count for ~95% of ceiling
             _CVI_league     — LeagueMultiplier (0.85 or 1.0)
-            _CVI_trajectory — perf - same-age-position-median (a "+30
-                              flag" surfaced separately, NOT applied)
+            _CVI_trajectory — shrunk_perf - same-age-position-median
+                              (a "+30 flag" surfaced separately, NOT
+                              applied to CVI)
     """
     if player_stats_df is None or player_stats_df.empty:
         return pd.DataFrame()
 
     df = player_stats_df.copy()
-    # Map position to CVI group + age
+
+    # ---- BULLETPROOF DTYPE COERCION AT ENTRY ----
+    # The dashboard's upstream pipelines (especially the cross-tier Liga 3
+    # + Campeonato merges) can leak object-dtype columns containing
+    # sentinel strings like '—', '-', 'N/A', or even mixed int/str
+    # values. Any of those would later blow up a sort/rank/between/clip
+    # comparison with the cryptic "'>=' not supported between str and
+    # float" TypeError. Coerce every column we will compare/sort here.
+    #
+    # primaryPosition: leave as object (string-keyed map below) but force
+    # to string so int values from a broken merge don't trip _cvi_position_group.
+    if 'primaryPosition' in df.columns:
+        df['primaryPosition'] = df['primaryPosition'].apply(
+            lambda v: str(v) if v is not None and not pd.isna(v) else None
+        )
+    # Total Value (the V/90 column we rank): force numeric.
+    if 'Total Value' in df.columns:
+        df['Total Value'] = pd.to_numeric(df['Total Value'], errors='coerce')
+    # totalMinutes drives reliability — same defensive coercion.
+    if 'totalMinutes' in df.columns:
+        df['totalMinutes'] = pd.to_numeric(df['totalMinutes'], errors='coerce')
+    # All <Role>_Score columns we read in _best_role_score.
+    for _sc in [c for c in df.columns if c.endswith('_Score')]:
+        df[_sc] = pd.to_numeric(df[_sc], errors='coerce')
+
+    # Map position to CVI group + age. Coerce age to numeric — for some
+    # Campeonato player-seasons the age lookup may return a string
+    # (e.g. an unparsed birthDate) which would later blow up the
+    # df['_cvi_age'].between(a-2, a+2) call inside _expected_perf with
+    # "TypeError: '>=' not supported between str and float".
     df['_cvi_group'] = df['primaryPosition'].map(_cvi_position_group)
-    df['_cvi_age'] = df['playerId'].map(age_lookup)
+    df['_cvi_age'] = pd.to_numeric(df['playerId'].map(age_lookup),
+                                     errors='coerce')
 
     # ---- PerformanceQuality ----
     # Role_Score percentile = the player's best-fit Role_Score among
@@ -1912,12 +2083,21 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
     # Action V percentile within position group — rank Total Value
     # within same _cvi_group so a 0.05 V/90 striker isn't compared
     # against a 0.005 V/90 CB.
+    # Defensive coercion: in cross-tier merges the 'Total Value' column
+    # can come in as object dtype (string '—' for missing Camp rows
+    # alongside floats for matched rows). rank() then raises
+    # "'>=' not supported between str and float". Force numeric first.
     val_col = 'Total Value' if 'Total Value' in df.columns else None
     if val_col:
+        df[val_col] = pd.to_numeric(df[val_col], errors='coerce')
         df['_cvi_av_pct'] = (df.groupby('_cvi_group')[val_col]
                               .rank(pct=True, method='average') * 100.0)
     else:
         df['_cvi_av_pct'] = None
+
+    # Same risk for totalMinutes (some pipelines stash it as object).
+    if 'totalMinutes' in df.columns:
+        df['totalMinutes'] = pd.to_numeric(df['totalMinutes'], errors='coerce')
 
     def _perf_quality(row):
         g = row.get('_cvi_group')
@@ -1926,15 +2106,30 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
         w_role, w_av = CVI_PERF_WEIGHTS[g]
         role = row.get('_cvi_role_score')
         av = row.get('_cvi_av_pct')
-        # Fall back gracefully when Action V is missing — re-weight
-        # so the score still uses Role_Score at full weight.
-        if (av is None or pd.isna(av)):
-            return role if role is not None and not pd.isna(role) else None
-        if (role is None or pd.isna(role)):
-            return av
-        return w_role * float(role) + w_av * float(av)
+        # Coerce both to float (or None) up-front so we can't return a
+        # weird type that breaks downstream sorts/comparisons.
+        try:
+            role_f = (float(role) if role is not None
+                       and not pd.isna(role) else None)
+        except Exception:
+            role_f = None
+        try:
+            av_f = (float(av) if av is not None
+                     and not pd.isna(av) else None)
+        except Exception:
+            av_f = None
+        # Fall back gracefully when one side is missing — re-weight
+        # so the score still uses the other side at full weight.
+        if av_f is None and role_f is None:
+            return None
+        if av_f is None:
+            return role_f
+        if role_f is None:
+            return av_f
+        return w_role * role_f + w_av * av_f
 
-    df['_CVI_perf'] = df.apply(_perf_quality, axis=1)
+    df['_CVI_perf'] = pd.to_numeric(df.apply(_perf_quality, axis=1),
+                                      errors='coerce')
 
     # ---- AgeValueMultiplier ----
     df['_CVI_age'] = df.apply(
@@ -1943,11 +2138,24 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
     )
 
     # ---- ReliabilityWeight ----
+    # Position-aware empirical curve (see CVI_RELIAB_* constants above).
     if 'totalMinutes' in df.columns:
-        df['_CVI_reliab'] = (df['totalMinutes'].fillna(0).clip(upper=CVI_RELIABILITY_CEILING)
-                              / CVI_RELIABILITY_CEILING)
+        _reliab_results = df.apply(
+            lambda r: _cvi_reliability_weight(r.get('totalMinutes'), r.get('_cvi_group')),
+            axis=1,
+        )
+        df['_CVI_reliab'] = _reliab_results.apply(lambda t: t[0])
+        df['_CVI_reliab_ceiling'] = _reliab_results.apply(
+            lambda t: t[1].get('ceiling'))
+        df['_CVI_reliab_sample_factor'] = _reliab_results.apply(
+            lambda t: t[1].get('sample_factor'))
+        df['_CVI_reliab_mins_to_ceiling'] = _reliab_results.apply(
+            lambda t: t[1].get('mins_to_ceiling'))
     else:
         df['_CVI_reliab'] = 1.0
+        df['_CVI_reliab_ceiling'] = None
+        df['_CVI_reliab_sample_factor'] = None
+        df['_CVI_reliab_mins_to_ceiling'] = None
 
     # ---- LeagueMultiplier ----
     # Pure tier-level: 1.0 for Liga 3, 0.85 for Campeonato. The
@@ -1966,15 +2174,36 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
                    if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT
     )
 
+    # ---- Empirical-Bayes shrinkage toward replacement-level ----
+    # Instead of multiplying perf × reliab (which shrinks toward zero),
+    # we shrink toward the replacement-level prior. With high reliability
+    # the rating barely moves; with low reliability the rating is pulled
+    # most of the way toward the prior.
+    def _shrink_perf(raw_perf, reliab):
+        if raw_perf is None or pd.isna(raw_perf):
+            return None
+        if reliab is None or pd.isna(reliab):
+            return float(raw_perf)
+        w = float(reliab)
+        return w * float(raw_perf) + (1.0 - w) * CVI_REPLACEMENT_PERF
+
+    df['_CVI_perf_shrunk'] = df.apply(
+        lambda r: _shrink_perf(r.get('_CVI_perf'), r.get('_CVI_reliab')),
+        axis=1,
+    )
+
     # ---- Final composite ----
-    df['_CVI'] = (df['_CVI_perf']
+    # Note: _CVI_reliab is now BAKED INTO _CVI_perf_shrunk (it's the
+    # shrinkage weight); we no longer multiply by it again.
+    df['_CVI'] = (df['_CVI_perf_shrunk']
                    * df['_CVI_age']
-                   * df['_CVI_reliab']
                    * df['_CVI_league'])
 
     # ---- Trajectory flag (separate, NOT multiplied into CVI) ----
-    # Median PerformanceQuality among same-position-group same-age-band
-    # players. ±2 yr band for stability at the extremes.
+    # Median shrunk PerformanceQuality among same-position-group
+    # same-age-band players. Using shrunk perf (not raw) keeps the
+    # comparison apples-to-apples — both numerator and denominator
+    # reflect the same sample-discount treatment.
     def _expected_perf(row):
         g = row.get('_cvi_group')
         a = row.get('_cvi_age')
@@ -1983,17 +2212,258 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
         peers = df[
             (df['_cvi_group'] == g)
             & (df['_cvi_age'].between(a - 2, a + 2))
-            & df['_CVI_perf'].notna()
+            & df['_CVI_perf_shrunk'].notna()
         ]
         if len(peers) < 10:
             return None
-        return float(peers['_CVI_perf'].median())
+        return float(peers['_CVI_perf_shrunk'].median())
 
     df['_cvi_expected_perf'] = df.apply(_expected_perf, axis=1)
-    df['_CVI_trajectory'] = df['_CVI_perf'] - df['_cvi_expected_perf']
+    df['_CVI_trajectory'] = df['_CVI_perf_shrunk'] - df['_cvi_expected_perf']
 
-    return df[['_CVI', '_CVI_perf', '_CVI_age', '_CVI_reliab',
+    return df[['_CVI', '_CVI_perf', '_CVI_perf_shrunk', '_CVI_age',
+                '_CVI_reliab', '_CVI_reliab_ceiling',
+                '_CVI_reliab_sample_factor', '_CVI_reliab_mins_to_ceiling',
                 '_CVI_league', '_CVI_trajectory']]
+
+
+# ==============================================================================
+# Career CVI (cross-season + cross-league aggregation)
+# ------------------------------------------------------------------------------
+# Single-season CVI answers "how good was this player in 2024/25?".
+# Career CVI answers "what's the durable estimate combining everything we
+# know about this player up to and including season X?".
+#
+# Aggregation rules (anchored to chosen season; never uses future seasons):
+#   1. For each prior season i (counting backwards from anchor):
+#        decay_factor_i = CVI_CAREER_DECAY ** seasons_back_i
+#        league_factor_i = CVI_LEAGUE_MULTIPLIER[comp_at_season_i]
+#                          (translates Camp perf to Liga 3 equivalent;
+#                           anchor-season league is applied AT THE END)
+#        weight_i        = decay_factor_i × mins_i
+#        contribution_i  = perf_i × league_factor_i × weight_i
+#   2. career_perf_raw_l3 = Σ contribution_i / Σ weight_i
+#   3. effective_mins     = Σ weight_i        (drives reliability shrinkage)
+#   4. shrunk_perf        = reliab × career_perf_raw_l3
+#                            + (1 − reliab) × CVI_REPLACEMENT_PERF
+#      (reliab computed at the anchor season's position group + effective_mins)
+#   5. age_at_anchor      = player_age at anchor season's start (Aug of year)
+#   6. career_CVI = shrunk_perf × AgeValueMultiplier(age_at_anchor, pos)
+#                                × CVI_LEAGUE_MULTIPLIER[league_at_anchor]
+#
+# Why "anchor at anchor season's league"?
+#   The career_perf is now in Liga-3-equivalent units (we translated each
+#   season's contribution). To finish in the right scale, we re-apply the
+#   anchor season's league multiplier. So a career CVI anchored to a Camp
+#   season gets the 0.85 final discount; anchored to a Liga 3 season does
+#   not. This keeps Current CVI commensurate with the player's current
+#   league context.
+#
+# Anchored never INCLUDES future seasons (we don't peek). When called for
+# "Current CVI", anchor = the player's most recent season; for "Season
+# CVI" inside a historical season's view, anchor = that selected season.
+CVI_CAREER_DECAY = 0.6           # weighting per season back (0.6 default)
+CVI_CAREER_MAX_LOOKBACK = 4      # seasons back included (0..4 = up to 5 seasons)
+
+
+def _build_player_season_perf_table(gpa_values_df, player_minutes_df=None):
+    """One row per (playerId, seasonId, competitionId) with:
+       playerId, seasonId, competitionId, position_group, mins_played, perf_pct
+
+    perf_pct is the player's Total Value /90 percentile WITHIN the same
+    (seasonId × position_group) cohort — a sensible historical proxy for
+    PerformanceQuality that doesn't require re-running the full role-score
+    pipeline for every season.
+
+    Returns empty DataFrame if GPA data is unavailable.
+    """
+    if gpa_values_df is None or gpa_values_df.empty:
+        return pd.DataFrame()
+    g = gpa_values_df.copy()
+    # Pick the per-90 Total Value column (name varies between snapshots)
+    val_col = next((c for c in ('Total Value', 'total_v_per_90',
+                                  'Total Value_per_90')
+                     if c in g.columns), None)
+    if val_col is None:
+        return pd.DataFrame()
+    # Map raw position to CVI position group
+    pos_col = next((c for c in ('position', 'primaryPosition')
+                     if c in g.columns), None)
+    if pos_col is None:
+        return pd.DataFrame()
+    g['_cvi_group'] = g[pos_col].map(_cvi_position_group)
+    # Defensive numeric coercion (Camp/L3 cross-tier merges sometimes
+    # leave val_col as object dtype which breaks rank() with the
+    # str/float comparison error).
+    g[val_col] = pd.to_numeric(g[val_col], errors='coerce')
+    g = g.dropna(subset=['_cvi_group', val_col, 'seasonId', 'playerId'])
+    # Within (seasonId, position_group), percentile-rank Total Value/90
+    g['_perf_pct'] = (g.groupby(['seasonId', '_cvi_group'])[val_col]
+                        .rank(pct=True, method='average') * 100.0)
+    mins_col = next((c for c in ('mins_played', 'totalMinutes', 'Minutes')
+                      if c in g.columns), None)
+    if mins_col is None:
+        # Fall back to player_minutes_df if provided
+        if player_minutes_df is not None and not player_minutes_df.empty:
+            pm = player_minutes_df[['playerId', 'totalMinutes']].rename(
+                columns={'totalMinutes': '_mins_filled'}
+            )
+            g = g.merge(pm, on='playerId', how='left')
+            mins_col = '_mins_filled'
+        else:
+            return pd.DataFrame()
+    out = g[['playerId', 'seasonId', '_cvi_group', mins_col, '_perf_pct']].copy()
+    out = out.rename(columns={mins_col: 'mins_played',
+                                '_cvi_group': 'position_group',
+                                '_perf_pct': 'perf_pct'})
+    if 'competitionId' in g.columns:
+        out['competitionId'] = g['competitionId'].values
+    else:
+        out['competitionId'] = out['seasonId'].map(competition_for_season)
+    return out
+
+
+def _season_year(season_id):
+    """Numeric chronology key from SEASON_ID_MAP labels like '2024/25' → 2024.
+    Used to order seasons and compute 'seasons back' from an anchor.
+    """
+    label = SEASON_ID_MAP.get(int(season_id)) if season_id is not None else None
+    if not label:
+        return None
+    try:
+        return int(str(label).split('/')[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def compute_career_cvi(player_id, anchor_season_id, *,
+                        perf_table, dob_lookup,
+                        decay=CVI_CAREER_DECAY,
+                        max_lookback=CVI_CAREER_MAX_LOOKBACK):
+    """Career-aggregated CVI anchored to anchor_season_id, including that
+    season + up to `max_lookback` prior seasons (whichever the player has
+    data for). Never peeks at seasons AFTER the anchor.
+
+    Returns dict with:
+        career_cvi, career_perf_raw (L3-equivalent), career_perf_shrunk,
+        reliability, effective_mins, age_at_anchor, league_at_anchor,
+        position_group, n_seasons_used, breakdown (list of per-season dicts)
+
+    Returns None if the player has no GPA seasons at-or-before the anchor.
+    """
+    if perf_table is None or perf_table.empty or anchor_season_id is None:
+        return None
+    anchor_year = _season_year(anchor_season_id)
+    if anchor_year is None:
+        return None
+
+    rows = perf_table[perf_table['playerId'] == player_id].copy()
+    if rows.empty:
+        return None
+    rows['_season_year'] = rows['seasonId'].map(_season_year)
+    rows = rows.dropna(subset=['_season_year'])
+    rows['_season_year'] = rows['_season_year'].astype(int)
+    # Only the anchor season + prior seasons, up to max_lookback back
+    rows = rows[(rows['_season_year'] <= anchor_year)
+                 & (rows['_season_year'] >= anchor_year - max_lookback)]
+    if rows.empty:
+        return None
+    rows['_seasons_back'] = anchor_year - rows['_season_year']
+    rows['_decay'] = decay ** rows['_seasons_back']
+    rows['_league_factor'] = rows['competitionId'].map(
+        lambda c: (CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
+                    if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT)
+    )
+    rows['_weight'] = rows['_decay'] * rows['mins_played'].fillna(0).clip(lower=0)
+    rows['_contribution'] = rows['perf_pct'] * rows['_league_factor'] * rows['_weight']
+
+    total_w = float(rows['_weight'].sum())
+    if total_w <= 0:
+        return None
+    career_perf_raw_l3 = float(rows['_contribution'].sum() / total_w)
+    effective_mins = total_w   # decay-weighted effective minutes
+
+    # Resolve the anchor row to lock down position group + league for the
+    # final shrinkage/multiplier step. Use the most-recent matching season
+    # ≤ anchor (handles the case where the player skipped the anchor year).
+    anchor_row_candidates = rows.sort_values('_season_year', ascending=False)
+    anchor_row = anchor_row_candidates.iloc[0]
+    pos_group = anchor_row['position_group']
+    league_at_anchor = (CVI_LEAGUE_MULTIPLIER.get(int(anchor_row['competitionId']),
+                                                     CVI_LEAGUE_DEFAULT)
+                         if anchor_row.get('competitionId') is not None
+                         and not pd.isna(anchor_row.get('competitionId'))
+                         else CVI_LEAGUE_DEFAULT)
+
+    # Reliability from effective_mins under the anchor-position curve
+    reliab, reliab_breakdown = _cvi_reliability_weight(effective_mins, pos_group)
+
+    # Shrinkage toward replacement-level
+    shrunk_perf = (reliab * career_perf_raw_l3
+                    + (1 - reliab) * CVI_REPLACEMENT_PERF)
+
+    # Age at anchor season (Aug 1 of anchor_year used as a reference date
+    # so a player born in March looks "the right age" for that season)
+    age_at_anchor = None
+    try:
+        dob = dob_lookup(player_id) if callable(dob_lookup) else None
+        if dob is not None and not pd.isna(dob):
+            from datetime import date as _date_cls
+            anchor_ref = _date_cls(anchor_year, 8, 1)
+            if hasattr(dob, 'date'):
+                dob_d = dob.date()
+            else:
+                dob_d = dob
+            age_at_anchor = (anchor_ref - dob_d).days / 365.25
+    except Exception:
+        age_at_anchor = None
+    age_mult = _cvi_age_value_multiplier(age_at_anchor, pos_group)
+
+    career_cvi = shrunk_perf * age_mult * league_at_anchor
+
+    breakdown = (rows.sort_values('_season_year', ascending=False)
+                       [['seasonId', '_season_year', '_seasons_back',
+                          'competitionId', 'position_group', 'mins_played',
+                          'perf_pct', '_league_factor', '_decay', '_weight']]
+                       .rename(columns={'_season_year': 'season_year',
+                                          '_seasons_back': 'seasons_back',
+                                          '_league_factor': 'league_factor',
+                                          '_decay': 'decay_factor',
+                                          '_weight': 'weight'})
+                       .to_dict('records'))
+
+    return {
+        'career_cvi': career_cvi,
+        'career_perf_raw_l3': career_perf_raw_l3,
+        'career_perf_shrunk': shrunk_perf,
+        'reliability': reliab,
+        'reliability_ceiling': reliab_breakdown.get('ceiling'),
+        'reliability_sample_factor': reliab_breakdown.get('sample_factor'),
+        'effective_mins': effective_mins,
+        'age_at_anchor': age_at_anchor,
+        'age_multiplier': age_mult,
+        'league_at_anchor': league_at_anchor,
+        'position_group': pos_group,
+        'anchor_season_id': int(anchor_season_id),
+        'n_seasons_used': int(len(rows)),
+        'breakdown': breakdown,
+    }
+
+
+def most_recent_season_for_player(perf_table, player_id):
+    """Return the most recent seasonId this player has GPA data for, or
+    None if they have none. Used to anchor 'Current CVI' in the bio row.
+    """
+    if perf_table is None or perf_table.empty:
+        return None
+    rows = perf_table[perf_table['playerId'] == player_id].copy()
+    if rows.empty:
+        return None
+    rows['_y'] = rows['seasonId'].map(_season_year)
+    rows = rows.dropna(subset=['_y'])
+    if rows.empty:
+        return None
+    return int(rows.sort_values('_y', ascending=False).iloc[0]['seasonId'])
 
 
 # ==============================================================================
@@ -7936,6 +8406,51 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             except Exception:
                 _tv_cvi_block = pd.DataFrame()
 
+        # ---- Career CVI (cross-season, cross-league, decay-weighted) ----
+        # Two anchors:
+        #   • _tv_career_current — anchored to the player's most recent
+        #     season → headline "Current CVI" in the bio row
+        #   • _tv_career_season  — anchored to the selected season → shown
+        #     in Transfer Value Detail with full per-season breakdown
+        # Both apply 0.6 decay per season back and never peek at seasons
+        # after the anchor.
+        _tv_career_current = None
+        _tv_career_season = None
+        try:
+            _gpa_for_career = load_gpa_values()
+            _perf_table = _build_player_season_perf_table(
+                _gpa_for_career,
+                profile_player_minutes_df
+                  if 'profile_player_minutes_df' in dir() else None,
+            )
+            _dob_for_career = None
+            if isinstance(player_bio, pd.Series):
+                _dob_for_career = player_bio.get('birthDate')
+            _dob_lookup_for_career = (lambda pid:
+                                         pd.to_datetime(_dob_for_career,
+                                                          errors='coerce')
+                                         if _dob_for_career is not None
+                                         else None)
+            # Current CVI: anchor at player's most recent season w/ GPA data
+            _most_recent_sid = most_recent_season_for_player(_perf_table,
+                                                                player_id)
+            if _most_recent_sid is not None:
+                _tv_career_current = compute_career_cvi(
+                    player_id, _most_recent_sid,
+                    perf_table=_perf_table,
+                    dob_lookup=_dob_lookup_for_career,
+                )
+            # Season CVI: anchor at the user-selected season
+            if selected_season_id is not None:
+                _tv_career_season = compute_career_cvi(
+                    player_id, selected_season_id,
+                    perf_table=_perf_table,
+                    dob_lookup=_dob_lookup_for_career,
+                )
+        except Exception as _car_exc:
+            print(f"Warning: career CVI failed: "
+                   f"{type(_car_exc).__name__}: {_car_exc}")
+
         _tv_valuations_rows = pd.DataFrame()
         try:
             from valuations.load_valuations import load_all_valuations
@@ -8018,20 +8533,38 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                       "values higher (visibility/intangibles the model "
                       "doesn't capture). Pending v2."),
             )
-            # CVI score as a quick reference too — full breakdown
-            # lives below.
-            _cvi_score_for_bio = None
-            if not _tv_cvi_block.empty:
+            # Current CVI — career-aggregated, anchored to the player's
+            # most recent season. Uses 0.6 decay per season back and
+            # league-translates Camp seasons to Liga 3 equivalent.
+            # Full breakdown lives in Transfer Value Detail below.
+            _current_cvi = None
+            _current_cvi_n_seasons = None
+            if _tv_career_current is not None:
+                _v = _tv_career_current.get('career_cvi')
+                if _v is not None and not pd.isna(_v):
+                    _current_cvi = float(_v)
+                _current_cvi_n_seasons = _tv_career_current.get('n_seasons_used')
+            # Fallback to selected-season CVI if career version unavailable
+            if _current_cvi is None and not _tv_cvi_block.empty:
                 _v = _tv_cvi_block.iloc[0].get('_CVI')
                 if _v is not None and not pd.isna(_v):
-                    _cvi_score_for_bio = float(_v)
+                    _current_cvi = float(_v)
+            _bio_cvi_help = (
+                "Career-aggregated Composite Value Index, anchored to the "
+                "player's most recent season. Combines that season + up to "
+                f"{CVI_CAREER_MAX_LOOKBACK} prior seasons with "
+                f"{CVI_CAREER_DECAY}^seasons-back decay weighting and "
+                "cross-league translation (Camp → Liga 3 equivalent). "
+                "Full breakdown in the Transfer Value Detail section below."
+            )
             bio_row3[3].metric(
-                "CVI",
-                ("—" if _cvi_score_for_bio is None
-                 else f"{_cvi_score_for_bio:.1f}"),
-                help="Composite Value Index (0-150). Performance × "
-                     "age-value × reliability × league. Breakdown in "
-                     "the Transfer Value Detail section below.",
+                "Current CVI",
+                ("—" if _current_cvi is None
+                 else f"{_current_cvi:.1f}"),
+                (f"{_current_cvi_n_seasons}-season aggregate"
+                  if _current_cvi_n_seasons and _current_cvi_n_seasons > 1
+                  else None),
+                help=_bio_cvi_help,
             )
 
         st.divider()
@@ -8368,33 +8901,194 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _cvi_row = _tv_cvi_block.iloc[0]
                     _cvi_v = _cvi_row.get('_CVI')
                     _cvi_perf = _cvi_row.get('_CVI_perf')
+                    _cvi_perf_shr = _cvi_row.get('_CVI_perf_shrunk')
                     _cvi_age_m = _cvi_row.get('_CVI_age')
                     _cvi_reliab = _cvi_row.get('_CVI_reliab')
+                    _cvi_reliab_ceil = _cvi_row.get('_CVI_reliab_ceiling')
+                    _cvi_reliab_sf = _cvi_row.get('_CVI_reliab_sample_factor')
+                    _cvi_reliab_mtc = _cvi_row.get('_CVI_reliab_mins_to_ceiling')
                     _cvi_league = _cvi_row.get('_CVI_league')
                     _cvi_traj = _cvi_row.get('_CVI_trajectory')
                     if pd.notna(_cvi_v):
                         st.metric("CVI", f"{_cvi_v:.1f}")
                     else:
                         st.metric("CVI", "—")
+                    # Build the "Raw → Shrunk (toward 40)" string so the
+                    # user can see exactly how much the small-sample
+                    # discount moved their player.
+                    if pd.notna(_cvi_perf) and pd.notna(_cvi_perf_shr):
+                        _perf_str = (f"{_cvi_perf:.1f}  →  "
+                                      f"{_cvi_perf_shr:.1f}  "
+                                      f"(toward {CVI_REPLACEMENT_PERF:.0f})")
+                    elif pd.notna(_cvi_perf):
+                        _perf_str = f"{_cvi_perf:.1f}"
+                    else:
+                        _perf_str = "—"
+                    # Reliability shrinkage-weight display — show how
+                    # much weight the player's own data gets vs the
+                    # replacement-level prior.
+                    if (pd.notna(_cvi_reliab) and pd.notna(_cvi_reliab_ceil)
+                            and pd.notna(_cvi_reliab_sf)):
+                        _own_pct = _cvi_reliab * 100
+                        _prior_pct = (1 - _cvi_reliab) * 100
+                        _reliab_str = (f"{_own_pct:.0f}% own / "
+                                        f"{_prior_pct:.0f}% prior  "
+                                        f"(ceil {_cvi_reliab_ceil:.2f}"
+                                        f" × sample {_cvi_reliab_sf:.2f})")
+                    elif pd.notna(_cvi_reliab):
+                        _reliab_str = f"{_cvi_reliab*100:.0f}% own data"
+                    else:
+                        _reliab_str = "—"
                     _comp_df = pd.DataFrame([
-                        {'Component': 'Performance (0-100)',
-                         'Value': (f"{_cvi_perf:.1f}" if pd.notna(_cvi_perf) else "—")},
+                        {'Component': 'Perf (raw → shrunk)',
+                         'Value': _perf_str},
+                        {'Component': 'Shrinkage weighting',
+                         'Value': _reliab_str},
                         {'Component': '× Age-value multiplier',
                          'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
-                        {'Component': '× Reliability (minutes)',
-                         'Value': (f"{_cvi_reliab:.3f}" if pd.notna(_cvi_reliab) else "—")},
                         {'Component': '× League multiplier',
                          'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
                         {'Component': 'Trajectory vs age peer',
-                         'Value': (f"{int(_cvi_traj):+d}"
+                         'Value': (f"{_cvi_traj:+.1f}"
                                     if _cvi_traj is not None and pd.notna(_cvi_traj)
                                     else "—")},
                     ])
                     st.dataframe(_comp_df, use_container_width=True, hide_index=True)
+                    # Footnote — explain the shrinkage in plain English
+                    if pd.notna(_cvi_reliab_mtc) and pd.notna(_cvi_reliab_ceil):
+                        st.caption(
+                            f"**Shrinkage toward replacement-level (CVI v1.6).** "
+                            f"With limited sample, the rating is pulled toward "
+                            f"**{CVI_REPLACEMENT_PERF:.0f}** (~40th-percentile "
+                            f"player at this position — the kind a club could "
+                            f"sign for free). Position ceiling **{_cvi_reliab_ceil:.2f}** "
+                            f"(asymptotic max trust), reached at "
+                            f"**~{int(_cvi_reliab_mtc):,} min**. Grounded in "
+                            f"within-position YoY r from the GPA explainer "
+                            f"(Part VI). CMs stabilize faster than CBs; "
+                            f"GK V-metrics need ~2 seasons."
+                        )
                     st.caption("📌 CVI uses placeholder parameters — to be "
                                 "calibrated against scraped market values.")
                 else:
                     st.caption("CVI unavailable for this player-season.")
+
+                # ---- Season CVI (career-aggregated, anchored to selected) ----
+                # Pairs the per-season CVI above with a career view that
+                # includes the selected season + all prior seasons with
+                # 0.6 decay. Never peeks at seasons after the anchor.
+                if _tv_career_season is not None:
+                    st.caption("")  # spacer
+                    st.caption(f"**Season CVI** — career-aggregated, "
+                                f"anchored at "
+                                f"**{SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}**")
+                    _scvi = _tv_career_season.get('career_cvi')
+                    _scvi_n = _tv_career_season.get('n_seasons_used')
+                    _scvi_em = _tv_career_season.get('effective_mins')
+                    _scvi_perf_raw = _tv_career_season.get('career_perf_raw_l3')
+                    _scvi_perf_shr = _tv_career_season.get('career_perf_shrunk')
+                    _scvi_rel = _tv_career_season.get('reliability')
+                    _scvi_age = _tv_career_season.get('age_at_anchor')
+                    _scvi_age_m = _tv_career_season.get('age_multiplier')
+                    _scvi_lg = _tv_career_season.get('league_at_anchor')
+                    if _scvi is not None and not pd.isna(_scvi):
+                        st.metric(
+                            f"Season CVI ({_scvi_n}-season aggregate)",
+                            f"{_scvi:.1f}",
+                            (f"vs season-only CVI: "
+                              f"{(_scvi - (_tv_cvi_block.iloc[0].get('_CVI') or 0)):+.1f}"
+                              if not _tv_cvi_block.empty
+                              and _tv_cvi_block.iloc[0].get('_CVI') is not None
+                              and pd.notna(_tv_cvi_block.iloc[0].get('_CVI'))
+                              else None),
+                        )
+                    _scvi_comp_df = pd.DataFrame([
+                        {'Component': 'Career perf (L3-eq, decay-weighted)',
+                         'Value': (f"{_scvi_perf_raw:.1f}"
+                                    if _scvi_perf_raw is not None
+                                    and not pd.isna(_scvi_perf_raw)
+                                    else "—")},
+                        {'Component': 'Career perf (shrunk → 40 prior)',
+                         'Value': (f"{_scvi_perf_shr:.1f}"
+                                    if _scvi_perf_shr is not None
+                                    and not pd.isna(_scvi_perf_shr)
+                                    else "—")},
+                        {'Component': 'Effective minutes (decay-weighted)',
+                         'Value': (f"{int(_scvi_em):,}"
+                                    if _scvi_em is not None
+                                    and not pd.isna(_scvi_em)
+                                    else "—")},
+                        {'Component': 'Reliability (own data weight)',
+                         'Value': (f"{_scvi_rel:.3f}"
+                                    if _scvi_rel is not None
+                                    and not pd.isna(_scvi_rel)
+                                    else "—")},
+                        {'Component': 'Age at anchor',
+                         'Value': (f"{_scvi_age:.1f}"
+                                    if _scvi_age is not None
+                                    and not pd.isna(_scvi_age)
+                                    else "—")},
+                        {'Component': '× Age-value multiplier',
+                         'Value': (f"{_scvi_age_m:.3f}"
+                                    if _scvi_age_m is not None
+                                    and not pd.isna(_scvi_age_m)
+                                    else "—")},
+                        {'Component': '× League multiplier (at anchor)',
+                         'Value': (f"{_scvi_lg:.2f}"
+                                    if _scvi_lg is not None
+                                    and not pd.isna(_scvi_lg)
+                                    else "—")},
+                    ])
+                    st.dataframe(_scvi_comp_df, use_container_width=True,
+                                  hide_index=True)
+                    # Per-season breakdown so the user can audit every
+                    # season's contribution
+                    _brk = _tv_career_season.get('breakdown', []) or []
+                    if _brk:
+                        with st.expander("Per-season breakdown (decay, "
+                                          "league translation, weight)"):
+                            _brk_rows = []
+                            _total_w = sum(r.get('weight', 0) or 0 for r in _brk)
+                            for r in _brk:
+                                _sid = int(r.get('seasonId'))
+                                _cid = r.get('competitionId')
+                                _lbl = SEASON_ID_MAP.get(_sid, str(_sid))
+                                _comp_name = ('Camp' if _cid == 702
+                                                else 'L3' if _cid == 43324
+                                                else (str(_cid)
+                                                       if _cid is not None
+                                                       else '—'))
+                                _w = r.get('weight', 0) or 0
+                                _share = (_w / _total_w * 100
+                                            if _total_w > 0 else 0)
+                                _brk_rows.append({
+                                    'Season': _lbl,
+                                    'League': _comp_name,
+                                    'Mins': f"{int(r.get('mins_played', 0) or 0):,}",
+                                    'Perf %ile': f"{(r.get('perf_pct') or 0):.0f}",
+                                    'Decay': f"{(r.get('decay_factor') or 0):.2f}",
+                                    'League factor': f"{(r.get('league_factor') or 0):.2f}",
+                                    'Weight share': f"{_share:.0f}%",
+                                })
+                            st.dataframe(pd.DataFrame(_brk_rows),
+                                          use_container_width=True,
+                                          hide_index=True)
+                            st.caption(
+                                f"Aggregation: each season's perf is "
+                                f"multiplied by its league factor "
+                                f"(Camp×0.85 → Liga 3 equivalent), then "
+                                f"weighted by `decay × minutes` with "
+                                f"decay = {CVI_CAREER_DECAY}^seasons-back. "
+                                f"Effective minutes drive the shrinkage "
+                                f"weight, so a 3-season player gets a "
+                                f"larger 'own data' share than a 1-season "
+                                f"player at the same age."
+                            )
+                elif selected_season_id is not None:
+                    st.caption("")
+                    st.caption("Season CVI unavailable — no GPA data "
+                                "found for this player on or before the "
+                                "selected season.")
 
             with _tv_right:
                 st.caption("**Market value sources**")
@@ -8419,6 +9113,65 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             )
                             st.dataframe(_hist_view, use_container_width=True,
                                           hide_index=True)
+
+                # ---- Manual valuation entry ----
+                # Add a hand-entered figure from club / agent conversations.
+                # Highest-authority source (weight 4.0 in the loader's blend).
+                with st.expander("➕ Add manual valuation", expanded=False):
+                    with st.form(f"manual_val_{player_id}_{selected_season_id}",
+                                  clear_on_submit=True):
+                        _mv_col_a, _mv_col_b = st.columns(2)
+                        _mv_eur = _mv_col_a.number_input(
+                            "Value (EUR)", min_value=0, step=10_000,
+                            value=0, help="Hand-entered figure from club "
+                                          "or agent conversation. €0 = skip.",
+                        )
+                        from datetime import date as _date_cls
+                        _mv_date = _mv_col_b.date_input(
+                            "As-of date", value=_date_cls.today(),
+                            help="When this valuation was given to you.",
+                        )
+                        _mv_notes = st.text_input(
+                            "Notes (optional)",
+                            placeholder="e.g. 'agent quote', 'club asking price', "
+                                        "'rejected bid from X'",
+                        )
+                        _mv_submitted = st.form_submit_button("Save",
+                                                                type="primary")
+                        if _mv_submitted:
+                            if _mv_eur <= 0:
+                                st.warning("Value must be > €0 — skipping.")
+                            else:
+                                try:
+                                    import csv
+                                    _man_path = (Path(__file__).resolve().parent
+                                                  / 'valuations'
+                                                  / 'manual_entries.csv')
+                                    _man_path.parent.mkdir(exist_ok=True)
+                                    _new_file = not _man_path.exists()
+                                    with open(_man_path, 'a', newline='') as _f:
+                                        _w = csv.writer(_f)
+                                        if _new_file:
+                                            _w.writerow(['playerId', 'value_eur',
+                                                          'as_of_date', 'season_id',
+                                                          'source_url', 'notes'])
+                                        _w.writerow([
+                                            int(player_id), int(_mv_eur),
+                                            _mv_date.isoformat(),
+                                            (int(selected_season_id)
+                                             if selected_season_id else ''),
+                                            '',
+                                            (f"{_mv_notes} | added via dashboard"
+                                             if _mv_notes else "added via dashboard"),
+                                        ])
+                                    st.success(
+                                        f"Saved: €{_mv_eur:,} as of {_mv_date} "
+                                        f"for {selected_player_name}. "
+                                        f"Refresh the page to see it in the True value."
+                                    )
+                                except Exception as _save_exc:
+                                    st.error(f"Could not save: "
+                                              f"{type(_save_exc).__name__}: {_save_exc}")
 
             # ---- Market Context features ----
             st.markdown("##### Market Context")
@@ -10153,8 +10906,42 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         axis=1,
                     )
             except Exception as _cvi_exc:
+                import traceback as _tb
+                _tb_str = _tb.format_exc()
+                # Dtype diagnostic for the input frame — the most likely
+                # source of comparison errors is a mixed-type column.
+                _dtype_lines = []
+                try:
+                    for _c in ('primaryPosition', 'totalMinutes',
+                                'Total Value', 'playerId', 'seasonId',
+                                'competitionId', '_age'):
+                        if _c in filtered_df.columns:
+                            _samp = filtered_df[_c].dropna().head(3).tolist()
+                            _dtype_lines.append(
+                                f"  {_c:<18} dtype={filtered_df[_c].dtype} "
+                                f"sample={_samp}")
+                    _score_cols = [c for c in filtered_df.columns
+                                    if c.endswith('_Score')][:5]
+                    for _c in _score_cols:
+                        _samp = filtered_df[_c].dropna().head(3).tolist()
+                        _dtype_lines.append(
+                            f"  {_c:<18} dtype={filtered_df[_c].dtype} "
+                            f"sample={_samp}")
+                except Exception:
+                    pass
+                _diag = "\n".join(_dtype_lines)
                 st.sidebar.warning(f"CVI compute failed: "
                                     f"{type(_cvi_exc).__name__}: {_cvi_exc}")
+                # Full traceback + dtype diagnostic to BOTH sidebar
+                # (always visible) and server-side stdout. Don't gate
+                # on an expander — Streamlit's expander_state can hide
+                # the message on some deploys.
+                _full_diag = (f"{_tb_str}\n"
+                                f"---- input column diagnostics ----\n"
+                                f"{_diag}")
+                print(f"[CVI ERROR] {type(_cvi_exc).__name__}: {_cvi_exc}\n"
+                       f"{_full_diag}")
+                st.sidebar.code(_full_diag, language='python')
                 show_cvi = False
                 sort_by_cvi = False
 

@@ -27,10 +27,6 @@ cited. Scraper in `scrape_transfermarkt.py`. Matches Wyscout players
 by name + DOB (fuzzy) — match log written to
 `valuations/tm_match_log.csv` for audit.
 
-### `zerozero`
-Portuguese-focused market values from zerozero.pt. Different
-methodology than TM — useful 2nd opinion. Scraper TBD.
-
 ### `reported_fee`
 Hand-curated table of actual reported transfer fees (when published
 by club/press). Highest authority but sparsest. Input via
@@ -38,8 +34,20 @@ by club/press). Highest authority but sparsest. Input via
 
 ### `manual`
 Hand-entered estimates from club/agent conversations. Highest
-authority for the specific player. Input via the dashboard's manual
-entry UI (TBD) which writes to `valuations/manual_entries.csv`.
+authority for the specific player. Input via the dashboard's
+**"➕ Add manual valuation"** expander inside the Transfer Value
+Detail section of any Player Profile — appends to
+`valuations/manual_entries.csv` (schema: `playerId, value_eur,
+as_of_date, season_id, source_url, notes`). New entries appear in
+the True value on next page load.
+
+### `zerozero`
+Portuguese-focused market values from zerozero.pt. Different
+methodology than TM — useful 2nd opinion. **Currently parked**:
+zerozero.pt is behind Cloudflare bot protection (returns the "Just
+a moment..." challenge to plain `requests` and `cloudscraper`).
+Would need Playwright/Selenium or a paid proxy to bypass. Revisit
+if Transfermarkt + manual + reported sources prove insufficient.
 
 ## Refresh cadence
 
