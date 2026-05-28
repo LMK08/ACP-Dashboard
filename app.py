@@ -1790,10 +1790,24 @@ CVI_AGE_VALUE_PARAMS = {
 # pro-rate below. 1800 min ≈ 20 full matches, ~"regular starter".
 CVI_RELIABILITY_CEILING = 1800
 
-# League strength reference — Liga 3 average Opta team rating (so a
-# Liga 3 player at avg team gets LeagueMultiplier = 1.0). Re-derive
-# from opta_ratings.parquet when refreshing.
-CVI_LEAGUE_REFERENCE = 67.0
+# Pure tier-level league multipliers, anchored to the empirical
+# mover-based cross-tier ratio from the cross-tier analysis (see
+# git history around 2026-05: 41 Camp→L3 movers showed ~0.80×
+# V/90 in L3 vs Camp; 271 L3→Camp movers showed ~0.89× L3/Camp;
+# the all-movers median of 0.88 weighted by sample sizes lands
+# at ~0.85 once selection bias on the upward-mover side is folded
+# in). We deliberately do NOT layer team-strength-within-tier on
+# top — GPA Total Value already encodes team context per action,
+# so a team multiplier would double-count it.
+#
+# Reference frame: Liga 3 = 1.0 (baseline).
+CVI_LEAGUE_MULTIPLIER = {
+    43324: 1.00,    # Liga 3
+    702:   0.85,    # Campeonato de Portugal
+}
+# Fallback for any competition not in the dict (won't normally fire
+# since the dashboard's data scope is Liga 3 + Camp only).
+CVI_LEAGUE_DEFAULT = 1.0
 
 
 def _cvi_position_group(primary_position):
@@ -1835,7 +1849,9 @@ def _cvi_age_value_multiplier(age, position_group):
     return p['floor'] + (p['max_mult'] - p['floor']) * bell
 
 
-def compute_cvi_columns(player_stats_df, *, age_lookup, opta_team_strength_lookup,
+def compute_cvi_columns(player_stats_df, *, age_lookup,
+                         comp_id_lookup=None,
+                         opta_team_strength_lookup=None,   # deprecated, kept for compat
                          team_col='teamName'):
     """Compute CVI + its components for every row in player_stats_df.
 
@@ -1844,8 +1860,16 @@ def compute_cvi_columns(player_stats_df, *, age_lookup, opta_team_strength_looku
             (must have primaryPosition, totalMinutes, all {role}_Score
             columns, and 'Total Value' from GPA merge).
         age_lookup: callable playerId -> age in years (or None).
-        opta_team_strength_lookup: callable teamName -> Opta rating (or None).
-        team_col: column in player_stats_df with the team name.
+        comp_id_lookup: callable playerId -> competitionId (43324 or 702).
+            If None, falls back to the player_stats_df's competitionId
+            column if present, else assumes Liga 3 (1.0×).
+        opta_team_strength_lookup: deprecated. Earlier versions used team
+            Opta strength to scale LeagueMultiplier within a tier; we
+            dropped that to avoid double-counting team context which is
+            already encoded in GPA Total Value per action. Argument
+            kept so call sites don't break.
+        team_col: column in player_stats_df with the team name (still
+            used for joining / display, but not for CVI math anymore).
 
     Returns:
         DataFrame with the same index as input plus columns:
@@ -1853,7 +1877,7 @@ def compute_cvi_columns(player_stats_df, *, age_lookup, opta_team_strength_looku
             _CVI_perf       — PerformanceQuality (0-100)
             _CVI_age        — AgeValueMultiplier (0.4-1.6)
             _CVI_reliab     — ReliabilityWeight (0-1)
-            _CVI_league     — LeagueMultiplier (~0.85-1.10)
+            _CVI_league     — LeagueMultiplier (0.85 or 1.0)
             _CVI_trajectory — perf - same-age-position-median (a "+30
                               flag" surfaced separately, NOT applied)
     """
@@ -1926,12 +1950,21 @@ def compute_cvi_columns(player_stats_df, *, age_lookup, opta_team_strength_looku
         df['_CVI_reliab'] = 1.0
 
     # ---- LeagueMultiplier ----
-    if team_col in df.columns:
-        team_strength = df[team_col].map(opta_team_strength_lookup)
-        df['_CVI_league'] = (team_strength.fillna(CVI_LEAGUE_REFERENCE)
-                              / CVI_LEAGUE_REFERENCE)
+    # Pure tier-level: 1.0 for Liga 3, 0.85 for Campeonato. The
+    # comp_id_lookup callable wins if provided; otherwise we use
+    # competitionId from the player_stats_df if present; otherwise
+    # the conservative default of 1.0 (we'd rather not penalize a
+    # player if we can't classify their tier).
+    if comp_id_lookup is not None and 'playerId' in df.columns:
+        comps = df['playerId'].map(comp_id_lookup)
+    elif 'competitionId' in df.columns:
+        comps = df['competitionId']
     else:
-        df['_CVI_league'] = 1.0
+        comps = pd.Series([None] * len(df), index=df.index)
+    df['_CVI_league'] = comps.map(
+        lambda c: CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
+                   if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT
+    )
 
     # ---- Final composite ----
     df['_CVI'] = (df['_CVI_perf']
@@ -7720,6 +7753,138 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
 
+        # --- 4c. Transfer Value (CVI + projected EUR + true value sources) ---
+        # Two-column scout-facing summary:
+        #   left: CVI breakdown (current model output)
+        #   right: Projected € / True € / Δ — placeholder until the
+        #          Transfermarkt + ZeroZero scrape + manual entries
+        #          populate valuations.parquet, then the v2 regression
+        #          fits CVI → €.
+        st.subheader("Transfer Value")
+
+        try:
+            _tv_age = _calculate_age(player_bio.get('birthDate')) \
+                       if isinstance(player_bio, pd.Series) else None
+            _tv_comp_id = competition_for_season(selected_season_id) \
+                           if selected_season_id else None
+            _tv_player_row = player_data_row.iloc[0] if not player_data_row.empty else None
+
+            # We need a single-row DataFrame matching the schema of
+            # filtered_df entries (Role_Score columns + Total Value)
+            # so compute_cvi_columns can be reused.
+            _tv_single = (player_data_row.copy()
+                           if not player_data_row.empty else None)
+            if _tv_single is not None and 'Total Value' not in _tv_single.columns:
+                # GPA merge may not be present in profile-mode stats;
+                # fall back to looking it up directly.
+                try:
+                    _gpa = load_gpa_values()
+                    if _gpa is not None and not _gpa.empty:
+                        _r = _gpa[(_gpa['playerId'] == player_id)
+                                   & (_gpa['seasonId'] == selected_season_id)]
+                        if not _r.empty:
+                            _val_col = next((c for c in ('Total Value',
+                                              'total_v_per_90')
+                                              if c in _r.columns), None)
+                            if _val_col:
+                                _tv_single['Total Value'] = float(_r[_val_col].iloc[0])
+                except Exception:
+                    pass
+
+            _tv_cvi_block = pd.DataFrame()
+            if _tv_single is not None and 'primaryPosition' in _tv_single.columns:
+                _tv_cvi_block = compute_cvi_columns(
+                    _tv_single,
+                    age_lookup=lambda pid: _tv_age,
+                    comp_id_lookup=lambda pid: _tv_comp_id,
+                )
+
+            _tv_left, _tv_right = st.columns(2)
+            with _tv_left:
+                st.caption("**Composite Value Index (CVI)**")
+                if not _tv_cvi_block.empty:
+                    _cvi_row = _tv_cvi_block.iloc[0]
+                    _cvi_v = _cvi_row.get('_CVI')
+                    _cvi_perf = _cvi_row.get('_CVI_perf')
+                    _cvi_age_m = _cvi_row.get('_CVI_age')
+                    _cvi_reliab = _cvi_row.get('_CVI_reliab')
+                    _cvi_league = _cvi_row.get('_CVI_league')
+                    _cvi_traj = _cvi_row.get('_CVI_trajectory')
+                    if pd.notna(_cvi_v):
+                        st.metric("CVI", f"{_cvi_v:.1f}")
+                    else:
+                        st.metric("CVI", "—")
+                    # Components table
+                    _comp_df = pd.DataFrame([
+                        {'Component': 'Performance (0-100)',
+                         'Value': (f"{_cvi_perf:.1f}" if pd.notna(_cvi_perf) else "—")},
+                        {'Component': '× Age-value multiplier',
+                         'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
+                        {'Component': '× Reliability (minutes)',
+                         'Value': (f"{_cvi_reliab:.3f}" if pd.notna(_cvi_reliab) else "—")},
+                        {'Component': '× League multiplier',
+                         'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
+                        {'Component': 'Trajectory vs age peer',
+                         'Value': (f"{int(_cvi_traj):+d}"
+                                    if _cvi_traj is not None and pd.notna(_cvi_traj)
+                                    else "—")},
+                    ])
+                    st.dataframe(_comp_df, use_container_width=True, hide_index=True)
+                    st.caption("📌 CVI uses placeholder parameters — to be "
+                                "calibrated against scraped market values.")
+                else:
+                    st.caption("CVI unavailable for this player-season.")
+
+            with _tv_right:
+                st.caption("**Market value (EUR)**")
+                # Try to load any existing valuations rows for this player
+                _valuations_rows = pd.DataFrame()
+                try:
+                    from valuations.load_valuations import load_all_valuations
+                    _all_val = load_all_valuations()
+                    if not _all_val.empty:
+                        _valuations_rows = _all_val[
+                            _all_val['playerId'] == player_id
+                        ].sort_values('as_of_date', ascending=False)
+                except Exception:
+                    pass
+
+                # Projected (model output) — pending until v2 regression
+                # has TM/ZZ data to train on.
+                st.metric("Projected value", "Pending v2 model")
+
+                # True value — show the latest per source
+                if _valuations_rows.empty:
+                    st.metric("True value", "No data yet",
+                               help="Will populate from Transfermarkt + "
+                                    "ZeroZero scrapes + reported fees + "
+                                    "manual entries.")
+                    st.caption("Sources pending: TM / ZZ / reported / manual")
+                else:
+                    _latest = _valuations_rows.iloc[0]
+                    _eur = _latest.get('value_eur')
+                    _src = _latest.get('source')
+                    st.metric("True value",
+                               (f"€{_eur:,.0f}" if pd.notna(_eur) else "—"),
+                               help=f"Latest from {_src}")
+                    # Source breakdown table
+                    _src_view = (_valuations_rows
+                                  .groupby('source', as_index=False)
+                                  .first()[['source', 'value_eur', 'as_of_date']])
+                    _src_view['value_eur'] = _src_view['value_eur'].apply(
+                        lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                    )
+                    st.dataframe(_src_view, use_container_width=True,
+                                  hide_index=True)
+
+                # Delta — placeholder
+                st.caption("Δ (projected − true): pending v2 model")
+        except Exception as _tv_exc:
+            st.caption(f"Transfer Value section error: "
+                        f"{type(_tv_exc).__name__}: {_tv_exc}")
+
+        st.divider()
+
         # --- Career Trajectory moved to just above Overall Season Stats ---
 
        # --- 5. NEW: DISPLAY PLAYER RADAR ---
@@ -9654,13 +9819,26 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             try:
                 _age_map = (filtered_df.set_index('playerId')['_age'].to_dict()
                              if '_age' in filtered_df.columns else {})
-                _opta_lookup = (make_opta_team_strength_lookup()
-                                 if 'make_opta_team_strength_lookup' in globals()
-                                 else lambda _t: None)
+                # Map player → competitionId. selected_comp_ids is the
+                # league filter active in the sidebar; when one league
+                # is selected, every visible player belongs to it.
+                # Otherwise fall back to competition_for_season.
+                if selected_comp_ids and len(selected_comp_ids) == 1:
+                    _the_comp = int(selected_comp_ids[0])
+                    _comp_lookup = lambda _pid: _the_comp
+                elif 'seasonId' in filtered_df.columns:
+                    _season_to_comp = {
+                        sid: competition_for_season(sid)
+                        for sid in filtered_df['seasonId'].dropna().unique()
+                    }
+                    _ssid_map = filtered_df.set_index('playerId')['seasonId'].to_dict()
+                    _comp_lookup = lambda pid: _season_to_comp.get(_ssid_map.get(pid))
+                else:
+                    _comp_lookup = lambda _pid: None
                 _cvi_block = compute_cvi_columns(
                     filtered_df,
                     age_lookup=lambda pid: _age_map.get(pid),
-                    opta_team_strength_lookup=_opta_lookup,
+                    comp_id_lookup=_comp_lookup,
                 )
                 if not _cvi_block.empty:
                     filtered_df = pd.concat(
