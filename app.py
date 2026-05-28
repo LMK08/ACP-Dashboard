@@ -7897,7 +7897,68 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 pass # Fallback to original values if lookup fails
 
         st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
-        
+
+        # ---- Compute Transfer Value primitives ONCE per page load ----
+        # Used twice: (a) compact projected / true / Δ metrics in the
+        # Player Information bio row below, (b) full CVI breakdown +
+        # Market Context detail section just above Career Trajectory.
+        _tv_age = _calculate_age(player_bio.get('birthDate')) \
+                   if isinstance(player_bio, pd.Series) else None
+        _tv_comp_id = competition_for_season(selected_season_id) \
+                       if selected_season_id else None
+        _tv_player_row = player_data_row.iloc[0] if not player_data_row.empty else None
+        _tv_single = (player_data_row.copy()
+                       if not player_data_row.empty else None)
+        if _tv_single is not None and 'Total Value' not in _tv_single.columns:
+            # GPA merge may not be present in profile-mode stats; backfill.
+            try:
+                _gpa = load_gpa_values()
+                if _gpa is not None and not _gpa.empty:
+                    _r = _gpa[(_gpa['playerId'] == player_id)
+                               & (_gpa['seasonId'] == selected_season_id)]
+                    if not _r.empty:
+                        _val_col = next((c for c in ('Total Value',
+                                          'total_v_per_90')
+                                          if c in _r.columns), None)
+                        if _val_col:
+                            _tv_single['Total Value'] = float(_r[_val_col].iloc[0])
+            except Exception:
+                pass
+
+        _tv_cvi_block = pd.DataFrame()
+        if _tv_single is not None and 'primaryPosition' in _tv_single.columns:
+            try:
+                _tv_cvi_block = compute_cvi_columns(
+                    _tv_single,
+                    age_lookup=lambda pid: _tv_age,
+                    comp_id_lookup=lambda pid: _tv_comp_id,
+                )
+            except Exception:
+                _tv_cvi_block = pd.DataFrame()
+
+        _tv_valuations_rows = pd.DataFrame()
+        try:
+            from valuations.load_valuations import load_all_valuations
+            _all_val = load_all_valuations()
+            if _all_val is not None and not _all_val.empty:
+                _tv_valuations_rows = _all_val[
+                    _all_val['playerId'] == player_id
+                ].sort_values('as_of_date', ascending=False)
+        except Exception:
+            pass
+
+        # Headline projected / true / Δ values for the bio row.
+        _tv_projected_eur = None      # v2 model output — pending
+        _tv_true_eur = None
+        _tv_true_source = None
+        if not _tv_valuations_rows.empty:
+            _latest = _tv_valuations_rows.iloc[0]
+            _tv_true_eur = _latest.get('value_eur')
+            _tv_true_source = _latest.get('source')
+        _tv_delta_eur = (_tv_projected_eur - _tv_true_eur
+                          if _tv_projected_eur is not None and _tv_true_eur is not None
+                          else None)
+
         col1_bio, col2_bio = st.columns([1, 3])
         with col1_bio:
             image_url = player_bio.get('imageDataURL', None)
@@ -7927,227 +7988,55 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
 
-        st.divider()
-
-        # --- 4c. Transfer Value (CVI + projected EUR + true value sources) ---
-        # Two-column scout-facing summary:
-        #   left: CVI breakdown (current model output)
-        #   right: Projected € / True € / Δ — placeholder until the
-        #          Transfermarkt + ZeroZero scrape + manual entries
-        #          populate valuations.parquet, then the v2 regression
-        #          fits CVI → €.
-        st.subheader("Transfer Value")
-
-        try:
-            _tv_age = _calculate_age(player_bio.get('birthDate')) \
-                       if isinstance(player_bio, pd.Series) else None
-            _tv_comp_id = competition_for_season(selected_season_id) \
-                           if selected_season_id else None
-            _tv_player_row = player_data_row.iloc[0] if not player_data_row.empty else None
-
-            # We need a single-row DataFrame matching the schema of
-            # filtered_df entries (Role_Score columns + Total Value)
-            # so compute_cvi_columns can be reused.
-            _tv_single = (player_data_row.copy()
-                           if not player_data_row.empty else None)
-            if _tv_single is not None and 'Total Value' not in _tv_single.columns:
-                # GPA merge may not be present in profile-mode stats;
-                # fall back to looking it up directly.
-                try:
-                    _gpa = load_gpa_values()
-                    if _gpa is not None and not _gpa.empty:
-                        _r = _gpa[(_gpa['playerId'] == player_id)
-                                   & (_gpa['seasonId'] == selected_season_id)]
-                        if not _r.empty:
-                            _val_col = next((c for c in ('Total Value',
-                                              'total_v_per_90')
-                                              if c in _r.columns), None)
-                            if _val_col:
-                                _tv_single['Total Value'] = float(_r[_val_col].iloc[0])
-                except Exception:
-                    pass
-
-            _tv_cvi_block = pd.DataFrame()
-            if _tv_single is not None and 'primaryPosition' in _tv_single.columns:
-                _tv_cvi_block = compute_cvi_columns(
-                    _tv_single,
-                    age_lookup=lambda pid: _tv_age,
-                    comp_id_lookup=lambda pid: _tv_comp_id,
-                )
-
-            _tv_left, _tv_right = st.columns(2)
-            with _tv_left:
-                st.caption("**Composite Value Index (CVI)**")
-                if not _tv_cvi_block.empty:
-                    _cvi_row = _tv_cvi_block.iloc[0]
-                    _cvi_v = _cvi_row.get('_CVI')
-                    _cvi_perf = _cvi_row.get('_CVI_perf')
-                    _cvi_age_m = _cvi_row.get('_CVI_age')
-                    _cvi_reliab = _cvi_row.get('_CVI_reliab')
-                    _cvi_league = _cvi_row.get('_CVI_league')
-                    _cvi_traj = _cvi_row.get('_CVI_trajectory')
-                    if pd.notna(_cvi_v):
-                        st.metric("CVI", f"{_cvi_v:.1f}")
-                    else:
-                        st.metric("CVI", "—")
-                    # Components table
-                    _comp_df = pd.DataFrame([
-                        {'Component': 'Performance (0-100)',
-                         'Value': (f"{_cvi_perf:.1f}" if pd.notna(_cvi_perf) else "—")},
-                        {'Component': '× Age-value multiplier',
-                         'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
-                        {'Component': '× Reliability (minutes)',
-                         'Value': (f"{_cvi_reliab:.3f}" if pd.notna(_cvi_reliab) else "—")},
-                        {'Component': '× League multiplier',
-                         'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
-                        {'Component': 'Trajectory vs age peer',
-                         'Value': (f"{int(_cvi_traj):+d}"
-                                    if _cvi_traj is not None and pd.notna(_cvi_traj)
-                                    else "—")},
-                    ])
-                    st.dataframe(_comp_df, use_container_width=True, hide_index=True)
-                    st.caption("📌 CVI uses placeholder parameters — to be "
-                                "calibrated against scraped market values.")
-                else:
-                    st.caption("CVI unavailable for this player-season.")
-
-            with _tv_right:
-                st.caption("**Market value (EUR)**")
-                # Try to load any existing valuations rows for this player
-                _valuations_rows = pd.DataFrame()
-                try:
-                    from valuations.load_valuations import load_all_valuations
-                    _all_val = load_all_valuations()
-                    if not _all_val.empty:
-                        _valuations_rows = _all_val[
-                            _all_val['playerId'] == player_id
-                        ].sort_values('as_of_date', ascending=False)
-                except Exception:
-                    pass
-
-                # Projected (model output) — pending until v2 regression
-                # has TM/ZZ data to train on.
-                st.metric("Projected value", "Pending v2 model")
-
-                # True value — show the latest per source
-                if _valuations_rows.empty:
-                    st.metric("True value", "No data yet",
-                               help="Will populate from Transfermarkt + "
-                                    "ZeroZero scrapes + reported fees + "
-                                    "manual entries.")
-                    st.caption("Sources pending: TM / ZZ / reported / manual")
-                else:
-                    _latest = _valuations_rows.iloc[0]
-                    _eur = _latest.get('value_eur')
-                    _src = _latest.get('source')
-                    st.metric("True value",
-                               (f"€{_eur:,.0f}" if pd.notna(_eur) else "—"),
-                               help=f"Latest from {_src}")
-                    # Source breakdown table
-                    _src_view = (_valuations_rows
-                                  .groupby('source', as_index=False)
-                                  .first()[['source', 'value_eur', 'as_of_date']])
-                    _src_view['value_eur'] = _src_view['value_eur'].apply(
-                        lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                    )
-                    st.dataframe(_src_view, use_container_width=True,
-                                  hide_index=True)
-
-                # Delta — placeholder
-                st.caption("Δ (projected − true): pending v2 model")
-
-            # --- Market Context features (inputs to v2 regression) ---
-            st.markdown("##### Market Context")
-            try:
-                # Get the player's current team for this season
-                _tv_team = (str(_tv_player_row.get('teamName'))
-                             if _tv_player_row is not None
-                             and pd.notna(_tv_player_row.get('teamName'))
-                             else None)
-                _opta_fn = (make_opta_team_strength_lookup()
-                             if 'make_opta_team_strength_lookup' in globals()
-                             else (lambda _t: None))
-                _mc = compute_market_features(
-                    player_id=player_id,
-                    season_id=selected_season_id,
-                    raw_events_df=raw_events_df,
-                    matches_summary_df=matches_summary_df,
-                    player_details_df=player_details_df,
-                    player_minutes_data=player_minutes_data,
-                    team_name=_tv_team,
-                    opta_team_lookup=_opta_fn,
-                )
-                # 4-col compact layout
-                _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
-                def _fmt_resid(v, n_dec=1, sign=True):
-                    if v is None or pd.isna(v): return "—"
-                    return f"{v:+.{n_dec}f}" if sign else f"{v:.{n_dec}f}"
-
-                _mc_c1.metric("xG O/U (season)",
-                                _fmt_resid(_mc['xg_residual_season']),
-                                help="Goals minus xG, non-penalty, this season. "
-                                     "Positive = outperforming xG (clinical "
-                                     "finishing or variance); negative = "
-                                     "underperforming.")
-                _mc_c1.metric("xG O/U (career)",
-                                _fmt_resid(_mc['xg_residual_career']),
-                                help="Cumulative across all seasons in our "
-                                     "data. More stable than single-season "
-                                     "residuals.")
-                _mc_c2.metric("xA O/U (season)",
-                                _fmt_resid(_mc['ass_residual_season']),
-                                help="Assists minus xA proxy (sum of xG of "
-                                     "shots the player set up).")
-                _mc_c2.metric("xA O/U (career)",
-                                _fmt_resid(_mc['ass_residual_career']))
-
-                _nat_p = _mc.get('passport_nationality') or '—'
-                _nat_b = _mc.get('birth_nationality') or '—'
-                _mc_c3.metric("Nationality (passport)", _nat_p)
-                if _nat_b != _nat_p:
-                    _mc_c3.metric("Birthplace", _nat_b)
-
-                _team_opta = _mc.get('team_opta_rating')
-                _team_ppm = _mc.get('team_ppm_season')
-                _team_pos = _mc.get('team_league_position')
-                _mc_c4.metric(
-                    "Team Opta",
-                    f"{_team_opta:.1f}" if _team_opta is not None else "—",
-                    help="Current team's Opta Power Ranking — proxy for "
-                         "scouting visibility and tier-internal team strength.",
-                )
-                _mc_c4.metric(
-                    "Team this season",
-                    (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
-                    + (f" · {_team_pos}." if _team_pos is not None else ""),
-                    help="Points per match + league position from parsed scores. "
-                         "Successful-team players typically carry a market premium.",
-                )
-
-                # Versatility footnote
-                _ver = _mc.get('positions_played_career')
-                _sea = _mc.get('seasons_played')
-                if _ver is not None or _sea is not None:
-                    _bits = []
-                    if _ver is not None:
-                        _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
-                    if _sea is not None:
-                        _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
-                    st.caption("· ".join(_bits))
-                st.caption(
-                    "📌 These features feed the v2 EUR regression "
-                    "(currently pending). They don't change CVI itself."
-                )
-            except Exception as _mc_exc:
-                st.caption(f"Market Context error: "
-                            f"{type(_mc_exc).__name__}: {_mc_exc}")
-        except Exception as _tv_exc:
-            st.caption(f"Transfer Value section error: "
-                        f"{type(_tv_exc).__name__}: {_tv_exc}")
+            # Headline transfer-value figures (Projected / True / Δ).
+            # Full breakdown lives in the "Transfer Value Detail"
+            # section just above Career Trajectory.
+            bio_row3 = st.columns(4)
+            bio_row3[0].metric(
+                "Projected value",
+                ("Pending v2"
+                 if _tv_projected_eur is None
+                 else f"€{_tv_projected_eur:,.0f}"),
+                help="Model-predicted market value. Pending v2 "
+                     "regression on scraped TM/ZZ/manual valuations.",
+            )
+            bio_row3[1].metric(
+                "True value",
+                ("No data yet" if _tv_true_eur is None
+                 else f"€{_tv_true_eur:,.0f}"),
+                help=(f"Latest from {_tv_true_source}"
+                       if _tv_true_source else
+                       "Will populate from TM/ZZ scrapes + reported "
+                       "fees + manual entries."),
+            )
+            bio_row3[2].metric(
+                "Δ (proj − true)",
+                ("—" if _tv_delta_eur is None
+                 else f"{'+' if _tv_delta_eur >= 0 else ''}€{_tv_delta_eur:,.0f}"),
+                help=("Positive Δ = model thinks more than market "
+                      "(potentially undervalued buy). Negative = market "
+                      "values higher (visibility/intangibles the model "
+                      "doesn't capture). Pending v2."),
+            )
+            # CVI score as a quick reference too — full breakdown
+            # lives below.
+            _cvi_score_for_bio = None
+            if not _tv_cvi_block.empty:
+                _v = _tv_cvi_block.iloc[0].get('_CVI')
+                if _v is not None and not pd.isna(_v):
+                    _cvi_score_for_bio = float(_v)
+            bio_row3[3].metric(
+                "CVI",
+                ("—" if _cvi_score_for_bio is None
+                 else f"{_cvi_score_for_bio:.1f}"),
+                help="Composite Value Index (0-150). Performance × "
+                     "age-value × reliability × league. Breakdown in "
+                     "the Transfer Value Detail section below.",
+            )
 
         st.divider()
 
-        # --- Career Trajectory moved to just above Overall Season Stats ---
+        # --- Transfer Value Detail moved to just above Career Trajectory ---
 
        # --- 5. NEW: DISPLAY PLAYER RADAR ---
         st.subheader("Player Radar")
@@ -8461,6 +8350,161 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
             except Exception as e:
                 print(f"Warning: Could not compute outlier stats: {e}")
+
+        st.divider()
+
+        # --- 5a. Transfer Value Detail ------------------------------------
+        # Headline projected / true / Δ already live in the Player
+        # Information bio row at top. This section is the deep dive:
+        # CVI components + market-context features that feed the v2
+        # EUR regression. Lives here so the supporting analytics sit
+        # next to the trajectory plots that visualize them.
+        st.subheader("Transfer Value Detail")
+        try:
+            _tv_left, _tv_right = st.columns(2)
+            with _tv_left:
+                st.caption("**Composite Value Index (CVI) breakdown**")
+                if not _tv_cvi_block.empty:
+                    _cvi_row = _tv_cvi_block.iloc[0]
+                    _cvi_v = _cvi_row.get('_CVI')
+                    _cvi_perf = _cvi_row.get('_CVI_perf')
+                    _cvi_age_m = _cvi_row.get('_CVI_age')
+                    _cvi_reliab = _cvi_row.get('_CVI_reliab')
+                    _cvi_league = _cvi_row.get('_CVI_league')
+                    _cvi_traj = _cvi_row.get('_CVI_trajectory')
+                    if pd.notna(_cvi_v):
+                        st.metric("CVI", f"{_cvi_v:.1f}")
+                    else:
+                        st.metric("CVI", "—")
+                    _comp_df = pd.DataFrame([
+                        {'Component': 'Performance (0-100)',
+                         'Value': (f"{_cvi_perf:.1f}" if pd.notna(_cvi_perf) else "—")},
+                        {'Component': '× Age-value multiplier',
+                         'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
+                        {'Component': '× Reliability (minutes)',
+                         'Value': (f"{_cvi_reliab:.3f}" if pd.notna(_cvi_reliab) else "—")},
+                        {'Component': '× League multiplier',
+                         'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
+                        {'Component': 'Trajectory vs age peer',
+                         'Value': (f"{int(_cvi_traj):+d}"
+                                    if _cvi_traj is not None and pd.notna(_cvi_traj)
+                                    else "—")},
+                    ])
+                    st.dataframe(_comp_df, use_container_width=True, hide_index=True)
+                    st.caption("📌 CVI uses placeholder parameters — to be "
+                                "calibrated against scraped market values.")
+                else:
+                    st.caption("CVI unavailable for this player-season.")
+
+            with _tv_right:
+                st.caption("**Market value sources**")
+                if _tv_valuations_rows.empty:
+                    st.caption("No data yet. Will populate from Transfermarkt + "
+                                "ZeroZero scrapes + reported fees + manual entries.")
+                else:
+                    _src_view = (_tv_valuations_rows
+                                  .groupby('source', as_index=False)
+                                  .first()[['source', 'value_eur', 'as_of_date']])
+                    _src_view['value_eur'] = _src_view['value_eur'].apply(
+                        lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                    )
+                    st.dataframe(_src_view, use_container_width=True, hide_index=True)
+                    if len(_tv_valuations_rows) > len(_src_view):
+                        with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
+                            _hist_view = _tv_valuations_rows[
+                                ['source', 'value_eur', 'as_of_date', 'notes']
+                            ].copy()
+                            _hist_view['value_eur'] = _hist_view['value_eur'].apply(
+                                lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                            )
+                            st.dataframe(_hist_view, use_container_width=True,
+                                          hide_index=True)
+
+            # ---- Market Context features ----
+            st.markdown("##### Market Context")
+            try:
+                _tv_team = (str(_tv_player_row.get('teamName'))
+                             if _tv_player_row is not None
+                             and pd.notna(_tv_player_row.get('teamName'))
+                             else None)
+                _opta_fn = (make_opta_team_strength_lookup()
+                             if 'make_opta_team_strength_lookup' in globals()
+                             else (lambda _t: None))
+                _mc = compute_market_features(
+                    player_id=player_id,
+                    season_id=selected_season_id,
+                    raw_events_df=raw_events_df,
+                    matches_summary_df=matches_summary_df,
+                    player_details_df=player_details_df,
+                    player_minutes_data=player_minutes_data,
+                    team_name=_tv_team,
+                    opta_team_lookup=_opta_fn,
+                )
+                _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
+                def _fmt_resid(v, n_dec=1):
+                    if v is None or pd.isna(v): return "—"
+                    return f"{v:+.{n_dec}f}"
+
+                _mc_c1.metric("xG O/U (season)",
+                                _fmt_resid(_mc['xg_residual_season']),
+                                help="Goals minus xG, non-penalty, this season. "
+                                     "Positive = outperforming xG (clinical "
+                                     "finishing or variance); negative = "
+                                     "underperforming.")
+                _mc_c1.metric("xG O/U (career)",
+                                _fmt_resid(_mc['xg_residual_career']),
+                                help="Cumulative across all seasons in our "
+                                     "data. More stable than single-season "
+                                     "residuals.")
+                _mc_c2.metric("xA O/U (season)",
+                                _fmt_resid(_mc['ass_residual_season']),
+                                help="Assists minus xA proxy (sum of xG of "
+                                     "shots the player set up).")
+                _mc_c2.metric("xA O/U (career)",
+                                _fmt_resid(_mc['ass_residual_career']))
+
+                _nat_p = _mc.get('passport_nationality') or '—'
+                _nat_b = _mc.get('birth_nationality') or '—'
+                _mc_c3.metric("Nationality (passport)", _nat_p)
+                if _nat_b != _nat_p:
+                    _mc_c3.metric("Birthplace", _nat_b)
+
+                _team_opta = _mc.get('team_opta_rating')
+                _team_ppm = _mc.get('team_ppm_season')
+                _team_pos = _mc.get('team_league_position')
+                _mc_c4.metric(
+                    "Team Opta",
+                    f"{_team_opta:.1f}" if _team_opta is not None else "—",
+                    help="Current team's Opta Power Ranking — proxy for "
+                         "scouting visibility and tier-internal team strength.",
+                )
+                _mc_c4.metric(
+                    "Team this season",
+                    (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
+                    + (f" · {_team_pos}." if _team_pos is not None else ""),
+                    help="Points per match + league position from parsed scores. "
+                         "Successful-team players typically carry a market premium.",
+                )
+
+                _ver = _mc.get('positions_played_career')
+                _sea = _mc.get('seasons_played')
+                if _ver is not None or _sea is not None:
+                    _bits = []
+                    if _ver is not None:
+                        _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
+                    if _sea is not None:
+                        _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
+                    st.caption("· ".join(_bits))
+                st.caption(
+                    "📌 These features feed the v2 EUR regression "
+                    "(currently pending). They don't change CVI itself."
+                )
+            except Exception as _mc_exc:
+                st.caption(f"Market Context error: "
+                            f"{type(_mc_exc).__name__}: {_mc_exc}")
+        except Exception as _tv_exc:
+            st.caption(f"Transfer Value Detail error: "
+                        f"{type(_tv_exc).__name__}: {_tv_exc}")
 
         st.divider()
 
