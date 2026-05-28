@@ -8045,7 +8045,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _scaled_w = 0.85 * (_n / _max_n) ** 0.5
                         # 1) Violin: density shape, no built-in points (we
                         # render our own colored dots in the next trace).
+                        # Explicit x=0 anchor — without this, plotly
+                        # picks categorical mode and the highlight dot's
+                        # numeric x positioning silently breaks.
                         _fig.add_trace(go.Violin(
+                            x=np.zeros(len(_p['population'])),
                             y=_p['population'],
                             points=False,
                             box_visible=False,
@@ -8084,15 +8088,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         ), row=1, col=_i)
 
                         # 3) Highlight: the selected player's point on top.
+                        # Bumped to a larger diamond with a thicker dark
+                        # ring so it stays unmistakable against the
+                        # dense violin shape.
                         _fig.add_trace(go.Scatter(
                             y=[_p['player_value']],
-                            x=[0],
+                            x=[0.0],
                             mode='markers',
                             marker=dict(
-                                size=14,
-                                color='#FFD24A',
-                                line=dict(color='black', width=1.5),
-                                symbol='circle',
+                                size=18,
+                                color='#FFC400',
+                                line=dict(color='black', width=2),
+                                symbol='diamond',
                             ),
                             showlegend=False,
                             hovertemplate=(
@@ -8102,9 +8109,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             ),
                             name='',
                         ), row=1, col=_i)
-                        # Lock x-axis range so jitter stays contained and
-                        # all panels have identical horizontal scale.
+                        # Force the x-axis to linear — adding go.Violin
+                        # without an explicit x array flips Plotly into
+                        # categorical-axis mode, which silently clobbers
+                        # the numeric x positions we use for jitter and
+                        # the highlight dot (so they collapse onto a
+                        # single phantom category and the gold dot got
+                        # buried under the colored cloud).
                         _fig.update_xaxes(
+                            type='linear',
                             showticklabels=False, zeroline=False,
                             range=[-0.5, 0.5], row=1, col=_i,
                         )
