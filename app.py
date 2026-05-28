@@ -7902,8 +7902,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _best_fit_score, axis=1,
                         args=(WEIGHTS, POSITION_GROUPS),
                     )
-                    # Population for violin = all qualifying players this season.
-                    _pop = _scores_sid['_best_fit'].dropna().values
+                    # Population for violin = players who hit the ≥900-min
+                    # sample-size threshold for this season. Match the same
+                    # cutoff applied below for Action V/90.
+                    if 'totalMinutes' in _scores_sid.columns:
+                        _qualified = _scores_sid[
+                            (_scores_sid['totalMinutes'].fillna(0) >= 900)
+                            & _scores_sid['_best_fit'].notna()
+                        ]
+                    else:
+                        _qualified = _scores_sid[_scores_sid['_best_fit'].notna()]
+                    _pop = _qualified['_best_fit'].values
                     if len(_pop) > 0:
                         _rating_population[int(_sid)] = _pop
                     # The selected player's row.
@@ -7969,8 +7978,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _val_col = next((c for c in ('Total Value', 'total_v_per_90')
                                           if c in _gpa_full.columns), None)
                         if _val_col:
-                            _pop = (_gpa_full.loc[_gpa_full['seasonId'] == _sid, _val_col]
-                                              .dropna().values)
+                            # Filter to ≥900-min sample so the population
+                            # represents proper regular-rotation players
+                            # rather than every player who featured once.
+                            _gpa_season = _gpa_full.loc[
+                                (_gpa_full['seasonId'] == _sid)
+                                & (_gpa_full.get('mins_played', 0) >= 900)
+                            ]
+                            _pop = _gpa_season[_val_col].dropna().values
                         else:
                             _pop = np.array([])
                     else:
@@ -8004,21 +8019,52 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         subplot_titles=[p['label'] for p in _panels],
                         horizontal_spacing=0.01,
                     )
-                    # Common y-range across all panels for fair comparison.
-                    _all_vals = np.concatenate([p['population'] for p in _panels]
-                                                + [[p['player_value']] for p in _panels])
-                    _y_lo = float(np.nanmin(_all_vals))
-                    _y_hi = float(np.nanmax(_all_vals))
+                    # Common y-range — driven by the ≥900-min POPULATION
+                    # only (per user request). If the highlighted player
+                    # is outside that range we extend slightly so the gold
+                    # dot is still visible, but the scale is anchored to
+                    # the regular-rotation population.
+                    _pop_concat = np.concatenate([p['population'] for p in _panels])
+                    _y_lo = float(np.nanmin(_pop_concat))
+                    _y_hi = float(np.nanmax(_pop_concat))
                     _y_pad = 0.05 * (_y_hi - _y_lo if _y_hi > _y_lo else 1.0)
-                    # Build the strip plot per season using plain Scatter
-                    # rather than go.Violin — Violin.marker.color must be
-                    # a single value, but we want each dot tinted by its
-                    # own y-value (RdYlGn gradient).
+                    # Allow the highlighted dot to bleed up to 1 pad
+                    # outside the population range without rescaling the
+                    # whole panel.
+                    _player_vals = [p['player_value'] for p in _panels]
+                    _y_lo = min(_y_lo, float(np.nanmin(_player_vals)) - _y_pad)
+                    _y_hi = max(_y_hi, float(np.nanmax(_player_vals)) + _y_pad)
+                    # Width scaling: seasons with more ≥900-min players get
+                    # visibly wider violins so the user can tell apart a
+                    # 200-player Liga 3 season from a 600-player Camp
+                    # season. Use a power < 1 so small samples don't
+                    # collapse to slivers.
+                    _max_n = max(len(p['population']) for p in _panels) or 1
                     for _i, _p in enumerate(_panels, start=1):
-                        # Deterministic jitter so the layout doesn't shift
-                        # on rerun (seed by season id).
+                        _n = len(_p['population'])
+                        _scaled_w = 0.85 * (_n / _max_n) ** 0.5
+                        # 1) Violin: density shape, no built-in points (we
+                        # render our own colored dots in the next trace).
+                        _fig.add_trace(go.Violin(
+                            y=_p['population'],
+                            points=False,
+                            box_visible=False,
+                            meanline_visible=False,
+                            side='both',
+                            width=_scaled_w,
+                            line_color='rgba(80,80,80,0.55)',
+                            fillcolor='rgba(140,140,140,0.18)',
+                            showlegend=False,
+                            hoverinfo='skip',
+                            name='',
+                        ), row=1, col=_i)
+
+                        # 2) Colored dots: deterministic jitter so the
+                        # layout doesn't shift on rerun (seeded by sid),
+                        # bounded so dots stay inside the violin.
                         _rng = np.random.default_rng(seed=int(_p['sid']) & 0xFFFFFFFF)
-                        _jitter = _rng.uniform(-0.32, 0.32, size=len(_p['population']))
+                        _half = max(0.05, _scaled_w / 2 - 0.04)
+                        _jitter = _rng.uniform(-_half, _half, size=_n)
                         _fig.add_trace(go.Scatter(
                             x=_jitter,
                             y=_p['population'],
@@ -8028,7 +8074,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 color=_p['population'],
                                 colorscale='RdYlGn',
                                 cmin=_y_lo, cmax=_y_hi,
-                                opacity=0.55,
+                                opacity=0.6,
                                 line=dict(width=0),
                                 showscale=False,
                             ),
@@ -8036,7 +8082,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             hoverinfo='y',
                             name='',
                         ), row=1, col=_i)
-                        # Highlight: the selected player's point on top.
+
+                        # 3) Highlight: the selected player's point on top.
                         _fig.add_trace(go.Scatter(
                             y=[_p['player_value']],
                             x=[0],
@@ -8055,7 +8102,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             ),
                             name='',
                         ), row=1, col=_i)
-                        # Lock x-axis range so jitter stays contained.
+                        # Lock x-axis range so jitter stays contained and
+                        # all panels have identical horizontal scale.
                         _fig.update_xaxes(
                             showticklabels=False, zeroline=False,
                             range=[-0.5, 0.5], row=1, col=_i,
