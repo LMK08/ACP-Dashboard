@@ -152,6 +152,43 @@ def load_player_universe() -> pd.DataFrame:
         lambda x: x if isinstance(x, list) else []
     )
 
+    # Per-(season, club) ranges per player. Each entry is a dict:
+    #   {season_id, season_label, team, first_match, last_match}
+    # Useful for matching against TM transfer history (their dates)
+    # post-match and for v2 EUR regression features (movement churn).
+    if 'seasonId' in ev.columns and 'dateutc' in ev.columns:
+        try:
+            # Lazy import to keep top of file clean
+            from league_config import season_display_name
+        except Exception:
+            season_display_name = lambda s: str(s)
+        per_ss = (ev.dropna(subset=['team.name', 'seasonId'])
+                     .groupby(['player.id', 'seasonId', 'team.name'])
+                     .agg(first_match=('dateutc', 'min'),
+                           last_match=('dateutc', 'max'))
+                     .reset_index()
+                     .rename(columns={'player.id': 'playerId',
+                                        'team.name': 'team'}))
+        per_ss['season_label'] = per_ss['seasonId'].apply(
+            lambda s: season_display_name(int(s))
+                       if pd.notna(s) else None
+        )
+        per_ss['first_match'] = pd.to_datetime(per_ss['first_match'],
+                                                  errors='coerce').dt.date.astype(str)
+        per_ss['last_match'] = pd.to_datetime(per_ss['last_match'],
+                                                 errors='coerce').dt.date.astype(str)
+        cws = (per_ss.groupby('playerId')
+                       .apply(lambda g: g[['seasonId', 'season_label',
+                                            'team', 'first_match',
+                                            'last_match']].to_dict('records'))
+                       .reset_index(name='career_with_seasons'))
+        last = last.merge(cws, on='playerId', how='left')
+        last['career_with_seasons'] = last['career_with_seasons'].apply(
+            lambda x: x if isinstance(x, list) else []
+        )
+    else:
+        last['career_with_seasons'] = [[] for _ in range(len(last))]
+
     # Enrich with full firstName + lastName from player_details.pkl
     pd_path = HERE / 'player_details.pkl'
     if pd_path.exists():
@@ -421,6 +458,260 @@ def fetch_market_value_history(session, tm_id: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------
+# Rich-metadata fetchers — pulled for every accepted match.
+# These don't drive matching (we don't have them at search time)
+# but they're useful for v2 EUR regression features, manual audit,
+# and verifying that the chosen TM player's transfer history overlaps
+# with our (club, season) data.
+# ---------------------------------------------------------------------
+def _clean_text(node) -> str | None:
+    if node is None:
+        return None
+    t = node.get_text(' ', strip=True)
+    return t if t else None
+
+
+def _parse_eur(text: str | None) -> float | None:
+    """'€500k' / '€2.50m' / '€1.20bn' / '-' → float EUR. Returns None
+    if unparseable. TM uses lowercase k/m/bn suffixes."""
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip().replace('\xa0', ' ')
+    if t in ('-', '–', '?', ''):
+        return None
+    # Strip currency symbol + spaces
+    t = re.sub(r'[€$£\s]', '', t)
+    mult = 1.0
+    if t.endswith('bn') or t.endswith('Bn'):
+        mult = 1_000_000_000; t = t[:-2]
+    elif t.endswith('m') or t.endswith('M'):
+        mult = 1_000_000; t = t[:-1]
+    elif t.endswith('k') or t.endswith('K'):
+        mult = 1_000; t = t[:-1]
+    t = t.replace(',', '.')
+    try:
+        return float(t) * mult
+    except ValueError:
+        return None
+
+
+def _parse_tm_date(text: str | None) -> str | None:
+    """TM dates: 'Mar 28, 2007' / '28/03/2007' / '2007-03-28' → ISO."""
+    if not text or not isinstance(text, str):
+        return None
+    text = text.strip().rstrip('.,')
+    # Try several formats
+    for fmt in ('%b %d, %Y', '%B %d, %Y', '%d/%m/%Y', '%Y-%m-%d',
+                  '%d.%m.%Y', '%d %b %Y', '%d %B %Y'):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def fetch_tm_player_profile(session: requests.Session,
+                              tm_url: str) -> dict:
+    """Pull rich profile metadata from /profil/spieler/{tm_id}.
+
+    Returns dict with whichever fields could be parsed:
+      full_name, dob, birthplace, citizenships (list of str),
+      height_cm, foot, position_primary, position_secondary (list),
+      current_club, joined_date, contract_until, agent,
+      shirt_number, market_value_current_eur, on_loan_from
+    """
+    r = polite_get(session, tm_url)
+    out: dict = {}
+    if r is None or r.status_code != 200:
+        return out
+    soup = BeautifulSoup(r.text, 'html.parser')
+
+    # h1 — full headline name (may contain shirt number prefix)
+    h1 = soup.find('h1')
+    if h1:
+        shirt = h1.find('span', class_=re.compile(r'shirt'))
+        if shirt:
+            sh = _clean_text(shirt)
+            if sh:
+                out['shirt_number'] = re.sub(r'[^\d]', '', sh) or None
+            shirt.extract()
+        out['full_name'] = _clean_text(h1)
+
+    # Modern TM (2024+) structure: an info-table with paired spans:
+    #   <span class="info-table__content--regular">Label:</span>
+    #   <span class="info-table__content--bold">Value</span>
+    # Walking them in pairs is robust to label re-ordering.
+    labels = soup.select('span.info-table__content--regular')
+    values = soup.select('span.info-table__content--bold')
+    for lab, val_node in zip(labels, values):
+        label = (_clean_text(lab) or '').rstrip(':').lower().strip()
+        val = _clean_text(val_node)
+        if not val:
+            continue
+        if label in ('name in home country', 'full name'):
+            # Prefer this over the headline h1 when present
+            out['full_name'] = val
+        elif label in ('date of birth/age', 'date of birth', 'born'):
+            # "30/04/2007 (19)" or just "30/04/2007"
+            m = re.match(r'(.+?)\s*\(\s*(\d+)\s*\)\s*$', val)
+            if m:
+                out['dob'] = _parse_tm_date(m.group(1))
+                try: out['age'] = int(m.group(2))
+                except ValueError: pass
+            else:
+                out['dob'] = _parse_tm_date(val)
+        elif label == 'place of birth':
+            out['birthplace'] = val
+        elif label == 'height':
+            m = re.search(r'(\d+[\.,]?\d*)\s*m', val)
+            if m:
+                try:
+                    out['height_cm'] = int(round(
+                        float(m.group(1).replace(',', '.')) * 100))
+                except ValueError: pass
+        elif label == 'citizenship':
+            # TM joins with whitespace + flag emoji; split on multiple ws
+            parts = [p.strip() for p in re.split(r'\s{2,}', val) if p.strip()]
+            out['citizenships'] = parts if parts else [val]
+        elif label == 'position':
+            # "Attack - Right Winger" → primary "Right Winger" + group
+            out['position_full'] = val
+            if ' - ' in val:
+                grp, role = val.split(' - ', 1)
+                out['position_group'] = grp.strip()
+                out['position_primary'] = role.strip()
+            else:
+                out['position_primary'] = val
+        elif label == 'foot':
+            out['foot'] = val.lower()
+        elif label in ('player agent', 'agent'):
+            out['agent'] = val
+        elif label == 'outfitter':
+            out['outfitter'] = val
+        elif label == 'current club':
+            out['current_club'] = val
+        elif label == 'joined':
+            out['joined_date'] = _parse_tm_date(val)
+        elif label in ('contract expires', 'contract until'):
+            out['contract_until'] = _parse_tm_date(val)
+        elif label == 'last contract extension':
+            out['last_contract_extension'] = _parse_tm_date(val)
+        elif label == 'on loan from':
+            out['on_loan_from'] = val
+        elif label in ('contract option', 'option'):
+            out['contract_option'] = val
+
+    # Current market value — pulled directly from the header MV widget
+    mv = soup.select_one('a.data-header__market-value-wrapper, '
+                         'div.data-header__box--small a, '
+                         '[class*="market-value"]')
+    if mv:
+        out['market_value_current_eur'] = _parse_eur(_clean_text(mv))
+
+    return out
+
+
+def fetch_tm_transfer_history(session: requests.Session,
+                                tm_id: int) -> list[dict]:
+    """Pull the player's full transfer history via TM's transfers
+    JSON endpoint.
+
+    Returns list of dicts (one per transfer event):
+      {date, season, from_club, from_country, to_club, to_country,
+       transfer_type, fee_eur, mv_at_transfer_eur, is_loan, source_url}
+    """
+    url = f"{TM_BASE}/ceapi/transferHistory/list/{tm_id}"
+    r = polite_get(session, url,
+                    headers={'X-Requested-With': 'XMLHttpRequest',
+                              'Referer': f'{TM_BASE}/'})
+    if r is None or r.status_code != 200:
+        return []
+    try:
+        payload = r.json()
+    except ValueError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get('transfers') or payload.get('list') or []
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for row in rows:
+        try:
+            d = row.get('dateUnformatted') or row.get('date')
+            iso = _parse_tm_date(d) if d else None
+            old = row.get('from') or {}
+            new = row.get('to') or {}
+            fee_text = row.get('fee')
+            mv_text = row.get('marketValue')
+            out.append({
+                'date': iso,
+                'season': row.get('season'),
+                'from_club': old.get('clubName') if isinstance(old, dict) else None,
+                'from_country': old.get('countryName') if isinstance(old, dict) else None,
+                'to_club': new.get('clubName') if isinstance(new, dict) else None,
+                'to_country': new.get('countryName') if isinstance(new, dict) else None,
+                'transfer_type': fee_text if isinstance(fee_text, str) and not _parse_eur(fee_text) else None,
+                'fee_eur': _parse_eur(fee_text) if isinstance(fee_text, str) else None,
+                'mv_at_transfer_eur': _parse_eur(mv_text) if isinstance(mv_text, str) else None,
+                'is_loan': bool(row.get('isLoan')),
+                'source_url': url,
+            })
+        except Exception:
+            continue
+    return out
+
+
+METADATA_PATH = VAL_DIR / 'tm_player_metadata.parquet'
+TRANSFERS_PATH = VAL_DIR / 'tm_transfer_history.parquet'
+
+
+def append_metadata(rows: list[dict]) -> None:
+    """One-row-per-player metadata. Last write wins per playerId."""
+    if not rows:
+        return
+    new_df = pd.DataFrame(rows)
+    if METADATA_PATH.exists():
+        try:
+            existing = pd.read_parquet(METADATA_PATH)
+            combined = (pd.concat([existing, new_df], ignore_index=True)
+                          .drop_duplicates(['playerId'], keep='last'))
+        except Exception:
+            combined = new_df
+    else:
+        combined = new_df
+    # Cast list-of-strings columns to JSON strings for parquet portability
+    for col in ('citizenships', 'position_secondary'):
+        if col in combined.columns:
+            combined[col] = combined[col].apply(
+                lambda v: json.dumps(v) if isinstance(v, list) else v
+            )
+    combined.to_parquet(METADATA_PATH, index=False)
+    LOG.info(f"Wrote {len(combined):,} rows to {METADATA_PATH}")
+
+
+def append_transfers(rows: list[dict]) -> None:
+    """Many-rows-per-player transfer history. Dedupe by
+    (playerId, date, from_club, to_club)."""
+    if not rows:
+        return
+    new_df = pd.DataFrame(rows)
+    if TRANSFERS_PATH.exists():
+        try:
+            existing = pd.read_parquet(TRANSFERS_PATH)
+            combined = (pd.concat([existing, new_df], ignore_index=True)
+                          .drop_duplicates(
+                              ['playerId', 'date', 'from_club', 'to_club'],
+                              keep='last'))
+        except Exception:
+            combined = new_df
+    else:
+        combined = new_df
+    combined.to_parquet(TRANSFERS_PATH, index=False)
+    LOG.info(f"Wrote {len(combined):,} rows to {TRANSFERS_PATH}")
+
+
+# ---------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------
 def load_existing_valuations() -> pd.DataFrame:
@@ -473,7 +764,9 @@ def run(*, limit: int | None = None, player_id: int | None = None,
         newest = {}
 
     session = make_session()
-    fresh_rows: list[dict] = []
+    fresh_rows: list[dict] = []      # MV history (valuations.parquet)
+    fresh_metadata: list[dict] = []  # Player profiles (tm_player_metadata.parquet)
+    fresh_transfers: list[dict] = [] # Transfer history (tm_transfer_history.parquet)
     match_audit: list[dict] = []
     today = date.today()
 
@@ -550,6 +843,25 @@ def run(*, limit: int | None = None, player_id: int | None = None,
             })
             continue
 
+        # Compact (season → team) summary for the audit log — easier
+        # to spot-check than the full career_with_seasons list.
+        cws = row.get('career_with_seasons')
+        season_summary = ''
+        if isinstance(cws, list) and cws:
+            try:
+                # Group teams per season label, dedupe
+                from collections import defaultdict
+                by_ss = defaultdict(set)
+                for r in cws:
+                    lbl = r.get('season_label') or str(r.get('seasonId'))
+                    if r.get('team'):
+                        by_ss[lbl].add(r.get('team'))
+                season_summary = '; '.join(
+                    f"{lbl}: {'/'.join(sorted(ts))}"
+                    for lbl, ts in sorted(by_ss.items())
+                )
+            except Exception:
+                season_summary = ''
         match_audit.append({
             'playerId': pid, 'name': row['playerName'],
             'status': 'matched', 'tm_id': best.tm_id,
@@ -558,6 +870,7 @@ def run(*, limit: int | None = None, player_id: int | None = None,
             'tm_url': best.tm_url,
             'expected_club': (expected_clubs[0] if expected_clubs else ''),
             'tm_club': best.club or '',
+            'our_season_clubs': season_summary,
         })
 
         history = fetch_market_value_history(session, best.tm_id)
@@ -573,7 +886,33 @@ def run(*, limit: int | None = None, player_id: int | None = None,
                                 f"{h.get('club_at_time')}"
                                 if h.get('club_at_time') else f"tm_id={best.tm_id}"),
             })
+
+        # ---- Rich-metadata pull ----
+        # For every accepted match, fetch full player profile + transfer
+        # history. Stored separately from valuations.parquet but useful
+        # for v2 EUR regression features and post-match verification.
+        try:
+            profile = fetch_tm_player_profile(session, best.tm_url)
+            if profile:
+                profile['playerId'] = pid
+                profile['tm_id'] = best.tm_id
+                profile['tm_url'] = best.tm_url
+                profile['fetched_at'] = datetime.utcnow().isoformat(timespec='seconds')
+                fresh_metadata.append(profile)
+        except Exception as e:
+            LOG.warning(f"Profile fetch failed for {pid}: {e}")
+        try:
+            xfers = fetch_tm_transfer_history(session, best.tm_id)
+            for x in xfers:
+                x['playerId'] = pid
+                x['tm_id'] = best.tm_id
+                fresh_transfers.append(x)
+        except Exception as e:
+            LOG.warning(f"Transfer-history fetch failed for {pid}: {e}")
+
     append_rows(fresh_rows)
+    append_metadata(fresh_metadata)
+    append_transfers(fresh_transfers)
     if match_audit:
         pd.DataFrame(match_audit).to_csv(MATCH_LOG_PATH, index=False)
         LOG.info(f"Match audit written to {MATCH_LOG_PATH} "
