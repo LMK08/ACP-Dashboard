@@ -103,6 +103,12 @@ def main():
     else:
         opta = pd.DataFrame()
 
+    # --- Tier matcher (handles B-teams + distinctive-token logic) ---
+    from tier_matcher import build_tier_matcher, at_our_tier as _at_our_tier
+    build_tier_matcher()
+    print(f"[tier] Strict tier matcher loaded")
+    import re as _re
+
     # --- Map seasons → dates ---
     SEASON_MIDPOINT = {
         # Approximate Dec 15 of the year covering the bulk of matches
@@ -138,8 +144,22 @@ def main():
         gpa = gpa[gpa[mins_col] >= args.min_mins].copy()
         print(f"[build] After {args.min_mins}-min filter: {len(gpa):,}")
 
-    # For each (player, season), find closest TM snapshot
+    # For each (player, season), find closest TM snapshot.
+    # CRITICAL: only consider snapshots where the player was AT a
+    # Liga 3 / Camp club at the time — otherwise we'd pull in
+    # later-career snapshots (player moved to Primeira Liga or
+    # abroad) that reflect a different market tier.
     vals['_d'] = pd.to_datetime(vals['as_of_date'], errors='coerce')
+    def _extract_club(notes):
+        if not isinstance(notes, str): return None
+        m = _re.search(r'club_at_time=(.+?)$', notes)
+        return m.group(1).strip() if m else None
+    vals['_club_at_time'] = vals['notes'].apply(_extract_club)
+    vals['_at_our_tier'] = vals['_club_at_time'].apply(_at_our_tier)
+    n_tier = int(vals['_at_our_tier'].sum())
+    print(f"[tier] MV snapshots at-our-tier: {n_tier:,} of {len(vals):,} "
+           f"({n_tier/len(vals)*100:.0f}%)")
+    vals_tier = vals[vals['_at_our_tier']].copy()
     rows = []
     for _, r in gpa.iterrows():
         pid = int(r['playerId'])
@@ -148,9 +168,10 @@ def main():
         if mid_str is None:
             continue
         mid = pd.to_datetime(mid_str)
-        snaps = vals[(vals['playerId'] == pid)
-                       & (vals['value_eur'].notna())
-                       & (vals['value_eur'] > 0)].copy()
+        # Use tier-filtered snapshots only
+        snaps = vals_tier[(vals_tier['playerId'] == pid)
+                            & (vals_tier['value_eur'].notna())
+                            & (vals_tier['value_eur'] > 0)].copy()
         if snaps.empty:
             continue
         snaps['_diff'] = (snaps['_d'] - mid).abs()

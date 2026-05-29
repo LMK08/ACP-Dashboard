@@ -35,13 +35,24 @@ For scouting decisions:
 from __future__ import annotations
 
 
-# Realization ratio (fee / market value) — calibrated from 151 TM
-# transfer records with both fee and MV known. Piecewise linear in
-# log-MV space so the curve is smooth from €50k → €5M.
+# Realization ratio (fee / market value) — calibrated from a SMALL
+# set of legitimate-tier observations (n=6 strict at-tier transfers
+# with both fee and MV + 8 user-reported transfers, mostly without
+# concurrent TM MV → can only inform fee level, not ratio).
+#
+# IMPORTANT DATA LIMITATION: the v1 calibration accidentally included
+# 130+ transfers from later-career senior-team moves (Sporting CP,
+# Vit. Guimarães senior, Real Valladolid, etc.) that share tokens
+# with our B-teams. The strict tier_matcher fixed this but leaves us
+# data-limited at the actual Liga 3 / Camp tier.
+#
+# The anchors below are therefore best-evidence priors rather than
+# tight empirical fits. They'll tighten as more user-reported
+# transfers accumulate.
 #
 # Anchor points (median realized fee/MV at each MV bucket):
 #   MV €100k    → 0.20    (very small deals, near-free)
-#   MV €250k    → 0.30    (Liga 3 tier — your starting case)
+#   MV €250k    → 0.30    (Liga 3 modal — Joãozinho ratio ~0.20-0.25)
 #   MV €500k    → 0.45
 #   MV €1M      → 0.65
 #   MV €2.5M    → 0.95
