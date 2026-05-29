@@ -8923,12 +8923,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # and 0.55 at €250k-€1M. Calibrated from 151 TM transfer
         # records + 6 user transfers.
         _tv_realized = None
+        _league_for_real = (0.85 if _tv_comp_id == 702 else 1.00)
         try:
             if _tv_projected_eur is not None and _tv_projected_eur > 0:
                 from models.eur_v2.realization import expected_realized_fee
                 _tv_realized = expected_realized_fee(_tv_projected_eur,
                                                         age=_tv_age,
-                                                        perf_blend=_eur_perf_blend)
+                                                        perf_blend=_eur_perf_blend,
+                                                        position_group=_eur_pos_group,
+                                                        league_factor=_league_for_real)
         except Exception as _rl_exc:
             print(f"[realization] {type(_rl_exc).__name__}: {_rl_exc}")
 
@@ -9009,6 +9012,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _tv_true_value_eur = _predict_eur_tv(_tv_bundle, _tv_feats)
                         if _tv_true_value_eur is None:
                             _tv_predict_diag = "predict_eur returned None"
+                        else:
+                            # v3.10 — apply same adjustments as MV so
+                            # TV is on the comparable scale (was much
+                            # lower because it skipped the elite boost).
+                            try:
+                                from models.eur_v2.realization import apply_post_hoc_adjustments
+                                _tv_true_value_eur = apply_post_hoc_adjustments(
+                                    _tv_true_value_eur,
+                                    perf_blend=_eur_perf_blend, age=_tv_age,
+                                    position_group=_eur_pos_group,
+                                    league_factor=_league_for_real,
+                                )
+                            except Exception:
+                                pass
             except Exception as _tv_exc:
                 _tv_predict_diag = f"{type(_tv_exc).__name__}: {_tv_exc}"
                 print(f"[true_value predict] {_tv_predict_diag}")
@@ -11798,6 +11815,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     )
                     from models.eur_v2.realization import (
                         expected_realized_fee as _exp_real,
+                        apply_post_hoc_adjustments as _apply_adj,
                     )
                     _full_b = _load_full_eur()
                     _tv_b   = _load_tv_eur()
@@ -11855,8 +11873,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             )
                             _tmv = _pred_eur(_full_b, _feats_full)
                             _tv_pred = _pred_eur(_tv_b, _feats_tv)
-                            _mv = (_exp_real(_tmv, _age, perf_blend=_row_perf).get('expected_fee_if_sells')
+                            _mv = (_exp_real(_tmv, _age,
+                                                  perf_blend=_row_perf,
+                                                  position_group=_pos_g,
+                                                  league_factor=_league
+                                                  ).get('expected_fee_if_sells')
                                     if _tmv else None)
+                            # v3.10 — apply same adjustments to TV
+                            if _tv_pred is not None and _tv_pred > 0:
+                                _tv_pred = _apply_adj(
+                                    _tv_pred, perf_blend=_row_perf, age=_age,
+                                    position_group=_pos_g, league_factor=_league)
                             _tmv_list.append(_tmv)
                             _mv_list.append(_mv)
                             _tv_list.append(_tv_pred)

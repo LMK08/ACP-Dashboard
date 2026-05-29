@@ -159,77 +159,131 @@ def p_sells_for_fee(predicted_mv: float, age: float | None) -> float:
 
 def elite_youth_perf_multiplier(perf_blend: float | None,
                                    age: float | None) -> float:
-    """MV multiplier weighted HEAVILY on perf with a secondary youth bonus.
+    """Perf-dominant multiplier for valuing top performers.
 
-    v3.9 — user said "value performance even higher, expand the number
-    of super high value players while not expanding the top line value."
+    v3.10 — user said "performance should be even more important."
 
-    Perf dominates (0.4 + 0.6×youth factor inside the perf component) so
-    elite-perf players get a strong boost even at age 24-25; youth amplifies.
+    Perf now dominates (0.65 + 0.35×youth amplifier inside) and the
+    threshold dropped to perf 50 so meaningful perf above average gets
+    rewarded. An elite OLDER player still gets ~6x boost; a young weak
+    player gets nothing. The multiplier max is 7x to absorb the position
+    and Camp penalties applied downstream.
 
     Calibration (multiplier values):
-      Average player    (perf 55, age 25)  → 1.0  (no change)
-      Strong young      (perf 75, age 22)  → ~2.9
-      Elite young       (perf 90, age 20)  → ~4.5
-      Peak              (perf 95, age 18)  → ~6.0 (cap)
-      Elite older       (perf 95, age 30)  → 1.0  (no youth = no boost)
-
-    Both perf AND age above threshold required — old or weak players get
-    no multiplier. A hard MV cap (in expected_realized_fee) prevents the
-    absolute top from running away — instead, MORE players cluster near
-    the cap, which is the user's stated goal.
+      Average player   (perf 50, any age)  → 1.0  (no change)
+      Strong young     (perf 75, age 22)   → ~4.0
+      Elite young      (perf 90, age 20)   → ~5.7
+      Peak             (perf 95, age 18)   → ~7.0 (cap)
+      Elite older      (perf 95, age 28)   → ~5.7  (perf still rewarded)
+      Weak (any age)                       → 1.0
     """
     if perf_blend is None or age is None:
         return 1.0
-    perf_excess = max(0.0, (float(perf_blend) - 55.0) / 40.0)   # 0 at perf 55, 1 at perf 95
+    perf_excess = max(0.0, (float(perf_blend) - 50.0) / 45.0)   # 0 at perf 50, 1 at perf 95
+    perf_excess = min(perf_excess, 1.0)
     youth_excess = max(0.0, (24.0 - float(age)) / 6.0)            # 0 at age 24, 1 at age 18
-    # Perf dominates; youth amplifies. Even a 25yo elite gets ~3x; an
-    # 18yo elite gets ~6x. A weak 18yo gets nothing.
-    combo = perf_excess * (0.4 + 0.6 * youth_excess)
-    mult = 1.0 + 6.0 * combo
-    return min(mult, 6.0)
+    # Perf dominates; youth is a smaller amplifier. The 0.65 floor on
+    # the youth factor means perf 95 always gets at least ~6x regardless
+    # of age — the regression already penalizes age in the base TMV,
+    # so we don't need to double-penalize here.
+    combo = perf_excess * (0.65 + 0.35 * youth_excess)
+    mult = 1.0 + 8.0 * combo
+    return min(mult, 7.0)
 
 
-# v3.9 — hard cap on MV. User asked to "expand the number of super
-# high value players while not expanding the top line value." The cap
-# is calibrated against the actual top of our reported_fees set
-# (Yan Maranhão €450k summer 2025) plus a small headroom.
-MV_CAP_EUR = 500_000
+# v3.10 — position-specific MV caps. User: "CBs are too high, CFs should
+# be most expensive." So attackers can climb higher than defenders /
+# keepers. Real Liga 3 / Camp transfers are dominated by attackers
+# (Yan Maranhão €450k ST, Catarino €400k CM, etc.). CB transfers
+# typically cap around €250-300k at this tier.
+POSITION_MV_CAP = {
+    'ST': 500_000,
+    'AM_WG': 450_000,
+    'CM': 400_000,
+    'FB': 300_000,
+    'CB': 300_000,
+    'GK': 200_000,
+}
+MV_CAP_EUR = 500_000  # absolute top — used when position_group unknown
+
+# v3.10 — position-specific MV multiplier. The training data over-rewards
+# CBs (B-team prospects with high passes_accurate had high TM values).
+# Counter post-hoc so the market mix reflects reality: attackers premium,
+# defenders moderate, GKs discounted.
+POSITION_MV_MULTIPLIER = {
+    'ST': 1.40,
+    'AM_WG': 1.20,
+    'CM': 1.00,
+    'FB': 0.80,
+    'CB': 0.65,
+    'GK': 0.50,
+}
+
+# v3.10 — Camp league additional penalty. User: "players coming from
+# Campeonato should be more penalized in MV." The base regression
+# already uses league_factor 0.85 for Camp (vs 1.00 for Liga 3); we
+# add an additional 35% post-hoc penalty in the realization layer.
+CAMP_PENALTY = 0.65
+
+
+def apply_post_hoc_adjustments(base_value: float,
+                                  perf_blend: float | None,
+                                  age: float | None,
+                                  position_group: str | None = None,
+                                  league_factor: float = 1.0) -> float:
+    """Apply elite perf boost + position multiplier + Camp penalty + cap.
+
+    Used by BOTH MV and TV display paths so they're on the same scale.
+    The cap is position-aware: ST/AM_WG can reach €450-500k while
+    CB/GK cap lower. This makes attackers naturally top the rankings.
+    """
+    if base_value is None or base_value <= 0:
+        return 0.0
+    em = elite_youth_perf_multiplier(perf_blend, age)
+    pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
+    cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
+    adjusted = base_value * em * pm * cm
+    cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
+    return min(adjusted, cap)
 
 
 def expected_realized_fee(predicted_mv: float,
                             age: float | None = None,
-                            perf_blend: float | None = None) -> dict:
+                            perf_blend: float | None = None,
+                            position_group: str | None = None,
+                            league_factor: float = 1.0) -> dict:
     """Combined output: probability-weighted realized fee + components.
 
     Returns dict:
         realization_ratio  — fee/MV multiplier given sale (0..~1.3)
-        elite_mult         — v3.8 young+perf exponential boost (1..6)
-        expected_fee_if_sells — predicted_mv × realization_ratio × elite_mult
+        elite_mult         — v3.8 young+perf exponential boost (1..7)
+        position_mult      — v3.10 ST/AM_WG boost vs CB/GK discount
+        camp_mult          — v3.10 additional Camp league penalty
+        expected_fee_if_sells — fully adjusted MV (capped per position)
         p_sells_for_fee    — probability of a paid sale (vs free)
         expected_fee_overall — expected_fee_if_sells × p_sells_for_fee
                                 (the right scouting figure when budgeting
                                  expected proceeds from a portfolio of
                                  players)
-
-    The `perf_blend` arg is optional; if not passed, elite_mult is 1.0
-    (preserves backwards-compatible behaviour for callers that don't
-    have CVI perf available).
     """
     if predicted_mv is None or predicted_mv <= 0:
         return {'realization_ratio': 0, 'elite_mult': 1.0,
+                 'position_mult': 1.0, 'camp_mult': 1.0,
                  'expected_fee_if_sells': 0,
                  'p_sells_for_fee': 0, 'expected_fee_overall': 0}
     rr = realization_ratio(predicted_mv)
     em = elite_youth_perf_multiplier(perf_blend, age)
+    pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
+    cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
     p = p_sells_for_fee(predicted_mv, age)
-    fee_if = predicted_mv * rr * em
-    # v3.9 hard cap so the top doesn't run away as we steepen the perf
-    # boost. More players cluster near the cap — that's the user's goal.
-    fee_if = min(fee_if, MV_CAP_EUR)
+    fee_if = predicted_mv * rr * em * pm * cm
+    cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
+    fee_if = min(fee_if, cap)
     return {
         'realization_ratio': rr,
         'elite_mult': em,
+        'position_mult': pm,
+        'camp_mult': cm,
         'expected_fee_if_sells': fee_if,
         'p_sells_for_fee': p,
         'expected_fee_overall': fee_if * p,
