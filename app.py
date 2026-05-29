@@ -8935,6 +8935,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # section just above Career Trajectory.
             # Compute True Value (CVI-only — pure on-pitch quality)
             _tv_true_value_eur = None
+            _tv_predict_diag = None   # cause hint surfaced in MV / TV cells
             try:
                 from models.eur_v2.predict import (
                     load_true_value_model as _load_tv_model,
@@ -8942,26 +8943,36 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     build_features_for_player as _build_eur_feats_tv,
                 )
                 _tv_bundle = _load_tv_model()
-                if (_tv_bundle is not None and _tv_single is not None
-                        and not _tv_single.empty):
+                if _tv_bundle is None:
+                    _tv_predict_diag = "TV model file not deployed"
+                elif _tv_single is None or _tv_single.empty:
+                    _tv_predict_diag = "no player_stats row"
+                else:
                     _tv_row = _tv_single.iloc[0]
                     _tv_pos_group = _cvi_position_group(
                         _tv_row.get('primaryPosition'))
                     _tv_tv = _tv_row.get('Total Value')
-                    # Build minimal feature dict — True Value model only
-                    # consumes signed_log_tv + age + league + pos_*
-                    _tv_feats = _build_eur_feats_tv(
-                        age=_tv_age,
-                        position_group=_tv_pos_group,
-                        total_value_per90=(float(_tv_tv)
-                                              if _tv_tv is not None
-                                              and pd.notna(_tv_tv) else None),
-                        league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
-                    )
-                    _tv_true_value_eur = _predict_eur_tv(_tv_bundle, _tv_feats)
+                    if _tv_pos_group is None:
+                        _tv_predict_diag = (
+                            f"position '{_tv_row.get('primaryPosition')}' "
+                            f"can't map to CVI group")
+                    elif _tv_age is None:
+                        _tv_predict_diag = "missing DOB"
+                    else:
+                        _tv_feats = _build_eur_feats_tv(
+                            age=_tv_age,
+                            position_group=_tv_pos_group,
+                            total_value_per90=(float(_tv_tv)
+                                                  if _tv_tv is not None
+                                                  and pd.notna(_tv_tv) else None),
+                            league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
+                        )
+                        _tv_true_value_eur = _predict_eur_tv(_tv_bundle, _tv_feats)
+                        if _tv_true_value_eur is None:
+                            _tv_predict_diag = "predict_eur returned None"
             except Exception as _tv_exc:
-                print(f"[true_value predict] "
-                       f"{type(_tv_exc).__name__}: {_tv_exc}")
+                _tv_predict_diag = f"{type(_tv_exc).__name__}: {_tv_exc}"
+                print(f"[true_value predict] {_tv_predict_diag}")
 
             # Bio row — MV + True Value only (Predicted TMV and
             # Current CVI moved to Transfer Value Detail).
@@ -8994,7 +9005,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 ("—" if _bio_mv is None else f"€{_bio_mv:,.0f}"),
                 (f"{_tv_realized['realization_ratio']*100:.0f}% of TMV"
                   if _tv_realized is not None and
-                  _tv_realized.get('realization_ratio') else None),
+                  _tv_realized.get('realization_ratio')
+                  else (_tv_predict_diag if _bio_mv is None else None)),
                 help="Expected realized fee IF a sale happens. "
                      "Predicted TMV × realization_ratio. "
                      "At Liga 3 tier typical realization is 25-50% "
@@ -9007,7 +9019,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                  else f"€{_tv_true_value_eur:,.0f}"),
                 (f"MV − TV: {'+' if _mv_tv_gap >= 0 else ''}€{_mv_tv_gap:,.0f} "
                   f"({'+' if _mv_tv_gap_pct >= 0 else ''}{_mv_tv_gap_pct:.0f}%)"
-                  if _mv_tv_gap is not None else None),
+                  if _mv_tv_gap is not None
+                  else (_tv_predict_diag if _tv_true_value_eur is None else None)),
                 help="Pure CVI-only fair value on the MV scale — "
                      "directly comparable to MV.  \n\n"
                      "**MV − TV** is the market-vs-quality gap:  \n"
@@ -11970,10 +11983,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 'Full Backs', 'Center Backs', 'Goalkeepers',
             ]
             # Collect per-template data as lists aligned by rank.
-            # When CVI is on, append it as a 5th sub-column per template.
+            # When show_cvi is on, append MV / TV / MV-TV as sub-columns.
             _sub_cols = ['Player', 'Team', 'Min', 'Rating']
             if show_cvi:
-                _sub_cols.append('CVI')
+                _sub_cols.extend(['MV', 'TV', 'MV−TV'])
             template_columns = {}
             for group_name in _OVERVIEW_ORDER:
                 group_templates = _TEMPLATE_GROUPS.get(group_name, [])
@@ -11989,8 +12002,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 round(float(row.get('Rating', 0)), 1),
                             ]
                             if show_cvi:
-                                _cvi_v = row.get('CVI')
-                                tup.append(round(float(_cvi_v), 1) if pd.notna(_cvi_v) else '')
+                                # _build_template_table inserts MV/TV/MV−TV
+                                # already-formatted as €Xk strings.
+                                tup.extend([
+                                    row.get('MV', ''),
+                                    row.get('TV', ''),
+                                    row.get('MV−TV', ''),
+                                ])
                             rows.append(tuple(tup))
                         template_columns[tmpl] = rows
 
