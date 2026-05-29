@@ -1787,49 +1787,61 @@ CVI_PERF_WEIGHTS = {
     'ST':    (0.75, 0.25),
 }
 
-# AgeValueMultiplier(age, position) — asymmetric Gaussian (v2.2).
+# AgeValueMultiplier(age, position) — asymmetric Gaussian peaked at
+# VALUE age, not performance age (v2.3).
 #
-# v1 used a symmetric Gaussian + a 0.40 floor. That had three problems:
-#   1. Symmetric → a 17yo wonderkid got the same multiplier (~0.50) as
-#      a 30yo decline-phase player. Markets do the opposite: youth
-#      gets a premium, age gets a steep discount.
-#   2. Floor at 0.40 → a 36yo retirement-age striker was rated at 40%
-#      of peak value. Realistically a 36yo Liga 3 player has €0-50k
-#      transfer value, not 40% of peak.
-#   3. Peak ages 1-3 years too early per CIES market data — STs peak
-#      24-25 not 22, GKs 27-29 not 25.
+# Critical distinction: peak PERFORMANCE age (24-28 by position) is
+# NOT the same as peak VALUE age (~20-22). Performance is already
+# captured in raw_perf; the multiplier carries the RESIDUAL age-on-
+# value effect. For the same perf level, a 17yo is worth MORE than
+# a 25yo because:
+#   1. Resale runway — 17yo can be sold 2-3× in their career
+#   2. Expected future perf — 17yo @ 70 likely climbs to 80+; 25yo
+#      @ 70 is at their peak
+#   3. Scarcity — top young talent is a finite resource bigger clubs
+#      pay premiums for
+#   4. Contract flexibility — longer ROI horizon on signing bonus
 #
-# Fix: split-sigma Gaussian with separate slopes below vs above peak,
-# raised young_floor (~0.70 — captures wonderkid value), lowered
-# old_floor (~0.10 — recognizes near-zero late-career value).
+# Real-world evidence: Bellingham 17 → £25M; Mbappé 18 → £166M;
+# Endrick 17 → £60M. Not peak performers — peak VALUE.
 #
+# Curve:
 #   age ≤ peak: m = young_floor + (max_mult − young_floor)
 #                    × exp(−(age − peak)² / (2 × σ_below²))
 #   age >  peak: m = old_floor   + (max_mult − old_floor)
 #                    × exp(−(age − peak)² / (2 × σ_above²))
 #
 # Continuous at peak (both branches give max_mult exactly there).
-# σ_below is LARGE → gentle slope before peak → flat-ish high plateau
-#   from 18-25 (youth premium intact).
-# σ_above is SMALL → steep decline after peak → realistic depreciation
-#   past 28.
+# σ_below LARGE → flat-high plateau 16→peak (gentle approach to top)
+# σ_above SMALL → steep decline past peak (realistic depreciation)
+#
+# Per-position value peaks:
+#   GK     24  — keepers have longest career; value holds latest
+#   CB/CM  22  — physical-but-cerebral, longer prime
+#   FB     21  — pace-dependent role, slightly earlier value peak
+#   AM_WG  21  — explosive role; value peak earliest with ST
+#   ST     21  — same
+#
+# max_mult bumped up so top wonderkids get the real-world premium
+# (Bellingham-type players get 1.6-1.8× boost over raw_perf).
 #
 # Will be tuned against TM market-value evidence once the v2 EUR
-# regression is calibrated. Current peaks + sigmas are best-evidence
-# defaults from CIES Football Observatory + Opta market analyses.
+# regression is calibrated. Current peaks are best-evidence
+# defaults from CIES Football Observatory market-value-vs-age curves
+# (residualized for current performance).
 CVI_AGE_VALUE_PARAMS = {
-    'GK':    {'peak': 28, 'sigma_below': 10.0, 'sigma_above': 5.0,
-              'max_mult': 1.30, 'young_floor': 0.70, 'old_floor': 0.15},
-    'CB':    {'peak': 26, 'sigma_below': 8.0,  'sigma_above': 4.0,
-              'max_mult': 1.40, 'young_floor': 0.70, 'old_floor': 0.10},
-    'FB':    {'peak': 25, 'sigma_below': 8.0,  'sigma_above': 3.5,
-              'max_mult': 1.50, 'young_floor': 0.70, 'old_floor': 0.10},
-    'CM':    {'peak': 26, 'sigma_below': 8.0,  'sigma_above': 4.0,
-              'max_mult': 1.40, 'young_floor': 0.70, 'old_floor': 0.10},
-    'AM_WG': {'peak': 24, 'sigma_below': 7.0,  'sigma_above': 3.0,
-              'max_mult': 1.60, 'young_floor': 0.75, 'old_floor': 0.10},
-    'ST':    {'peak': 25, 'sigma_below': 7.0,  'sigma_above': 3.5,
-              'max_mult': 1.55, 'young_floor': 0.70, 'old_floor': 0.10},
+    'GK':    {'peak': 24, 'sigma_below': 10.0, 'sigma_above': 6.0,
+              'max_mult': 1.40, 'young_floor': 0.85, 'old_floor': 0.15},
+    'CB':    {'peak': 22, 'sigma_below': 8.0,  'sigma_above': 5.0,
+              'max_mult': 1.65, 'young_floor': 0.85, 'old_floor': 0.10},
+    'FB':    {'peak': 21, 'sigma_below': 7.0,  'sigma_above': 4.0,
+              'max_mult': 1.70, 'young_floor': 0.85, 'old_floor': 0.10},
+    'CM':    {'peak': 22, 'sigma_below': 8.0,  'sigma_above': 4.5,
+              'max_mult': 1.65, 'young_floor': 0.85, 'old_floor': 0.10},
+    'AM_WG': {'peak': 21, 'sigma_below': 7.0,  'sigma_above': 3.5,
+              'max_mult': 1.80, 'young_floor': 0.85, 'old_floor': 0.10},
+    'ST':    {'peak': 21, 'sigma_below': 7.0,  'sigma_above': 4.0,
+              'max_mult': 1.75, 'young_floor': 0.85, 'old_floor': 0.10},
 }
 
 # ---- ReliabilityWeight ----
@@ -2013,18 +2025,24 @@ def _cvi_reliability_weight(mins, position_group):
 
 
 def _cvi_age_value_multiplier(age, position_group):
-    """Asymmetric (split-sigma) Gaussian age-value curve. Returns 1.0
+    """Asymmetric (split-sigma) Gaussian age-VALUE curve. Returns 1.0
     if inputs can't be evaluated (so missing age doesn't tank the CVI).
 
-    Below peak (youth side): wide sigma + high young_floor — captures
-    market premium for promising young players (Bellingham-type runway
-    + resale value). A 17yo wonderkid at strong perf gets a HIGHER
-    multiplier than a 25yo at the same perf, mirroring how the market
-    actually prices youth.
+    Critical: this is peaked at VALUE age (~21), NOT performance age
+    (~25). For the same raw_perf, a 17yo has materially more market
+    value than a 25yo (resale runway, growth ceiling, scarcity).
+    Performance is already in raw_perf; this multiplier carries only
+    the residual age-on-value effect.
 
-    Above peak (decline side): narrow sigma + low old_floor — steep
-    depreciation. A 36yo player at the same raw perf as a 26yo gets
-    ~1/10th the multiplier, since their resale runway is months not
+    Below peak (youth side): wide sigma + high young_floor (~0.85)
+    → flat-ish high plateau from 16 to peak. A 17yo wonderkid gets
+    nearly the full peak multiplier (and stays above 1.0 across the
+    teen years), mirroring how the market prices Bellingham-type
+    youth.
+
+    Above peak (decline side): narrow sigma + low old_floor (~0.10)
+    → steep depreciation. A 36yo at the same raw_perf as a 26yo gets
+    ~1/15th the multiplier, since their resale runway is months not
     years.
 
     Continuous at peak (both branches evaluate to max_mult at age=peak).
