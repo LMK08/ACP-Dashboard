@@ -2481,8 +2481,15 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
 # Anchored never INCLUDES future seasons (we don't peek). When called for
 # "Current CVI", anchor = the player's most recent season; for "Season
 # CVI" inside a historical season's view, anchor = that selected season.
-CVI_CAREER_DECAY = 0.6           # weighting per season back (0.6 default)
+CVI_CAREER_DECAY = 0.5           # weighting per season back (steeper than v2.7's 0.6 — current season counts relatively more)
 CVI_CAREER_MAX_LOOKBACK = 4      # seasons back included (0..4 = up to 5 seasons)
+# v2.8 — current season gets an explicit bonus multiplier on top of decay.
+# User: "weight the current season a little bit more". With CURRENT_BONUS=1.5
+# and DECAY=0.5, the current season's recency weight is 3× the prior season's
+# (1.5 vs 0.5). The per-season MINUTES weighting (mins_played × recency)
+# already keeps small-sample seasons from dragging the avg down — this just
+# tilts further toward "what they're doing RIGHT NOW".
+CVI_CAREER_CURRENT_BONUS = 1.5
 
 
 def _build_player_season_perf_table(gpa_values_df, player_minutes_df=None):
@@ -2589,11 +2596,15 @@ def compute_career_cvi(player_id, anchor_season_id, *,
         return None
     rows['_seasons_back'] = anchor_year - rows['_season_year']
     rows['_decay'] = decay ** rows['_seasons_back']
+    # v2.8 — current season (seasons_back==0) gets an explicit recency bonus
+    # on top of the decay-to-the-zero (which is 1.0). Prior seasons unaffected.
+    rows['_recency'] = rows['_decay'].copy()
+    rows.loc[rows['_seasons_back'] == 0, '_recency'] *= CVI_CAREER_CURRENT_BONUS
     rows['_league_factor'] = rows['competitionId'].map(
         lambda c: (CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
                     if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT)
     )
-    rows['_weight'] = rows['_decay'] * rows['mins_played'].fillna(0).clip(lower=0)
+    rows['_weight'] = rows['_recency'] * rows['mins_played'].fillna(0).clip(lower=0)
     rows['_contribution'] = rows['perf_pct'] * rows['_league_factor'] * rows['_weight']
 
     total_w = float(rows['_weight'].sum())
@@ -8883,9 +8894,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                       "intangibles CVI doesn't capture)."),
             )
             # Current CVI — career-aggregated, anchored to the player's
-            # most recent season. Uses 0.6 decay per season back and
-            # league-translates Camp seasons to Liga 3 equivalent.
-            # Full breakdown lives in Transfer Value Detail below.
+            # most recent season. Decay per season back + explicit
+            # current-season bonus + minutes-weighted (small-sample
+            # seasons don't drag the avg down). League-translates Camp
+            # seasons to Liga 3 equivalent. Full breakdown in Transfer
+            # Value Detail below.
             _current_cvi = None
             _current_cvi_n_seasons = None
             if _tv_career_current is not None:
@@ -8901,10 +8914,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _bio_cvi_help = (
                 "Career-aggregated Composite Value Index, anchored to the "
                 "player's most recent season. Combines that season + up to "
-                f"{CVI_CAREER_MAX_LOOKBACK} prior seasons with "
-                f"{CVI_CAREER_DECAY}^seasons-back decay weighting and "
-                "cross-league translation (Camp → Liga 3 equivalent). "
-                "Full breakdown in the Transfer Value Detail section below."
+                f"{CVI_CAREER_MAX_LOOKBACK} prior seasons. Per-season weight = "
+                f"recency × minutes_played, where recency = "
+                f"{CVI_CAREER_DECAY}^seasons-back and the current season "
+                f"gets a {CVI_CAREER_CURRENT_BONUS}× bonus. Small-sample "
+                "seasons don't drag the avg down. Camp seasons translated "
+                "to Liga 3 equivalent. Full breakdown in Transfer Value Detail."
             )
             bio_row3[3].metric(
                 "Current CVI",
