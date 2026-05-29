@@ -8886,6 +8886,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                           if _tv_projected_eur is not None and _tv_true_eur is not None
                           else None)
 
+        # ---- Expected realized fee (after free-transfer / contract reality) ----
+        # Layer on top of predicted_mv. At Liga 3/Camp tier, 97% of
+        # transfer records have no recorded fee — most players leave
+        # for free. Of paid deals, median fee/MV is 0.25 at €50-250k
+        # and 0.55 at €250k-€1M. Calibrated from 151 TM transfer
+        # records + 6 user transfers.
+        _tv_realized = None
+        try:
+            if _tv_projected_eur is not None and _tv_projected_eur > 0:
+                from models.eur_v2.realization import expected_realized_fee
+                _tv_realized = expected_realized_fee(_tv_projected_eur,
+                                                        age=_tv_age)
+        except Exception as _rl_exc:
+            print(f"[realization] {type(_rl_exc).__name__}: {_rl_exc}")
+
         col1_bio, col2_bio = st.columns([1, 3])
         with col1_bio:
             image_url = player_bio.get('imageDataURL', None)
@@ -9724,6 +9739,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 "selected season.")
 
             with _tv_right:
+                # ---- Expected realized fee (after the free-transfer reality) ----
+                if _tv_realized is not None and _tv_projected_eur is not None:
+                    st.caption("**Expected realized fee** (after free-transfer reality)")
+                    _exp_fee_if = _tv_realized.get('expected_fee_if_sells', 0)
+                    _exp_fee_overall = _tv_realized.get('expected_fee_overall', 0)
+                    _p_sells = _tv_realized.get('p_sells_for_fee', 0)
+                    _r_rat = _tv_realized.get('realization_ratio', 0)
+                    st.metric(
+                        "Expected fee IF sold",
+                        f"€{_exp_fee_if:,.0f}",
+                        f"{_r_rat*100:.0f}% of TM market value",
+                    )
+                    st.metric(
+                        f"P(sells for fee): {_p_sells*100:.0f}%",
+                        f"€{_exp_fee_overall:,.0f}",
+                        f"probability-weighted (vs free transfer / loan / end-of-contract)",
+                    )
+                    st.caption(
+                        f"At this tier most players exit via free transfer or "
+                        f"end-of-contract — only ~{_p_sells*100:.0f}% of comparable "
+                        f"players generate a paid transfer fee. When they do, the "
+                        f"realized fee is typically **{_r_rat*100:.0f}%** of the TM "
+                        f"market value at this MV bracket. Calibrated from 151 "
+                        f"TM-recorded fees + 6 user transfers."
+                    )
+                    st.caption("")
+
                 st.caption("**Market value sources**")
                 if _tv_valuations_rows.empty:
                     st.caption("No data yet. Will populate from Transfermarkt + "
