@@ -604,25 +604,6 @@ def load_gpa_values():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=3600)
-def load_player_career_goals():
-    """Return dict {playerId: int} of career goals from raw_events.
-    Used as a feature in the v2 EUR regression. Cached for the
-    session — raw_events is the biggest file we read."""
-    try:
-        ev = pd.read_parquet('raw_events.parquet',
-                              columns=['player.id', 'type.primary',
-                                        'shot.isGoal'])
-        ev = ev.dropna(subset=['player.id'])
-        ev['player.id'] = ev['player.id'].astype('int64')
-        shots = ev[ev['type.primary'] == 'shot'].copy()
-        shots['goal'] = shots['shot.isGoal'].fillna(False).astype(int)
-        return shots.groupby('player.id')['goal'].sum().to_dict()
-    except Exception as e:
-        logger.warning(f"load_player_career_goals failed: {e}")
-        return {}
-
-
 # ============================================================================
 # Cross-tier translation factors (Liga 3 ↔ Campeonato)
 # ----------------------------------------------------------------------------
@@ -8812,128 +8793,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             pass
 
         # Headline projected / true / Δ values for the bio row.
-        _tv_projected_eur = None
+        _tv_projected_eur = None      # v2 model output — pending
         _tv_true_eur = None
         _tv_true_source = None
         if not _tv_valuations_rows.empty:
             _latest = _tv_valuations_rows.iloc[0]
             _tv_true_eur = _latest.get('value_eur')
             _tv_true_source = _latest.get('source')
-
-        # v2 EUR regression — produces Projected value
-        try:
-            from models.eur_v2.predict import (
-                load_model as _load_eur_model,
-                predict_eur as _predict_eur,
-                build_features_for_player as _build_eur_feats,
-            )
-            _eur_bundle = _load_eur_model()
-            if _eur_bundle is not None and _tv_single is not None and not _tv_single.empty:
-                _eur_row = _tv_single.iloc[0]
-                _eur_pos_group = _cvi_position_group(
-                    _eur_row.get('primaryPosition'))
-                # Determine season year from selected_season_id (Aug 1)
-                _eur_season_year = (int(SEASON_ID_MAP.get(
-                    int(selected_season_id), '2025/26').split('/')[0])
-                    if selected_season_id is not None else 2025)
-                _eur_tv = _eur_row.get('Total Value')
-                _eur_mins = _eur_row.get('totalMinutes')
-                # passport_pt: True if Portuguese passport / birth area
-                _eur_pp = 0
-                try:
-                    if isinstance(player_bio, pd.Series):
-                        for _f in ('passportArea', 'birthArea'):
-                            _v = player_bio.get(_f)
-                            if isinstance(_v, dict) and \
-                               (_v.get('name', '') or '').lower() == 'portugal':
-                                _eur_pp = 1
-                                break
-                except Exception:
-                    pass
-                # Career goals from cached raw_events scan
-                _eur_career_goals = 0.0
-                try:
-                    _goals_map = load_player_career_goals()
-                    _eur_career_goals = float(_goals_map.get(int(player_id), 0))
-                except Exception:
-                    pass
-                # v3.1 — pull the CVI-style perf_blend from the CVI
-                # compute block. _CVI_perf is on the same 0-100 scale as
-                # the training perf_blend (before the ×2 boost which
-                # the predict.py builder applies).
-                _eur_perf_blend = None
-                if not _tv_cvi_block.empty:
-                    _v = _tv_cvi_block.iloc[0].get('_CVI_perf')
-                    if _v is not None and pd.notna(_v):
-                        _eur_perf_blend = float(_v)
-                # v3.7 — pull per-(player, season) counting stats
-                # (passes accurate, clean sheets, saves) for the MV model.
-                _eur_count = {'ga_per90': 0.0, 'passes_accurate_per90': 0.0,
-                                'cs_pct': 0.0, 'save_pct': 0.0}
-                try:
-                    from models.eur_v2.predict import lookup_counting_stats
-                    _g = float(_eur_row.get('goals') or 0)
-                    _a = float(_eur_row.get('assists') or 0)
-                    _eur_count = lookup_counting_stats(
-                        player_id=int(player_id),
-                        season_id=int(selected_season_id) if selected_season_id else 0,
-                        mins_played=float(_eur_mins or 0),
-                        goals_season=_g, assists_season=_a,
-                    )
-                except Exception:
-                    pass
-                _eur_feats = _build_eur_feats(
-                    age=_tv_age,
-                    position_group=_eur_pos_group,
-                    total_value_per90=(float(_eur_tv)
-                                          if _eur_tv is not None
-                                          and pd.notna(_eur_tv) else None),
-                    league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
-                    career_mins=(float(_tv_career_current.get('effective_mins'))
-                                   if _tv_career_current else
-                                   (float(_eur_mins)
-                                      if _eur_mins is not None
-                                      and pd.notna(_eur_mins) else None)),
-                    mins_season=(float(_eur_mins)
-                                   if _eur_mins is not None
-                                   and pd.notna(_eur_mins) else None),
-                    passport_pt=_eur_pp,
-                    n_seasons_played=(_tv_career_current.get('n_seasons_used', 1)
-                                        if _tv_career_current else 1),
-                    season_year=_eur_season_year,
-                    goals_career=_eur_career_goals,
-                    perf_blend=_eur_perf_blend,
-                    ga_per90=_eur_count['ga_per90'],
-                    passes_accurate_per90=_eur_count['passes_accurate_per90'],
-                    cs_pct=_eur_count['cs_pct'],
-                    save_pct=_eur_count['save_pct'],
-                )
-                _tv_projected_eur = _predict_eur(_eur_bundle, _eur_feats)
-        except Exception as _eur_exc:
-            print(f"[eur_v2 predict] {type(_eur_exc).__name__}: {_eur_exc}")
-
         _tv_delta_eur = (_tv_projected_eur - _tv_true_eur
                           if _tv_projected_eur is not None and _tv_true_eur is not None
                           else None)
-
-        # ---- Expected realized fee (after free-transfer / contract reality) ----
-        # Layer on top of predicted_mv. At Liga 3/Camp tier, 97% of
-        # transfer records have no recorded fee — most players leave
-        # for free. Of paid deals, median fee/MV is 0.25 at €50-250k
-        # and 0.55 at €250k-€1M. Calibrated from 151 TM transfer
-        # records + 6 user transfers.
-        _tv_realized = None
-        _league_for_real = (0.85 if _tv_comp_id == 702 else 1.00)
-        try:
-            if _tv_projected_eur is not None and _tv_projected_eur > 0:
-                from models.eur_v2.realization import expected_realized_fee
-                _tv_realized = expected_realized_fee(_tv_projected_eur,
-                                                        age=_tv_age,
-                                                        perf_blend=_eur_perf_blend,
-                                                        position_group=_eur_pos_group,
-                                                        league_factor=_league_for_real)
-        except Exception as _rl_exc:
-            print(f"[realization] {type(_rl_exc).__name__}: {_rl_exc}")
 
         col1_bio, col2_bio = st.columns([1, 3])
         with col1_bio:
@@ -8967,82 +8836,37 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Headline transfer-value figures (Projected / True / Δ).
             # Full breakdown lives in the "Transfer Value Detail"
             # section just above Career Trajectory.
-            # Compute True Value (CVI-only — pure on-pitch quality)
-            _tv_true_value_eur = None
-            _tv_predict_diag = None   # cause hint surfaced in MV / TV cells
-            try:
-                from models.eur_v2.predict import (
-                    load_true_value_model as _load_tv_model,
-                    predict_eur as _predict_eur_tv,
-                    build_features_for_player as _build_eur_feats_tv,
-                )
-                _tv_bundle = _load_tv_model()
-                if _tv_bundle is None:
-                    _tv_predict_diag = "TV model file not deployed"
-                elif _tv_single is None or _tv_single.empty:
-                    _tv_predict_diag = "no player_stats row"
-                else:
-                    _tv_row = _tv_single.iloc[0]
-                    _tv_pos_group = _cvi_position_group(
-                        _tv_row.get('primaryPosition'))
-                    _tv_tv = _tv_row.get('Total Value')
-                    if _tv_pos_group is None:
-                        _tv_predict_diag = (
-                            f"position '{_tv_row.get('primaryPosition')}' "
-                            f"can't map to CVI group")
-                    elif _tv_age is None:
-                        _tv_predict_diag = "missing DOB"
-                    else:
-                        # v3.1 — pass CVI perf_blend through (same as
-                        # bio TMV path above)
-                        _tv_perf_blend = None
-                        if not _tv_cvi_block.empty:
-                            _v = _tv_cvi_block.iloc[0].get('_CVI_perf')
-                            if _v is not None and pd.notna(_v):
-                                _tv_perf_blend = float(_v)
-                        _tv_feats = _build_eur_feats_tv(
-                            age=_tv_age,
-                            position_group=_tv_pos_group,
-                            total_value_per90=(float(_tv_tv)
-                                                  if _tv_tv is not None
-                                                  and pd.notna(_tv_tv) else None),
-                            league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
-                            perf_blend=_tv_perf_blend,
-                        )
-                        _tv_true_value_eur = _predict_eur_tv(_tv_bundle, _tv_feats)
-                        if _tv_true_value_eur is None:
-                            _tv_predict_diag = "predict_eur returned None"
-                        else:
-                            # v3.10 — apply same adjustments as MV so
-                            # TV is on the comparable scale (was much
-                            # lower because it skipped the elite boost).
-                            try:
-                                from models.eur_v2.realization import apply_post_hoc_adjustments
-                                _tv_true_value_eur = apply_post_hoc_adjustments(
-                                    _tv_true_value_eur,
-                                    perf_blend=_eur_perf_blend, age=_tv_age,
-                                    position_group=_eur_pos_group,
-                                    league_factor=_league_for_real,
-                                )
-                            except Exception:
-                                pass
-            except Exception as _tv_exc:
-                _tv_predict_diag = f"{type(_tv_exc).__name__}: {_tv_exc}"
-                print(f"[true_value predict] {_tv_predict_diag}")
-
-            # Bio row — MV + True Value only (Predicted TMV and
-            # Current CVI moved to Transfer Value Detail).
-            _bio_mv = None
-            if _tv_realized is not None:
-                _bio_mv = _tv_realized.get('expected_fee_if_sells')
-            _mv_tv_gap = None
-            _mv_tv_gap_pct = None
-            if (_tv_true_value_eur is not None and _bio_mv is not None
-                    and _tv_true_value_eur > 0):
-                _mv_tv_gap = _bio_mv - _tv_true_value_eur
-                _mv_tv_gap_pct = _mv_tv_gap / _tv_true_value_eur * 100
-            # Resolve Current CVI here (still used inside Transfer Value
-            # Detail later, not surfaced in the bio row).
+            bio_row3 = st.columns(4)
+            bio_row3[0].metric(
+                "Projected value",
+                ("Pending v2"
+                 if _tv_projected_eur is None
+                 else f"€{_tv_projected_eur:,.0f}"),
+                help="Model-predicted market value. Pending v2 "
+                     "regression on scraped TM/ZZ/manual valuations.",
+            )
+            bio_row3[1].metric(
+                "True value",
+                ("No data yet" if _tv_true_eur is None
+                 else f"€{_tv_true_eur:,.0f}"),
+                help=(f"Latest from {_tv_true_source}"
+                       if _tv_true_source else
+                       "Will populate from TM/ZZ scrapes + reported "
+                       "fees + manual entries."),
+            )
+            bio_row3[2].metric(
+                "Δ (proj − true)",
+                ("—" if _tv_delta_eur is None
+                 else f"{'+' if _tv_delta_eur >= 0 else ''}€{_tv_delta_eur:,.0f}"),
+                help=("Positive Δ = model thinks more than market "
+                      "(potentially undervalued buy). Negative = market "
+                      "values higher (visibility/intangibles the model "
+                      "doesn't capture). Pending v2."),
+            )
+            # Current CVI — career-aggregated, anchored to the player's
+            # most recent season. Uses 0.6 decay per season back and
+            # league-translates Camp seasons to Liga 3 equivalent.
+            # Full breakdown lives in Transfer Value Detail below.
             _current_cvi = None
             _current_cvi_n_seasons = None
             if _tv_career_current is not None:
@@ -9050,111 +8874,28 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if _v is not None and not pd.isna(_v):
                     _current_cvi = float(_v)
                 _current_cvi_n_seasons = _tv_career_current.get('n_seasons_used')
+            # Fallback to selected-season CVI if career version unavailable
             if _current_cvi is None and not _tv_cvi_block.empty:
                 _v = _tv_cvi_block.iloc[0].get('_CVI')
                 if _v is not None and not pd.isna(_v):
                     _current_cvi = float(_v)
-
-            bio_row3 = st.columns(2)
-            bio_row3[0].metric(
-                "MV",
-                ("—" if _bio_mv is None else f"€{_bio_mv:,.0f}"),
-                (f"{_tv_realized['realization_ratio']*100:.0f}% of TMV"
-                  if _tv_realized is not None and
-                  _tv_realized.get('realization_ratio') else None),
-                help="Expected realized fee IF a sale happens. "
-                     "Predicted TMV × realization_ratio. "
-                     "At Liga 3 tier typical realization is 25-50% "
-                     "of TM market value. See Transfer Value Detail "
-                     "below for TMV + CVI breakdown.",
+            _bio_cvi_help = (
+                "Career-aggregated Composite Value Index, anchored to the "
+                "player's most recent season. Combines that season + up to "
+                f"{CVI_CAREER_MAX_LOOKBACK} prior seasons with "
+                f"{CVI_CAREER_DECAY}^seasons-back decay weighting and "
+                "cross-league translation (Camp → Liga 3 equivalent). "
+                "Full breakdown in the Transfer Value Detail section below."
             )
-            bio_row3[1].metric(
-                "True Value",
-                ("Pending" if _tv_true_value_eur is None
-                 else f"€{_tv_true_value_eur:,.0f}"),
-                (f"MV − TV: {'+' if _mv_tv_gap >= 0 else ''}€{_mv_tv_gap:,.0f} "
-                  f"({'+' if _mv_tv_gap_pct >= 0 else ''}{_mv_tv_gap_pct:.0f}%)"
-                  if _mv_tv_gap is not None else None),
-                help="Pure CVI-only fair value on the MV scale — "
-                     "directly comparable to MV.  \n\n"
-                     "**MV − TV** is the market-vs-quality gap:  \n"
-                     "• Positive = market overpaying for visibility/"
-                     "potential beyond pure CVI quality  \n"
-                     "• Negative = market underpaying — potential BUY",
+            bio_row3[3].metric(
+                "Current CVI",
+                ("—" if _current_cvi is None
+                 else f"{_current_cvi:.1f}"),
+                (f"{_current_cvi_n_seasons}-season aggregate"
+                  if _current_cvi_n_seasons and _current_cvi_n_seasons > 1
+                  else None),
+                help=_bio_cvi_help,
             )
-            # If either prediction failed, show the FULL diagnostic
-            # in a visible warning so we can debug without relying on
-            # the truncated metric-delta slot.
-            if (_bio_mv is None or _tv_true_value_eur is None) and \
-                    _tv_predict_diag:
-                st.warning(
-                    f"⚠️ EUR predictions unavailable for this player. "
-                    f"Diagnostic: **{_tv_predict_diag}**"
-                )
-                # FULL environment diagnostic — shown ONLY when predict
-                # fails. Tells us in one expand whether the model files
-                # actually deployed, joblib is importable, etc. Once
-                # MV/TV stop failing this block won't render at all.
-                with st.expander("🔬 EUR predict environment diagnostic",
-                                  expanded=True):
-                    import sys, os, traceback
-                    _diag_lines = [
-                        f"**Python:** {sys.version.split()[0]}",
-                        f"**Working dir:** `{os.getcwd()}`",
-                    ]
-                    # joblib availability
-                    try:
-                        import joblib as _j
-                        _diag_lines.append(f"**joblib:** {_j.__version__} ✓")
-                    except Exception as _je:
-                        _diag_lines.append(
-                            f"**joblib:** ✗ `{type(_je).__name__}: {_je}`")
-                    # sklearn availability
-                    try:
-                        import sklearn
-                        _diag_lines.append(f"**scikit-learn:** {sklearn.__version__} ✓")
-                    except Exception as _se:
-                        _diag_lines.append(
-                            f"**scikit-learn:** ✗ `{type(_se).__name__}: {_se}`")
-                    # models.eur_v2.predict import
-                    try:
-                        from models.eur_v2 import predict as _pmod
-                        _diag_lines.append(
-                            f"**models.eur_v2.predict:** importable ✓")
-                        # Model files
-                        from pathlib import Path as _P
-                        _mdir = _P(_pmod.__file__).parent
-                        for _f in ('eur_v2_ridge.joblib',
-                                    'true_value_ridge.joblib',
-                                    'meta.json', 'training_set.csv'):
-                            _fp = _mdir / _f
-                            if _fp.exists():
-                                _diag_lines.append(
-                                    f"  • {_f}: {_fp.stat().st_size:,} bytes ✓")
-                            else:
-                                _diag_lines.append(f"  • {_f}: ✗ MISSING")
-                    except Exception as _ie:
-                        _diag_lines.append(
-                            f"**models.eur_v2.predict:** ✗ "
-                            f"`{type(_ie).__name__}: {_ie}`")
-                        _diag_lines.append("```\n" + traceback.format_exc() + "```")
-                    # Try load_model
-                    try:
-                        from models.eur_v2.predict import (
-                            load_model as _lm, load_true_value_model as _ltv)
-                        _b1 = _lm()
-                        _b2 = _ltv()
-                        _diag_lines.append(
-                            f"**load_model():** "
-                            f"{'✓ ' + str(len(_b1.get('features', []))) + ' features' if _b1 else '✗ None'}")
-                        _diag_lines.append(
-                            f"**load_true_value_model():** "
-                            f"{'✓ ' + str(len(_b2.get('features', []))) + ' features' if _b2 else '✗ None'}")
-                    except Exception as _le:
-                        _diag_lines.append(
-                            f"**load_model():** ✗ "
-                            f"`{type(_le).__name__}: {_le}`")
-                    st.markdown("\n\n".join(_diag_lines))
 
         st.divider()
 
@@ -9483,35 +9224,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # next to the trajectory plots that visualize them.
         st.subheader("Transfer Value Detail")
         try:
-            # Top mini-row: Predicted TMV + Current CVI (moved from
-            # bio row to keep the bio focused on MV + True Value).
-            _hdr_a, _hdr_b = st.columns(2)
-            _hdr_a.metric(
-                "Predicted TMV",
-                ("Pending" if _tv_projected_eur is None
-                  else f"€{_tv_projected_eur:,.0f}"),
-                help="Predicted Transfermarkt market value — what TM "
-                     "would list this player at. v2 Ridge regression "
-                     "on 19 features (incl. goals, assists, xG residual, "
-                     "passport, career mins, season year). Captures "
-                     "market positioning, not just pure on-pitch quality. "
-                     "MV (in the bio row) = this × realization_ratio.",
-            )
-            _hdr_b.metric(
-                "Current CVI",
-                ("—" if _current_cvi is None
-                  else f"{_current_cvi:.1f}"),
-                (f"{_current_cvi_n_seasons}-season aggregate"
-                  if _current_cvi_n_seasons and _current_cvi_n_seasons > 1
-                  else None),
-                help=("Career-aggregated Composite Value Index, anchored "
-                       "to the player's most recent season. Combines that "
-                       f"season + up to {CVI_CAREER_MAX_LOOKBACK} prior "
-                       f"seasons with {CVI_CAREER_DECAY}^seasons-back decay "
-                       "weighting and cross-league translation (Camp → "
-                       "Liga 3 equivalent). Full breakdown below."),
-            )
-            st.markdown("")  # small spacer
             _tv_left, _tv_right = st.columns(2)
             with _tv_left:
                 st.caption("**Composite Value Index (CVI) breakdown**")
@@ -9930,34 +9642,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 "selected season.")
 
             with _tv_right:
-                # ---- Expected realized fee (after the free-transfer reality) ----
-                if _tv_realized is not None and _tv_projected_eur is not None:
-                    st.caption("**Expected realized fee (MV)** — what we'd "
-                                "actually get if a sale happens")
-                    _exp_fee_if = _tv_realized.get('expected_fee_if_sells', 0)
-                    _exp_fee_overall = _tv_realized.get('expected_fee_overall', 0)
-                    _p_sells = _tv_realized.get('p_sells_for_fee', 0)
-                    _r_rat = _tv_realized.get('realization_ratio', 0)
-                    st.metric(
-                        "MV (Expected fee IF sold)",
-                        f"€{_exp_fee_if:,.0f}",
-                        f"{_r_rat*100:.0f}% of Predicted TMV",
-                    )
-                    st.metric(
-                        f"P(sells for fee): {_p_sells*100:.0f}%",
-                        f"€{_exp_fee_overall:,.0f}",
-                        f"probability-weighted (vs free transfer / loan / end-of-contract)",
-                    )
-                    st.caption(
-                        f"At this tier most players exit via free transfer or "
-                        f"end-of-contract — only ~{_p_sells*100:.0f}% of comparable "
-                        f"players generate a paid transfer fee. When they do, the "
-                        f"realized fee is typically **{_r_rat*100:.0f}%** of the TM "
-                        f"market value at this MV bracket. Calibrated from 151 "
-                        f"TM-recorded fees + 6 user transfers."
-                    )
-                    st.caption("")
-
                 st.caption("**Market value sources**")
                 if _tv_valuations_rows.empty:
                     st.caption("No data yet. Will populate from Transfermarkt + "
@@ -11707,34 +11391,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # ranking re-sorts by CVI. Currently uses placeholder parameters
         # (see CVI_AGE_VALUE_PARAMS); will be calibrated against TM/ZZ
         # market values in v2.
-        # v2 — toggle now surfaces MV (realized fee) + True Value
-        # (CVI-only fair value on the MV scale) + MV-TV gap. CVI itself
-        # is still computed under the hood (the True Value model uses
-        # the same CVI-equivalent features).
         show_cvi = st.sidebar.checkbox(
-            "Show MV / True Value (€)",
+            "Show Composite Value Index (CVI)",
             value=False,
             key="player_analysis_show_cvi",
-            help="Adds three EUR columns after Rating:  \n"
-                 "• **MV** — expected realized fee (TMV × realization "
-                 "ratio)  \n"
-                 "• **TV** — True Value, CVI-only on the MV scale  \n"
-                 "• **MV-TV** — market vs quality gap. Negative = "
-                 "potential BUY (market underpaying for the quality)",
+            help="A 0-150 scout-facing index blending performance "
+                 "(position-tuned Role + Action V), age-value premium, "
+                 "sample reliability, and league strength. "
+                 "Currently uses literature-informed defaults — to be "
+                 "calibrated against scraped market values.",
         )
         sort_by_cvi = False
-        cvi_sort_metric = 'MV'
         if show_cvi:
-            cvi_sort_metric = st.sidebar.radio(
-                "Sort by",
-                options=['Rating (default)', 'MV', 'True Value',
-                          'MV − TV (buy signal)'],
-                index=0,
-                key="player_analysis_sort_metric",
-                help="'MV − TV' ascending highlights the biggest 'market "
-                     "underpaying' buy candidates at the top.",
+            sort_by_cvi = st.sidebar.checkbox(
+                "Sort by CVI",
+                value=False,
+                key="player_analysis_sort_by_cvi",
+                help="Replace the Rating-based sort with a CVI sort.",
             )
-            sort_by_cvi = cvi_sort_metric != 'Rating (default)'
 
         # Pre-compute age column for the full filtered pool — used by
         # the same-age peer computation inside _build_template_table
@@ -11804,100 +11478,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                          _cvi_block.reset_index(drop=True)],
                         axis=1,
                     )
-                # ---- Compute Predicted TMV / MV / True Value per player ----
-                try:
-                    from models.eur_v2.predict import (
-                        load_model as _load_full_eur,
-                        load_true_value_model as _load_tv_eur,
-                        predict_eur as _pred_eur,
-                        build_features_for_player as _build_eur_feats_bulk,
-                        lookup_counting_stats as _lookup_counts_bulk,
-                    )
-                    from models.eur_v2.realization import (
-                        expected_realized_fee as _exp_real,
-                        apply_post_hoc_adjustments as _apply_adj,
-                    )
-                    _full_b = _load_full_eur()
-                    _tv_b   = _load_tv_eur()
-                    if _full_b is not None and _tv_b is not None:
-                        _eur_year = 2025
-                        try:
-                            _eur_year = int(SEASON_ID_MAP.get(
-                                int(selected_season_id), '2025/26').split('/')[0])
-                        except Exception: pass
-                        _tmv_list, _mv_list, _tv_list = [], [], []
-                        for _, _pr in filtered_df.iterrows():
-                            _pos_g = _cvi_position_group(_pr.get('primaryPosition'))
-                            _age = _pr.get('_age') if '_age' in filtered_df.columns else None
-                            _tv_val_col = _pr.get('Total Value')
-                            _mins = _pr.get('totalMinutes')
-                            try: _tv_f = float(_tv_val_col) if _tv_val_col is not None and not pd.isna(_tv_val_col) else None
-                            except Exception: _tv_f = None
-                            _comp_id_p = (_comp_lookup(int(_pr['playerId']))
-                                            if callable(_comp_lookup) else None)
-                            _league = 0.85 if _comp_id_p == 702 else 1.00
-                            # v3.1 — perf_blend from CVI compute block
-                            _row_perf = _pr.get('_CVI_perf')
-                            _row_perf = (float(_row_perf)
-                                          if _row_perf is not None
-                                          and pd.notna(_row_perf) else None)
-                            # v3.7 — counting-stat lookup for MV
-                            _bulk_count = {'ga_per90':0.0, 'passes_accurate_per90':0.0, 'cs_pct':0.0, 'save_pct':0.0}
-                            try:
-                                _g_p = float(_pr.get('goals') or 0)
-                                _a_p = float(_pr.get('assists') or 0)
-                                _bulk_count = _lookup_counts_bulk(
-                                    player_id=int(_pr['playerId']),
-                                    season_id=int(selected_season_id) if selected_season_id else 0,
-                                    mins_played=float(_mins or 0),
-                                    goals_season=_g_p, assists_season=_a_p,
-                                )
-                            except Exception:
-                                pass
-                            _feats_full = _build_eur_feats_bulk(
-                                age=_age, position_group=_pos_g,
-                                total_value_per90=_tv_f, league_factor=_league,
-                                career_mins=float(_mins) if _mins is not None and pd.notna(_mins) else None,
-                                mins_season=float(_mins) if _mins is not None and pd.notna(_mins) else None,
-                                n_seasons_played=1, season_year=_eur_year,
-                                perf_blend=_row_perf,
-                                ga_per90=_bulk_count['ga_per90'],
-                                passes_accurate_per90=_bulk_count['passes_accurate_per90'],
-                                cs_pct=_bulk_count['cs_pct'],
-                                save_pct=_bulk_count['save_pct'],
-                            )
-                            _feats_tv = _build_eur_feats_bulk(
-                                age=_age, position_group=_pos_g,
-                                total_value_per90=_tv_f, league_factor=_league,
-                                perf_blend=_row_perf,
-                            )
-                            _tmv = _pred_eur(_full_b, _feats_full)
-                            _tv_pred = _pred_eur(_tv_b, _feats_tv)
-                            _mv = (_exp_real(_tmv, _age,
-                                                  perf_blend=_row_perf,
-                                                  position_group=_pos_g,
-                                                  league_factor=_league
-                                                  ).get('expected_fee_if_sells')
-                                    if _tmv else None)
-                            # v3.10 — apply same adjustments to TV
-                            if _tv_pred is not None and _tv_pred > 0:
-                                _tv_pred = _apply_adj(
-                                    _tv_pred, perf_blend=_row_perf, age=_age,
-                                    position_group=_pos_g, league_factor=_league)
-                            _tmv_list.append(_tmv)
-                            _mv_list.append(_mv)
-                            _tv_list.append(_tv_pred)
-                        filtered_df = filtered_df.assign(
-                            _Predicted_TMV=_tmv_list,
-                            _MV=_mv_list,
-                            _True_Value=_tv_list,
-                        )
-                        filtered_df['_MV_minus_TV'] = (
-                            pd.to_numeric(filtered_df['_MV'], errors='coerce')
-                            - pd.to_numeric(filtered_df['_True_Value'], errors='coerce')
-                        )
-                except Exception as _eur_bulk_exc:
-                    print(f"[bulk EUR predict] {type(_eur_bulk_exc).__name__}: {_eur_bulk_exc}")
             except Exception as _cvi_exc:
                 import traceback as _tb
                 _tb_str = _tb.format_exc()
@@ -12007,25 +11587,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 _sort_col = score_col
 
-            # Override sort if user picked an MV/TV-based sort metric.
-            # 'MV − TV (buy signal)' is the only one we want ascending
-            # — most-negative gap (= biggest market under-pricing) first.
-            _sort_ascending = False
-            if show_cvi and sort_by_cvi:
-                _sort_metric_map = {
-                    'MV': '_MV',
-                    'True Value': '_True_Value',
-                    'MV − TV (buy signal)': '_MV_minus_TV',
-                }
-                _target_col = _sort_metric_map.get(cvi_sort_metric)
-                if _target_col and _target_col in tdf.columns:
-                    _sort_col = _target_col
-                    if cvi_sort_metric == 'MV − TV (buy signal)':
-                        _sort_ascending = True
+            # CVI overrides the sort if "Sort by CVI" is on.
+            if show_cvi and sort_by_cvi and '_CVI' in tdf.columns:
+                _sort_col = '_CVI'
 
-            sorted_tdf = tdf.sort_values(
-                by=_sort_col, ascending=_sort_ascending, na_position='last'
-            ).head(n_players)
+            sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
 
             if compact:
                 # Overview mode: Rank, Player, Team, Position, Minutes, Age, Rating
@@ -12084,27 +11650,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # (perf - same-age-position median) — bumps a value-
             # focused row with a "+30 vs age peer" callout when the
             # player is meaningfully ahead of their age cohort.
-            # Insert MV / True Value / MV-TV columns to the right of
-            # Rating when the toggle is on. Formatted as €k (rounded
-            # thousands) for compactness in the table.
-            if show_cvi and '_MV' in sorted_tdf.columns:
+            if show_cvi and '_CVI' in sorted_tdf.columns:
+                cvi_vals = pd.Series(sorted_tdf['_CVI'].values, index=display.index).round(1)
                 _r_idx = display.columns.get_loc('Rating')
-                def _fmt_eur_k(v):
-                    if v is None or pd.isna(v): return ''
-                    if abs(v) >= 1_000_000:
-                        return f"€{v/1_000_000:.1f}M"
-                    return f"€{v/1000:.0f}k"
-                def _fmt_eur_signed_k(v):
-                    if v is None or pd.isna(v): return ''
-                    return f"{'+' if v >= 0 else ''}€{v/1000:.0f}k"
-                _mv = pd.Series(sorted_tdf['_MV'].values, index=display.index)
-                _tv = pd.Series(sorted_tdf['_True_Value'].values,
-                                  index=display.index)
-                _gap = pd.Series(sorted_tdf['_MV_minus_TV'].values,
-                                   index=display.index)
-                display.insert(_r_idx + 1, 'MV',  _mv.apply(_fmt_eur_k))
-                display.insert(_r_idx + 2, 'TV',  _tv.apply(_fmt_eur_k))
-                display.insert(_r_idx + 3, 'MV−TV', _gap.apply(_fmt_eur_signed_k))
+                display.insert(_r_idx + 1, 'CVI', cvi_vals)
+                if not compact and '_CVI_trajectory' in sorted_tdf.columns:
+                    traj_vals = pd.Series(sorted_tdf['_CVI_trajectory'].values,
+                                           index=display.index).round(0)
+                    display.insert(_r_idx + 2, 'Traj vs age',
+                                    traj_vals.apply(
+                                        lambda v: (f"{int(v):+d}" if pd.notna(v) else '')
+                                    ))
 
             # Add Pos. Minutes
             if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
@@ -12145,10 +11701,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 'Full Backs', 'Center Backs', 'Goalkeepers',
             ]
             # Collect per-template data as lists aligned by rank.
-            # When show_cvi is on, append MV / TV / MV-TV as sub-columns.
+            # When CVI is on, append it as a 5th sub-column per template.
             _sub_cols = ['Player', 'Team', 'Min', 'Rating']
             if show_cvi:
-                _sub_cols.extend(['MV', 'TV', 'MV−TV'])
+                _sub_cols.append('CVI')
             template_columns = {}
             for group_name in _OVERVIEW_ORDER:
                 group_templates = _TEMPLATE_GROUPS.get(group_name, [])
@@ -12164,13 +11720,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 round(float(row.get('Rating', 0)), 1),
                             ]
                             if show_cvi:
-                                # _build_template_table inserts MV/TV/MV−TV
-                                # already-formatted as €Xk strings.
-                                tup.extend([
-                                    row.get('MV', ''),
-                                    row.get('TV', ''),
-                                    row.get('MV−TV', ''),
-                                ])
+                                _cvi_v = row.get('CVI')
+                                tup.append(round(float(_cvi_v), 1) if pd.notna(_cvi_v) else '')
                             rows.append(tuple(tup))
                         template_columns[tmpl] = rows
 
@@ -12211,13 +11762,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
-                        "🟩 **MV** = expected realized fee · "
-                        "**TV** = pure-CVI fair value (same scale as MV) · "
-                        "**MV−TV** = market vs quality gap. "
-                        "Negative MV−TV = market underpaying for the quality "
-                        "(potential BUY candidate)."
-                        + (f" Sorted by **{cvi_sort_metric}**."
-                            if sort_by_cvi else '')
+                        "🟩 CVI = composite scout-facing value (0-150). "
+                        "Performance × age-value × reliability × league strength. "
+                        "Currently uses placeholder parameters; will be calibrated "
+                        "against Transfermarkt/ZeroZero market values."
+                        + (" Sort is by CVI." if sort_by_cvi else "")
                     )
                 st.dataframe(overview_df, use_container_width=True)
             else:
@@ -12366,13 +11915,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
-                        "🟩 **MV** = expected realized fee · "
-                        "**TV** = pure-CVI fair value (same scale as MV) · "
-                        "**MV−TV** = market vs quality gap. "
-                        "Negative MV−TV = market underpaying for the quality "
-                        "(potential BUY candidate)."
-                        + (f" Sorted by **{cvi_sort_metric}**."
-                            if sort_by_cvi else '')
+                        "🟩 CVI = composite scout-facing value · 'Traj vs age' = "
+                        "performance vs same-position-same-age median "
+                        "(e.g. '+25' = 25pt ahead of age peer median). "
+                        "Currently uses placeholder parameters; will be calibrated "
+                        "against scraped market values."
+                        + (" Sort is by CVI." if sort_by_cvi else "")
                     )
                 st.caption("Click on a row to view that player's profile")
                 selection = st.dataframe(
