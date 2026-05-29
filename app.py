@@ -11577,24 +11577,34 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # ranking re-sorts by CVI. Currently uses placeholder parameters
         # (see CVI_AGE_VALUE_PARAMS); will be calibrated against TM/ZZ
         # market values in v2.
+        # v2 — toggle now surfaces MV (realized fee) + True Value
+        # (CVI-only fair value on the MV scale) + MV-TV gap. CVI itself
+        # is still computed under the hood (the True Value model uses
+        # the same CVI-equivalent features).
         show_cvi = st.sidebar.checkbox(
-            "Show Composite Value Index (CVI)",
+            "Show MV / True Value (€)",
             value=False,
             key="player_analysis_show_cvi",
-            help="A 0-150 scout-facing index blending performance "
-                 "(position-tuned Role + Action V), age-value premium, "
-                 "sample reliability, and league strength. "
-                 "Currently uses literature-informed defaults — to be "
-                 "calibrated against scraped market values.",
+            help="Adds three EUR columns after Rating:  \n"
+                 "• **MV** — expected realized fee (TMV × realization "
+                 "ratio)  \n"
+                 "• **TV** — True Value, CVI-only on the MV scale  \n"
+                 "• **MV-TV** — market vs quality gap. Negative = "
+                 "potential BUY (market underpaying for the quality)",
         )
         sort_by_cvi = False
+        cvi_sort_metric = 'MV'
         if show_cvi:
-            sort_by_cvi = st.sidebar.checkbox(
-                "Sort by CVI",
-                value=False,
-                key="player_analysis_sort_by_cvi",
-                help="Replace the Rating-based sort with a CVI sort.",
+            cvi_sort_metric = st.sidebar.radio(
+                "Sort by",
+                options=['Rating (default)', 'MV', 'True Value',
+                          'MV − TV (buy signal)'],
+                index=0,
+                key="player_analysis_sort_metric",
+                help="'MV − TV' ascending highlights the biggest 'market "
+                     "underpaying' buy candidates at the top.",
             )
+            sort_by_cvi = cvi_sort_metric != 'Rating (default)'
 
         # Pre-compute age column for the full filtered pool — used by
         # the same-age peer computation inside _build_template_table
@@ -11664,6 +11674,65 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                          _cvi_block.reset_index(drop=True)],
                         axis=1,
                     )
+                # ---- Compute Predicted TMV / MV / True Value per player ----
+                try:
+                    from models.eur_v2.predict import (
+                        load_model as _load_full_eur,
+                        load_true_value_model as _load_tv_eur,
+                        predict_eur as _pred_eur,
+                        build_features_for_player as _build_eur_feats_bulk,
+                    )
+                    from models.eur_v2.realization import (
+                        expected_realized_fee as _exp_real,
+                    )
+                    _full_b = _load_full_eur()
+                    _tv_b   = _load_tv_eur()
+                    if _full_b is not None and _tv_b is not None:
+                        _eur_year = 2025
+                        try:
+                            _eur_year = int(SEASON_ID_MAP.get(
+                                int(selected_season_id), '2025/26').split('/')[0])
+                        except Exception: pass
+                        _tmv_list, _mv_list, _tv_list = [], [], []
+                        for _, _pr in filtered_df.iterrows():
+                            _pos_g = _cvi_position_group(_pr.get('primaryPosition'))
+                            _age = _pr.get('_age') if '_age' in filtered_df.columns else None
+                            _tv_val_col = _pr.get('Total Value')
+                            _mins = _pr.get('totalMinutes')
+                            try: _tv_f = float(_tv_val_col) if _tv_val_col is not None and not pd.isna(_tv_val_col) else None
+                            except Exception: _tv_f = None
+                            _comp_id_p = (_comp_lookup(int(_pr['playerId']))
+                                            if callable(_comp_lookup) else None)
+                            _league = 0.85 if _comp_id_p == 702 else 1.00
+                            _feats_full = _build_eur_feats_bulk(
+                                age=_age, position_group=_pos_g,
+                                total_value_per90=_tv_f, league_factor=_league,
+                                career_mins=float(_mins) if _mins is not None and pd.notna(_mins) else None,
+                                mins_season=float(_mins) if _mins is not None and pd.notna(_mins) else None,
+                                n_seasons_played=1, season_year=_eur_year,
+                            )
+                            _feats_tv = _build_eur_feats_bulk(
+                                age=_age, position_group=_pos_g,
+                                total_value_per90=_tv_f, league_factor=_league,
+                            )
+                            _tmv = _pred_eur(_full_b, _feats_full)
+                            _tv_pred = _pred_eur(_tv_b, _feats_tv)
+                            _mv = (_exp_real(_tmv, _age).get('expected_fee_if_sells')
+                                    if _tmv else None)
+                            _tmv_list.append(_tmv)
+                            _mv_list.append(_mv)
+                            _tv_list.append(_tv_pred)
+                        filtered_df = filtered_df.assign(
+                            _Predicted_TMV=_tmv_list,
+                            _MV=_mv_list,
+                            _True_Value=_tv_list,
+                        )
+                        filtered_df['_MV_minus_TV'] = (
+                            pd.to_numeric(filtered_df['_MV'], errors='coerce')
+                            - pd.to_numeric(filtered_df['_True_Value'], errors='coerce')
+                        )
+                except Exception as _eur_bulk_exc:
+                    print(f"[bulk EUR predict] {type(_eur_bulk_exc).__name__}: {_eur_bulk_exc}")
             except Exception as _cvi_exc:
                 import traceback as _tb
                 _tb_str = _tb.format_exc()
@@ -11773,11 +11842,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 _sort_col = score_col
 
-            # CVI overrides the sort if "Sort by CVI" is on.
-            if show_cvi and sort_by_cvi and '_CVI' in tdf.columns:
-                _sort_col = '_CVI'
+            # Override sort if user picked an MV/TV-based sort metric.
+            # 'MV − TV (buy signal)' is the only one we want ascending
+            # — most-negative gap (= biggest market under-pricing) first.
+            _sort_ascending = False
+            if show_cvi and sort_by_cvi:
+                _sort_metric_map = {
+                    'MV': '_MV',
+                    'True Value': '_True_Value',
+                    'MV − TV (buy signal)': '_MV_minus_TV',
+                }
+                _target_col = _sort_metric_map.get(cvi_sort_metric)
+                if _target_col and _target_col in tdf.columns:
+                    _sort_col = _target_col
+                    if cvi_sort_metric == 'MV − TV (buy signal)':
+                        _sort_ascending = True
 
-            sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
+            sorted_tdf = tdf.sort_values(
+                by=_sort_col, ascending=_sort_ascending, na_position='last'
+            ).head(n_players)
 
             if compact:
                 # Overview mode: Rank, Player, Team, Position, Minutes, Age, Rating
@@ -11836,17 +11919,27 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # (perf - same-age-position median) — bumps a value-
             # focused row with a "+30 vs age peer" callout when the
             # player is meaningfully ahead of their age cohort.
-            if show_cvi and '_CVI' in sorted_tdf.columns:
-                cvi_vals = pd.Series(sorted_tdf['_CVI'].values, index=display.index).round(1)
+            # Insert MV / True Value / MV-TV columns to the right of
+            # Rating when the toggle is on. Formatted as €k (rounded
+            # thousands) for compactness in the table.
+            if show_cvi and '_MV' in sorted_tdf.columns:
                 _r_idx = display.columns.get_loc('Rating')
-                display.insert(_r_idx + 1, 'CVI', cvi_vals)
-                if not compact and '_CVI_trajectory' in sorted_tdf.columns:
-                    traj_vals = pd.Series(sorted_tdf['_CVI_trajectory'].values,
-                                           index=display.index).round(0)
-                    display.insert(_r_idx + 2, 'Traj vs age',
-                                    traj_vals.apply(
-                                        lambda v: (f"{int(v):+d}" if pd.notna(v) else '')
-                                    ))
+                def _fmt_eur_k(v):
+                    if v is None or pd.isna(v): return ''
+                    if abs(v) >= 1_000_000:
+                        return f"€{v/1_000_000:.1f}M"
+                    return f"€{v/1000:.0f}k"
+                def _fmt_eur_signed_k(v):
+                    if v is None or pd.isna(v): return ''
+                    return f"{'+' if v >= 0 else ''}€{v/1000:.0f}k"
+                _mv = pd.Series(sorted_tdf['_MV'].values, index=display.index)
+                _tv = pd.Series(sorted_tdf['_True_Value'].values,
+                                  index=display.index)
+                _gap = pd.Series(sorted_tdf['_MV_minus_TV'].values,
+                                   index=display.index)
+                display.insert(_r_idx + 1, 'MV',  _mv.apply(_fmt_eur_k))
+                display.insert(_r_idx + 2, 'TV',  _tv.apply(_fmt_eur_k))
+                display.insert(_r_idx + 3, 'MV−TV', _gap.apply(_fmt_eur_signed_k))
 
             # Add Pos. Minutes
             if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
@@ -11948,11 +12041,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
-                        "🟩 CVI = composite scout-facing value (0-150). "
-                        "Performance × age-value × reliability × league strength. "
-                        "Currently uses placeholder parameters; will be calibrated "
-                        "against Transfermarkt/ZeroZero market values."
-                        + (" Sort is by CVI." if sort_by_cvi else "")
+                        "🟩 **MV** = expected realized fee · "
+                        "**TV** = pure-CVI fair value (same scale as MV) · "
+                        "**MV−TV** = market vs quality gap. "
+                        "Negative MV−TV = market underpaying for the quality "
+                        "(potential BUY candidate)."
+                        + (f" Sorted by **{cvi_sort_metric}**."
+                            if sort_by_cvi else '')
                     )
                 st.dataframe(overview_df, use_container_width=True)
             else:
@@ -12101,12 +12196,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
-                        "🟩 CVI = composite scout-facing value · 'Traj vs age' = "
-                        "performance vs same-position-same-age median "
-                        "(e.g. '+25' = 25pt ahead of age peer median). "
-                        "Currently uses placeholder parameters; will be calibrated "
-                        "against scraped market values."
-                        + (" Sort is by CVI." if sort_by_cvi else "")
+                        "🟩 **MV** = expected realized fee · "
+                        "**TV** = pure-CVI fair value (same scale as MV) · "
+                        "**MV−TV** = market vs quality gap. "
+                        "Negative MV−TV = market underpaying for the quality "
+                        "(potential BUY candidate)."
+                        + (f" Sorted by **{cvi_sort_metric}**."
+                            if sort_by_cvi else '')
                     )
                 st.caption("Click on a row to view that player's profile")
                 selection = st.dataframe(
