@@ -8992,16 +8992,34 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      "At Liga 3 tier the typical realization is 25-50% "
                      "of TM market value.",
             )
+            # True Value is on the MV scale — directly comparable to MV
+            # (realized fee). MV − TV = market-vs-quality gap:
+            #   MV > TV → market overpaying for this player vs CVI quality
+            #   MV < TV → market underpaying (potential buy candidate)
+            _mv_tv_gap = None
+            _mv_tv_gap_pct = None
+            if (_tv_true_value_eur is not None and _bio_mv is not None
+                    and _tv_true_value_eur > 0):
+                _mv_tv_gap = _bio_mv - _tv_true_value_eur
+                _mv_tv_gap_pct = _mv_tv_gap / _tv_true_value_eur * 100
             bio_row3[2].metric(
                 "True Value",
                 ("Pending" if _tv_true_value_eur is None
                  else f"€{_tv_true_value_eur:,.0f}"),
-                help="Pure on-pitch fair value — derived from CVI "
-                     "(signed_log_tv + age + league + position_group) "
-                     "ONLY. Excludes market-noise features like total "
-                     "goals, xG over/under-performance, passport, "
-                     "team performance. Answers 'what is this player "
-                     "actually worth by their playing level alone?'",
+                (f"MV − TV: {'+' if _mv_tv_gap >= 0 else ''}€{_mv_tv_gap:,.0f} "
+                  f"({'+' if _mv_tv_gap_pct >= 0 else ''}{_mv_tv_gap_pct:.0f}%)"
+                  if _mv_tv_gap is not None else None),
+                help="Pure on-pitch fair value on the MV scale — "
+                     "trained on realized-fee target (TMV × realization "
+                     "ratio) using only CVI inputs (signed_log_tv + age "
+                     "+ league + position). Directly comparable to MV "
+                     "above.  \n\n"
+                     "**MV − TV** is the market-vs-quality gap:  \n"
+                     "• Positive = market overpaying for visibility/"
+                     "potential beyond pure CVI quality  \n"
+                     "• Negative = market underpaying — potential BUY "
+                     "candidate (CVI says they're worth more than the "
+                     "fee they'd command)",
             )
             # Current CVI — career-aggregated, anchored to the player's
             # most recent season. Uses 0.6 decay per season back and

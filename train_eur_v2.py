@@ -588,44 +588,57 @@ def main():
         print(f"\n[done] Dry run — no model saved")
         return 0
 
-    # --- Train SECOND model: True Value (CVI-equivalent features only) ---
-    # The user-facing "True Value" should isolate pure on-pitch quality
-    # by stripping out market-noise features (goals/assists/xG residuals/
-    # passport/career mins/season year). Only the CVI-relevant signals
-    # remain: performance proxy (signed_log_tv = Total Value /90), age,
-    # league factor, and position group. This answers "what would this
-    # player be worth based purely on their playing level?", ignoring
-    # market hype, contract drama, or finishing-luck residuals.
+    # --- Train SECOND model: True Value (CVI-equivalent features only,
+    # MV-scale target) ---
+    # The user-facing "True Value" should be directly comparable to MV
+    # (realized fee), NOT to TMV (theoretical market value). So we train
+    # the True Value model with target = log(MV) where
+    # MV = value_eur × realization_ratio(value_eur). This puts True
+    # Value on the same scale as the realized-fee number — making
+    # the MV − TV gap interpretable as "market overpaying/underpaying
+    # vs pure-quality fair value".
+    #
+    # Features = CVI-equivalent only (signed_log_tv + age + league +
+    # position_group). Strips market-noise features (goals/assists/
+    # xG residuals/passport/career mins/season year).
+    from models.eur_v2.realization import realization_ratio
+    realized_target_eur = train['value_eur'] * train['value_eur'].apply(
+        realization_ratio)
+    # Clip lower bound so log is well-defined
+    realized_target_eur = realized_target_eur.clip(lower=1000)
+    y_mv = np.log(realized_target_eur.values)
     true_value_features = ['signed_log_tv', 'age', 'league_factor',
                             'pos_AM_WG', 'pos_CB', 'pos_FB', 'pos_GK', 'pos_ST']
     X_tv = train[true_value_features].astype(float).values
-    print(f"\n[true_value] Fitting True Value model on {len(true_value_features)} "
+    print(f"\n[true_value] Fitting on MV-scale target "
+           f"(value_eur × realization_ratio), {len(true_value_features)} "
            f"pure-CVI features...")
+    print(f"  Median target MV: €{np.exp(y_mv).median() if hasattr(np.exp(y_mv), 'median') else float(np.median(np.exp(y_mv))):,.0f}  "
+           f"(vs median TMV €{np.exp(y).mean():,.0f})")
     tv_model = Pipeline([
         ('scale', StandardScaler()),
         ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=5)),
     ])
-    tv_model.fit(X_tv, y)
+    tv_model.fit(X_tv, y_mv)
     tv_alpha = tv_model.named_steps['ridge'].alpha_
     tv_coefs = tv_model.named_steps['ridge'].coef_
 
-    # Out-of-fold for honest comparison
-    tv_oof = np.zeros(len(y))
+    # OOF on the SAME MV-target (so we can compare TV predictions
+    # against the realized-MV target directly)
+    tv_oof = np.zeros(len(y_mv))
     for tr, te in kf.split(X_tv):
         fm = Pipeline([
             ('scale', StandardScaler()),
             ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=3)),
         ])
-        fm.fit(X_tv[tr], y[tr])
+        fm.fit(X_tv[tr], y_mv[tr])
         tv_oof[te] = fm.predict(X_tv[te])
-    tv_r2 = r2_score(y, tv_oof)
-    tv_mae_log = mean_absolute_error(y, tv_oof)
-    tv_spearman, _ = spearmanr(y, tv_oof)
+    tv_r2 = r2_score(y_mv, tv_oof)
+    tv_mae_log = mean_absolute_error(y_mv, tv_oof)
+    tv_spearman, _ = spearmanr(y_mv, tv_oof)
     print(f"[true_value] chosen alpha: {tv_alpha}")
-    print(f"[true_value] OOF R²:       {tv_r2:.3f}  "
-           f"(vs full model {oof_r2:.3f})")
-    print(f"[true_value] OOF Spearman: {tv_spearman:.3f}  "
-           f"(vs full model {spearman_rho:.3f})")
+    print(f"[true_value] OOF R² (vs MV target):  {tv_r2:.3f}")
+    print(f"[true_value] OOF Spearman:           {tv_spearman:.3f}")
     print(f"[true_value] coefficients (standardized):")
     tv_coef_df = pd.DataFrame({
         'feature': true_value_features,
@@ -653,8 +666,12 @@ def main():
         'n_training_rows': len(train),
         'oof_r2': float(tv_r2),
         'oof_mae_log': float(tv_mae_log),
-        'description': ('CVI-only True Value model: log(EUR) ~ '
-                          'signed_log_tv + age + league_factor + position'),
+        'target_scale': 'MV',  # log(value_eur × realization_ratio) — not raw TMV
+        'description': ('CVI-only True Value model trained on MV target '
+                          '(realized fee scale = TMV × realization_ratio). '
+                          'Features: signed_log_tv + age + league + position. '
+                          'Output is directly comparable to MV in the dashboard; '
+                          'MV − TV is the market-vs-quality gap signal.'),
     }, out_dir / 'true_value_ridge.joblib')
     tv_coef_df.to_csv(out_dir / 'true_value_coefficients.csv', index=False)
     coef_df.to_csv(out_dir / 'coefficients.csv', index=False)
