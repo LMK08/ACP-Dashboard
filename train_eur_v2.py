@@ -479,28 +479,87 @@ def main():
     # weight to elite performances.
     train['signed_log_tv_sq'] = train['signed_log_tv'] * train['signed_log_tv'].abs()
 
-    # ====== v3.1 — CVI-style position-weighted performance blend ======
-    # Mirrors the CVI engine: blend (Role_Score-proxy) + (Action V/90)
-    # with the same position-tuned weights (GK 80/20 .. ST 50/50).
-    # Both components are within-(season × position_group) percentiles
-    # so a 1.0 = best at their position in that season.
+    # ====== v3.2 — CVI versatility blend: max + mean across templates ======
+    # Mirrors the dashboard's CVI engine exactly:
+    #   Role_Score = 0.6 × max(role_template_pcts) + 0.4 × mean(...)
+    #   perf_blend = w_role × Role_Score + w_av × Action_V_pct
+    # Position-tuned weights for the inner blend match CVI_PERF_WEIGHTS.
     #
-    # Role_Score proxy: position-specific weighted sum of V/90 categories
-    # (mimics what each role template in the dashboard rewards).
-    ROLE_V_WEIGHTS = {
-        'GK':    {'GK Total Value': 1.00},
-        'CB':    {'Total Value': 0.50, 'Passing Value': 0.20,
-                  'Interrupting Value': 0.30},
-        'FB':    {'Total Value': 0.40, 'Passing Value': 0.20,
-                  'Receiving Value': 0.20, 'Dribbling Value': 0.20},
-        'CM':    {'Total Value': 0.30, 'Passing Value': 0.30,
-                  'Receiving Value': 0.20, 'Dribbling Value': 0.20},
-        'AM_WG': {'Total Value': 0.20, 'Receiving Value': 0.30,
-                  'Dribbling Value': 0.25, 'Passing Value': 0.10,
-                  'Shooting Value': 0.15},
-        'ST':    {'Total Value': 0.20, 'Shooting Value': 0.40,
-                  'Receiving Value': 0.20, 'Dribbling Value': 0.20},
+    # Multiple role templates per position (each one a V/90 weighted
+    # composite). The max captures specialist value; the mean rewards
+    # versatility. Templates designed to mirror the dashboard's role
+    # score templates by intent.
+    ROLE_TEMPLATES = {
+        'GK': [
+            {'GK Total Value': 1.00},
+        ],
+        'CB': [
+            # Stopper
+            {'Total Value': 0.40, 'Interrupting Value': 0.60},
+            # Build-up CB
+            {'Total Value': 0.30, 'Passing Value': 0.50,
+              'Interrupting Value': 0.20},
+            # All-rounder CB
+            {'Total Value': 0.40, 'Passing Value': 0.30,
+              'Interrupting Value': 0.30},
+        ],
+        'FB': [
+            # Defensive FB
+            {'Total Value': 0.40, 'Interrupting Value': 0.40,
+              'Passing Value': 0.20},
+            # Wingback (attacking)
+            {'Total Value': 0.30, 'Receiving Value': 0.30,
+              'Dribbling Value': 0.30, 'Passing Value': 0.10},
+            # Inverted FB
+            {'Total Value': 0.30, 'Passing Value': 0.40,
+              'Dribbling Value': 0.20, 'Receiving Value': 0.10},
+        ],
+        'CM': [
+            # Box-to-Box
+            {'Total Value': 0.30, 'Passing Value': 0.25,
+              'Receiving Value': 0.20, 'Dribbling Value': 0.15,
+              'Interrupting Value': 0.10},
+            # Deep-lying Playmaker
+            {'Total Value': 0.15, 'Passing Value': 0.60,
+              'Dribbling Value': 0.15, 'Interrupting Value': 0.10},
+            # Ball-winning Mid
+            {'Total Value': 0.30, 'Interrupting Value': 0.50,
+              'Passing Value': 0.20},
+            # Holding Mid
+            {'Total Value': 0.40, 'Passing Value': 0.30,
+              'Interrupting Value': 0.30},
+        ],
+        'AM_WG': [
+            # Inside Forward
+            {'Total Value': 0.15, 'Receiving Value': 0.25,
+              'Dribbling Value': 0.25, 'Shooting Value': 0.25,
+              'Passing Value': 0.10},
+            # Wide Winger
+            {'Total Value': 0.15, 'Receiving Value': 0.30,
+              'Dribbling Value': 0.40, 'Passing Value': 0.15},
+            # Advanced Playmaker
+            {'Total Value': 0.10, 'Passing Value': 0.55,
+              'Receiving Value': 0.20, 'Dribbling Value': 0.15},
+            # Shadow Striker
+            {'Total Value': 0.15, 'Shooting Value': 0.40,
+              'Receiving Value': 0.30, 'Dribbling Value': 0.15},
+        ],
+        'ST': [
+            # Poacher
+            {'Total Value': 0.10, 'Shooting Value': 0.70,
+              'Receiving Value': 0.20},
+            # Target Forward
+            {'Total Value': 0.25, 'Shooting Value': 0.30,
+              'Receiving Value': 0.45},
+            # Mobile Striker
+            {'Total Value': 0.15, 'Shooting Value': 0.40,
+              'Receiving Value': 0.25, 'Dribbling Value': 0.20},
+            # Pressing Forward (high work-rate ST)
+            {'Total Value': 0.30, 'Shooting Value': 0.30,
+              'Receiving Value': 0.20, 'Interrupting Value': 0.20},
+        ],
     }
+    CVI_ROLE_VERSATILITY_ALPHA = 0.6   # 0.6 × max + 0.4 × mean
     # CVI position weights: (role_weight, action_v_weight)
     CVI_PERF_WEIGHTS = {
         'GK': (0.80, 0.20), 'CB': (0.75, 0.25), 'FB': (0.65, 0.35),
@@ -533,31 +592,48 @@ def main():
     gpa_full['_pos_group'] = gpa_full['position'].map(POS_GROUP_MAP)
     gpa_full = gpa_full.dropna(subset=['_pos_group'])
 
-    def _role_v_for_row(row):
-        wts = ROLE_V_WEIGHTS.get(row['_pos_group'])
-        if not wts:
-            return 0.0
-        return sum(row.get(col, 0) * w for col, w in wts.items())
-    gpa_full['_role_v'] = gpa_full.apply(_role_v_for_row, axis=1)
-
-    # Within each (season × position_group) cohort, percentile-rank
-    # both Total Value (action_v) and _role_v (role_score proxy)
+    # Compute role_v per template; percentile-rank each within
+    # (season × position_group); take 0.6 × max + 0.4 × mean.
+    # Action V percentile (Total Value /90) is also computed.
     gpa_full['_av_pct'] = (gpa_full.groupby(['seasonId', '_pos_group'])
                             ['Total Value']
                             .rank(pct=True, method='average') * 100.0)
-    gpa_full['_role_pct'] = (gpa_full.groupby(['seasonId', '_pos_group'])
-                              ['_role_v']
-                              .rank(pct=True, method='average') * 100.0)
-    # CVI-style blend
+    role_pct_cols = []
+    for pos, templates in ROLE_TEMPLATES.items():
+        sub = gpa_full[gpa_full['_pos_group'] == pos].copy()
+        for t_idx, t_weights in enumerate(templates):
+            col = f'_role_v_{pos}_{t_idx}'
+            sub[col] = sum(sub.get(c, 0) * w for c, w in t_weights.items())
+            sub[col + '_pct'] = (sub.groupby('seasonId')[col]
+                                  .rank(pct=True, method='average') * 100.0)
+            gpa_full.loc[sub.index, col + '_pct'] = sub[col + '_pct']
+            role_pct_cols.append(col + '_pct')
+    # For each row, collect its position-specific role pct cols + blend
+    def _role_score_blend(row):
+        pos = row['_pos_group']
+        n_templates = len(ROLE_TEMPLATES.get(pos, []))
+        pcts = []
+        for t_idx in range(n_templates):
+            v = row.get(f'_role_v_{pos}_{t_idx}_pct')
+            if v is not None and not pd.isna(v):
+                pcts.append(float(v))
+        if not pcts:
+            return 50.0
+        if len(pcts) == 1:
+            return pcts[0]
+        a = CVI_ROLE_VERSATILITY_ALPHA
+        return a * max(pcts) + (1.0 - a) * (sum(pcts) / len(pcts))
+    gpa_full['_role_pct_blend'] = gpa_full.apply(_role_score_blend, axis=1)
+    # CVI position-weighted blend
     gpa_full['_perf_blend'] = gpa_full.apply(
         lambda r: (
-            CVI_PERF_WEIGHTS[r['_pos_group']][0] * r['_role_pct']
+            CVI_PERF_WEIGHTS[r['_pos_group']][0] * r['_role_pct_blend']
             + CVI_PERF_WEIGHTS[r['_pos_group']][1] * r['_av_pct']
         ),
         axis=1,
     )
     perf_map = {(int(r['playerId']), int(r['seasonId'])):
-                 (r['_perf_blend'], r['_av_pct'], r['_role_pct'])
+                 (r['_perf_blend'], r['_av_pct'], r['_role_pct_blend'])
                  for _, r in gpa_full.iterrows()}
     train['perf_blend'] = train.apply(
         lambda r: perf_map.get((int(r['playerId']), int(r['seasonId'])),
@@ -616,13 +692,26 @@ def main():
     y = train['log_value_eur'].values
     print(f"[features] X shape: {X.shape}, y shape: {y.shape}")
 
+    # v3.2 — sample weighting: user-reported transfer fees are the
+    # most authoritative training signal we have for this tier (real
+    # money changed hands). TM snapshots are noisier (TM editors
+    # estimate; senior-team B-squad players inflate the upper tail).
+    # Weight reported_fee rows 8× so the regression listens to them.
+    REPORTED_FEE_WEIGHT = 8.0
+    sw = np.where(train['value_source'] == 'reported_fee',
+                    REPORTED_FEE_WEIGHT, 1.0).astype(float)
+    n_rep = int((train['value_source'] == 'reported_fee').sum())
+    print(f"[weights] {n_rep} reported_fee rows × {REPORTED_FEE_WEIGHT:.0f}, "
+           f"{len(sw) - n_rep} TM rows × 1.0  "
+           f"(effective N = {sw.sum():.0f})")
+
     # --- Cross-validate Ridge ---
     print(f"\n[model] Fitting Ridge with 5-fold CV...")
     model = Pipeline([
         ('scale', StandardScaler()),
         ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=5)),
     ])
-    model.fit(X, y)
+    model.fit(X, y, ridge__sample_weight=sw)
     chosen_alpha = model.named_steps['ridge'].alpha_
     print(f"[model] Chosen alpha: {chosen_alpha}")
 
@@ -648,7 +737,7 @@ def main():
             ('scale', StandardScaler()),
             ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=3)),
         ])
-        fm.fit(X[tr], y[tr])
+        fm.fit(X[tr], y[tr], ridge__sample_weight=sw[tr])
         oof[te] = fm.predict(X[te])
     oof_r2 = r2_score(y, oof)
     oof_mae_log = mean_absolute_error(y, oof)
@@ -733,7 +822,7 @@ def main():
         ('scale', StandardScaler()),
         ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=5)),
     ])
-    tv_model.fit(X_tv, y_mv)
+    tv_model.fit(X_tv, y_mv, ridge__sample_weight=sw)
     tv_alpha = tv_model.named_steps['ridge'].alpha_
     tv_coefs = tv_model.named_steps['ridge'].coef_
 
@@ -745,7 +834,7 @@ def main():
             ('scale', StandardScaler()),
             ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=3)),
         ])
-        fm.fit(X_tv[tr], y_mv[tr])
+        fm.fit(X_tv[tr], y_mv[tr], ridge__sample_weight=sw[tr])
         tv_oof[te] = fm.predict(X_tv[te])
     tv_r2 = r2_score(y_mv, tv_oof)
     tv_mae_log = mean_absolute_error(y_mv, tv_oof)
@@ -802,7 +891,41 @@ def main():
             'oof_mape_pct': float(mape),
             'pos_groups_one_hot': [c for c in features if c.startswith('pos_')],
             'reference_position_group': 'CM',
+            'version': 'v3.2',
+            'changes': [
+                'CVI-style versatility blend: 0.6 × max + 0.4 × mean across role templates',
+                'Sample-weight reported_fee transfers 8× over TM snapshots',
+            ],
         }, f, indent=2)
+
+    # --- v3 — also write JSON fallback bundles (no sklearn / joblib
+    # needed at runtime). The HF Space loads these when joblib is
+    # missing or sklearn version mismatches. KEEP IN SYNC with the
+    # joblib bundles above. ---
+    def _dump_json_bundle(pipeline, feature_list, target_path, extra_meta=None):
+        s = pipeline.named_steps['scale']
+        r = pipeline.named_steps['ridge']
+        payload = {
+            'scaler_mean': s.mean_.tolist(),
+            'scaler_scale': s.scale_.tolist(),
+            'ridge_coef': r.coef_.tolist(),
+            'ridge_intercept': float(r.intercept_),
+            'features': list(feature_list),
+            'meta': extra_meta or {},
+        }
+        with open(target_path, 'w') as f:
+            json.dump(payload, f, indent=2)
+        print(f"[json bundle] wrote {target_path.name}")
+    _dump_json_bundle(model, features, out_dir / 'eur_v2_ridge.json',
+                       extra_meta={'chosen_alpha': float(chosen_alpha),
+                                    'oof_r2': float(oof_r2),
+                                    'version': 'v3.2'})
+    _dump_json_bundle(tv_model, true_value_features,
+                       out_dir / 'true_value_ridge.json',
+                       extra_meta={'chosen_alpha': float(tv_alpha),
+                                    'oof_r2': float(tv_r2),
+                                    'target_scale': 'MV',
+                                    'version': 'v3.2'})
     print(f"\n[done] Model + diagnostics saved to {out_dir}/")
     return 0
 

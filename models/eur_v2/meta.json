@@ -15,11 +15,11 @@
     "pos_GK",
     "pos_ST"
   ],
-  "chosen_alpha": 10.0,
+  "chosen_alpha": 100.0,
   "n_training_rows": 201,
-  "oof_r2": 0.31296010362490667,
-  "oof_mae_log": 0.6513522134172681,
-  "oof_mape_pct": 44.310268803001826,
+  "oof_r2": 0.19062009483013176,
+  "oof_mae_log": 0.699521425389804,
+  "oof_mape_pct": 50.44422666973934,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",
@@ -27,5 +27,10 @@
     "pos_GK",
     "pos_ST"
   ],
-  "reference_position_group": "CM"
+  "reference_position_group": "CM",
+  "version": "v3.2",
+  "changes": [
+    "CVI-style versatility blend: 0.6 \u00d7 max + 0.4 \u00d7 mean across role templates",
+    "Sample-weight reported_fee transfers 8\u00d7 over TM snapshots"
+  ]
 }
