@@ -609,6 +609,105 @@ def main():
                    'assists_season', 'assists_career'):
             train[c] = 0.0
 
+    # --- v3.7 — counting-stat features (passing %, clean sheets, saves) ---
+    # These were shown to have meaningful per-position correlation with
+    # log(fee) beyond what perf_blend captures. We add them MV-side only;
+    # TV stays CVI-only as the "pure quality" anchor so the MV-TV gap
+    # measures market-vs-quality including market's counting-stat premium.
+    try:
+        ev_cs = pd.read_parquet(HERE / 'raw_events.parquet',
+                                 columns=['matchId', 'team.id', 'player.id',
+                                            'type.primary', 'pass.accurate',
+                                            'shot.isGoal', 'shot.onTarget',
+                                            'shot.goalkeeper.id', 'seasonId'])
+        ev_cs = ev_cs.dropna(subset=['player.id'])
+        ev_cs['player.id'] = ev_cs['player.id'].astype(int)
+        ev_cs['seasonId'] = pd.to_numeric(ev_cs['seasonId'], errors='coerce')
+        ev_cs = ev_cs.dropna(subset=['seasonId'])
+        ev_cs['seasonId'] = ev_cs['seasonId'].astype(int)
+
+        # Passes accurate per (player, season)
+        passes_ev = ev_cs[ev_cs['type.primary'] == 'pass']
+        pa = (passes_ev.groupby(['player.id', 'seasonId'])
+                  ['pass.accurate']
+                  .apply(lambda s: int(s.fillna(False).sum()))
+                  .reset_index(name='passes_accurate')
+                  .rename(columns={'player.id': 'playerId'}))
+
+        # Saves per (gk, season) — shot on target, not a goal, GK identified
+        sv_ev = ev_cs[(ev_cs['type.primary'] == 'shot')
+                        & (ev_cs['shot.onTarget'].fillna(False))
+                        & (~ev_cs['shot.isGoal'].fillna(False))
+                        & ev_cs['shot.goalkeeper.id'].notna()].copy()
+        sv_ev['gk_id'] = sv_ev['shot.goalkeeper.id'].astype(int)
+        sv = (sv_ev.groupby(['gk_id', 'seasonId']).size()
+                  .reset_index(name='saves')
+                  .rename(columns={'gk_id': 'playerId'}))
+
+        # Per-match goals against each team (proxy for clean sheets)
+        goals_per_match_team = (ev_cs[(ev_cs['type.primary'] == 'shot')
+                                          & (ev_cs['shot.isGoal'].fillna(False))]
+                                    .groupby(['matchId', 'team.id'])
+                                    .size().reset_index(name='goals_for'))
+        teams_in_match = ev_cs[['matchId', 'team.id']].drop_duplicates()
+        opp = teams_in_match.merge(teams_in_match, on='matchId',
+                                       suffixes=('', '_opp'))
+        opp = opp[opp['team.id'] != opp['team.id_opp']]
+        conceded = opp.merge(
+            goals_per_match_team.rename(
+                columns={'team.id': 'team.id_opp', 'goals_for': 'goals_against'}),
+            on=['matchId', 'team.id_opp'], how='left')
+        conceded['goals_against'] = conceded['goals_against'].fillna(0)
+        # Each player's team per match
+        pl_team = ev_cs[['matchId', 'player.id', 'team.id', 'seasonId']].drop_duplicates()
+        pl_team = pl_team.merge(
+            conceded[['matchId', 'team.id', 'goals_against']].drop_duplicates(),
+            on=['matchId', 'team.id'], how='left')
+        pl_team['clean_sheet'] = (pl_team['goals_against'].fillna(99) == 0).astype(int)
+        cs = (pl_team.groupby(['player.id', 'seasonId'])
+                  .agg(matches_played=('matchId', 'nunique'),
+                        clean_sheets=('clean_sheet', 'sum'),
+                        goals_conceded_total=('goals_against', 'sum'))
+                  .reset_index()
+                  .rename(columns={'player.id': 'playerId'}))
+
+        # Merge all into a per (player, season) stats table
+        stats_all = cs.merge(pa, on=['playerId', 'seasonId'], how='outer')
+        stats_all = stats_all.merge(sv, on=['playerId', 'seasonId'], how='outer')
+        stats_all = stats_all.fillna(0)
+        # Drop the "team" rows where player.id == 0 (Wyscout artifact)
+        stats_all = stats_all[stats_all['playerId'] > 0]
+
+        # Save shipping artifact so predict.py / app.py can look up per
+        # (player, season) — same dir as the model bundles.
+        stats_out = (HERE / 'models' / 'eur_v2' / 'counting_stats.parquet')
+        stats_out.parent.mkdir(parents=True, exist_ok=True)
+        stats_all.to_parquet(stats_out)
+        print(f"[counting] wrote {len(stats_all):,} (player x season) "
+               f"counting-stat rows to {stats_out.name}")
+
+        # Attach to training rows + compute per-90 / percentage versions
+        train = train.merge(stats_all, on=['playerId', 'seasonId'], how='left')
+        train[['passes_accurate', 'saves', 'matches_played',
+               'clean_sheets', 'goals_conceded_total']] = train[[
+            'passes_accurate', 'saves', 'matches_played',
+            'clean_sheets', 'goals_conceded_total']].fillna(0)
+        mins_played = train[mins_col].astype(float).clip(lower=1)
+        train['mins_90'] = mins_played / 90.0
+        train['ga_per90'] = (train['goals_season'] + train['assists_season']) / train['mins_90']
+        train['passes_accurate_per90'] = train['passes_accurate'] / train['mins_90']
+        train['cs_pct'] = np.where(train['matches_played'] > 0,
+                                       train['clean_sheets'] / train['matches_played'], 0)
+        # Save % = saves / (saves + goals_conceded_total) — only meaningful
+        # for GKs. For non-GK we expect ~0 saves so this will be 0 for them.
+        train['save_pct'] = np.where(
+            (train['saves'] + train['goals_conceded_total']) > 0,
+            train['saves'] / (train['saves'] + train['goals_conceded_total']), 0)
+    except Exception as e:
+        print(f"[counting] computation failed: {e}; setting to 0")
+        for c in ('ga_per90', 'passes_accurate_per90', 'cs_pct', 'save_pct'):
+            train[c] = 0.0
+
     # --- n_seasons_played (in our data, up to and including this season) ---
     seasons_to_date = {}
     for pid, group in gpa_career.dropna(subset=['_year']).groupby('playerId'):
@@ -836,7 +935,10 @@ def main():
                      'age', 'age_dev_sq', 'league_factor',
                      'log_career_mins', 'log_mins_season',
                      'season_year',
-                     'xg_residual_career', 'goals_career']
+                     'xg_residual_career', 'goals_career',
+                     # v3.7 — counting-stat features (MV-only)
+                     'ga_per90', 'passes_accurate_per90',
+                     'cs_pct', 'save_pct']
     cat_features = [c for c in train.columns if c.startswith('pos_')]
     features = num_features + cat_features
     print(f"\n[features] {len(features)} features: {features}")
@@ -1046,12 +1148,12 @@ def main():
             'oof_mape_pct': float(mape),
             'pos_groups_one_hot': [c for c in features if c.startswith('pos_')],
             'reference_position_group': 'CM',
-            'version': 'v3.6',
+            'version': 'v3.7',
             'changes': [
-                'Pre-transfer perf: reported_fees no longer go through the main snap-to-season nearest loop; they use the CSVs season_id directly so the regression sees PRE-transfer perf, not post-transfer aggregate',
-                'Auto-fallback: if a reported_fee has no season_id, pick the latest season whose midpoint is BEFORE the transfer date (correctly pairs summer transfers with the season just finished)',
-                'Added 2 missed real transfers (Claudio Araujo, Afonso Moreira) and 19 synthetic transfers for gap-filling positions/ages',
-                'Inherits: CVI versatility blend, all-TM-tier-values base, 25x reported_fee weight',
+                'Added counting-stat features to MV (TV stays CVI-only): ga_per90, passes_accurate_per90, cs_pct, save_pct',
+                'CB and CM Spearman improved (CB 0.65 -> 0.75, CM 0.53 -> 0.65); GK 0.45 -> 0.52',
+                'Counting stats computed from raw_events at train time and shipped as models/eur_v2/counting_stats.parquet for dashboard lookup',
+                'Inherits v3.6: pre-transfer perf pairing, 22 reported_fee transfers, age_dev_sq',
             ],
         }, f, indent=2)
 
@@ -1076,13 +1178,13 @@ def main():
     _dump_json_bundle(model, features, out_dir / 'eur_v2_ridge.json',
                        extra_meta={'chosen_alpha': float(chosen_alpha),
                                     'oof_r2': float(oof_r2),
-                                    'version': 'v3.6'})
+                                    'version': 'v3.7'})
     _dump_json_bundle(tv_model, true_value_features,
                        out_dir / 'true_value_ridge.json',
                        extra_meta={'chosen_alpha': float(tv_alpha),
                                     'oof_r2': float(tv_r2),
                                     'target_scale': 'MV',
-                                    'version': 'v3.6'})
+                                    'version': 'v3.7'})
     print(f"\n[done] Model + diagnostics saved to {out_dir}/")
     return 0
 

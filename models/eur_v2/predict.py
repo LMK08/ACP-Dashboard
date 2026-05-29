@@ -34,6 +34,62 @@ MODEL_JSON_PATH = HERE / 'eur_v2_ridge.json'
 META_PATH  = HERE / 'meta.json'
 TRUE_VALUE_MODEL_PATH = HERE / 'true_value_ridge.joblib'
 TRUE_VALUE_JSON_PATH = HERE / 'true_value_ridge.json'
+COUNTING_STATS_PATH = HERE / 'counting_stats.parquet'
+
+
+_counting_stats_cache = None
+
+
+def _load_counting_stats():
+    """One-time load of the per-(player, season) counting-stat table.
+    Returns a dict keyed by (playerId, seasonId) → stat dict, or empty
+    if the parquet hasn't been shipped (e.g. older deploys)."""
+    global _counting_stats_cache
+    if _counting_stats_cache is not None:
+        return _counting_stats_cache
+    if not COUNTING_STATS_PATH.exists():
+        _counting_stats_cache = {}
+        return _counting_stats_cache
+    try:
+        df = pd.read_parquet(COUNTING_STATS_PATH)
+        _counting_stats_cache = {
+            (int(r['playerId']), int(r['seasonId'])): {
+                'passes_accurate': float(r.get('passes_accurate', 0) or 0),
+                'saves': float(r.get('saves', 0) or 0),
+                'matches_played': int(r.get('matches_played', 0) or 0),
+                'clean_sheets': int(r.get('clean_sheets', 0) or 0),
+                'goals_conceded_total': float(r.get('goals_conceded_total', 0) or 0),
+            }
+            for _, r in df.iterrows()
+        }
+    except Exception as e:
+        print(f"[predict] counting_stats load failed: {e}")
+        _counting_stats_cache = {}
+    return _counting_stats_cache
+
+
+def lookup_counting_stats(player_id: int, season_id: int,
+                            mins_played: float = 0.0,
+                            goals_season: float = 0.0,
+                            assists_season: float = 0.0) -> dict:
+    """Return the v3.7 counting-stat feature values for one (player, season).
+    Caller supplies mins_played, goals_season, assists_season (these
+    come from the GPA pipeline). The rest are loaded from the parquet.
+
+    Returns dict with: ga_per90, passes_accurate_per90, cs_pct, save_pct.
+    Defaults to 0 for any value we can't compute."""
+    raw = _load_counting_stats().get((int(player_id), int(season_id)), {})
+    mins90 = max(mins_played / 90.0, 1e-6) if mins_played else 0
+    out = {'ga_per90': 0.0, 'passes_accurate_per90': 0.0,
+            'cs_pct': 0.0, 'save_pct': 0.0}
+    if mins_played and mins_played > 0:
+        out['ga_per90'] = (goals_season + assists_season) / mins90
+        out['passes_accurate_per90'] = raw.get('passes_accurate', 0) / mins90
+    if raw.get('matches_played', 0) > 0:
+        out['cs_pct'] = raw['clean_sheets'] / raw['matches_played']
+    if raw.get('saves', 0) + raw.get('goals_conceded_total', 0) > 0:
+        out['save_pct'] = raw['saves'] / (raw['saves'] + raw['goals_conceded_total'])
+    return out
 
 
 class _LinearPipeline:
@@ -172,6 +228,11 @@ def build_features_for_player(*, age: float | None,
                                  assists_career: float = 0.0,
                                  assists_season: float = 0.0,
                                  perf_blend: float | None = None,
+                                 # v3.7 counting-stat features (MV-only)
+                                 ga_per90: float = 0.0,
+                                 passes_accurate_per90: float = 0.0,
+                                 cs_pct: float = 0.0,
+                                 save_pct: float = 0.0,
                                  ) -> dict:
     """Convenience builder mirroring the feature schema in
     train_eur_v2.py. Pass whatever you have; the rest fills with
@@ -218,6 +279,13 @@ def build_features_for_player(*, age: float | None,
                             if career_mins else None),
         'log_mins_season': (np.log(max(mins_season, 1))
                               if mins_season else None),
+        # v3.7 — counting stats (MV-only). Defaults are 0 which match
+        # the training-set means for non-relevant positions (e.g.
+        # save_pct = 0 for outfielders).
+        'ga_per90': ga_per90,
+        'passes_accurate_per90': passes_accurate_per90,
+        'cs_pct': cs_pct,
+        'save_pct': save_pct,
     }
     # Position one-hots (CM = reference; not included)
     for pos in ('AM_WG', 'CB', 'FB', 'GK', 'ST'):

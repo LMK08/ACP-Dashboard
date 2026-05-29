@@ -8866,6 +8866,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _v = _tv_cvi_block.iloc[0].get('_CVI_perf')
                     if _v is not None and pd.notna(_v):
                         _eur_perf_blend = float(_v)
+                # v3.7 — pull per-(player, season) counting stats
+                # (passes accurate, clean sheets, saves) for the MV model.
+                _eur_count = {'ga_per90': 0.0, 'passes_accurate_per90': 0.0,
+                                'cs_pct': 0.0, 'save_pct': 0.0}
+                try:
+                    from models.eur_v2.predict import lookup_counting_stats
+                    _g = float(_eur_row.get('goals') or 0)
+                    _a = float(_eur_row.get('assists') or 0)
+                    _eur_count = lookup_counting_stats(
+                        player_id=int(player_id),
+                        season_id=int(selected_season_id) if selected_season_id else 0,
+                        mins_played=float(_eur_mins or 0),
+                        goals_season=_g, assists_season=_a,
+                    )
+                except Exception:
+                    pass
                 _eur_feats = _build_eur_feats(
                     age=_tv_age,
                     position_group=_eur_pos_group,
@@ -8887,6 +8903,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     season_year=_eur_season_year,
                     goals_career=_eur_career_goals,
                     perf_blend=_eur_perf_blend,
+                    ga_per90=_eur_count['ga_per90'],
+                    passes_accurate_per90=_eur_count['passes_accurate_per90'],
+                    cs_pct=_eur_count['cs_pct'],
+                    save_pct=_eur_count['save_pct'],
                 )
                 _tv_projected_eur = _predict_eur(_eur_bundle, _eur_feats)
         except Exception as _eur_exc:
@@ -11773,6 +11793,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         load_true_value_model as _load_tv_eur,
                         predict_eur as _pred_eur,
                         build_features_for_player as _build_eur_feats_bulk,
+                        lookup_counting_stats as _lookup_counts_bulk,
                     )
                     from models.eur_v2.realization import (
                         expected_realized_fee as _exp_real,
@@ -11801,6 +11822,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             _row_perf = (float(_row_perf)
                                           if _row_perf is not None
                                           and pd.notna(_row_perf) else None)
+                            # v3.7 — counting-stat lookup for MV
+                            _bulk_count = {'ga_per90':0.0, 'passes_accurate_per90':0.0, 'cs_pct':0.0, 'save_pct':0.0}
+                            try:
+                                _g_p = float(_pr.get('goals') or 0)
+                                _a_p = float(_pr.get('assists') or 0)
+                                _bulk_count = _lookup_counts_bulk(
+                                    player_id=int(_pr['playerId']),
+                                    season_id=int(selected_season_id) if selected_season_id else 0,
+                                    mins_played=float(_mins or 0),
+                                    goals_season=_g_p, assists_season=_a_p,
+                                )
+                            except Exception:
+                                pass
                             _feats_full = _build_eur_feats_bulk(
                                 age=_age, position_group=_pos_g,
                                 total_value_per90=_tv_f, league_factor=_league,
@@ -11808,6 +11842,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 mins_season=float(_mins) if _mins is not None and pd.notna(_mins) else None,
                                 n_seasons_played=1, season_year=_eur_year,
                                 perf_blend=_row_perf,
+                                ga_per90=_bulk_count['ga_per90'],
+                                passes_accurate_per90=_bulk_count['passes_accurate_per90'],
+                                cs_pct=_bulk_count['cs_pct'],
+                                save_pct=_bulk_count['save_pct'],
                             )
                             _feats_tv = _build_eur_feats_bulk(
                                 age=_age, position_group=_pos_g,

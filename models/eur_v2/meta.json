@@ -10,6 +10,10 @@
     "season_year",
     "xg_residual_career",
     "goals_career",
+    "ga_per90",
+    "passes_accurate_per90",
+    "cs_pct",
+    "save_pct",
     "pos_AM_WG",
     "pos_CB",
     "pos_FB",
@@ -18,9 +22,9 @@
   ],
   "chosen_alpha": 100.0,
   "n_training_rows": 191,
-  "oof_r2": 0.045131671209015733,
-  "oof_mae_log": 0.787901025486877,
-  "oof_mape_pct": 55.03061247136778,
+  "oof_r2": -0.1442232951939879,
+  "oof_mae_log": 0.8225380986758313,
+  "oof_mape_pct": 55.20473439635075,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",
@@ -29,7 +33,7 @@
     "pos_ST"
   ],
   "reference_position_group": "CM",
-  "version": "v3.6",
+  "version": "v3.7",
   "changes": [
     "Pre-transfer perf: reported_fees no longer go through the main snap-to-season nearest loop; they use the CSVs season_id directly so the regression sees PRE-transfer perf, not post-transfer aggregate",
     "Auto-fallback: if a reported_fee has no season_id, pick the latest season whose midpoint is BEFORE the transfer date (correctly pairs summer transfers with the season just finished)",
