@@ -1862,12 +1862,15 @@ CVI_RELIAB_MINS_TO_CEILING = {
 }
 CVI_RELIAB_MINS_TO_CEILING_DEFAULT = 1800
 
-# Very-short-sample floor — players below 270 min (~3 matches) still
-# get *some* weight rather than collapsing to 0, but heavily discounted.
-# This avoids the v1 behavior where a 200-min cup-game player's CVI
-# went to ~0 even if their Role_Score was strong.
-CVI_RELIAB_MIN_FLOOR_MINS = 270
-CVI_RELIAB_FLOOR = 0.15
+# NOTE on the (now-removed) very-short-sample floor:
+# v1 had a linear floor below 270 min so small-sample players didn't
+# collapse to reliab=0 (which would have killed their CVI via
+# multiplication). With v2.0's empirical-Bayes shrinkage the
+# justification went away — even a 0-reliability player gets shrunk
+# to a sensible prior (their career mean if known, 40 if not), never
+# to 0. The floor was also creating a JUMP of ~25 percentage points
+# at the 270-min boundary where the floor formula and the saturating
+# curve didn't meet smoothly. Removed in v2.1.
 
 # ---- Shrinkage prior ----
 # When reliability is low, we don't shrink the rating to ZERO — we
@@ -1969,13 +1972,11 @@ def _cvi_reliability_weight(mins, position_group):
     ceiling = CVI_RELIAB_CEILING_BY_POS.get(position_group, CVI_RELIAB_CEILING_DEFAULT)
     mins_full = CVI_RELIAB_MINS_TO_CEILING.get(position_group,
                                                   CVI_RELIAB_MINS_TO_CEILING_DEFAULT)
-    if mins < CVI_RELIAB_MIN_FLOOR_MINS:
-        # Linear ramp from 0 to FLOOR across [0, 270]
-        w = CVI_RELIAB_FLOOR * (mins / CVI_RELIAB_MIN_FLOOR_MINS)
-        return w, {'ceiling': ceiling, 'sample_factor': mins / CVI_RELIAB_MIN_FLOOR_MINS,
-                    'mins_to_ceiling': mins_full,
-                    'note': f'short sample (<{CVI_RELIAB_MIN_FLOOR_MINS} min)'}
-    # Saturating curve
+    # Smooth saturating curve from 0 — no discontinuity. Combined with
+    # the v2.0 empirical-Bayes prior, a very-low-sample player no longer
+    # collapses to 0; they're shrunk toward their career prior (or 40
+    # for a debutant). At mins=100 the weight is ~0.17, at 270 it's
+    # ~0.40, at mins_full it's ~0.95 — continuous everywhere.
     sample_factor = 1.0 - math.exp(-3.0 * mins / mins_full)
     weight = ceiling * sample_factor
     return weight, {'ceiling': ceiling, 'sample_factor': sample_factor,
@@ -2579,16 +2580,29 @@ def build_player_priors_lookup(perf_table, anchor_season_id,
     anchor_year = _season_year(anchor_season_id)
     if anchor_year is None:
         return {}
+    anchor_comp = competition_for_season(anchor_season_id)
     pt = perf_table.copy()
     pt['_year'] = pt['seasonId'].map(_season_year)
     pt = pt.dropna(subset=['_year'])
     pt['_year'] = pt['_year'].astype(int)
-    # STRICTLY prior seasons only (year < anchor_year), up to lookback
-    pt = pt[(pt['_year'] < anchor_year)
-              & (pt['_year'] >= anchor_year - max_lookback)]
+    # Eligible prior rows:
+    #   - STRICTLY prior years (year < anchor_year), up to lookback
+    #   - SAME year + DIFFERENT competition — cross-league concurrent
+    #     play (e.g. Santi Guzman 23/24 played for Leça in Camp AND
+    #     for Atlético CP in Liga 3; Dedé 24/25 Dezembro/Camp +
+    #     Sintrense/Liga 3). When rating the Liga 3 portion, the
+    #     concurrent Camp portion is real evidence about current
+    #     level and should inform the prior.
+    pt = pt[
+        ((pt['_year'] < anchor_year) & (pt['_year'] >= anchor_year - max_lookback))
+        | ((pt['_year'] == anchor_year)
+            & (pt['competitionId'].fillna(-1).astype(int) != (anchor_comp or -1)))
+    ]
     if pt.empty:
         return {}
-    pt['_seasons_back'] = anchor_year - pt['_year']
+    # seasons_back ≥ 0; same-year cross-league gets decay=1.0 (full
+    # weight) since it's contemporary evidence.
+    pt['_seasons_back'] = (anchor_year - pt['_year']).clip(lower=0)
     pt['_decay'] = decay ** pt['_seasons_back']
     pt['_league_factor'] = pt['competitionId'].map(
         lambda c: (CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
@@ -2618,8 +2632,17 @@ def build_player_priors_lookup(perf_table, anchor_season_id,
 
 
 def most_recent_season_for_player(perf_table, player_id):
-    """Return the most recent seasonId this player has GPA data for, or
-    None if they have none. Used to anchor 'Current CVI' in the bio row.
+    """Return the most recent seasonId this player has GPA data for,
+    or None if they have none. Used to anchor 'Current CVI' in the
+    bio row.
+
+    Tiebreaker for players with two same-year league rows (e.g. Santi
+    Guzman 23/24 Leça-Camp + Atlético-CP-Liga-3): pick the seasonId
+    where the player logged MORE MINUTES. The other league's data
+    still contributes via Career CVI's same-year cross-league
+    aggregation; this choice only affects which league_at_anchor
+    multiplier is applied to the final composite (so a player who
+    played mostly in Liga 3 gets a Liga-3-framed Current CVI).
     """
     if perf_table is None or perf_table.empty:
         return None
@@ -2630,7 +2653,10 @@ def most_recent_season_for_player(perf_table, player_id):
     rows = rows.dropna(subset=['_y'])
     if rows.empty:
         return None
-    return int(rows.sort_values('_y', ascending=False).iloc[0]['seasonId'])
+    rows['_mins'] = pd.to_numeric(rows.get('mins_played', 0),
+                                     errors='coerce').fillna(0)
+    rows = rows.sort_values(['_y', '_mins'], ascending=[False, False])
+    return int(rows.iloc[0]['seasonId'])
 
 
 # ==============================================================================
