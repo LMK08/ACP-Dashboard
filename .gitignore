@@ -33,6 +33,8 @@ __pycache__/
 !valuations/tm_match_log.csv
 !valuations/manual_entries.csv
 !valuations/valuations.parquet
+!valuations/tm_player_metadata.parquet
+!valuations/tm_transfer_history.parquet
 !opta_ratings.parquet
 
 # System files
