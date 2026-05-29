@@ -9005,8 +9005,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 ("—" if _bio_mv is None else f"€{_bio_mv:,.0f}"),
                 (f"{_tv_realized['realization_ratio']*100:.0f}% of TMV"
                   if _tv_realized is not None and
-                  _tv_realized.get('realization_ratio')
-                  else (_tv_predict_diag if _bio_mv is None else None)),
+                  _tv_realized.get('realization_ratio') else None),
                 help="Expected realized fee IF a sale happens. "
                      "Predicted TMV × realization_ratio. "
                      "At Liga 3 tier typical realization is 25-50% "
@@ -9019,8 +9018,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                  else f"€{_tv_true_value_eur:,.0f}"),
                 (f"MV − TV: {'+' if _mv_tv_gap >= 0 else ''}€{_mv_tv_gap:,.0f} "
                   f"({'+' if _mv_tv_gap_pct >= 0 else ''}{_mv_tv_gap_pct:.0f}%)"
-                  if _mv_tv_gap is not None
-                  else (_tv_predict_diag if _tv_true_value_eur is None else None)),
+                  if _mv_tv_gap is not None else None),
                 help="Pure CVI-only fair value on the MV scale — "
                      "directly comparable to MV.  \n\n"
                      "**MV − TV** is the market-vs-quality gap:  \n"
@@ -9028,6 +9026,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      "potential beyond pure CVI quality  \n"
                      "• Negative = market underpaying — potential BUY",
             )
+            # If either prediction failed, show the FULL diagnostic
+            # in a visible warning so we can debug without relying on
+            # the truncated metric-delta slot.
+            if (_bio_mv is None or _tv_true_value_eur is None) and \
+                    _tv_predict_diag:
+                st.warning(
+                    f"⚠️ EUR predictions unavailable for this player. "
+                    f"Diagnostic: **{_tv_predict_diag}**"
+                )
 
         st.divider()
 

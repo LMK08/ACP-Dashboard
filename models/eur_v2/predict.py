@@ -17,6 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+# joblib is a transitive dep of scikit-learn but HF Spaces installs
+# strip it sometimes. Importing at module-load makes a missing-joblib
+# error fail loud + early instead of silently disabling MV / TV cells.
+import joblib
 
 HERE = Path(__file__).resolve().parent
 MODEL_PATH = HERE / 'eur_v2_ridge.joblib'
@@ -33,7 +37,6 @@ def load_model() -> dict | None:
     """
     if not MODEL_PATH.exists():
         return None
-    import joblib
     bundle = joblib.load(MODEL_PATH)
     meta = json.loads(META_PATH.read_text()) if META_PATH.exists() else {}
     feature_means = {}
@@ -55,7 +58,6 @@ def load_true_value_model() -> dict | None:
     """
     if not TRUE_VALUE_MODEL_PATH.exists():
         return None
-    import joblib
     bundle = joblib.load(TRUE_VALUE_MODEL_PATH)
     feature_means = {}
     ts_path = HERE / 'training_set.csv'
