@@ -25,9 +25,7 @@ MANUAL_ENTRIES_PATH = VAL_DIR / 'manual_entries.csv'
 # `source_weighted_avg` convenience column. The model may override.
 DEFAULT_SOURCE_WEIGHTS = {
     'manual':        4.0,  # club/agent-level info — highest authority
-    'reported_fee':  3.0,  # actual paid fee
-    'transfermarkt': 1.0,  # crowd-edited proxy
-    'zerozero':      1.0,  # crowd-edited proxy
+    'reported_fee':  3.0,  # actual paid fee (real + synthetic)
 }
 
 
@@ -38,12 +36,9 @@ def load_all_valuations() -> pd.DataFrame:
     source_url, notes.
     """
     frames = []
-    # 1) Parquet (TM + ZZ from scrapers)
-    if VALUATIONS_PATH.exists():
-        try:
-            frames.append(pd.read_parquet(VALUATIONS_PATH))
-        except Exception:
-            pass
+    # 1) Transfermarkt + ZeroZero scrape data — REMOVED from dashboard.
+    # The user asked to take all Transfermarkt data off the dashboard.
+    # valuations.parquet stays on disk but is no longer loaded by the UI.
     # 2) Reported fees CSV
     if REPORTED_FEES_PATH.exists():
         try:

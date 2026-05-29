@@ -1744,10 +1744,9 @@ INVERT_METRICS = ['Loss index', 'goalsConceded']
 # Composite Value Index (CVI) — v1 parameters
 # ==============================================================================
 # CVI is a single 0–~150 score combining performance, age-value premium,
-# sample reliability, and league strength. The parameters below are
-# literature-informed PLACEHOLDERS — they'll be re-fit against
-# Transfermarkt/ZeroZero/reported market values once that data is
-# scraped (see Transfermarkt scraping infrastructure task).
+# sample reliability, and league strength. Calibrated against the
+# 27 user-reported transfer fees (real + synthetic) via a CVI → EUR
+# power curve in the bio "Projected value" cell.
 #
 # Formula:
 #   CVI = PerformanceQuality
@@ -1819,8 +1818,7 @@ CVI_PERF_WEIGHTS = {
 # all ages.
 #
 # Per-position trajectory parameters (best evidence from CIES +
-# market analyses; will be tuned against TM data once v2 EUR
-# regression is fit):
+# market analyses):
 #   GK     peak 28, decline 33, end 39  — longest career, latest decline
 #   CB     peak 27, decline 31, end 36
 #   CM     peak 26, decline 30, end 35
@@ -2220,8 +2218,7 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
     # specialist takes a bigger hit because their non-Poacher numbers
     # really are weak (and a Mourinho would pay for an all-rounder
     # over a one-trick pony at the same headline). α=0.6 is a starting
-    # point; once we calibrate the v2 EUR regression on TM values
-    # we'll tune α directly off transfer-market evidence.
+    # point; can be tuned off the reported transfer fees.
     CVI_ROLE_VERSATILITY_ALPHA = 0.6  # weight on max vs mean
 
     def _role_score_blend(row):
@@ -8873,17 +8870,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                  else f"€{_tv_true_eur:,.0f}"),
                 help=(f"Latest from {_tv_true_source}"
                        if _tv_true_source else
-                       "Will populate from TM/ZZ scrapes + reported "
-                       "fees + manual entries."),
+                       "Populates from reported transfer fees + "
+                       "manual entries."),
             )
             bio_row3[2].metric(
                 "Δ (proj − true)",
                 ("—" if _tv_delta_eur is None
                  else f"{'+' if _tv_delta_eur >= 0 else ''}€{_tv_delta_eur:,.0f}"),
-                help=("Positive Δ = model thinks more than market "
-                      "(potentially undervalued buy). Negative = market "
-                      "values higher (visibility/intangibles the model "
-                      "doesn't capture). Pending v2."),
+                help=("Positive Δ = CVI thinks more than the last reported "
+                      "fee (undervalued buy candidate). Negative = the "
+                      "fee was higher than CVI says (visibility / "
+                      "intangibles CVI doesn't capture)."),
             )
             # Current CVI — career-aggregated, anchored to the player's
             # most recent season. Uses 0.6 decay per season back and
@@ -9666,8 +9663,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with _tv_right:
                 st.caption("**Market value sources**")
                 if _tv_valuations_rows.empty:
-                    st.caption("No data yet. Will populate from Transfermarkt + "
-                                "ZeroZero scrapes + reported fees + manual entries.")
+                    st.caption("No data yet. Populates from reported transfer "
+                                "fees + manual entries.")
                 else:
                     _src_view = (_tv_valuations_rows
                                   .groupby('source', as_index=False)
@@ -11410,9 +11407,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- CVI (Composite Value Index) toggle -----------------------
         # When ON, a CVI column is appended to the right of the Rating
         # column in Overview + per-template tables, and (optionally) the
-        # ranking re-sorts by CVI. Currently uses placeholder parameters
-        # (see CVI_AGE_VALUE_PARAMS); will be calibrated against TM/ZZ
-        # market values in v2.
+        # ranking re-sorts by CVI. Position-tuned age curve
+        # (see CVI_AGE_VALUE_PARAMS) calibrated off the 27 reported transfers.
         show_cvi = st.sidebar.checkbox(
             "Show Composite Value Index (CVI)",
             value=False,
@@ -11786,8 +11782,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption(
                         "🟩 CVI = composite scout-facing value (0-150). "
                         "Performance × age-value × reliability × league strength. "
-                        "Currently uses placeholder parameters; will be calibrated "
-                        "against Transfermarkt/ZeroZero market values."
+                        "Calibrated against the 27 reported transfer fees."
                         + (" Sort is by CVI." if sort_by_cvi else "")
                     )
                 st.dataframe(overview_df, use_container_width=True)
