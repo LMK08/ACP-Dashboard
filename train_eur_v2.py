@@ -250,6 +250,16 @@ def main():
     print(f"  by source: "
            f"{vals[vals['_at_our_tier']]['source'].value_counts().to_dict()}")
     vals_tier = vals[vals['_at_our_tier']].copy()
+    # v3.6 — main loop ONLY pairs TM snapshots to seasons (nearest-by-
+    # midpoint). reported_fees + manual entries are excluded here and
+    # added below via force-include using their CSV-supplied season_id.
+    # This guarantees each transfer is paired with its PRE-transfer
+    # season — fixes the post-transfer-contamination bug where Juan
+    # Perea's Jul 2024 fee was paired with 24-25 GPA (post-Bulgaria
+    # move) instead of his 23-24 Académica season.
+    vals_tm_only = vals_tier[
+        ~vals_tier['source'].isin(['reported_fee', 'manual'])
+    ].copy()
     rows = []
     n_no_snaps = 0
     for _, r in gpa.iterrows():
@@ -267,9 +277,9 @@ def main():
         # needing the snapshot to be temporally precise. Keep a
         # generous 18-month nearest-snapshot cap so we don't pair
         # a snapshot from 3 years before the GPA season.
-        snaps = vals_tier[(vals_tier['playerId'] == pid)
-                            & (vals_tier['value_eur'].notna())
-                            & (vals_tier['value_eur'] > 0)].copy()
+        snaps = vals_tm_only[(vals_tm_only['playerId'] == pid)
+                            & (vals_tm_only['value_eur'].notna())
+                            & (vals_tm_only['value_eur'] > 0)].copy()
         if snaps.empty:
             n_no_snaps += 1
             continue
@@ -308,31 +318,46 @@ def main():
         for _, uv in user_vals.iterrows():
             pid = int(uv['playerId'])
             xfer_date = uv['_d']
-            # v3.3 — find the seasonId whose date window CONTAINS
-            # the transfer date. If a player's user-reported transfer
-            # falls in the summer window after their final Liga 3
-            # season (e.g. Jul 2024 transfer paired with season 189147
-            # 2023-24), pair it with that season. We pick the most
-            # recent matching GPA season for this player.
+            # v3.6 — pre-transfer perf pairing.
+            # The CSV's season_id field is treated as authoritative —
+            # the user knows whether the transfer's pre-transfer perf
+            # comes from the season just finished (summer move) or the
+            # season currently in progress at transfer time (winter
+            # move, where post-transfer data was at a different tier
+            # and isn't in our GPA anyway).
+            # If season_id is not set in the CSV, we fall back to:
+            #   "latest season whose midpoint is BEFORE the transfer date"
+            # which gives correct behaviour for summer transfers
+            # (was previously broken — would pick the upcoming season
+            # instead of the one just finished).
             gpa_pl = gpa_all[gpa_all['playerId'] == pid]
             if gpa_pl.empty:
                 print(f"  [user-row skip] pid {pid}: no GPA rows")
                 continue
             best_gpa = None
-            for _, g in gpa_pl.iterrows():
-                sid = int(g['seasonId'])
-                if sid not in SEASON_WINDOW: continue
-                w = SEASON_WINDOW[sid]
-                w_lo, w_hi = pd.to_datetime(w[0]), pd.to_datetime(w[1])
-                if w_lo <= xfer_date <= w_hi:
-                    # If multiple seasons contain the date (shouldn't
-                    # happen with non-overlapping windows but defensive),
-                    # prefer the latest one — the player just finished it.
-                    if best_gpa is None or int(g['seasonId']) > int(best_gpa['seasonId']):
+            csv_sid = uv.get('season_id')
+            if csv_sid is not None and pd.notna(csv_sid):
+                csv_sid = int(csv_sid)
+                match = gpa_pl[gpa_pl['seasonId'].astype(int) == csv_sid]
+                if not match.empty:
+                    best_gpa = match.iloc[0]
+                else:
+                    print(f"  [user-row skip] pid {pid}: CSV season_id "
+                           f"{csv_sid} has no GPA row")
+                    continue
+            else:
+                # Auto-pick: latest season midpoint BEFORE transfer date
+                for _, g in gpa_pl.iterrows():
+                    sid = int(g['seasonId'])
+                    if sid not in SEASON_MIDPOINT: continue
+                    mid = pd.to_datetime(SEASON_MIDPOINT[sid])
+                    if mid > xfer_date:
+                        continue
+                    if best_gpa is None or mid > pd.to_datetime(SEASON_MIDPOINT[int(best_gpa['seasonId'])]):
                         best_gpa = g
             if best_gpa is None:
                 print(f"  [user-row skip] pid {pid}: no GPA season "
-                       f"window contains transfer date {xfer_date.date()}")
+                       f"with midpoint before transfer date {xfer_date.date()}")
                 continue
             sid_int = int(best_gpa['seasonId'])
             # Skip if main loop already added this (pid, seasonId)
@@ -342,7 +367,6 @@ def main():
             )
             if already_present: continue
             best_dist = pd.Timedelta(days=0)
-            sid_int = int(best_gpa['seasonId'])
             user_rows.append({
                 'playerId': pid,
                 'seasonId': sid_int,
@@ -459,6 +483,13 @@ def main():
         axis=1,
     )
     train = train.dropna(subset=['age'])
+    # v3.6 — age centered at peak-market age 24, then squared. This
+    # lets the regression fit a U-shape (slight discount young AND old,
+    # peak at prime) rather than the linear "younger = always better"
+    # the model was learning before. Centering at 24 means age_dev_sq
+    # is 0 at 24 and grows symmetrically — the model can decide how
+    # steep the decline is on either side.
+    train['age_dev_sq'] = (train['age'] - 24.0) ** 2
     print(f"[build] After age filter (age at snapshot date): {len(train):,}")
 
     # --- Passport nationality flag ---
@@ -802,7 +833,7 @@ def main():
     # league, log mins (sample size), goals_career + xg_residual
     # (finishing track), position dummies, season_year (market drift).
     num_features = ['perf_blend', 'perf_blend_sq',
-                     'age', 'league_factor',
+                     'age', 'age_dev_sq', 'league_factor',
                      'log_career_mins', 'log_mins_season',
                      'season_year',
                      'xg_residual_career', 'goals_career']
@@ -933,7 +964,8 @@ def main():
     # v3.1 — True Value uses the CVI-style position-weighted perf
     # blend (matches what CVI's PerformanceQuality computes).
     true_value_features = ['perf_blend', 'perf_blend_sq',
-                            'age', 'league_factor', 'log_mins_season',
+                            'age', 'age_dev_sq',
+                            'league_factor', 'log_mins_season',
                             'pos_AM_WG', 'pos_CB', 'pos_FB', 'pos_GK', 'pos_ST']
     X_tv = train[true_value_features].astype(float).values
     print(f"\n[true_value] Fitting on MV-scale target "
@@ -1014,11 +1046,12 @@ def main():
             'oof_mape_pct': float(mape),
             'pos_groups_one_hot': [c for c in features if c.startswith('pos_')],
             'reference_position_group': 'CM',
-            'version': 'v3.4',
+            'version': 'v3.6',
             'changes': [
-                'Use all per-snapshot tier-tagged TM values within 18 months of season (reverted v3.3 strict season-window + club-match filter)',
-                'Bumped reported_fee sample weight 8x -> 25x so paid transfers dominate the regression gradient',
-                'Inherits: CVI versatility blend, manual DOB overrides for Tamble Monteiro / Juan Perea, Santi Guzman pid fix',
+                'Pre-transfer perf: reported_fees no longer go through the main snap-to-season nearest loop; they use the CSVs season_id directly so the regression sees PRE-transfer perf, not post-transfer aggregate',
+                'Auto-fallback: if a reported_fee has no season_id, pick the latest season whose midpoint is BEFORE the transfer date (correctly pairs summer transfers with the season just finished)',
+                'Added 2 missed real transfers (Claudio Araujo, Afonso Moreira) and 19 synthetic transfers for gap-filling positions/ages',
+                'Inherits: CVI versatility blend, all-TM-tier-values base, 25x reported_fee weight',
             ],
         }, f, indent=2)
 
@@ -1043,13 +1076,13 @@ def main():
     _dump_json_bundle(model, features, out_dir / 'eur_v2_ridge.json',
                        extra_meta={'chosen_alpha': float(chosen_alpha),
                                     'oof_r2': float(oof_r2),
-                                    'version': 'v3.4'})
+                                    'version': 'v3.6'})
     _dump_json_bundle(tv_model, true_value_features,
                        out_dir / 'true_value_ridge.json',
                        extra_meta={'chosen_alpha': float(tv_alpha),
                                     'oof_r2': float(tv_r2),
                                     'target_scale': 'MV',
-                                    'version': 'v3.4'})
+                                    'version': 'v3.6'})
     print(f"\n[done] Model + diagnostics saved to {out_dir}/")
     return 0
 

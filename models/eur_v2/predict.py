@@ -185,6 +185,9 @@ def build_features_for_player(*, age: float | None,
               else 0.0)
     feats = {
         'age': age,
+        # v3.6 — age centered at 24, then squared. Lets the regression
+        # express a U-shape (peak prime, slight discount young AND old).
+        'age_dev_sq': ((age - 24.0) ** 2) if age is not None else 4.0,
         'league_factor': league_factor,
         'passport_pt': passport_pt,
         'n_seasons_played': n_seasons_played,

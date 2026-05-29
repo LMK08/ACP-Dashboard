@@ -64,15 +64,38 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 #
 # === User-reported transfers (real transfers, highest-authority source) ===
 445341,Joãozinho,Atlético CP,Varzim,permanent,30000,,,2026-01-15,191782,,,,Liga 3 → Liga 3 winter move,0
-703977,Santiago Hernández Guzmán,Leça,Atlético CP,permanent,27000,,,2026-01-15,191782,,,https://www.transfermarkt.com/santiago-hernandez/profil/spieler/836551,Camp → Liga 3 step-up winter move (TM pid 836551 = Wyscout pid 703977; earlier pid 1218266 was a different player Yeiner Guzmán Naranjo),0
-489426,Elias Franco,Atlético CP,CSKA 1948,permanent,60000,,,2025-07-15,191782,,,,Liga 3 → Bulgaria Prva Liga summer move (data has him at Alverca pre-move — confirm path),0
+703977,Santiago Hernández Guzmán,Leça,Atlético CP,permanent,27000,,,2026-01-15,191779,,,https://www.transfermarkt.com/santiago-hernandez/profil/spieler/836551,Camp → Liga 3 step-up winter move; pre-transfer season = 25-26 Camp at Leça,0
+489426,Elias Franco,Atlético CP,CSKA 1948,permanent,60000,,,2025-07-15,190090,,,,Liga 3 → Bulgaria Prva Liga summer move; pre-transfer season = 24-25 L3 at Atlético CP,0
 915086,Hélder Suker,Penafiel,Atlético CP,permanent,25000,,,2026-01-15,191782,,,,Segunda Liga → Liga 3 winter move (drop-down),0
 709015,Tâmble Monteiro,Felgueiras 1932,Portimonense,permanent,250000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move (Wyscout data has him at Anadia pre-Felgueiras),0
 807307,Juan Perea,Académica,Lokomotiv Plovdiv,permanent,100000,,,2024-07-15,189147,,,,Liga 3 → Bulgaria Prva Liga summer move,0
 852792,Miguel Rebelo,Caldas,Moreirense,permanent,90000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move,0
 650811,Yan Lincoln,Anadia,Moreirense,permanent,450000,,,2025-01-15,190090,,,,Liga 3 → Primeira Liga winter move (Wyscout lists him as 'Yan Maranhão' — same player different alias; only 'Yan' at Anadia),0
 
-# === Synthetic transfers (your domain-knowledge anchors) ===
-# Add rows below. Examples (delete and replace with real entries):
-# 999999,Example CB,Liga 3 Club,Another Club,permanent,180000,,,2025-01-15,190090,,,,Hypothetical: 26yo CB perf 75 selling to mid-Primeira,1
-# 888888,Example GK,Liga 3 Club,Camp Club,permanent,40000,,,2024-07-15,189147,,,,Hypothetical: 32yo GK perf 60 step-down,1
+# === Real transfers added later ===
+846557,Cláudio Araújo,Varzim,Segunda Liga (TBD),permanent,300000,,,2025-07-15,190090,,,,Liga 3 → Segunda Liga summer 2025; pre-transfer = 24-25 L3 Varzim,0
+776749,Afonso Moreira,Sporting CP B,Lyon (FRA L1),permanent,2000000,,,2025-07-15,190090,,,,Big-money Sporting B → Lyon move summer 2025; pre-transfer = 24-25 L3 Sporting CP B,0
+
+# === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
+# These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
+# Pre-transfer season_id is set explicitly per row; all flagged synthetic_flag=1.
+1039596,Catarino Pascoal,Atlético CP,Sporting Lisbon,permanent,400000,,,2026-07-15,191782,,,,Synthetic: top young L3 mid → Primeira; pre-transfer = 25-26 L3 ACP,1
+598545,Nicolás Souza,Atlético CP,Korea (TBD),permanent,100000,,,2026-07-15,191782,,,,Synthetic: ACP attacker → Korea; pre-transfer = 25-26 L3 ACP,1
+646981,Duarte Henriques,Atlético CP,Segunda Liga (TBD),permanent,100000,,,2026-07-15,191782,,,,Synthetic: ACP regular → Segunda; pre-transfer = 25-26 L3 ACP,1
+626950,Leandro Ferreira,Louletano,Atlético CP,permanent,80000,,,2026-07-15,191779,,,,Synthetic: Camp wide forward → ACP step-up; pre-transfer = 25-26 Camp Louletano,1
+693095,Coquinho,Oliveira do Hospital,Atlético CP,permanent,25000,,,2026-07-15,191779,,,,Synthetic: Camp DMF → ACP step-up; pre-transfer = 25-26 Camp,1
+967585,Nuno Gaspar,Benfica Castelo Branco,Atlético CP,permanent,9000,,,2026-07-15,191779,,,,Synthetic: Camp SS → ACP modest fee; pre-transfer = 25-26 Camp,1
+946612,Matar Manga,JD Lajense,Sintrense,permanent,10000,,,2026-01-15,191779,,,,Synthetic: intra-Camp Jan move; pre-transfer = 25-26 Camp,1
+852804,Miguel Barandas,Atlético CP,Segunda Liga (TBD),permanent,150000,,,2026-07-15,191782,,,,Synthetic: ACP FB → Segunda; pre-transfer = 25-26 L3 ACP,1
+914078,Guilherme Neiva,Oliveira do Hospital,Primeira Liga (TBD),permanent,100000,,,2025-07-15,190090,,,,Synthetic: OdH wing → Primeira; pre-transfer = 24-25 L3 OdH,1
+603354,João Victor,São João Ver,Segunda Liga (TBD),permanent,200000,,,2025-07-15,190090,,,,Synthetic: SJV starter → Segunda; pre-transfer = 24-25 L3 SJV,1
+348076,Fábio Baldé,Leça,Liga 3 (TBD),permanent,30000,,,2026-07-15,191779,,,,Synthetic: Camp CB → Liga 3 step-up; pre-transfer = 25-26 Camp Leça,1
+873630,Duarte Bonito,Sintrense,Liga 3 (TBD),permanent,5000,,,2026-07-15,191779,,,,Synthetic: Camp FB → Liga 3 minor fee; pre-transfer = 25-26 Camp,1
+741806,Vicente Durand,Atlético CP,Segunda Liga (TBD),permanent,35000,,,2026-07-15,191782,,,,Synthetic: ACP rotational → Segunda; pre-transfer = 25-26 L3 ACP,1
+622338,Bruno Miguel Lopes Almeida,Atlético CP,Segunda Liga (TBD),permanent,80000,,,2026-07-15,191782,,,,Synthetic: ACP CB long-server → Segunda; pre-transfer = 25-26 L3 ACP,1
+824636,Afonso Pinto,CF Os Belenenses,Segunda Liga (TBD),permanent,150000,,,2026-07-15,191782,,,,Synthetic: Belenenses → Segunda; pre-transfer = 25-26 L3 Belenenses,1
+650485,Matheus Dario,AD Sanjoanense,Segunda Liga (TBD),permanent,100000,,,2025-07-15,190090,,,,Synthetic: Sanjoanense starter → Segunda; pre-transfer = 24-25 L3 Sanjoanense,1
+580979,Diogo Paulo,CF Os Belenenses,Segunda Liga (TBD),permanent,150000,,,2026-07-15,191782,,,,Synthetic: Belenenses regular → Segunda; pre-transfer = 25-26 L3 Belenenses,1
+446492,Mohamed Mbaye,Varzim,Atlético CP,permanent,25000,,,2025-07-15,190090,,,,Synthetic: Varzim → ACP intra-Liga 3 modest fee; pre-transfer = 24-25 L3 Varzim,1
+# Skipped: Pedro Pinto (Celoricense → ACP) — Celoricense is not in our match data,
+#          so we have no pre-transfer GPA to pair the fee with.

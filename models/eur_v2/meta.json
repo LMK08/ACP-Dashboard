@@ -3,6 +3,7 @@
     "perf_blend",
     "perf_blend_sq",
     "age",
+    "age_dev_sq",
     "league_factor",
     "log_career_mins",
     "log_mins_season",
@@ -16,10 +17,10 @@
     "pos_ST"
   ],
   "chosen_alpha": 100.0,
-  "n_training_rows": 177,
-  "oof_r2": 0.14999847674322642,
-  "oof_mae_log": 0.720429548917259,
-  "oof_mape_pct": 49.95000133773635,
+  "n_training_rows": 191,
+  "oof_r2": 0.045131671209015733,
+  "oof_mae_log": 0.787901025486877,
+  "oof_mape_pct": 55.03061247136778,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",
@@ -28,10 +29,11 @@
     "pos_ST"
   ],
   "reference_position_group": "CM",
-  "version": "v3.4",
+  "version": "v3.6",
   "changes": [
-    "Use all per-snapshot tier-tagged TM values within 18 months of season (reverted v3.3 strict season-window + club-match filter)",
-    "Bumped reported_fee sample weight 8x -> 25x so paid transfers dominate the regression gradient",
-    "Inherits: CVI versatility blend, manual DOB overrides for Tamble Monteiro / Juan Perea, Santi Guzman pid fix"
+    "Pre-transfer perf: reported_fees no longer go through the main snap-to-season nearest loop; they use the CSVs season_id directly so the regression sees PRE-transfer perf, not post-transfer aggregate",
+    "Auto-fallback: if a reported_fee has no season_id, pick the latest season whose midpoint is BEFORE the transfer date (correctly pairs summer transfers with the season just finished)",
+    "Added 2 missed real transfers (Claudio Araujo, Afonso Moreira) and 19 synthetic transfers for gap-filling positions/ages",
+    "Inherits: CVI versatility blend, all-TM-tier-values base, 25x reported_fee weight"
   ]
 }
