@@ -2012,6 +2012,33 @@ CVI_LEAGUE_MULTIPLIER = {
 CVI_LEAGUE_DEFAULT = 1.0
 
 
+# v2.8 — position-specific multiplier applied to the CVI→EUR mapping
+# (bio "Projected value" cell). Literature-grounded priors compressed
+# toward 1.0 for Liga 3 reality.
+#
+# Sources informing the magnitudes:
+#   • CIES (Poli, Besson & Ravenel 2022, Economies 10/1/4) — standardized
+#     experience betas: forwards 0.934 > mid 0.793 > CB 0.749 > FB 0.606
+#     > GK 0.407. Ratio GK/FW ≈ 0.44 in Big-5.
+#   • Müller, Simons & Weinmann (2017, EJOR) — position random-effect SD
+#     0.050 on log-MV (~±5% spread once age/perf/club/league controlled).
+#   • Franceschi, Brocard, Follert & Gouguet (2024, JoES 38(3)) — review
+#     of 29 papers / 111 specs: directional ordering ST > AM/WG > CM >
+#     CB > FB > GK is robust; FB shows the most-negative coef vs CF.
+#   • Frick (2007, SJPE) — GK pay penalty mechanism (low role flexibility).
+#   • Garcia-del-Barrio & Pujol (2007, MDE) — attacker premium driven by
+#     crowd-pulling capacity — a mechanism MUCH weaker in Liga 3, so we
+#     deliberately compress the GK discount toward 0.70 (not Big-5's ~0.50).
+POSITION_EUR_MULTIPLIER = {
+    'ST':    1.30,
+    'AM_WG': 1.25,
+    'CM':    1.00,
+    'CB':    0.90,
+    'FB':    0.85,
+    'GK':    0.70,
+}
+
+
 def _cvi_position_group(primary_position):
     """Map Wyscout primaryPosition to a CVI position-group key
     (matches keys in CVI_PERF_WEIGHTS / CVI_AGE_VALUE_PARAMS)."""
@@ -8821,7 +8848,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if _v is not None and not pd.isna(_v):
                 _current_cvi_for_eur = float(_v)
         if _current_cvi_for_eur is not None and _current_cvi_for_eur > 0:
-            _tv_projected_eur = min(2.5 * (_current_cvi_for_eur ** 2.5), 500_000)
+            # v2.8 — position multiplier applied BEFORE the €500k cap so
+            # elite STs hit cap a bit earlier and elite GKs effectively
+            # cap around €350k. See POSITION_EUR_MULTIPLIER for sources.
+            _pos_grp_for_eur = _cvi_position_group(current_pos)
+            _pos_mult_for_eur = POSITION_EUR_MULTIPLIER.get(_pos_grp_for_eur, 1.00)
+            _tv_projected_eur = min(
+                2.5 * (_current_cvi_for_eur ** 2.5) * _pos_mult_for_eur,
+                500_000,
+            )
         _tv_true_eur = None
         _tv_true_source = None
         if not _tv_valuations_rows.empty:
@@ -8871,9 +8906,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                  if _tv_projected_eur is None
                  else f"€{_tv_projected_eur:,.0f}"),
                 help="CVI → EUR mapping calibrated against the 27 "
-                     "reported transfers. EUR ≈ 2.5 × CVI^2.5, capped "
-                     "at €500k. CVI 40 ≈ €25k, CVI 80 ≈ €150k, CVI "
-                     "120 ≈ €400k, CVI 135+ ≈ €500k.",
+                     "reported transfers, scaled by position. "
+                     "Base: 2.5 × CVI^2.5, ×position_mult, capped at "
+                     "€500k. Position multipliers from transfer-fee "
+                     "literature (CIES/Müller/Franceschi): ST 1.30, "
+                     "AM/WG 1.25, CM 1.00, CB 0.90, FB 0.85, GK 0.70.",
             )
             bio_row3[1].metric(
                 "True value",
