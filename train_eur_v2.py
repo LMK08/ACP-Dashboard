@@ -72,9 +72,18 @@ def main():
     print("=" * 60)
 
     # --- Load data sources ---
-    vals = pd.read_parquet(HERE / 'valuations' / 'valuations.parquet')
-    print(f"\n[data] TM MV snapshots: {len(vals):,} rows for "
-           f"{vals['playerId'].nunique()} players")
+    # Use load_all_valuations() so we pick up BOTH the TM scrape AND
+    # the hand-curated reported_fees.csv (and manual_entries.csv if
+    # present). Previously the trainer read valuations.parquet
+    # directly and missed the 8 user transfers entirely.
+    sys.path.insert(0, str(HERE))
+    from valuations.load_valuations import load_all_valuations
+    vals = load_all_valuations()
+    print(f"\n[data] All valuation sources: {len(vals):,} rows")
+    print(f"  by source: {vals['source'].value_counts().to_dict()}")
+    # Coerce types — load_all_valuations may keep playerId as Int64
+    vals['playerId'] = pd.to_numeric(vals['playerId'], errors='coerce').astype('int64')
+    vals['value_eur'] = pd.to_numeric(vals['value_eur'], errors='coerce')
 
     gpa = pd.read_parquet(HERE / 'gpa_player_season_values.parquet')
     print(f"[data] GPA per-(player, season): {len(gpa):,} rows for "
@@ -155,10 +164,19 @@ def main():
         m = _re.search(r'club_at_time=(.+?)$', notes)
         return m.group(1).strip() if m else None
     vals['_club_at_time'] = vals['notes'].apply(_extract_club)
-    vals['_at_our_tier'] = vals['_club_at_time'].apply(_at_our_tier)
+    # TM snapshots: require club_at_time to be at our tier.
+    # Reported_fee + manual: trust the user, always include (they
+    # explicitly listed Liga 3 / Camp transfers).
+    vals['_at_our_tier'] = vals.apply(
+        lambda r: (True if r['source'] in ('reported_fee', 'manual')
+                    else _at_our_tier(r['_club_at_time'])),
+        axis=1,
+    )
     n_tier = int(vals['_at_our_tier'].sum())
-    print(f"[tier] MV snapshots at-our-tier: {n_tier:,} of {len(vals):,} "
-           f"({n_tier/len(vals)*100:.0f}%)")
+    print(f"[tier] At-our-tier valuations (TM by club + all user-entered): "
+           f"{n_tier:,} of {len(vals):,} ({n_tier/len(vals)*100:.0f}%)")
+    print(f"  by source: "
+           f"{vals[vals['_at_our_tier']]['source'].value_counts().to_dict()}")
     vals_tier = vals[vals['_at_our_tier']].copy()
     rows = []
     for _, r in gpa.iterrows():
@@ -188,12 +206,73 @@ def main():
             'Total Value': r.get('Total Value', r.get('total_v_per_90')),
             'value_eur': float(best['value_eur']),
             'mv_snapshot_date': best['_d'].date().isoformat(),
+            # Date of the actual valuation/transfer — used to compute
+            # age correctly (vs old behaviour of using season midpoint).
+            '_snap_date': best['_d'],
+            'value_source': best.get('source', 'transfermarkt'),
             'season_year': SEASON_YEAR.get(sid, 2024),
             'league_factor': SEASON_LEAGUE_FACTOR.get(sid, 1.0),
             'days_to_snapshot': int(best['_diff'].days),
         })
+
+    # ALSO ensure every reported_fee / manual transfer gets at least one
+    # training row, even if the player's nearest-snapshot logic picked a
+    # different TM record or the player is below the 500-min filter for
+    # the season the transfer landed in. These are highest-authority data.
+    user_rows = []
+    user_vals = vals_tier[vals_tier['source'].isin(['reported_fee', 'manual'])].copy()
+    if not user_vals.empty:
+        gpa_all = pd.read_parquet(HERE / 'gpa_player_season_values.parquet')
+        for _, uv in user_vals.iterrows():
+            pid = int(uv['playerId'])
+            xfer_date = uv['_d']
+            # Find the GPA season this transfer date falls in (or the
+            # season just before, if mid-summer)
+            gpa_pl = gpa_all[gpa_all['playerId'] == pid]
+            if gpa_pl.empty:
+                print(f"  [user-row skip] pid {pid}: no GPA rows")
+                continue
+            best_gpa = None; best_dist = pd.Timedelta(days=10_000)
+            for _, g in gpa_pl.iterrows():
+                sid = int(g['seasonId'])
+                if sid not in SEASON_MIDPOINT: continue
+                mid = pd.to_datetime(SEASON_MIDPOINT[sid])
+                dist = abs(xfer_date - mid)
+                if dist < best_dist:
+                    best_dist = dist; best_gpa = g
+            if best_gpa is None: continue
+            # Check if this row already exists in the main training set
+            # (from the nearest-snapshot join). If so skip.
+            already_present = any(
+                r['playerId'] == pid
+                and r['seasonId'] == int(best_gpa['seasonId'])
+                and abs((r['_snap_date'] - xfer_date).days) < 30
+                for r in rows
+            )
+            if already_present: continue
+            sid_int = int(best_gpa['seasonId'])
+            user_rows.append({
+                'playerId': pid,
+                'seasonId': sid_int,
+                'mins_played': best_gpa.get(mins_col, 0),
+                'primaryPosition': best_gpa.get('position', best_gpa.get('primaryPosition')),
+                'Total Value': best_gpa.get('Total Value',
+                                              best_gpa.get('total_v_per_90')),
+                'value_eur': float(uv['value_eur']),
+                'mv_snapshot_date': xfer_date.date().isoformat(),
+                '_snap_date': xfer_date,
+                'value_source': uv['source'],
+                'season_year': SEASON_YEAR.get(sid_int, 2024),
+                'league_factor': SEASON_LEAGUE_FACTOR.get(sid_int, 1.0),
+                'days_to_snapshot': int(best_dist.days),
+            })
+        if user_rows:
+            print(f"[build] Force-included {len(user_rows)} user-reported "
+                   f"transfer rows that the nearest-snapshot join missed")
+    rows.extend(user_rows)
     train = pd.DataFrame(rows)
-    print(f"[build] Joined training rows: {len(train):,} player-seasons")
+    print(f"[build] Total training rows: {len(train):,} "
+           f"(incl {(train['value_source'] != 'transfermarkt').sum()} user-entered)")
 
     # Filter to a realistic EUR range. Liga 3 / Camp transfers cluster
     # in €25k - €2M; values outside that are noise (random €5k entries)
@@ -249,14 +328,16 @@ def main():
                 pass
         print(f"[build] DOBs from player_details: "
                f"{len(dob_map) - filled_from_tm}, from TM metadata: {filled_from_tm}")
+    # Age at the ACTUAL valuation/transfer date — not at season
+    # midpoint. For a TM snapshot in Sept or a Jan-window transfer
+    # this can be off by 6+ months vs the old behaviour.
     train['age'] = train.apply(
-        lambda r: ((pd.to_datetime(SEASON_MIDPOINT[r['seasonId']])
-                     - dob_map[int(r['playerId'])]).days / 365.25
+        lambda r: ((r['_snap_date'] - dob_map[int(r['playerId'])]).days / 365.25
                      if int(r['playerId']) in dob_map else np.nan),
         axis=1,
     )
     train = train.dropna(subset=['age'])
-    print(f"[build] After age filter: {len(train):,}")
+    print(f"[build] After age filter (age at snapshot date): {len(train):,}")
 
     # --- Passport nationality flag ---
     pt_pids = set()
