@@ -226,12 +226,42 @@ POSITION_MV_MULTIPLIER = {
 CAMP_PENALTY = 0.65
 
 
+def position_elite_bonus(perf_blend: float | None) -> float:
+    """v3.11 — additional bonus for genuine top-of-position performers.
+
+    perf_blend is already a within-(season × position_group) percentile
+    (it's the CVI Role + Action V blend), so a perf 95 player IS in the
+    top ~5% of their position. The user wanted "top players in each
+    position should also get a bump" so even the top GK / FB / CB
+    appropriately reaches the upper part of their position cap.
+
+    Tiers:
+      perf ≥ 95   → 2.0x  (top 5% of position — elite of elite)
+      perf ≥ 90   → 1.6x  (top 10%)
+      perf ≥ 85   → 1.3x  (top 15%)
+      perf ≥ 80   → 1.15x (top 20%)
+      perf < 80   → 1.0x  (no bonus)
+
+    Combines multiplicatively with elite_youth_perf_multiplier (which
+    is mostly about perf × youth). This bonus is pure perf-rank.
+    """
+    if perf_blend is None:
+        return 1.0
+    p = float(perf_blend)
+    if p >= 95: return 2.0
+    if p >= 90: return 1.6
+    if p >= 85: return 1.3
+    if p >= 80: return 1.15
+    return 1.0
+
+
 def apply_post_hoc_adjustments(base_value: float,
                                   perf_blend: float | None,
                                   age: float | None,
                                   position_group: str | None = None,
                                   league_factor: float = 1.0) -> float:
-    """Apply elite perf boost + position multiplier + Camp penalty + cap.
+    """Apply elite perf boost + position multiplier + Camp penalty +
+    position-elite bonus + cap.
 
     Used by BOTH MV and TV display paths so they're on the same scale.
     The cap is position-aware: ST/AM_WG can reach €450-500k while
@@ -242,7 +272,8 @@ def apply_post_hoc_adjustments(base_value: float,
     em = elite_youth_perf_multiplier(perf_blend, age)
     pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
     cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
-    adjusted = base_value * em * pm * cm
+    pe = position_elite_bonus(perf_blend)
+    adjusted = base_value * em * pm * cm * pe
     cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
     return min(adjusted, cap)
 
@@ -275,8 +306,9 @@ def expected_realized_fee(predicted_mv: float,
     em = elite_youth_perf_multiplier(perf_blend, age)
     pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
     cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
+    pe = position_elite_bonus(perf_blend)
     p = p_sells_for_fee(predicted_mv, age)
-    fee_if = predicted_mv * rr * em * pm * cm
+    fee_if = predicted_mv * rr * em * pm * cm * pe
     cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
     fee_if = min(fee_if, cap)
     return {
@@ -284,6 +316,7 @@ def expected_realized_fee(predicted_mv: float,
         'elite_mult': em,
         'position_mult': pm,
         'camp_mult': cm,
+        'position_elite_bonus': pe,
         'expected_fee_if_sells': fee_if,
         'p_sells_for_fee': p,
         'expected_fee_overall': fee_if * p,

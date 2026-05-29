@@ -968,9 +968,11 @@ def main():
                      'log_career_mins', 'log_mins_season',
                      'season_year',
                      'xg_residual_career', 'goals_career',
-                     # v3.7 — counting-stat features (MV-only)
-                     'ga_per90', 'passes_accurate_per90',
-                     'cs_pct', 'save_pct']
+                     # v3.11 — only G+A and clean sheets in MV counting
+                     # stats (dropped passes_accurate_per90 which was
+                     # inflating CBs via B-team-prospect training noise,
+                     # and save_pct which had near-zero coefficient).
+                     'ga_per90', 'cs_pct']
     cat_features = [c for c in train.columns if c.startswith('pos_')]
     features = num_features + cat_features
     print(f"\n[features] {len(features)} features: {features}")
@@ -1180,7 +1182,7 @@ def main():
             'oof_mape_pct': float(mape),
             'pos_groups_one_hot': [c for c in features if c.startswith('pos_')],
             'reference_position_group': 'CM',
-            'version': 'v3.7',
+            'version': 'v3.11',
             'changes': [
                 'Added counting-stat features to MV (TV stays CVI-only): ga_per90, passes_accurate_per90, cs_pct, save_pct',
                 'CB and CM Spearman improved (CB 0.65 -> 0.75, CM 0.53 -> 0.65); GK 0.45 -> 0.52',
@@ -1210,13 +1212,13 @@ def main():
     _dump_json_bundle(model, features, out_dir / 'eur_v2_ridge.json',
                        extra_meta={'chosen_alpha': float(chosen_alpha),
                                     'oof_r2': float(oof_r2),
-                                    'version': 'v3.7'})
+                                    'version': 'v3.11'})
     _dump_json_bundle(tv_model, true_value_features,
                        out_dir / 'true_value_ridge.json',
                        extra_meta={'chosen_alpha': float(tv_alpha),
                                     'oof_r2': float(tv_r2),
                                     'target_scale': 'MV',
-                                    'version': 'v3.7'})
+                                    'version': 'v3.11'})
     print(f"\n[done] Model + diagnostics saved to {out_dir}/")
     return 0
 

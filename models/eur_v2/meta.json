@@ -11,9 +11,7 @@
     "xg_residual_career",
     "goals_career",
     "ga_per90",
-    "passes_accurate_per90",
     "cs_pct",
-    "save_pct",
     "pos_AM_WG",
     "pos_CB",
     "pos_FB",
@@ -22,9 +20,9 @@
   ],
   "chosen_alpha": 100.0,
   "n_training_rows": 191,
-  "oof_r2": -0.1442232951939879,
-  "oof_mae_log": 0.8225380986758313,
-  "oof_mape_pct": 55.20473439635075,
+  "oof_r2": 0.05695507237570485,
+  "oof_mae_log": 0.7815189794190637,
+  "oof_mape_pct": 52.10730911692607,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",
@@ -33,7 +31,7 @@
     "pos_ST"
   ],
   "reference_position_group": "CM",
-  "version": "v3.7",
+  "version": "v3.11",
   "changes": [
     "Added counting-stat features to MV (TV stays CVI-only): ga_per90, passes_accurate_per90, cs_pct, save_pct",
     "CB and CM Spearman improved (CB 0.65 -> 0.75, CM 0.53 -> 0.65); GK 0.45 -> 0.52",
