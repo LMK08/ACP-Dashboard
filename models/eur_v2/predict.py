@@ -59,6 +59,9 @@ def _load_counting_stats():
                 'matches_played': int(r.get('matches_played', 0) or 0),
                 'clean_sheets': int(r.get('clean_sheets', 0) or 0),
                 'goals_conceded_total': float(r.get('goals_conceded_total', 0) or 0),
+                'goals': float(r.get('goals', 0) or 0),
+                'assists': float(r.get('assists', 0) or 0),
+                'mins_played': float(r.get('mins_played', 0) or 0),
             }
             for _, r in df.iterrows()
         }
@@ -73,17 +76,21 @@ def lookup_counting_stats(player_id: int, season_id: int,
                             goals_season: float = 0.0,
                             assists_season: float = 0.0) -> dict:
     """Return the v3.7 counting-stat feature values for one (player, season).
-    Caller supplies mins_played, goals_season, assists_season (these
-    come from the GPA pipeline). The rest are loaded from the parquet.
+    All four values (incl. goals, assists, mins) are baked into the
+    shipped parquet so the dashboard doesn't need to recompute them.
+    Caller-supplied mins/goals/assists override the parquet values
+    if they're non-zero (useful for synthetic-player what-ifs).
 
-    Returns dict with: ga_per90, passes_accurate_per90, cs_pct, save_pct.
-    Defaults to 0 for any value we can't compute."""
+    Returns dict with: ga_per90, passes_accurate_per90, cs_pct, save_pct."""
     raw = _load_counting_stats().get((int(player_id), int(season_id)), {})
-    mins90 = max(mins_played / 90.0, 1e-6) if mins_played else 0
+    mins = mins_played if mins_played and mins_played > 0 else raw.get('mins_played', 0)
+    g = goals_season if goals_season else raw.get('goals', 0)
+    a = assists_season if assists_season else raw.get('assists', 0)
     out = {'ga_per90': 0.0, 'passes_accurate_per90': 0.0,
             'cs_pct': 0.0, 'save_pct': 0.0}
-    if mins_played and mins_played > 0:
-        out['ga_per90'] = (goals_season + assists_season) / mins90
+    if mins and mins > 0:
+        mins90 = mins / 90.0
+        out['ga_per90'] = (g + a) / mins90
         out['passes_accurate_per90'] = raw.get('passes_accurate', 0) / mins90
     if raw.get('matches_played', 0) > 0:
         out['cs_pct'] = raw['clean_sheets'] / raw['matches_played']

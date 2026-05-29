@@ -678,6 +678,32 @@ def main():
         # Drop the "team" rows where player.id == 0 (Wyscout artifact)
         stats_all = stats_all[stats_all['playerId'] > 0]
 
+        # v3.7 — also bake per-season goals + assists into the shipped
+        # artifact so the dashboard doesn't need to recompute them.
+        # `per_ss` was built above (goals/assists block) and has
+        # ['playerId','seasonId','goals','assists'].
+        try:
+            stats_all = stats_all.merge(
+                per_ss[['playerId', 'seasonId', 'goals', 'assists']],
+                on=['playerId', 'seasonId'], how='left')
+            stats_all[['goals', 'assists']] = stats_all[['goals', 'assists']].fillna(0)
+        except Exception as _merr:
+            print(f"[counting] couldn't merge goals/assists: {_merr}")
+            stats_all['goals'] = 0
+            stats_all['assists'] = 0
+        # Also include mins_played so the dashboard can compute per-90s
+        # straight from the parquet without re-reading GPA.
+        try:
+            gpa_mins = pd.read_parquet(
+                HERE / 'gpa_player_season_values.parquet',
+                columns=['playerId', 'seasonId', 'mins_played'])
+            stats_all = stats_all.merge(gpa_mins, on=['playerId', 'seasonId'],
+                                            how='left')
+            stats_all['mins_played'] = stats_all['mins_played'].fillna(0)
+        except Exception as _merr:
+            print(f"[counting] couldn't merge mins_played: {_merr}")
+            stats_all['mins_played'] = 0
+
         # Save shipping artifact so predict.py / app.py can look up per
         # (player, season) — same dir as the model bundles.
         stats_out = (HERE / 'models' / 'eur_v2' / 'counting_stats.parquet')
@@ -686,8 +712,14 @@ def main():
         print(f"[counting] wrote {len(stats_all):,} (player x season) "
                f"counting-stat rows to {stats_out.name}")
 
+        # Don't merge mins_played / goals / assists back into train —
+        # train already has these from upstream. Strip them before the
+        # merge to avoid _x/_y column collisions.
+        stats_for_train = stats_all.drop(
+            columns=[c for c in ('mins_played', 'goals', 'assists')
+                       if c in stats_all.columns], errors='ignore')
         # Attach to training rows + compute per-90 / percentage versions
-        train = train.merge(stats_all, on=['playerId', 'seasonId'], how='left')
+        train = train.merge(stats_for_train, on=['playerId', 'seasonId'], how='left')
         train[['passes_accurate', 'saves', 'matches_played',
                'clean_sheets', 'goals_conceded_total']] = train[[
             'passes_accurate', 'saves', 'matches_played',

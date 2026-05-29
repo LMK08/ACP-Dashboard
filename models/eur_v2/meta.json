@@ -35,9 +35,9 @@
   "reference_position_group": "CM",
   "version": "v3.7",
   "changes": [
-    "Pre-transfer perf: reported_fees no longer go through the main snap-to-season nearest loop; they use the CSVs season_id directly so the regression sees PRE-transfer perf, not post-transfer aggregate",
-    "Auto-fallback: if a reported_fee has no season_id, pick the latest season whose midpoint is BEFORE the transfer date (correctly pairs summer transfers with the season just finished)",
-    "Added 2 missed real transfers (Claudio Araujo, Afonso Moreira) and 19 synthetic transfers for gap-filling positions/ages",
-    "Inherits: CVI versatility blend, all-TM-tier-values base, 25x reported_fee weight"
+    "Added counting-stat features to MV (TV stays CVI-only): ga_per90, passes_accurate_per90, cs_pct, save_pct",
+    "CB and CM Spearman improved (CB 0.65 -> 0.75, CM 0.53 -> 0.65); GK 0.45 -> 0.52",
+    "Counting stats computed from raw_events at train time and shipped as models/eur_v2/counting_stats.parquet for dashboard lookup",
+    "Inherits v3.6: pre-transfer perf pairing, 22 reported_fee transfers, age_dev_sq"
   ]
 }
