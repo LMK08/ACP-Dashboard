@@ -57,13 +57,20 @@ from __future__ import annotations
 #   MV €1M      → 0.65
 #   MV €2.5M    → 0.95
 #   MV €5M+     → 1.10    (signing premium kicks in)
+# v3 — steepened the upper tail. Top-tier players are scarce assets
+# that competing clubs bid up well past TM's listed value (Bellingham,
+# Mbappé, Endrick all cleared TM market by 30-90%). Holding the lower
+# anchors fixed (Liga 3 modal player still realizes ~25% of MV) but
+# bumping €1M+ tiers so 'top players are more valuable' reflects the
+# real auction dynamics.
 REALIZATION_ANCHORS = [
-    (100_000,   0.20),
-    (250_000,   0.30),
-    (500_000,   0.45),
-    (1_000_000, 0.65),
-    (2_500_000, 0.95),
-    (5_000_000, 1.10),
+    (100_000,    0.20),
+    (250_000,    0.30),
+    (500_000,    0.50),    # was 0.45
+    (1_000_000,  0.75),    # was 0.65
+    (2_500_000,  1.10),    # was 0.95
+    (5_000_000,  1.40),    # was 1.10
+    (10_000_000, 1.60),    # NEW — premium auction territory
 ]
 
 
@@ -93,14 +100,16 @@ P_SELLS_AGE_ADJUST = {
 }
 
 P_SELLS_MV_ANCHORS = [
-    # (predicted MV in EUR, base P(sells_for_fee))
-    (50_000,    0.05),   # tiny deals rarely formalized
-    (150_000,   0.12),
-    (250_000,   0.18),   # Liga 3 modal player
-    (500_000,   0.30),
-    (1_000_000, 0.45),
-    (2_500_000, 0.60),
-    (5_000_000, 0.70),
+    # v3 — top-tier players also have MUCH higher sale probability.
+    # Big-money assets get sold; small-tier players walk on frees.
+    (50_000,     0.05),    # tiny deals rarely formalized
+    (150_000,    0.12),
+    (250_000,    0.18),    # Liga 3 modal player
+    (500_000,    0.30),
+    (1_000_000,  0.50),    # was 0.45
+    (2_500_000,  0.70),    # was 0.60
+    (5_000_000,  0.85),    # was 0.70
+    (10_000_000, 0.92),    # NEW — top assets nearly always sell
 ]
 
 

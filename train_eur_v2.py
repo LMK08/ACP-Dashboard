@@ -475,6 +475,9 @@ def main():
     train['Total Value'] = pd.to_numeric(train['Total Value'], errors='coerce')
     train['signed_log_tv'] = train['Total Value'].apply(
         lambda v: np.sign(v) * np.log1p(abs(v) * 100) if pd.notna(v) else 0)
+    # v3 — squared (sign-preserving) version so models can give convex
+    # weight to elite performances.
+    train['signed_log_tv_sq'] = train['signed_log_tv'] * train['signed_log_tv'].abs()
     train['log_career_mins'] = np.log(
         train['career_mins_to_date'].clip(lower=1))
     train['log_mins_season'] = np.log(train['mins_played'].clip(lower=1))
@@ -495,7 +498,8 @@ def main():
     train = pd.concat([train, pos_dummies], axis=1)
 
     # --- Final feature list ---
-    num_features = ['signed_log_tv', 'age', 'league_factor',
+    num_features = ['signed_log_tv', 'signed_log_tv_sq',
+                     'age', 'league_factor',
                      'log_career_mins', 'career_mins_k',
                      'log_mins_season',
                      'passport_pt', 'n_seasons_played', 'season_year',
@@ -607,7 +611,13 @@ def main():
     # Clip lower bound so log is well-defined
     realized_target_eur = realized_target_eur.clip(lower=1000)
     y_mv = np.log(realized_target_eur.values)
-    true_value_features = ['signed_log_tv', 'age', 'league_factor',
+    # v3 — added log_mins_season so small samples get explicitly
+    # discounted. Also added signed_log_tv_sq (squared transform of the
+    # performance signal) to let the model give more weight to top
+    # performers — convex perf response means a 95th-percentile V/90
+    # carries proportionally more EUR weight than a 50th-percentile.
+    true_value_features = ['signed_log_tv', 'signed_log_tv_sq',
+                            'age', 'league_factor', 'log_mins_season',
                             'pos_AM_WG', 'pos_CB', 'pos_FB', 'pos_GK', 'pos_ST']
     X_tv = train[true_value_features].astype(float).values
     print(f"\n[true_value] Fitting on MV-scale target "

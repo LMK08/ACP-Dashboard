@@ -176,6 +176,12 @@ def build_features_for_player(*, age: float | None,
     train_eur_v2.py. Pass whatever you have; the rest fills with
     sensible defaults / training means.
     """
+    # signed log of total_value_per90 with × 100 scaling (matches
+    # train_eur_v2's signed_log_tv)
+    _slt = (np.sign(total_value_per90)
+              * np.log1p(abs(total_value_per90) * 100)
+              if total_value_per90 is not None and total_value_per90 == total_value_per90
+              else 0.0)
     feats = {
         'age': age,
         'league_factor': league_factor,
@@ -187,12 +193,10 @@ def build_features_for_player(*, age: float | None,
         'goals_season': goals_season,
         'assists_career': assists_career,
         'assists_season': assists_season,
-        # signed log of total_value_per90 with × 100 scaling (matches
-        # train_eur_v2's signed_log_tv)
-        'signed_log_tv': (np.sign(total_value_per90)
-                            * np.log1p(abs(total_value_per90) * 100)
-                            if total_value_per90 is not None and total_value_per90 == total_value_per90
-                            else 0.0),
+        'signed_log_tv': _slt,
+        # v3 — squared (sign-preserving) version of the perf signal.
+        # Lets the model give convex weight to elite performances.
+        'signed_log_tv_sq': _slt * abs(_slt),
         'log_career_mins': (np.log(max(career_mins, 1))
                               if career_mins else None),
         'career_mins_k': (career_mins / 1000.0
