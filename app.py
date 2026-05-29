@@ -1840,18 +1840,24 @@ CVI_PERF_WEIGHTS = {
 #   16yo CVI 126 vs 25yo CVI 65   → 2× premium for the wonderkid
 #   16yo CVI 126 vs 30yo CVI 18   → 7× premium
 CVI_AGE_VALUE_PARAMS = {
+    # v2.6 — compressed multiplier range vs v2.5 to weight performance
+    # relatively more. The career-NPV shape is unchanged (still
+    # strictly monotone decreasing, same peak/decline/end ages), only
+    # the output range is tighter. Youth-vs-veteran ratio dropped from
+    # ~18× to ~4× — matches real-world wonderkid pricing (Bellingham
+    # £25M vs same-perf 30yo £5-7M ≈ 4-5×).
     'GK':    {'peak_age': 28, 'decline_start': 33, 'career_end': 39,
-              'max_mult': 1.50, 'old_floor': 0.15, 'youth_baseline': 0.55},
+              'max_mult': 1.35, 'old_floor': 0.45, 'youth_baseline': 0.55},
     'CB':    {'peak_age': 27, 'decline_start': 31, 'career_end': 36,
-              'max_mult': 1.70, 'old_floor': 0.10, 'youth_baseline': 0.50},
+              'max_mult': 1.50, 'old_floor': 0.40, 'youth_baseline': 0.50},
     'CM':    {'peak_age': 26, 'decline_start': 30, 'career_end': 35,
-              'max_mult': 1.70, 'old_floor': 0.10, 'youth_baseline': 0.50},
+              'max_mult': 1.50, 'old_floor': 0.40, 'youth_baseline': 0.50},
     'FB':    {'peak_age': 25, 'decline_start': 29, 'career_end': 33,
-              'max_mult': 1.75, 'old_floor': 0.10, 'youth_baseline': 0.50},
+              'max_mult': 1.52, 'old_floor': 0.40, 'youth_baseline': 0.50},
     'ST':    {'peak_age': 25, 'decline_start': 28, 'career_end': 33,
-              'max_mult': 1.80, 'old_floor': 0.10, 'youth_baseline': 0.50},
+              'max_mult': 1.55, 'old_floor': 0.40, 'youth_baseline': 0.50},
     'AM_WG': {'peak_age': 24, 'decline_start': 27, 'career_end': 32,
-              'max_mult': 1.85, 'old_floor': 0.10, 'youth_baseline': 0.50},
+              'max_mult': 1.58, 'old_floor': 0.40, 'youth_baseline': 0.50},
 }
 
 
