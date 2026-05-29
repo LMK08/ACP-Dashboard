@@ -49,12 +49,17 @@ def load_all_valuations() -> pd.DataFrame:
         try:
             r = pd.read_csv(REPORTED_FEES_PATH, comment='#')
             r = r.rename(columns={'fee_eur': 'value_eur'})
+            # synthetic_flag column may not exist on older CSVs; default to 0
+            if 'synthetic_flag' not in r.columns:
+                r['synthetic_flag'] = 0
+            r['synthetic_flag'] = pd.to_numeric(
+                r['synthetic_flag'], errors='coerce').fillna(0).astype(int)
             r['source'] = 'reported_fee'
             r['source_url'] = r.get('source_url', None)
             r = r[r['value_eur'].notna() & (r['value_eur'] > 0)]
             frames.append(r[['playerId', 'source', 'value_eur',
                               'as_of_date', 'season_id',
-                              'source_url', 'notes']])
+                              'source_url', 'notes', 'synthetic_flag']])
         except Exception:
             pass
     # 3) Manual entries CSV

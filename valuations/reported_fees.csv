@@ -40,18 +40,39 @@
 #   - You don't have to fill every column for every row — minimum is
 #     playerId, fee_eur (if any), as_of_date. The rest is gravy.
 #
-# Example rows below — delete or replace with real data.
-playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on_pct,as_of_date,season_id,contract_until,loan_until,source_url,notes
-# 123456,Example Player A,Atlético CP,Some Liga 3 Club,permanent,150000,,15,2025-07-01,191782,2028-06-30,,,Permanent move with 15% sell-on retained
-# 234567,Example Player B,Some Camp Club,Atlético CP,loan_with_option,0,,,2025-08-15,191782,,2026-06-30,,Loan with €200k buy option
-# 345678,Example Player C,Free agent,Atlético CP,free,0,,,2025-07-15,191782,2027-06-30,,,Free transfer after contract expired
+# SYNTHETIC TRANSFERS:
+# To expand the training set with "transfers that could have happened" you can
+# add rows with synthetic_flag=1. They feed the EUR regression exactly like
+# real reported fees do (same source='reported_fee', same weight). Use this
+# to anchor your domain knowledge — "a 28yo perf-75 CB in Liga 3 would sell for
+# ~€150k" — and to fill position/age gaps the 8 real transfers don't cover.
 #
-# === User-reported transfers (entered manually, highest-authority source) ===
-445341,Joãozinho,Atlético CP,Varzim,permanent,30000,,,2026-01-15,191782,,,,Liga 3 → Liga 3 winter move
-703977,Santiago Hernández Guzmán,Leça,Atlético CP,permanent,27000,,,2026-01-15,191782,,,https://www.transfermarkt.com/santiago-hernandez/profil/spieler/836551,Camp → Liga 3 step-up winter move (TM pid 836551 = Wyscout pid 703977; earlier pid 1218266 was a different player Yeiner Guzmán Naranjo)
-489426,Elias Franco,Atlético CP,CSKA 1948,permanent,60000,,,2025-07-15,191782,,,,Liga 3 → Bulgaria Prva Liga summer move (data has him at Alverca pre-move — confirm path)
-915086,Hélder Suker,Penafiel,Atlético CP,permanent,25000,,,2026-01-15,191782,,,,Segunda Liga → Liga 3 winter move (drop-down)
-709015,Tâmble Monteiro,Felgueiras 1932,Portimonense,permanent,250000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move (Wyscout data has him at Anadia pre-Felgueiras)
-807307,Juan Perea,Académica,Lokomotiv Plovdiv,permanent,100000,,,2024-07-15,189147,,,,Liga 3 → Bulgaria Prva Liga summer move
-852792,Miguel Rebelo,Caldas,Moreirense,permanent,90000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move
-650811,Yan Lincoln,Anadia,Moreirense,permanent,450000,,,2025-01-15,190090,,,,Liga 3 → Primeira Liga winter move (Wyscout lists him as 'Yan Maranhão' — same player different alias; only 'Yan' at Anadia)
+# For synthetic rows:
+#   - playerId must point to a real Wyscout player so we can join GPA perf
+#   - as_of_date should be a date during the season you want to "anchor"
+#     (so the player's perf for THAT season is what we'd be training against)
+#   - season_id should match the as_of_date's football year
+#   - fee_eur is your best estimate of what the player would sell for
+#   - synthetic_flag=1 marks it as hypothetical (audit-only — model treats
+#     synthetic and real fees identically)
+#
+# Example rows below — delete or replace with real data.
+playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on_pct,as_of_date,season_id,contract_until,loan_until,source_url,notes,synthetic_flag
+# 123456,Example Player A,Atlético CP,Some Liga 3 Club,permanent,150000,,15,2025-07-01,191782,2028-06-30,,,Permanent move with 15% sell-on retained,0
+# 234567,Example Player B,Some Camp Club,Atlético CP,loan_with_option,0,,,2025-08-15,191782,,2026-06-30,,Loan with €200k buy option,0
+# 345678,Example Player C,Free agent,Atlético CP,free,0,,,2025-07-15,191782,2027-06-30,,,Free transfer after contract expired,0
+#
+# === User-reported transfers (real transfers, highest-authority source) ===
+445341,Joãozinho,Atlético CP,Varzim,permanent,30000,,,2026-01-15,191782,,,,Liga 3 → Liga 3 winter move,0
+703977,Santiago Hernández Guzmán,Leça,Atlético CP,permanent,27000,,,2026-01-15,191782,,,https://www.transfermarkt.com/santiago-hernandez/profil/spieler/836551,Camp → Liga 3 step-up winter move (TM pid 836551 = Wyscout pid 703977; earlier pid 1218266 was a different player Yeiner Guzmán Naranjo),0
+489426,Elias Franco,Atlético CP,CSKA 1948,permanent,60000,,,2025-07-15,191782,,,,Liga 3 → Bulgaria Prva Liga summer move (data has him at Alverca pre-move — confirm path),0
+915086,Hélder Suker,Penafiel,Atlético CP,permanent,25000,,,2026-01-15,191782,,,,Segunda Liga → Liga 3 winter move (drop-down),0
+709015,Tâmble Monteiro,Felgueiras 1932,Portimonense,permanent,250000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move (Wyscout data has him at Anadia pre-Felgueiras),0
+807307,Juan Perea,Académica,Lokomotiv Plovdiv,permanent,100000,,,2024-07-15,189147,,,,Liga 3 → Bulgaria Prva Liga summer move,0
+852792,Miguel Rebelo,Caldas,Moreirense,permanent,90000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move,0
+650811,Yan Lincoln,Anadia,Moreirense,permanent,450000,,,2025-01-15,190090,,,,Liga 3 → Primeira Liga winter move (Wyscout lists him as 'Yan Maranhão' — same player different alias; only 'Yan' at Anadia),0
+
+# === Synthetic transfers (your domain-knowledge anchors) ===
+# Add rows below. Examples (delete and replace with real entries):
+# 999999,Example CB,Liga 3 Club,Another Club,permanent,180000,,,2025-01-15,190090,,,,Hypothetical: 26yo CB perf 75 selling to mid-Primeira,1
+# 888888,Example GK,Liga 3 Club,Camp Club,permanent,40000,,,2024-07-15,189147,,,,Hypothetical: 32yo GK perf 60 step-down,1
