@@ -9035,6 +9035,70 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     f"⚠️ EUR predictions unavailable for this player. "
                     f"Diagnostic: **{_tv_predict_diag}**"
                 )
+                # FULL environment diagnostic — shown ONLY when predict
+                # fails. Tells us in one expand whether the model files
+                # actually deployed, joblib is importable, etc. Once
+                # MV/TV stop failing this block won't render at all.
+                with st.expander("🔬 EUR predict environment diagnostic",
+                                  expanded=True):
+                    import sys, os, traceback
+                    _diag_lines = [
+                        f"**Python:** {sys.version.split()[0]}",
+                        f"**Working dir:** `{os.getcwd()}`",
+                    ]
+                    # joblib availability
+                    try:
+                        import joblib as _j
+                        _diag_lines.append(f"**joblib:** {_j.__version__} ✓")
+                    except Exception as _je:
+                        _diag_lines.append(
+                            f"**joblib:** ✗ `{type(_je).__name__}: {_je}`")
+                    # sklearn availability
+                    try:
+                        import sklearn
+                        _diag_lines.append(f"**scikit-learn:** {sklearn.__version__} ✓")
+                    except Exception as _se:
+                        _diag_lines.append(
+                            f"**scikit-learn:** ✗ `{type(_se).__name__}: {_se}`")
+                    # models.eur_v2.predict import
+                    try:
+                        from models.eur_v2 import predict as _pmod
+                        _diag_lines.append(
+                            f"**models.eur_v2.predict:** importable ✓")
+                        # Model files
+                        from pathlib import Path as _P
+                        _mdir = _P(_pmod.__file__).parent
+                        for _f in ('eur_v2_ridge.joblib',
+                                    'true_value_ridge.joblib',
+                                    'meta.json', 'training_set.csv'):
+                            _fp = _mdir / _f
+                            if _fp.exists():
+                                _diag_lines.append(
+                                    f"  • {_f}: {_fp.stat().st_size:,} bytes ✓")
+                            else:
+                                _diag_lines.append(f"  • {_f}: ✗ MISSING")
+                    except Exception as _ie:
+                        _diag_lines.append(
+                            f"**models.eur_v2.predict:** ✗ "
+                            f"`{type(_ie).__name__}: {_ie}`")
+                        _diag_lines.append("```\n" + traceback.format_exc() + "```")
+                    # Try load_model
+                    try:
+                        from models.eur_v2.predict import (
+                            load_model as _lm, load_true_value_model as _ltv)
+                        _b1 = _lm()
+                        _b2 = _ltv()
+                        _diag_lines.append(
+                            f"**load_model():** "
+                            f"{'✓ ' + str(len(_b1.get('features', []))) + ' features' if _b1 else '✗ None'}")
+                        _diag_lines.append(
+                            f"**load_true_value_model():** "
+                            f"{'✓ ' + str(len(_b2.get('features', []))) + ' features' if _b2 else '✗ None'}")
+                    except Exception as _le:
+                        _diag_lines.append(
+                            f"**load_model():** ✗ "
+                            f"`{type(_le).__name__}: {_le}`")
+                    st.markdown("\n\n".join(_diag_lines))
 
         st.divider()
 
