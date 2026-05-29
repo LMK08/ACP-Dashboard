@@ -1787,61 +1787,108 @@ CVI_PERF_WEIGHTS = {
     'ST':    (0.75, 0.25),
 }
 
-# AgeValueMultiplier(age, position) — asymmetric Gaussian peaked at
-# VALUE age, not performance age (v2.3).
+# AgeValueMultiplier(age, position) — NPV of remaining career value
+# (v2.5).
 #
-# Critical distinction: peak PERFORMANCE age (24-28 by position) is
-# NOT the same as peak VALUE age (~20-22). Performance is already
-# captured in raw_perf; the multiplier carries the RESIDUAL age-on-
-# value effect. For the same perf level, a 17yo is worth MORE than
-# a 25yo because:
-#   1. Resale runway — 17yo can be sold 2-3× in their career
-#   2. Expected future perf — 17yo @ 70 likely climbs to 80+; 25yo
-#      @ 70 is at their peak
-#   3. Scarcity — top young talent is a finite resource bigger clubs
-#      pay premiums for
-#   4. Contract flexibility — longer ROI horizon on signing bonus
+# Model: a player's age multiplier = the sum of expected future
+# performance years from their current age until career end. The
+# multiplier strictly decreases with age because every year you age,
+# you lose one year of remaining career.
 #
-# Real-world evidence: Bellingham 17 → £25M; Mbappé 18 → £166M;
-# Endrick 17 → £60M. Not peak performers — peak VALUE.
+# Captures the four mechanisms the user identified:
+#   1. Projected rate of perf IMPROVEMENT  → youth_baseline → 1.0 by peak_age
+#   2. Years REMAINING before decline      → peak_age → decline_start
+#   3. Projected rate of perf DECLINE      → decline_start → career_end
+#   4. Total career value                  → integral of the above
 #
-# Curve:
-#   age ≤ peak: m = young_floor + (max_mult − young_floor)
-#                    × exp(−(age − peak)² / (2 × σ_below²))
-#   age >  peak: m = old_floor   + (max_mult − old_floor)
-#                    × exp(−(age − peak)² / (2 × σ_above²))
+# Three-phase performance trajectory at any future age:
+#   age < peak_age:        linear growth from youth_baseline at 16 to 1.0
+#   peak_age ≤ age < decline_start: flat at 1.0
+#   decline_start ≤ age < career_end: linear decline from 1.0 to 0
+#   age ≥ career_end:      0
 #
-# Continuous at peak (both branches give max_mult exactly there).
-# σ_below LARGE → flat-high plateau 16→peak (gentle approach to top)
-# σ_above SMALL → steep decline past peak (realistic depreciation)
+# Remaining career value at age A = ∫ perf(t) dt from t=A to career_end
+# (approximated by sum across integer year boundaries, linearly
+# interpolated for fractional ages).
 #
-# Per-position value peaks:
-#   GK     24  — keepers have longest career; value holds latest
-#   CB/CM  22  — physical-but-cerebral, longer prime
-#   FB     21  — pace-dependent role, slightly earlier value peak
-#   AM_WG  21  — explosive role; value peak earliest with ST
-#   ST     21  — same
+# Final multiplier:
+#   m(A) = old_floor + (max_mult − old_floor) × (rcv(A) / rcv(16))
 #
-# max_mult bumped up so top wonderkids get the real-world premium
-# (Bellingham-type players get 1.6-1.8× boost over raw_perf).
+# Anchored to rcv(16) so the multiplier hits max_mult at age 16 and
+# old_floor at career_end. Strictly monotone non-increasing across
+# all ages.
 #
-# Will be tuned against TM market-value evidence once the v2 EUR
-# regression is calibrated. Current peaks are best-evidence
-# defaults from CIES Football Observatory market-value-vs-age curves
-# (residualized for current performance).
+# Per-position trajectory parameters (best evidence from CIES +
+# market analyses; will be tuned against TM data once v2 EUR
+# regression is fit):
+#   GK     peak 28, decline 33, end 39  — longest career, latest decline
+#   CB     peak 27, decline 31, end 36
+#   CM     peak 26, decline 30, end 35
+#   FB     peak 25, decline 29, end 33
+#   ST     peak 25, decline 28, end 33
+#   AM_WG  peak 24, decline 27, end 32  — pace-dependent, earliest end
+#
+# Sample multipliers for ST (peak 25, decline 28, end 33):
+#   16yo → 1.80  ~17 years of remaining perf; wonderkid premium
+#   21yo → 1.38  Approaching peak, still 12 years
+#   25yo → 0.92  At perf peak, 8 years left
+#   28yo → 0.51  Decline starts now, 5 years
+#   30yo → 0.26  Mid-decline, 3 years
+#   33yo → 0.10  Floor
+#
+# Same perf=70:
+#   16yo CVI 126 vs 25yo CVI 65   → 2× premium for the wonderkid
+#   16yo CVI 126 vs 30yo CVI 18   → 7× premium
 CVI_AGE_VALUE_PARAMS = {
-    'GK':    {'peak': 24, 'sigma_below': 10.0, 'sigma_above': 6.0,
-              'max_mult': 1.40, 'young_floor': 0.85, 'old_floor': 0.15},
-    'CB':    {'peak': 22, 'sigma_below': 8.0,  'sigma_above': 5.0,
-              'max_mult': 1.65, 'young_floor': 0.85, 'old_floor': 0.10},
-    'FB':    {'peak': 21, 'sigma_below': 7.0,  'sigma_above': 4.0,
-              'max_mult': 1.70, 'young_floor': 0.85, 'old_floor': 0.10},
-    'CM':    {'peak': 22, 'sigma_below': 8.0,  'sigma_above': 4.5,
-              'max_mult': 1.65, 'young_floor': 0.85, 'old_floor': 0.10},
-    'AM_WG': {'peak': 21, 'sigma_below': 7.0,  'sigma_above': 3.5,
-              'max_mult': 1.80, 'young_floor': 0.85, 'old_floor': 0.10},
-    'ST':    {'peak': 21, 'sigma_below': 7.0,  'sigma_above': 4.0,
-              'max_mult': 1.75, 'young_floor': 0.85, 'old_floor': 0.10},
+    'GK':    {'peak_age': 28, 'decline_start': 33, 'career_end': 39,
+              'max_mult': 1.50, 'old_floor': 0.15, 'youth_baseline': 0.55},
+    'CB':    {'peak_age': 27, 'decline_start': 31, 'career_end': 36,
+              'max_mult': 1.70, 'old_floor': 0.10, 'youth_baseline': 0.50},
+    'CM':    {'peak_age': 26, 'decline_start': 30, 'career_end': 35,
+              'max_mult': 1.70, 'old_floor': 0.10, 'youth_baseline': 0.50},
+    'FB':    {'peak_age': 25, 'decline_start': 29, 'career_end': 33,
+              'max_mult': 1.75, 'old_floor': 0.10, 'youth_baseline': 0.50},
+    'ST':    {'peak_age': 25, 'decline_start': 28, 'career_end': 33,
+              'max_mult': 1.80, 'old_floor': 0.10, 'youth_baseline': 0.50},
+    'AM_WG': {'peak_age': 24, 'decline_start': 27, 'career_end': 32,
+              'max_mult': 1.85, 'old_floor': 0.10, 'youth_baseline': 0.50},
+}
+
+
+def _cvi_expected_perf_at(age, params):
+    """Expected normalized performance at given age (0..1).
+    Three-phase: youth growth → peak plateau → linear decline → 0."""
+    if age < 16:
+        return params['youth_baseline']
+    if age >= params['career_end']:
+        return 0.0
+    if age < params['peak_age']:
+        yb = params['youth_baseline']
+        return yb + (1.0 - yb) * (age - 16) / (params['peak_age'] - 16)
+    if age < params['decline_start']:
+        return 1.0
+    decline_yrs = params['career_end'] - params['decline_start']
+    if decline_yrs <= 0:
+        return 0.0
+    return max(1.0 - (age - params['decline_start']) / decline_yrs, 0.0)
+
+
+def _cvi_cum_remaining_career(age_int, params):
+    """Sum of expected perf from int(age) up to career_end−1
+    (integer-year boundaries)."""
+    ce = int(params['career_end'])
+    if age_int >= ce:
+        return 0.0
+    start = max(int(age_int), 16)
+    return sum(_cvi_expected_perf_at(t, params) for t in range(start, ce))
+
+
+# Pre-compute max remaining career value at age 16 per position so
+# the multiplier hits max_mult exactly at age 16. Computed at module
+# load time; safe because CVI_AGE_VALUE_PARAMS is fixed.
+_CVI_MAX_CAREER_VALUE = {
+    pos: _cvi_cum_remaining_career(16, p)
+    for pos, p in CVI_AGE_VALUE_PARAMS.items()
 }
 
 # ---- ReliabilityWeight ----
@@ -2025,28 +2072,23 @@ def _cvi_reliability_weight(mins, position_group):
 
 
 def _cvi_age_value_multiplier(age, position_group):
-    """Asymmetric (split-sigma) Gaussian age-VALUE curve. Returns 1.0
-    if inputs can't be evaluated (so missing age doesn't tank the CVI).
+    """NPV-of-remaining-career age multiplier. Returns 1.0 if inputs
+    can't be evaluated (so missing age doesn't tank the CVI).
 
-    Critical: this is peaked at VALUE age (~21), NOT performance age
-    (~25). For the same raw_perf, a 17yo has materially more market
-    value than a 25yo (resale runway, growth ceiling, scarcity).
-    Performance is already in raw_perf; this multiplier carries only
-    the residual age-on-value effect.
+    Sums the player's expected future performance from current age to
+    career_end, normalizes against the value at age 16. Result is
+    strictly non-increasing in age — same raw_perf, younger always
+    wins, with the magnitude reflecting how many productive years
+    they have left.
 
-    Below peak (youth side): wide sigma + high young_floor (~0.85)
-    → flat-ish high plateau from 16 to peak. A 17yo wonderkid gets
-    nearly the full peak multiplier (and stays above 1.0 across the
-    teen years), mirroring how the market prices Bellingham-type
-    youth.
+    Captures: rate of perf improvement (youth → peak), years before
+    decline, rate of perf decline, and total career horizon. See
+    CVI_AGE_VALUE_PARAMS docstring for parameters.
 
-    Above peak (decline side): narrow sigma + low old_floor (~0.10)
-    → steep depreciation. A 36yo at the same raw_perf as a 26yo gets
-    ~1/15th the multiplier, since their resale runway is months not
-    years.
-
-    Continuous at peak (both branches evaluate to max_mult at age=peak).
+    For fractional ages, linearly interpolates between integer-year
+    cumulative values so the curve is smooth (no step jumps).
     """
+    import math
     if age is None or position_group not in CVI_AGE_VALUE_PARAMS:
         return 1.0
     try:
@@ -2056,15 +2098,19 @@ def _cvi_age_value_multiplier(age, position_group):
     except (TypeError, ValueError):
         return 1.0
     p = CVI_AGE_VALUE_PARAMS[position_group]
-    import math
-    if a <= p['peak']:
-        sigma = p['sigma_below']
-        floor = p['young_floor']
-    else:
-        sigma = p['sigma_above']
-        floor = p['old_floor']
-    bell = math.exp(-((a - p['peak']) ** 2) / (2 * sigma ** 2))
-    return floor + (p['max_mult'] - floor) * bell
+    if a >= p['career_end']:
+        return p['old_floor']
+    lo = int(math.floor(a))
+    hi = lo + 1
+    f = a - lo
+    rcv_lo = _cvi_cum_remaining_career(lo, p)
+    rcv_hi = _cvi_cum_remaining_career(hi, p)
+    rcv = rcv_lo * (1.0 - f) + rcv_hi * f
+    max_rcv = _CVI_MAX_CAREER_VALUE.get(position_group, 1.0)
+    if max_rcv <= 0:
+        return p['old_floor']
+    norm = max(0.0, min(rcv / max_rcv, 1.0))
+    return p['old_floor'] + (p['max_mult'] - p['old_floor']) * norm
 
 
 def compute_cvi_columns(player_stats_df, *, age_lookup,
