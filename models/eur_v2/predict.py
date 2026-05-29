@@ -17,15 +17,57 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-# joblib is a transitive dep of scikit-learn but HF Spaces installs
-# strip it sometimes. Importing at module-load makes a missing-joblib
-# error fail loud + early instead of silently disabling MV / TV cells.
-import joblib
+# joblib is optional now — we ship .json fallbacks of the same
+# coefficients so MV/TV work even when joblib is missing OR when
+# sklearn version mismatches make the pickled Pipeline unloadable
+# on HF Spaces.
+try:
+    import joblib
+    _HAS_JOBLIB = True
+except Exception:
+    joblib = None
+    _HAS_JOBLIB = False
 
 HERE = Path(__file__).resolve().parent
 MODEL_PATH = HERE / 'eur_v2_ridge.joblib'
+MODEL_JSON_PATH = HERE / 'eur_v2_ridge.json'
 META_PATH  = HERE / 'meta.json'
 TRUE_VALUE_MODEL_PATH = HERE / 'true_value_ridge.joblib'
+TRUE_VALUE_JSON_PATH = HERE / 'true_value_ridge.json'
+
+
+class _LinearPipeline:
+    """Pure-numpy stand-in for sklearn Pipeline(StandardScaler+RidgeCV).
+    Lets us load + predict from the .json bundle without any sklearn
+    or joblib at runtime. Identical numeric output to the original.
+    """
+    def __init__(self, scaler_mean, scaler_scale, coef, intercept):
+        self._mean = np.array(scaler_mean, dtype=float)
+        self._scale = np.array(scaler_scale, dtype=float)
+        self._coef = np.array(coef, dtype=float)
+        self._intercept = float(intercept)
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=float)
+        X_std = (X - self._mean) / np.where(self._scale != 0, self._scale, 1.0)
+        return X_std @ self._coef + self._intercept
+
+
+def _load_json_bundle(json_path):
+    if not json_path.exists():
+        return None
+    try:
+        payload = json.loads(json_path.read_text())
+        return {
+            'model': _LinearPipeline(
+                payload['scaler_mean'], payload['scaler_scale'],
+                payload['ridge_coef'], payload['ridge_intercept']),
+            'features': payload['features'],
+            **payload.get('meta', {}),
+        }
+    except Exception as e:
+        print(f"[predict] JSON bundle {json_path.name} unreadable: {e}")
+        return None
 
 
 def load_model() -> dict | None:
@@ -35,9 +77,20 @@ def load_model() -> dict | None:
     This is the FULL feature model — produces 'Predicted TMV'
     (Transfermarkt-style market value estimate).
     """
-    if not MODEL_PATH.exists():
+    bundle = None
+    # Try joblib first (richest format)
+    if _HAS_JOBLIB and MODEL_PATH.exists():
+        try:
+            bundle = joblib.load(MODEL_PATH)
+        except Exception as e:
+            print(f"[load_model] joblib load failed: "
+                   f"{type(e).__name__}: {e} — falling back to JSON")
+            bundle = None
+    # Fallback to portable JSON (no sklearn / joblib needed)
+    if bundle is None:
+        bundle = _load_json_bundle(MODEL_JSON_PATH)
+    if bundle is None:
         return None
-    bundle = joblib.load(MODEL_PATH)
     meta = json.loads(META_PATH.read_text()) if META_PATH.exists() else {}
     feature_means = {}
     ts_path = HERE / 'training_set.csv'
@@ -56,9 +109,18 @@ def load_true_value_model() -> dict | None:
     market-noise features (goals/assists/xG/passport/career_mins).
     Answers 'pure on-pitch quality' EUR rather than market positioning.
     """
-    if not TRUE_VALUE_MODEL_PATH.exists():
+    bundle = None
+    if _HAS_JOBLIB and TRUE_VALUE_MODEL_PATH.exists():
+        try:
+            bundle = joblib.load(TRUE_VALUE_MODEL_PATH)
+        except Exception as e:
+            print(f"[load_true_value_model] joblib load failed: "
+                   f"{type(e).__name__}: {e} — falling back to JSON")
+            bundle = None
+    if bundle is None:
+        bundle = _load_json_bundle(TRUE_VALUE_JSON_PATH)
+    if bundle is None:
         return None
-    bundle = joblib.load(TRUE_VALUE_MODEL_PATH)
     feature_means = {}
     ts_path = HERE / 'training_set.csv'
     if ts_path.exists():

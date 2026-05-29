@@ -1,0 +1,51 @@
+{
+  "features": [
+    "signed_log_tv",
+    "age",
+    "league_factor",
+    "pos_AM_WG",
+    "pos_CB",
+    "pos_FB",
+    "pos_GK",
+    "pos_ST"
+  ],
+  "scaler_mean": [
+    2.286304847102813,
+    24.83832718679021,
+    0.996268656716418,
+    0.19900497512437812,
+    0.1691542288557214,
+    0.1044776119402985,
+    0.16417910447761194,
+    0.16417910447761194
+  ],
+  "scaler_scale": [
+    1.146216161612513,
+    4.643549013787137,
+    0.02336190424253512,
+    0.3992517939848534,
+    0.374888084254418,
+    0.30587912734207756,
+    0.37043801928330916,
+    0.37043801928330916
+  ],
+  "ridge_coef": [
+    0.16849203597716927,
+    -0.8427824155854576,
+    0.08575640334221409,
+    -0.05136164125411734,
+    -0.08402272034322046,
+    -0.06964406469269678,
+    0.11017101067058696,
+    0.020764022979484837
+  ],
+  "ridge_intercept": 10.830628405139587,
+  "meta": {
+    "chosen_alpha": 10.0,
+    "n_training_rows": 201,
+    "oof_r2": 0.3589054559052286,
+    "oof_mae_log": 0.8803978949172397,
+    "target_scale": "MV",
+    "description": "CVI-only True Value model trained on MV target (realized fee scale = TMV \u00d7 realization_ratio). Features: signed_log_tv + age + league + position. Output is directly comparable to MV in the dashboard; MV \u2212 TV is the market-vs-quality gap signal."
+  }
+}

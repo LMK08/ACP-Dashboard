@@ -38,9 +38,16 @@ __pycache__/
 !opta_ratings.parquet
 # v2 EUR regression artifacts
 !models/eur_v2/eur_v2_ridge.joblib
+!models/eur_v2/true_value_ridge.joblib
+!models/eur_v2/eur_v2_ridge.json
+!models/eur_v2/true_value_ridge.json
 !models/eur_v2/coefficients.csv
 !models/eur_v2/training_set.csv
 !models/eur_v2/meta.json
+!models/__init__.py
+!models/eur_v2/__init__.py
+!models/eur_v2/predict.py
+!models/eur_v2/realization.py
 
 # System files
 .DS_Store
