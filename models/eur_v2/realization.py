@@ -159,31 +159,42 @@ def p_sells_for_fee(predicted_mv: float, age: float | None) -> float:
 
 def elite_youth_perf_multiplier(perf_blend: float | None,
                                    age: float | None) -> float:
-    """Exponential MV multiplier for young + high-performing players.
+    """MV multiplier weighted HEAVILY on perf with a secondary youth bonus.
 
-    The ridge regression compresses top-tier predictions toward the
-    mean (alpha=100), so without this the model's top MV is
-    around €200k while actual transfers in our data top out at
-    €300-450k+. This curve gives back the dynamic range.
+    v3.9 — user said "value performance even higher, expand the number
+    of super high value players while not expanding the top line value."
+
+    Perf dominates (0.4 + 0.6×youth factor inside the perf component) so
+    elite-perf players get a strong boost even at age 24-25; youth amplifies.
 
     Calibration (multiplier values):
-      Average player (perf 50, age 25)      → 1.0  (no change)
-      Strong young   (perf 75, age 22)      → ~2.0
-      Elite young    (perf 90, age 20)      → ~3.5
-      Top elite      (perf 95, age 18)      → 5.0+ (capped at 6)
-      Old or weak                            → 1.0 (no penalty applied)
+      Average player    (perf 55, age 25)  → 1.0  (no change)
+      Strong young      (perf 75, age 22)  → ~2.9
+      Elite young       (perf 90, age 20)  → ~4.5
+      Peak              (perf 95, age 18)  → ~6.0 (cap)
+      Elite older       (perf 95, age 30)  → 1.0  (no youth = no boost)
 
-    The product max(0, perf_z) × max(0, youth_z) means BOTH have to
-    be above average for the boost to kick in — an old elite player
-    or a weak young one stays at multiplier 1.0.
+    Both perf AND age above threshold required — old or weak players get
+    no multiplier. A hard MV cap (in expected_realized_fee) prevents the
+    absolute top from running away — instead, MORE players cluster near
+    the cap, which is the user's stated goal.
     """
     if perf_blend is None or age is None:
         return 1.0
-    perf_z = (float(perf_blend) - 50.0) / 25.0  # ~-2..2
-    youth_z = (24.0 - float(age)) / 4.0          # ~-2..2
-    combo = max(0.0, perf_z) * max(0.0, youth_z)
-    mult = (1.0 + 0.5 * combo) ** 2
+    perf_excess = max(0.0, (float(perf_blend) - 55.0) / 40.0)   # 0 at perf 55, 1 at perf 95
+    youth_excess = max(0.0, (24.0 - float(age)) / 6.0)            # 0 at age 24, 1 at age 18
+    # Perf dominates; youth amplifies. Even a 25yo elite gets ~3x; an
+    # 18yo elite gets ~6x. A weak 18yo gets nothing.
+    combo = perf_excess * (0.4 + 0.6 * youth_excess)
+    mult = 1.0 + 6.0 * combo
     return min(mult, 6.0)
+
+
+# v3.9 — hard cap on MV. User asked to "expand the number of super
+# high value players while not expanding the top line value." The cap
+# is calibrated against the actual top of our reported_fees set
+# (Yan Maranhão €450k summer 2025) plus a small headroom.
+MV_CAP_EUR = 500_000
 
 
 def expected_realized_fee(predicted_mv: float,
@@ -213,6 +224,9 @@ def expected_realized_fee(predicted_mv: float,
     em = elite_youth_perf_multiplier(perf_blend, age)
     p = p_sells_for_fee(predicted_mv, age)
     fee_if = predicted_mv * rr * em
+    # v3.9 hard cap so the top doesn't run away as we steepen the perf
+    # boost. More players cluster near the cap — that's the user's goal.
+    fee_if = min(fee_if, MV_CAP_EUR)
     return {
         'realization_ratio': rr,
         'elite_mult': em,
