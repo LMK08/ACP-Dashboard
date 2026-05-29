@@ -157,27 +157,65 @@ def p_sells_for_fee(predicted_mv: float, age: float | None) -> float:
     return min(max(base * age_mult, 0.0), 1.0)
 
 
+def elite_youth_perf_multiplier(perf_blend: float | None,
+                                   age: float | None) -> float:
+    """Exponential MV multiplier for young + high-performing players.
+
+    The ridge regression compresses top-tier predictions toward the
+    mean (alpha=100), so without this the model's top MV is
+    around €200k while actual transfers in our data top out at
+    €300-450k+. This curve gives back the dynamic range.
+
+    Calibration (multiplier values):
+      Average player (perf 50, age 25)      → 1.0  (no change)
+      Strong young   (perf 75, age 22)      → ~2.0
+      Elite young    (perf 90, age 20)      → ~3.5
+      Top elite      (perf 95, age 18)      → 5.0+ (capped at 6)
+      Old or weak                            → 1.0 (no penalty applied)
+
+    The product max(0, perf_z) × max(0, youth_z) means BOTH have to
+    be above average for the boost to kick in — an old elite player
+    or a weak young one stays at multiplier 1.0.
+    """
+    if perf_blend is None or age is None:
+        return 1.0
+    perf_z = (float(perf_blend) - 50.0) / 25.0  # ~-2..2
+    youth_z = (24.0 - float(age)) / 4.0          # ~-2..2
+    combo = max(0.0, perf_z) * max(0.0, youth_z)
+    mult = (1.0 + 0.5 * combo) ** 2
+    return min(mult, 6.0)
+
+
 def expected_realized_fee(predicted_mv: float,
-                            age: float | None = None) -> dict:
+                            age: float | None = None,
+                            perf_blend: float | None = None) -> dict:
     """Combined output: probability-weighted realized fee + components.
 
     Returns dict:
         realization_ratio  — fee/MV multiplier given sale (0..~1.3)
-        expected_fee_if_sells — predicted_mv × realization_ratio
+        elite_mult         — v3.8 young+perf exponential boost (1..6)
+        expected_fee_if_sells — predicted_mv × realization_ratio × elite_mult
         p_sells_for_fee    — probability of a paid sale (vs free)
         expected_fee_overall — expected_fee_if_sells × p_sells_for_fee
                                 (the right scouting figure when budgeting
                                  expected proceeds from a portfolio of
                                  players)
+
+    The `perf_blend` arg is optional; if not passed, elite_mult is 1.0
+    (preserves backwards-compatible behaviour for callers that don't
+    have CVI perf available).
     """
     if predicted_mv is None or predicted_mv <= 0:
-        return {'realization_ratio': 0, 'expected_fee_if_sells': 0,
+        return {'realization_ratio': 0, 'elite_mult': 1.0,
+                 'expected_fee_if_sells': 0,
                  'p_sells_for_fee': 0, 'expected_fee_overall': 0}
     rr = realization_ratio(predicted_mv)
+    em = elite_youth_perf_multiplier(perf_blend, age)
     p = p_sells_for_fee(predicted_mv, age)
-    fee_if = predicted_mv * rr
+    fee_if = predicted_mv * rr * em
     return {
         'realization_ratio': rr,
+        'elite_mult': em,
         'expected_fee_if_sells': fee_if,
         'p_sells_for_fee': p,
         'expected_fee_overall': fee_if * p,

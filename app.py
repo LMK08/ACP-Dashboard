@@ -8927,7 +8927,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if _tv_projected_eur is not None and _tv_projected_eur > 0:
                 from models.eur_v2.realization import expected_realized_fee
                 _tv_realized = expected_realized_fee(_tv_projected_eur,
-                                                        age=_tv_age)
+                                                        age=_tv_age,
+                                                        perf_blend=_eur_perf_blend)
         except Exception as _rl_exc:
             print(f"[realization] {type(_rl_exc).__name__}: {_rl_exc}")
 
@@ -11854,7 +11855,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             )
                             _tmv = _pred_eur(_full_b, _feats_full)
                             _tv_pred = _pred_eur(_tv_b, _feats_tv)
-                            _mv = (_exp_real(_tmv, _age).get('expected_fee_if_sells')
+                            _mv = (_exp_real(_tmv, _age, perf_blend=_row_perf).get('expected_fee_if_sells')
                                     if _tmv else None)
                             _tmv_list.append(_tmv)
                             _mv_list.append(_mv)
