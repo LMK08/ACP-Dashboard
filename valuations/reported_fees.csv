@@ -1,0 +1,47 @@
+# Hand-curated transfer history + reported fees.
+# This file serves two purposes:
+#   1. Reported fee data feeds the v2 EUR regression as the highest-
+#      authority training signal (source weight 3.0, only manual is higher).
+#   2. The metadata columns (transfer_type, add_ons, sell-on, contracts)
+#      provide context for scouting and modelling, but are not required
+#      for the regression itself.
+#
+# Schema:
+#   playerId         Wyscout integer ID. Look up via Player Profile page.
+#   player_name      Human-readable (free text — for sanity, not joined).
+#   from_team        Selling/releasing club.
+#   to_team          Buying/receiving club.
+#   transfer_type    One of:
+#                      permanent          — outright transfer
+#                      loan               — temporary, fee_eur is loan fee
+#                      loan_with_option   — loan with buy option (record option in notes)
+#                      buy_option         — option from a previous loan was exercised
+#                      free               — free transfer (fee_eur should be 0 or blank)
+#                      end_of_contract    — contract ran out, no fee
+#                      mutual_termination — contract dissolved early
+#                      release_clause     — release clause triggered
+#                      pre_contract       — pre-contract signed (Bosman-style)
+#   fee_eur          Base transfer fee in EUR. Blank/0 = free/loan-without-fee.
+#   add_ons_eur      Performance-based add-ons in EUR (if reported).
+#   sell_on_pct      Percentage of next sale owed back to selling club (0-100).
+#   as_of_date       Date of transfer (YYYY-MM-DD).
+#   season_id        Wyscout seasonId the transfer landed in.
+#   contract_until   Length of new contract at receiving club (YYYY-MM-DD).
+#   loan_until       For loans only: when the loan ends (YYYY-MM-DD).
+#   source_url       Press article / TM URL where fee was reported.
+#   notes            Free text — agent, weekly wage, buy-back clause,
+#                    rejected bids, anything else worth recording.
+#
+# Tips for filling rows:
+#   - Lines starting with `#` are ignored by load_valuations.py.
+#   - Leave `fee_eur` blank for loans-without-fee or free transfers; they
+#     still get included in the ledger but are filtered from the EUR-model
+#     training data automatically.
+#   - You don't have to fill every column for every row — minimum is
+#     playerId, fee_eur (if any), as_of_date. The rest is gravy.
+#
+# Example rows below — delete or replace with real data.
+playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on_pct,as_of_date,season_id,contract_until,loan_until,source_url,notes
+# 123456,Example Player A,Atlético CP,Some Liga 3 Club,permanent,150000,,15,2025-07-01,191782,2028-06-30,,,Permanent move with 15% sell-on retained
+# 234567,Example Player B,Some Camp Club,Atlético CP,loan_with_option,0,,,2025-08-15,191782,,2026-06-30,,Loan with €200k buy option
+# 345678,Example Player C,Free agent,Atlético CP,free,0,,,2025-07-15,191782,2027-06-30,,,Free transfer after contract expired

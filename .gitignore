@@ -28,6 +28,12 @@ __pycache__/
 !transferred_players.json
 !match_ids_for_season_191782.csv
 !gpa_player_season_values.parquet
+# Valuations data — small files, want them deployed to HF with the app
+!valuations/reported_fees.csv
+!valuations/tm_match_log.csv
+!valuations/manual_entries.csv
+!valuations/valuations.parquet
+!opta_ratings.parquet
 
 # System files
 .DS_Store

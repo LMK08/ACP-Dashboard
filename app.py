@@ -1758,16 +1758,33 @@ INVERT_METRICS = ['Loss index', 'goalsConceded']
 # Each component is documented inline below.
 
 # Position-tuned blend of Role_Score percentile and Action V percentile
-# for PerformanceQuality. GKs lean hard on Role_Score (Action V is a
-# weak signal for shot-stopping); forwards lean closer to balanced
-# (Action V directly measures goal contribution via xG buildup).
+# for PerformanceQuality.
+#
+# v1.8 rebalance — the old 50-80% role weights underestimated the
+# overlap between Role_Score and Action V. Role_Score's underlying
+# metric weights already include heavy contributions from the same
+# signals that build Total Value/90:
+#   - npxG → Shooting Value           (r ≈ 0.95 per GPA explainer)
+#   - xAOP → Passing/Receiving Value
+#   - xTOP → Passing/Receiving Value
+#   - Progressive Passes → Passing Value
+#   - Dribbles successful → Dribbling Value
+# So weighting Action V at 40-50% (the old ST/AM_WG weights) was
+# largely double-counting the same chance-creation/progression signal.
+# The new weights keep Action V as a sanity-check cross-validator but
+# make Role_Score the dominant input — which is what role-fit
+# scouting at the lower-division level actually rewards.
+#
+# GK still gets the most extreme tilt because the GPA explainer
+# (Part VI) shows Action V is a particularly weak signal for keepers
+# (Shot-Stopping Value within-pos r ≈ 0.03 within a single season).
 CVI_PERF_WEIGHTS = {
-    'GK':    (0.80, 0.20),   # (role, action_v)
-    'CB':    (0.75, 0.25),
-    'FB':    (0.65, 0.35),
-    'CM':    (0.60, 0.40),
-    'AM_WG': (0.55, 0.45),
-    'ST':    (0.50, 0.50),
+    'GK':    (0.90, 0.10),   # (role, action_v)
+    'CB':    (0.85, 0.15),
+    'FB':    (0.80, 0.20),
+    'CM':    (0.80, 0.20),
+    'AM_WG': (0.75, 0.25),
+    'ST':    (0.75, 0.25),
 }
 
 # AgeValueMultiplier(age, position) — Gaussian peak + a 0.4 floor so
