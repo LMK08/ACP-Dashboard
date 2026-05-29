@@ -8857,6 +8857,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _eur_career_goals = float(_goals_map.get(int(player_id), 0))
                 except Exception:
                     pass
+                # v3.1 — pull the CVI-style perf_blend from the CVI
+                # compute block. _CVI_perf is on the same 0-100 scale as
+                # the training perf_blend (before the ×2 boost which
+                # the predict.py builder applies).
+                _eur_perf_blend = None
+                if not _tv_cvi_block.empty:
+                    _v = _tv_cvi_block.iloc[0].get('_CVI_perf')
+                    if _v is not None and pd.notna(_v):
+                        _eur_perf_blend = float(_v)
                 _eur_feats = _build_eur_feats(
                     age=_tv_age,
                     position_group=_eur_pos_group,
@@ -8877,6 +8886,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                         if _tv_career_current else 1),
                     season_year=_eur_season_year,
                     goals_career=_eur_career_goals,
+                    perf_blend=_eur_perf_blend,
                 )
                 _tv_projected_eur = _predict_eur(_eur_bundle, _eur_feats)
         except Exception as _eur_exc:
@@ -8959,6 +8969,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     elif _tv_age is None:
                         _tv_predict_diag = "missing DOB"
                     else:
+                        # v3.1 — pass CVI perf_blend through (same as
+                        # bio TMV path above)
+                        _tv_perf_blend = None
+                        if not _tv_cvi_block.empty:
+                            _v = _tv_cvi_block.iloc[0].get('_CVI_perf')
+                            if _v is not None and pd.notna(_v):
+                                _tv_perf_blend = float(_v)
                         _tv_feats = _build_eur_feats_tv(
                             age=_tv_age,
                             position_group=_tv_pos_group,
@@ -8966,6 +8983,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                                   if _tv_tv is not None
                                                   and pd.notna(_tv_tv) else None),
                             league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
+                            perf_blend=_tv_perf_blend,
                         )
                         _tv_true_value_eur = _predict_eur_tv(_tv_bundle, _tv_feats)
                         if _tv_true_value_eur is None:
@@ -11778,16 +11796,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             _comp_id_p = (_comp_lookup(int(_pr['playerId']))
                                             if callable(_comp_lookup) else None)
                             _league = 0.85 if _comp_id_p == 702 else 1.00
+                            # v3.1 — perf_blend from CVI compute block
+                            _row_perf = _pr.get('_CVI_perf')
+                            _row_perf = (float(_row_perf)
+                                          if _row_perf is not None
+                                          and pd.notna(_row_perf) else None)
                             _feats_full = _build_eur_feats_bulk(
                                 age=_age, position_group=_pos_g,
                                 total_value_per90=_tv_f, league_factor=_league,
                                 career_mins=float(_mins) if _mins is not None and pd.notna(_mins) else None,
                                 mins_season=float(_mins) if _mins is not None and pd.notna(_mins) else None,
                                 n_seasons_played=1, season_year=_eur_year,
+                                perf_blend=_row_perf,
                             )
                             _feats_tv = _build_eur_feats_bulk(
                                 age=_age, position_group=_pos_g,
                                 total_value_per90=_tv_f, league_factor=_league,
+                                perf_blend=_row_perf,
                             )
                             _tmv = _pred_eur(_full_b, _feats_full)
                             _tv_pred = _pred_eur(_tv_b, _feats_tv)

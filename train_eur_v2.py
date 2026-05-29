@@ -478,6 +478,103 @@ def main():
     # v3 — squared (sign-preserving) version so models can give convex
     # weight to elite performances.
     train['signed_log_tv_sq'] = train['signed_log_tv'] * train['signed_log_tv'].abs()
+
+    # ====== v3.1 — CVI-style position-weighted performance blend ======
+    # Mirrors the CVI engine: blend (Role_Score-proxy) + (Action V/90)
+    # with the same position-tuned weights (GK 80/20 .. ST 50/50).
+    # Both components are within-(season × position_group) percentiles
+    # so a 1.0 = best at their position in that season.
+    #
+    # Role_Score proxy: position-specific weighted sum of V/90 categories
+    # (mimics what each role template in the dashboard rewards).
+    ROLE_V_WEIGHTS = {
+        'GK':    {'GK Total Value': 1.00},
+        'CB':    {'Total Value': 0.50, 'Passing Value': 0.20,
+                  'Interrupting Value': 0.30},
+        'FB':    {'Total Value': 0.40, 'Passing Value': 0.20,
+                  'Receiving Value': 0.20, 'Dribbling Value': 0.20},
+        'CM':    {'Total Value': 0.30, 'Passing Value': 0.30,
+                  'Receiving Value': 0.20, 'Dribbling Value': 0.20},
+        'AM_WG': {'Total Value': 0.20, 'Receiving Value': 0.30,
+                  'Dribbling Value': 0.25, 'Passing Value': 0.10,
+                  'Shooting Value': 0.15},
+        'ST':    {'Total Value': 0.20, 'Shooting Value': 0.40,
+                  'Receiving Value': 0.20, 'Dribbling Value': 0.20},
+    }
+    # CVI position weights: (role_weight, action_v_weight)
+    CVI_PERF_WEIGHTS = {
+        'GK': (0.80, 0.20), 'CB': (0.75, 0.25), 'FB': (0.65, 0.35),
+        'CM': (0.60, 0.40), 'AM_WG': (0.55, 0.45), 'ST': (0.50, 0.50),
+    }
+
+    # Load FULL GPA per-season with V-category breakdown
+    gpa_full = pd.read_parquet(HERE / 'gpa_player_season_values.parquet')
+    # Coerce all V columns to numeric
+    _v_cols = ['Total Value', 'Passing Value', 'Receiving Value',
+                'Dribbling Value', 'Shooting Value', 'Interrupting Value',
+                'GK Total Value']
+    for c in _v_cols:
+        if c in gpa_full.columns:
+            gpa_full[c] = pd.to_numeric(gpa_full[c], errors='coerce').fillna(0)
+    # Compute role-V composite per row (depends on position group)
+    POS_GROUP_MAP = {
+        'GK': 'GK',
+        'CB': 'CB', 'LCB': 'CB', 'RCB': 'CB', 'LCB3': 'CB', 'RCB3': 'CB',
+        'LB': 'FB', 'RB': 'FB', 'LB5': 'FB', 'RB5': 'FB',
+        'LWB': 'FB', 'RWB': 'FB',
+        'CMF': 'CM', 'LCMF': 'CM', 'RCMF': 'CM',
+        'LCMF3': 'CM', 'RCMF3': 'CM',
+        'DMF': 'CM', 'LDMF': 'CM', 'RDMF': 'CM',
+        'AMF': 'AM_WG', 'LAMF': 'AM_WG', 'RAMF': 'AM_WG',
+        'LMF': 'AM_WG', 'RMF': 'AM_WG',
+        'LW': 'AM_WG', 'RW': 'AM_WG', 'LWF': 'AM_WG', 'RWF': 'AM_WG',
+        'CF': 'ST', 'SS': 'ST',
+    }
+    gpa_full['_pos_group'] = gpa_full['position'].map(POS_GROUP_MAP)
+    gpa_full = gpa_full.dropna(subset=['_pos_group'])
+
+    def _role_v_for_row(row):
+        wts = ROLE_V_WEIGHTS.get(row['_pos_group'])
+        if not wts:
+            return 0.0
+        return sum(row.get(col, 0) * w for col, w in wts.items())
+    gpa_full['_role_v'] = gpa_full.apply(_role_v_for_row, axis=1)
+
+    # Within each (season × position_group) cohort, percentile-rank
+    # both Total Value (action_v) and _role_v (role_score proxy)
+    gpa_full['_av_pct'] = (gpa_full.groupby(['seasonId', '_pos_group'])
+                            ['Total Value']
+                            .rank(pct=True, method='average') * 100.0)
+    gpa_full['_role_pct'] = (gpa_full.groupby(['seasonId', '_pos_group'])
+                              ['_role_v']
+                              .rank(pct=True, method='average') * 100.0)
+    # CVI-style blend
+    gpa_full['_perf_blend'] = gpa_full.apply(
+        lambda r: (
+            CVI_PERF_WEIGHTS[r['_pos_group']][0] * r['_role_pct']
+            + CVI_PERF_WEIGHTS[r['_pos_group']][1] * r['_av_pct']
+        ),
+        axis=1,
+    )
+    perf_map = {(int(r['playerId']), int(r['seasonId'])):
+                 (r['_perf_blend'], r['_av_pct'], r['_role_pct'])
+                 for _, r in gpa_full.iterrows()}
+    train['perf_blend'] = train.apply(
+        lambda r: perf_map.get((int(r['playerId']), int(r['seasonId'])),
+                                  (50.0, 50.0, 50.0))[0],
+        axis=1,
+    )
+    train['perf_blend_sq'] = train['perf_blend'] * train['perf_blend'] / 100.0
+    # Boost factor — multiply the standardized perf signal so it
+    # contributes more in the regression. v3.1 default = 2.0×.
+    PERF_BOOST = 2.0
+    train['perf_blend'] = train['perf_blend'] * PERF_BOOST
+    train['perf_blend_sq'] = train['perf_blend_sq'] * PERF_BOOST
+    print(f"[perf] CVI-style perf_blend computed for {len(perf_map):,} "
+           f"(player, season) cohorts, boost factor {PERF_BOOST}×")
+
+    # ====== END v3.1 perf blend ======
+
     train['log_career_mins'] = np.log(
         train['career_mins_to_date'].clip(lower=1))
     train['log_mins_season'] = np.log(train['mins_played'].clip(lower=1))
@@ -498,14 +595,19 @@ def main():
     train = pd.concat([train, pos_dummies], axis=1)
 
     # --- Final feature list ---
-    num_features = ['signed_log_tv', 'signed_log_tv_sq',
+    # v3.1 — slimmer feature set.
+    # Dropped: signed_log_tv (replaced by perf_blend), goals_season +
+    # assists_season (collinearity artifacts), assists_career (extreme
+    # at n=201), n_seasons_played + passport_pt (zero impact),
+    # career_mins_k (collinear with log_career_mins).
+    # Kept: age (still strongest signal), perf_blend + sq (CVI-style),
+    # league, log mins (sample size), goals_career + xg_residual
+    # (finishing track), position dummies, season_year (market drift).
+    num_features = ['perf_blend', 'perf_blend_sq',
                      'age', 'league_factor',
-                     'log_career_mins', 'career_mins_k',
-                     'log_mins_season',
-                     'passport_pt', 'n_seasons_played', 'season_year',
-                     'xg_residual_career',
-                     'goals_career', 'goals_season',
-                     'assists_career', 'assists_season']
+                     'log_career_mins', 'log_mins_season',
+                     'season_year',
+                     'xg_residual_career', 'goals_career']
     cat_features = [c for c in train.columns if c.startswith('pos_')]
     features = num_features + cat_features
     print(f"\n[features] {len(features)} features: {features}")
@@ -616,7 +718,9 @@ def main():
     # performance signal) to let the model give more weight to top
     # performers — convex perf response means a 95th-percentile V/90
     # carries proportionally more EUR weight than a 50th-percentile.
-    true_value_features = ['signed_log_tv', 'signed_log_tv_sq',
+    # v3.1 — True Value uses the CVI-style position-weighted perf
+    # blend (matches what CVI's PerformanceQuality computes).
+    true_value_features = ['perf_blend', 'perf_blend_sq',
                             'age', 'league_factor', 'log_mins_season',
                             'pos_AM_WG', 'pos_CB', 'pos_FB', 'pos_GK', 'pos_ST']
     X_tv = train[true_value_features].astype(float).values

@@ -171,6 +171,7 @@ def build_features_for_player(*, age: float | None,
                                  goals_season: float = 0.0,
                                  assists_career: float = 0.0,
                                  assists_season: float = 0.0,
+                                 perf_blend: float | None = None,
                                  ) -> dict:
     """Convenience builder mirroring the feature schema in
     train_eur_v2.py. Pass whatever you have; the rest fills with
@@ -197,6 +198,17 @@ def build_features_for_player(*, age: float | None,
         # v3 — squared (sign-preserving) version of the perf signal.
         # Lets the model give convex weight to elite performances.
         'signed_log_tv_sq': _slt * abs(_slt),
+        # v3.1 — CVI-style position-weighted perf blend, 2× boost
+        # applied. The caller passes this in directly when available
+        # (computed from CVI state); otherwise we estimate it from the
+        # raw V/90 using a 50th-percentile prior (best we can do
+        # without the full season's position-cohort percentile table).
+        # See train_eur_v2.py PERF_BOOST.
+        'perf_blend': ((perf_blend * 2.0) if perf_blend is not None
+                        else 100.0),  # 50 × 2.0 boost
+        'perf_blend_sq': (((perf_blend * perf_blend / 100.0) * 2.0)
+                            if perf_blend is not None
+                            else 50.0),  # (50² / 100) × 2.0
         'log_career_mins': (np.log(max(career_mins, 1))
                               if career_mins else None),
         'career_mins_k': (career_mins / 1000.0
