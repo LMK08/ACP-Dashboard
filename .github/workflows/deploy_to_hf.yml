@@ -63,7 +63,13 @@ jobs:
           done
 
           # Copy any subdirectories that contain code (not data)
-          for d in .streamlit; do
+          # - .streamlit: Streamlit config
+          # - models:     v2 EUR regression artifacts (predict.py +
+          #               __init__.py + ridge .joblib/.json bundles)
+          # - valuations: load_valuations.py + reported_fees.csv +
+          #               manual_entries.csv + valuations.parquet +
+          #               TM scrape outputs
+          for d in .streamlit models valuations; do
             if [ -d "$d" ]; then
               cp -r "$d" ../hf-repo/
             fi
