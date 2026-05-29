@@ -2002,7 +2002,8 @@ def _cvi_age_value_multiplier(age, position_group):
 def compute_cvi_columns(player_stats_df, *, age_lookup,
                          comp_id_lookup=None,
                          opta_team_strength_lookup=None,   # deprecated, kept for compat
-                         team_col='teamName'):
+                         team_col='teamName',
+                         prior_lookup=None):
     """Compute CVI + its components for every row in player_stats_df.
 
     Args:
@@ -2218,23 +2219,79 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
                    if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT
     )
 
-    # ---- Empirical-Bayes shrinkage toward replacement-level ----
-    # Instead of multiplying perf × reliab (which shrinks toward zero),
-    # we shrink toward the replacement-level prior. With high reliability
-    # the rating barely moves; with low reliability the rating is pulled
-    # most of the way toward the prior.
-    def _shrink_perf(raw_perf, reliab):
+    # ---- Empirical-Bayes shrinkage toward player-specific prior ----
+    # v2.0 — instead of always shrinking toward the generic
+    # replacement-level (40), shrink toward THIS PLAYER's career prior
+    # when we have rich prior-season data. A 1350-min season from a
+    # player with 2400 effective prior minutes shouldn't be discounted
+    # toward generic replacement — we know who he is.
+    #
+    # Formula:
+    #   prior_strength  = min(prior_mins_eff / 1500, 1.0)
+    #   effective_prior = prior_strength × player_career_perf
+    #                     + (1 − prior_strength) × CVI_REPLACEMENT_PERF
+    #   shrunk_perf     = season_reliability × raw_perf
+    #                     + (1 − season_reliability) × effective_prior
+    #
+    # With no prior data: effective_prior = 40 (falls back to v1.7
+    # behavior — debutants get the generic replacement target).
+    # With strong prior data: effective_prior = player's own career
+    # mean → the shrinkage just regresses toward what we already
+    # believe about the player, not toward a generic floor.
+    def _shrink_perf(raw_perf, reliab, prior_info):
         if raw_perf is None or pd.isna(raw_perf):
             return None
         if reliab is None or pd.isna(reliab):
             return float(raw_perf)
+        # Resolve effective prior using player-specific info if present.
+        if prior_info is None:
+            effective_prior = CVI_REPLACEMENT_PERF
+        else:
+            p_perf = prior_info.get('prior_perf')
+            p_strength = prior_info.get('prior_strength', 0.0) or 0.0
+            if p_perf is None or pd.isna(p_perf):
+                effective_prior = CVI_REPLACEMENT_PERF
+            else:
+                effective_prior = (p_strength * float(p_perf)
+                                    + (1.0 - p_strength) * CVI_REPLACEMENT_PERF)
         w = float(reliab)
-        return w * float(raw_perf) + (1.0 - w) * CVI_REPLACEMENT_PERF
+        return w * float(raw_perf) + (1.0 - w) * effective_prior
 
     df['_CVI_perf_shrunk'] = df.apply(
-        lambda r: _shrink_perf(r.get('_CVI_perf'), r.get('_CVI_reliab')),
+        lambda r: _shrink_perf(
+            r.get('_CVI_perf'),
+            r.get('_CVI_reliab'),
+            prior_lookup(r.get('playerId')) if callable(prior_lookup) else None,
+        ),
         axis=1,
     )
+    # Expose the prior used so the UI can surface "shrunk toward 70"
+    # vs "shrunk toward 40 (debutant)" instead of always saying 40.
+    if callable(prior_lookup):
+        _prior_resolved = df['playerId'].apply(
+            lambda pid: prior_lookup(pid) if pid is not None else None
+        )
+        df['_CVI_prior_perf'] = _prior_resolved.apply(
+            lambda x: x.get('prior_perf') if isinstance(x, dict) else None
+        )
+        df['_CVI_prior_strength'] = _prior_resolved.apply(
+            lambda x: x.get('prior_strength') if isinstance(x, dict) else None
+        )
+        df['_CVI_prior_mins_eff'] = _prior_resolved.apply(
+            lambda x: x.get('prior_mins_eff') if isinstance(x, dict) else None
+        )
+        # Effective shrinkage target = blended prior actually used.
+        def _effective_prior_for_row(info):
+            if not isinstance(info, dict) or info.get('prior_perf') is None:
+                return CVI_REPLACEMENT_PERF
+            s = info.get('prior_strength', 0.0) or 0.0
+            return s * float(info['prior_perf']) + (1 - s) * CVI_REPLACEMENT_PERF
+        df['_CVI_effective_prior'] = _prior_resolved.apply(_effective_prior_for_row)
+    else:
+        df['_CVI_prior_perf'] = None
+        df['_CVI_prior_strength'] = None
+        df['_CVI_prior_mins_eff'] = None
+        df['_CVI_effective_prior'] = CVI_REPLACEMENT_PERF
 
     # ---- Final composite ----
     # Note: _CVI_reliab is now BAKED INTO _CVI_perf_shrunk (it's the
@@ -2268,6 +2325,8 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
     return df[['_CVI', '_CVI_perf', '_CVI_perf_shrunk', '_CVI_age',
                 '_CVI_reliab', '_CVI_reliab_ceiling',
                 '_CVI_reliab_sample_factor', '_CVI_reliab_mins_to_ceiling',
+                '_CVI_prior_perf', '_CVI_prior_strength',
+                '_CVI_prior_mins_eff', '_CVI_effective_prior',
                 '_CVI_league', '_CVI_trajectory']]
 
 
@@ -2492,6 +2551,70 @@ def compute_career_cvi(player_id, anchor_season_id, *,
         'n_seasons_used': int(len(rows)),
         'breakdown': breakdown,
     }
+
+
+def build_player_priors_lookup(perf_table, anchor_season_id,
+                                  decay=CVI_CAREER_DECAY,
+                                  max_lookback=CVI_CAREER_MAX_LOOKBACK,
+                                  full_strength_mins=1500):
+    """Pre-compute the empirical-Bayes prior for every player relative
+    to an anchor season. Returns a dict:
+        {playerId: {'prior_perf': float, 'prior_strength': float (0..1),
+                     'prior_mins_eff': float}}
+
+    Used by compute_cvi_columns to shrink each player's season perf
+    toward THEIR OWN career mean (when we have enough prior data)
+    rather than the generic replacement-level (40). Implements the
+    empirical-Bayes pattern: with rich prior data the shrinkage
+    target IS the player's career; with no prior data we fall back
+    to the league-replacement default.
+
+    Strictly uses seasons PRIOR to anchor_season_id (excludes the
+    anchor season itself) to avoid leakage: when judging Caleb's
+    2024/25 perf, the prior is built from his 2021/22 + 2022/23 +
+    2023/24 data only — never from 2024/25 itself or anything later.
+    """
+    if perf_table is None or perf_table.empty or anchor_season_id is None:
+        return {}
+    anchor_year = _season_year(anchor_season_id)
+    if anchor_year is None:
+        return {}
+    pt = perf_table.copy()
+    pt['_year'] = pt['seasonId'].map(_season_year)
+    pt = pt.dropna(subset=['_year'])
+    pt['_year'] = pt['_year'].astype(int)
+    # STRICTLY prior seasons only (year < anchor_year), up to lookback
+    pt = pt[(pt['_year'] < anchor_year)
+              & (pt['_year'] >= anchor_year - max_lookback)]
+    if pt.empty:
+        return {}
+    pt['_seasons_back'] = anchor_year - pt['_year']
+    pt['_decay'] = decay ** pt['_seasons_back']
+    pt['_league_factor'] = pt['competitionId'].map(
+        lambda c: (CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
+                    if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT)
+    )
+    pt['_weight'] = pt['_decay'] * pt['mins_played'].fillna(0).clip(lower=0)
+    pt['_contrib'] = pt['perf_pct'] * pt['_league_factor'] * pt['_weight']
+    grouped = pt.groupby('playerId').agg(
+        _sum_w=('_weight', 'sum'),
+        _sum_c=('_contrib', 'sum'),
+    )
+    out = {}
+    for pid, r in grouped.iterrows():
+        w = float(r['_sum_w'])
+        if w <= 0:
+            continue
+        prior_perf = float(r['_sum_c'] / w)
+        # Prior strength ramps linearly from 0 (no prior) to 1.0 (at or
+        # above full_strength_mins of decay-weighted prior minutes).
+        strength = min(w / float(full_strength_mins), 1.0)
+        out[int(pid)] = {
+            'prior_perf': prior_perf,
+            'prior_strength': strength,
+            'prior_mins_eff': w,
+        }
+    return out
 
 
 def most_recent_season_for_player(perf_table, player_id):
@@ -8442,10 +8565,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         _tv_cvi_block = pd.DataFrame()
         if _tv_single is not None and 'primaryPosition' in _tv_single.columns:
             try:
+                # Build empirical-Bayes prior for THIS player based on
+                # their strictly-prior-season career data. Pulls the
+                # same perf_table used for Career CVI below so we only
+                # pay the cost once.
+                _tv_prior_lookup = None
+                try:
+                    _pt = _build_player_season_perf_table(
+                        load_gpa_values(),
+                        profile_player_minutes_df
+                          if 'profile_player_minutes_df' in dir() else None,
+                    )
+                    _prior_map = build_player_priors_lookup(
+                        _pt, selected_season_id,
+                    ) if selected_season_id is not None else {}
+                    _tv_prior_lookup = lambda pid: _prior_map.get(int(pid)) \
+                                                    if pid is not None else None
+                except Exception:
+                    _tv_prior_lookup = None
                 _tv_cvi_block = compute_cvi_columns(
                     _tv_single,
                     age_lookup=lambda pid: _tv_age,
                     comp_id_lookup=lambda pid: _tv_comp_id,
+                    prior_lookup=_tv_prior_lookup,
                 )
             except Exception:
                 _tv_cvi_block = pd.DataFrame()
@@ -8957,13 +9099,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.metric("CVI", f"{_cvi_v:.1f}")
                     else:
                         st.metric("CVI", "—")
-                    # Build the "Raw → Shrunk (toward 40)" string so the
-                    # user can see exactly how much the small-sample
-                    # discount moved their player.
+                    # Build the "Raw → Shrunk (toward X)" string so the
+                    # user can see where the anchor came from — the
+                    # player's own career mean (when we have data) or
+                    # generic replacement (40) for debutants.
+                    _cvi_eff_prior = _cvi_row.get('_CVI_effective_prior')
+                    _cvi_prior_perf = _cvi_row.get('_CVI_prior_perf')
+                    _cvi_prior_str = _cvi_row.get('_CVI_prior_strength')
+                    _cvi_prior_mins = _cvi_row.get('_CVI_prior_mins_eff')
                     if pd.notna(_cvi_perf) and pd.notna(_cvi_perf_shr):
+                        if (_cvi_prior_perf is not None
+                                and pd.notna(_cvi_prior_perf)
+                                and _cvi_prior_str is not None
+                                and pd.notna(_cvi_prior_str)
+                                and _cvi_prior_str > 0.05):
+                            _prior_lbl = (
+                                f"toward {_cvi_eff_prior:.0f}  "
+                                f"(your-career {_cvi_prior_perf:.0f}, "
+                                f"{int(_cvi_prior_str*100)}% strength)"
+                            )
+                        else:
+                            _prior_lbl = (
+                                f"toward {CVI_REPLACEMENT_PERF:.0f}  "
+                                f"(no prior data — replacement default)"
+                            )
                         _perf_str = (f"{_cvi_perf:.1f}  →  "
                                       f"{_cvi_perf_shr:.1f}  "
-                                      f"(toward {CVI_REPLACEMENT_PERF:.0f})")
+                                      f"{_prior_lbl}")
                     elif pd.notna(_cvi_perf):
                         _perf_str = f"{_cvi_perf:.1f}"
                     else:
@@ -9000,12 +9162,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.dataframe(_comp_df, use_container_width=True, hide_index=True)
                     # Footnote — explain the shrinkage in plain English
                     if pd.notna(_cvi_reliab_mtc) and pd.notna(_cvi_reliab_ceil):
+                        if (_cvi_prior_perf is not None
+                                and pd.notna(_cvi_prior_perf)
+                                and _cvi_prior_str is not None
+                                and pd.notna(_cvi_prior_str)
+                                and _cvi_prior_str > 0.05):
+                            _prior_note = (
+                                f"Prior built from this player's "
+                                f"**{int(_cvi_prior_mins):,} effective prior "
+                                f"minutes** (decay-weighted career, strictly "
+                                f"before {SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}). "
+                                f"With {int(_cvi_prior_str*100)}% prior "
+                                f"strength + {(1-_cvi_prior_str)*100:.0f}% "
+                                f"replacement-default, the shrinkage target "
+                                f"is **{_cvi_eff_prior:.1f}** — not the "
+                                f"generic 40. "
+                            )
+                        else:
+                            _prior_note = (
+                                f"No prior-season data for this player → "
+                                f"falls back to generic replacement-level "
+                                f"(**{CVI_REPLACEMENT_PERF:.0f}**, "
+                                f"~40th-percentile player at this position). "
+                            )
                         st.caption(
-                            f"**Shrinkage toward replacement-level (CVI v1.6).** "
-                            f"With limited sample, the rating is pulled toward "
-                            f"**{CVI_REPLACEMENT_PERF:.0f}** (~40th-percentile "
-                            f"player at this position — the kind a club could "
-                            f"sign for free). Position ceiling **{_cvi_reliab_ceil:.2f}** "
+                            f"**Empirical-Bayes shrinkage (CVI v2.0).** "
+                            f"{_prior_note}"
+                            f"Position ceiling **{_cvi_reliab_ceil:.2f}** "
                             f"(asymptotic max trust), reached at "
                             f"**~{int(_cvi_reliab_mtc):,} min**. Grounded in "
                             f"within-position YoY r from the GPA explainer "
@@ -10938,10 +11121,32 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _comp_lookup = lambda pid: _season_to_comp.get(_ssid_map.get(pid))
                 else:
                     _comp_lookup = lambda _pid: None
+                # Build empirical-Bayes prior lookup so each player's
+                # season perf is shrunk toward THEIR OWN career prior
+                # (not generic 40). Single perf_table build covers
+                # every player in filtered_df → cheap bulk lookup.
+                _bulk_prior_lookup = None
+                try:
+                    _bulk_pt = _build_player_season_perf_table(
+                        load_gpa_values(), None,
+                    )
+                    if (_bulk_pt is not None and not _bulk_pt.empty
+                            and selected_season_id is not None):
+                        _bulk_prior_map = build_player_priors_lookup(
+                            _bulk_pt, selected_season_id,
+                        )
+                        _bulk_prior_lookup = (
+                            lambda pid: _bulk_prior_map.get(int(pid))
+                                          if pid is not None else None
+                        )
+                except Exception as _prior_exc:
+                    print(f"[CVI prior] bulk lookup build failed: "
+                           f"{type(_prior_exc).__name__}: {_prior_exc}")
                 _cvi_block = compute_cvi_columns(
                     filtered_df,
                     age_lookup=lambda pid: _age_map.get(pid),
                     comp_id_lookup=_comp_lookup,
+                    prior_lookup=_bulk_prior_lookup,
                 )
                 if not _cvi_block.empty:
                     filtered_df = pd.concat(
