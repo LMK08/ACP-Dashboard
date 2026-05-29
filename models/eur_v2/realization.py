@@ -157,41 +157,77 @@ def p_sells_for_fee(predicted_mv: float, age: float | None) -> float:
     return min(max(base * age_mult, 0.0), 1.0)
 
 
+# v3.13 — position-specific age curves. User: "age decay should trigger
+# at all ages, and the decay should be different for different positions."
+#
+# Each position has:
+#   peak_age           — multiplier = 1.0 at this age
+#   below_peak_rate    — % discount per year below peak (mild)
+#   above_peak_rate    — % discount per year above peak (steeper)
+#   floor              — minimum multiplier (very old/very young)
+#
+# Real-world football peak ages (transfer-value, not pure performance):
+#   GK    peak late (28-32), decline slowest — longest careers
+#   CB    peak late (28-30) — defenders age well
+#   FB    peak prime (26-29), moderate decline
+#   CM    peak prime (26-28), moderate decline
+#   AM_WG peak early (24-26), faster decline — wingers lose pace
+#   ST    peak prime (25-28), fast decline — pace + sharpness matter
+POSITION_AGE_CURVE = {
+    #         peak,  below_rate, above_rate, floor
+    'GK':    (30,    0.020,      0.040,      0.35),  # latest peak, slowest decline
+    'CB':    (28,    0.020,      0.055,      0.30),  # defenders age well
+    'FB':    (27,    0.022,      0.065,      0.25),
+    'CM':    (26,    0.022,      0.065,      0.25),
+    'AM_WG': (24,    0.025,      0.080,      0.20),  # wingers peak earliest, decline fastest
+    'ST':    (25,    0.022,      0.080,      0.20),  # quick peak then sharp decline
+}
+
+
+def position_age_factor(age: float | None,
+                          position_group: str | None) -> float:
+    """Return 0..1 age multiplier peaked at the position-specific peak age.
+
+    Below peak: mild decay (young players are unproven).
+    Above peak: steeper decay (position-specific).
+    Both are continuous and trigger at ALL ages, no binary threshold.
+    """
+    if age is None or position_group not in POSITION_AGE_CURVE:
+        return 1.0
+    a = float(age)
+    peak, below, above, floor = POSITION_AGE_CURVE[position_group]
+    if a <= peak:
+        f = 1.0 - below * (peak - a)
+    else:
+        f = 1.0 - above * (a - peak)
+    return max(floor, f)
+
+
 def elite_youth_perf_multiplier(perf_blend: float | None,
-                                   age: float | None) -> float:
-    """Perf-dominant multiplier for valuing top performers.
+                                   age: float | None,
+                                   position_group: str | None = None) -> float:
+    """Perf-dominant multiplier with position-specific age curve.
 
-    v3.10 — user said "performance should be even more important."
+    v3.13 — replaced the v3.12 "above-25 only" decay with a per-position
+    age curve via position_age_factor(). User: "age decay should trigger
+    at all ages, and the decay should be different for different positions."
 
-    Perf now dominates (0.65 + 0.35×youth amplifier inside) and the
-    threshold dropped to perf 50 so meaningful perf above average gets
-    rewarded. An elite OLDER player still gets ~6x boost; a young weak
-    player gets nothing. The multiplier max is 7x to absorb the position
-    and Camp penalties applied downstream.
+    Calibration (multiplier values, position ST, peak age 26):
+      perf 98, age 19  → ~6.0  (peak − 7 years × 0.022 = 0.846 × perf)
+      perf 98, age 25  → ~7.0  (cap, near peak)
+      perf 98, age 29  → ~5.0  (peak + 3 years × 0.08 = 0.76 × perf)
+      perf 98, age 33  → ~3.4  (peak + 7 years × 0.08 = 0.44 × perf)
+      perf 75 any age  → ~3-4
+      perf 50 any age  → 1.0   (no boost)
 
-    Calibration (multiplier values):
-      Average player   (perf 50, any age)  → 1.0  (no change)
-      Strong young     (perf 75, age 22)   → ~4.0
-      Elite young      (perf 90, age 20)   → ~5.7
-      Peak             (perf 95, age 18)   → ~7.0 (cap)
-      Elite older      (perf 95, age 28)   → ~5.7  (perf still rewarded)
-      Weak (any age)                       → 1.0
+    For GK (peak 30, decline 0.045): same perf 98 at age 33 → ~6.0 (slow decline).
     """
     if perf_blend is None or age is None:
         return 1.0
-    perf_excess = max(0.0, (float(perf_blend) - 50.0) / 45.0)   # 0 at perf 50, 1 at perf 95
+    perf_excess = max(0.0, (float(perf_blend) - 50.0) / 45.0)
     perf_excess = min(perf_excess, 1.0)
-    youth_excess = max(0.0, (24.0 - float(age)) / 6.0)            # 0 at age 24, 1 at age 18
-    # Perf dominates; youth is a smaller amplifier.
-    combo = perf_excess * (0.65 + 0.35 * youth_excess)
-    # v3.12 — age decay above 25 so older elite players don't get the
-    # full multiplier. User: "he should be worth a lot but he is also
-    # 29" — a 29yo perf 98 needs perf valued but age discounted, not
-    # the same as a 22yo perf 98.
-    a = float(age)
-    if a > 25:
-        decay = max(0.5, 1.0 - 0.08 * (a - 25))   # 1.0 at 25 → 0.6 at 30 → 0.5 floor at 31.25+
-        combo *= decay
+    age_factor = position_age_factor(age, position_group)
+    combo = perf_excess * age_factor
     mult = 1.0 + 8.0 * combo
     return min(mult, 7.0)
 
@@ -232,25 +268,25 @@ CAMP_PENALTY = 0.65
 
 
 def position_elite_bonus(perf_blend: float | None,
-                            age: float | None = None) -> float:
-    """v3.11 — additional bonus for genuine top-of-position performers,
-    with v3.12 age decay so old elites don't get the full bump.
+                            age: float | None = None,
+                            position_group: str | None = None) -> float:
+    """Top-of-position bonus, scaled by position-specific age curve.
 
     perf_blend is already a within-(season × position_group) percentile
     (it's the CVI Role + Action V blend), so a perf 95 player IS in the
     top ~5% of their position.
 
-    Tiers (under age 25 — full bonus):
-      perf ≥ 95   → 2.0x  (top 5% of position — elite of elite)
-      perf ≥ 90   → 1.6x  (top 10%)
-      perf ≥ 85   → 1.3x  (top 15%)
-      perf ≥ 80   → 1.15x (top 20%)
+    Tiers (base bonus, scaled by position_age_factor):
+      perf ≥ 95   → base 2.0x  (top 5% of position)
+      perf ≥ 90   → base 1.6x  (top 10%)
+      perf ≥ 85   → base 1.3x  (top 15%)
+      perf ≥ 80   → base 1.15x (top 20%)
       perf < 80   → 1.0x  (no bonus)
 
-    Above age 25, the BONUS PORTION decays linearly by 10%/year, with a
-    floor of 0.4. So a 29yo perf 98 player gets:
-      base bonus 2.0 → bonus portion 1.0 × decay 0.6 → final 1.6
-    A 32yo perf 98 player gets bonus 1.0 × 0.4 (floor) → final 1.4.
+    v3.13 — bonus portion is multiplied by position_age_factor so the
+    same age curve applies at all ages. An 18yo perf 98 ST is below the
+    ST peak (26) so gets ~84% of bonus. A 32yo perf 98 ST is well above
+    peak so gets ~52% of bonus.
     """
     if perf_blend is None:
         return 1.0
@@ -261,9 +297,8 @@ def position_elite_bonus(perf_blend: float | None,
     elif p >= 80: base = 1.15
     else: return 1.0
     bonus_portion = base - 1.0
-    if age is not None and float(age) > 25:
-        decay = max(0.4, 1.0 - 0.10 * (float(age) - 25))
-        bonus_portion *= decay
+    if age is not None and position_group is not None:
+        bonus_portion *= position_age_factor(float(age), position_group)
     return 1.0 + bonus_portion
 
 
@@ -281,10 +316,10 @@ def apply_post_hoc_adjustments(base_value: float,
     """
     if base_value is None or base_value <= 0:
         return 0.0
-    em = elite_youth_perf_multiplier(perf_blend, age)
+    em = elite_youth_perf_multiplier(perf_blend, age, position_group)
     pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
     cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
-    pe = position_elite_bonus(perf_blend, age)
+    pe = position_elite_bonus(perf_blend, age, position_group)
     adjusted = base_value * em * pm * cm * pe
     cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
     return min(adjusted, cap)
@@ -315,10 +350,10 @@ def expected_realized_fee(predicted_mv: float,
                  'expected_fee_if_sells': 0,
                  'p_sells_for_fee': 0, 'expected_fee_overall': 0}
     rr = realization_ratio(predicted_mv)
-    em = elite_youth_perf_multiplier(perf_blend, age)
+    em = elite_youth_perf_multiplier(perf_blend, age, position_group)
     pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
     cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
-    pe = position_elite_bonus(perf_blend, age)
+    pe = position_elite_bonus(perf_blend, age, position_group)
     p = p_sells_for_fee(predicted_mv, age)
     fee_if = predicted_mv * rr * em * pm * cm * pe
     cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
