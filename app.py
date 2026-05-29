@@ -8933,32 +8933,75 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Headline transfer-value figures (Projected / True / Δ).
             # Full breakdown lives in the "Transfer Value Detail"
             # section just above Career Trajectory.
+            # Compute True Value (CVI-only — pure on-pitch quality)
+            _tv_true_value_eur = None
+            try:
+                from models.eur_v2.predict import (
+                    load_true_value_model as _load_tv_model,
+                    predict_eur as _predict_eur_tv,
+                    build_features_for_player as _build_eur_feats_tv,
+                )
+                _tv_bundle = _load_tv_model()
+                if (_tv_bundle is not None and _tv_single is not None
+                        and not _tv_single.empty):
+                    _tv_row = _tv_single.iloc[0]
+                    _tv_pos_group = _cvi_position_group(
+                        _tv_row.get('primaryPosition'))
+                    _tv_tv = _tv_row.get('Total Value')
+                    # Build minimal feature dict — True Value model only
+                    # consumes signed_log_tv + age + league + pos_*
+                    _tv_feats = _build_eur_feats_tv(
+                        age=_tv_age,
+                        position_group=_tv_pos_group,
+                        total_value_per90=(float(_tv_tv)
+                                              if _tv_tv is not None
+                                              and pd.notna(_tv_tv) else None),
+                        league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
+                    )
+                    _tv_true_value_eur = _predict_eur_tv(_tv_bundle, _tv_feats)
+            except Exception as _tv_exc:
+                print(f"[true_value predict] "
+                       f"{type(_tv_exc).__name__}: {_tv_exc}")
+
+            # Three-tier value framework
             bio_row3 = st.columns(4)
             bio_row3[0].metric(
-                "Projected value",
-                ("Pending v2"
+                "Predicted TMV",
+                ("Pending"
                  if _tv_projected_eur is None
                  else f"€{_tv_projected_eur:,.0f}"),
-                help="Model-predicted market value. Pending v2 "
-                     "regression on scraped TM/ZZ/manual valuations.",
+                help="Predicted Transfermarkt market value (what TM "
+                     "would list this player at). v2 Ridge regression "
+                     "on 14 features incl. goals/assists/xG residuals/"
+                     "passport — captures market positioning, not just "
+                     "on-pitch quality.",
             )
+            # MV = realistic expected sale fee (TMV × realization_ratio)
+            _bio_mv = None
+            if _tv_realized is not None:
+                _bio_mv = _tv_realized.get('expected_fee_if_sells')
             bio_row3[1].metric(
-                "True value",
-                ("No data yet" if _tv_true_eur is None
-                 else f"€{_tv_true_eur:,.0f}"),
-                help=(f"Latest from {_tv_true_source}"
-                       if _tv_true_source else
-                       "Will populate from TM/ZZ scrapes + reported "
-                       "fees + manual entries."),
+                "MV",
+                ("—" if _bio_mv is None else f"€{_bio_mv:,.0f}"),
+                (f"{_tv_realized['realization_ratio']*100:.0f}% of TMV"
+                  if _tv_realized is not None and
+                  _tv_realized.get('realization_ratio') else None),
+                help="Expected realized fee IF a sale happens. "
+                     "Predicted TMV × realization_ratio (calibrated from "
+                     "actual fee/MV ratios in TM transfer history). "
+                     "At Liga 3 tier the typical realization is 25-50% "
+                     "of TM market value.",
             )
             bio_row3[2].metric(
-                "Δ (proj − true)",
-                ("—" if _tv_delta_eur is None
-                 else f"{'+' if _tv_delta_eur >= 0 else ''}€{_tv_delta_eur:,.0f}"),
-                help=("Positive Δ = model thinks more than market "
-                      "(potentially undervalued buy). Negative = market "
-                      "values higher (visibility/intangibles the model "
-                      "doesn't capture). Pending v2."),
+                "True Value",
+                ("Pending" if _tv_true_value_eur is None
+                 else f"€{_tv_true_value_eur:,.0f}"),
+                help="Pure on-pitch fair value — derived from CVI "
+                     "(signed_log_tv + age + league + position_group) "
+                     "ONLY. Excludes market-noise features like total "
+                     "goals, xG over/under-performance, passport, "
+                     "team performance. Answers 'what is this player "
+                     "actually worth by their playing level alone?'",
             )
             # Current CVI — career-aggregated, anchored to the player's
             # most recent season. Uses 0.6 decay per season back and
@@ -9741,15 +9784,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with _tv_right:
                 # ---- Expected realized fee (after the free-transfer reality) ----
                 if _tv_realized is not None and _tv_projected_eur is not None:
-                    st.caption("**Expected realized fee** (after free-transfer reality)")
+                    st.caption("**Expected realized fee (MV)** — what we'd "
+                                "actually get if a sale happens")
                     _exp_fee_if = _tv_realized.get('expected_fee_if_sells', 0)
                     _exp_fee_overall = _tv_realized.get('expected_fee_overall', 0)
                     _p_sells = _tv_realized.get('p_sells_for_fee', 0)
                     _r_rat = _tv_realized.get('realization_ratio', 0)
                     st.metric(
-                        "Expected fee IF sold",
+                        "MV (Expected fee IF sold)",
                         f"€{_exp_fee_if:,.0f}",
-                        f"{_r_rat*100:.0f}% of TM market value",
+                        f"{_r_rat*100:.0f}% of Predicted TMV",
                     )
                     st.metric(
                         f"P(sells for fee): {_p_sells*100:.0f}%",

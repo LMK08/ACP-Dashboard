@@ -21,18 +21,21 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 MODEL_PATH = HERE / 'eur_v2_ridge.joblib'
 META_PATH  = HERE / 'meta.json'
+TRUE_VALUE_MODEL_PATH = HERE / 'true_value_ridge.joblib'
 
 
 def load_model() -> dict | None:
     """Returns dict with 'model', 'features', 'feature_means', 'meta'.
-    None if the model file is missing (regression not yet trained)."""
+    None if the model file is missing (regression not yet trained).
+
+    This is the FULL feature model — produces 'Predicted TMV'
+    (Transfermarkt-style market value estimate).
+    """
     if not MODEL_PATH.exists():
         return None
     import joblib
     bundle = joblib.load(MODEL_PATH)
     meta = json.loads(META_PATH.read_text()) if META_PATH.exists() else {}
-    # Try to load training-set mean for each feature so missing inputs
-    # at predict time can be filled sensibly.
     feature_means = {}
     ts_path = HERE / 'training_set.csv'
     if ts_path.exists():
@@ -42,6 +45,27 @@ def load_model() -> dict | None:
                 feature_means[f] = float(pd.to_numeric(ts[f],
                                                          errors='coerce').mean())
     return {**bundle, 'meta': meta, 'feature_means': feature_means}
+
+
+def load_true_value_model() -> dict | None:
+    """Returns the CVI-only True Value model bundle.
+    Uses ONLY signed_log_tv + age + league + position_group — strips out
+    market-noise features (goals/assists/xG/passport/career_mins).
+    Answers 'pure on-pitch quality' EUR rather than market positioning.
+    """
+    if not TRUE_VALUE_MODEL_PATH.exists():
+        return None
+    import joblib
+    bundle = joblib.load(TRUE_VALUE_MODEL_PATH)
+    feature_means = {}
+    ts_path = HERE / 'training_set.csv'
+    if ts_path.exists():
+        ts = pd.read_csv(ts_path)
+        for f in bundle.get('features', []):
+            if f in ts.columns:
+                feature_means[f] = float(pd.to_numeric(ts[f],
+                                                         errors='coerce').mean())
+    return {**bundle, 'feature_means': feature_means}
 
 
 def predict_eur(bundle: dict, features: dict) -> float | None:

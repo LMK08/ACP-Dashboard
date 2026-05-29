@@ -507,6 +507,51 @@ def main():
         print(f"\n[done] Dry run — no model saved")
         return 0
 
+    # --- Train SECOND model: True Value (CVI-equivalent features only) ---
+    # The user-facing "True Value" should isolate pure on-pitch quality
+    # by stripping out market-noise features (goals/assists/xG residuals/
+    # passport/career mins/season year). Only the CVI-relevant signals
+    # remain: performance proxy (signed_log_tv = Total Value /90), age,
+    # league factor, and position group. This answers "what would this
+    # player be worth based purely on their playing level?", ignoring
+    # market hype, contract drama, or finishing-luck residuals.
+    true_value_features = ['signed_log_tv', 'age', 'league_factor',
+                            'pos_AM_WG', 'pos_CB', 'pos_FB', 'pos_GK', 'pos_ST']
+    X_tv = train[true_value_features].astype(float).values
+    print(f"\n[true_value] Fitting True Value model on {len(true_value_features)} "
+           f"pure-CVI features...")
+    tv_model = Pipeline([
+        ('scale', StandardScaler()),
+        ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=5)),
+    ])
+    tv_model.fit(X_tv, y)
+    tv_alpha = tv_model.named_steps['ridge'].alpha_
+    tv_coefs = tv_model.named_steps['ridge'].coef_
+
+    # Out-of-fold for honest comparison
+    tv_oof = np.zeros(len(y))
+    for tr, te in kf.split(X_tv):
+        fm = Pipeline([
+            ('scale', StandardScaler()),
+            ('ridge', RidgeCV(alphas=[0.01, 0.1, 1, 10, 100], cv=3)),
+        ])
+        fm.fit(X_tv[tr], y[tr])
+        tv_oof[te] = fm.predict(X_tv[te])
+    tv_r2 = r2_score(y, tv_oof)
+    tv_mae_log = mean_absolute_error(y, tv_oof)
+    tv_spearman, _ = spearmanr(y, tv_oof)
+    print(f"[true_value] chosen alpha: {tv_alpha}")
+    print(f"[true_value] OOF R²:       {tv_r2:.3f}  "
+           f"(vs full model {oof_r2:.3f})")
+    print(f"[true_value] OOF Spearman: {tv_spearman:.3f}  "
+           f"(vs full model {spearman_rho:.3f})")
+    print(f"[true_value] coefficients (standardized):")
+    tv_coef_df = pd.DataFrame({
+        'feature': true_value_features,
+        'coef_std': tv_coefs,
+    }).sort_values('coef_std', key=abs, ascending=False)
+    print(tv_coef_df.to_string(index=False))
+
     # --- Save ---
     out_dir = HERE / 'models' / 'eur_v2'
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -520,6 +565,17 @@ def main():
         'oof_mae_log': float(oof_mae_log),
         'oof_mape_pct': float(mape),
     }, out_dir / 'eur_v2_ridge.joblib')
+    joblib.dump({
+        'model': tv_model,
+        'features': true_value_features,
+        'chosen_alpha': float(tv_alpha),
+        'n_training_rows': len(train),
+        'oof_r2': float(tv_r2),
+        'oof_mae_log': float(tv_mae_log),
+        'description': ('CVI-only True Value model: log(EUR) ~ '
+                          'signed_log_tv + age + league_factor + position'),
+    }, out_dir / 'true_value_ridge.joblib')
+    tv_coef_df.to_csv(out_dir / 'true_value_coefficients.csv', index=False)
     coef_df.to_csv(out_dir / 'coefficients.csv', index=False)
     train[['playerId', 'seasonId', 'position_group', 'age',
             'value_eur', 'predicted_eur', 'oof_predicted_eur']].to_csv(
