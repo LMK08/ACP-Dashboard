@@ -16,10 +16,10 @@
     "pos_ST"
   ],
   "chosen_alpha": 100.0,
-  "n_training_rows": 127,
-  "oof_r2": 0.17443074947685888,
-  "oof_mae_log": 0.7569492395167141,
-  "oof_mape_pct": 53.78816950973528,
+  "n_training_rows": 177,
+  "oof_r2": 0.14999847674322642,
+  "oof_mae_log": 0.720429548917259,
+  "oof_mape_pct": 49.95000133773635,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",
@@ -28,11 +28,10 @@
     "pos_ST"
   ],
   "reference_position_group": "CM",
-  "version": "v3.3",
+  "version": "v3.4",
   "changes": [
-    "Strict in-tenure filter: snapshot date must fall in the GPA season window AND club_at_time must match the player's actual Liga 3 / Camp club that season",
-    "Dedupe same (player x snapshot) rows across overlapping season windows",
-    "Manual DOB overrides for Tamble Monteiro (709015) and Juan Perea (807307)",
-    "Inherits v3.2: CVI versatility blend + 8x sample weight for reported_fees"
+    "Use all per-snapshot tier-tagged TM values within 18 months of season (reverted v3.3 strict season-window + club-match filter)",
+    "Bumped reported_fee sample weight 8x -> 25x so paid transfers dominate the regression gradient",
+    "Inherits: CVI versatility blend, manual DOB overrides for Tamble Monteiro / Juan Perea, Santi Guzman pid fix"
   ]
 }

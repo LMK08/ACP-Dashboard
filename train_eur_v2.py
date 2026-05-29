@@ -251,7 +251,7 @@ def main():
            f"{vals[vals['_at_our_tier']]['source'].value_counts().to_dict()}")
     vals_tier = vals[vals['_at_our_tier']].copy()
     rows = []
-    n_no_snaps = n_out_of_window = n_club_mismatch = 0
+    n_no_snaps = 0
     for _, r in gpa.iterrows():
         pid = int(r['playerId'])
         sid = int(r['seasonId'])
@@ -259,37 +259,26 @@ def main():
         if mid_str is None:
             continue
         mid = pd.to_datetime(mid_str)
-        # v3.3 — narrow window: snapshot must fall within the
-        # football season represented by this seasonId.
-        win = SEASON_WINDOW.get(sid)
-        if win is None:
-            continue
-        w_lo, w_hi = pd.to_datetime(win[0]), pd.to_datetime(win[1])
-        # Tier-filtered snapshots for this player, within this season window
+        # v3.4 — use ALL tier-tagged TM snapshots, not just those in
+        # the exact season window. The strict v3.3 filter cut the
+        # training set to 127 rows and over-shrank the regression
+        # (chosen alpha pinned at 100). With 25x sample weight on
+        # reported_fees we lean on the 8 paid transfers instead of
+        # needing the snapshot to be temporally precise. Keep a
+        # generous 18-month nearest-snapshot cap so we don't pair
+        # a snapshot from 3 years before the GPA season.
         snaps = vals_tier[(vals_tier['playerId'] == pid)
                             & (vals_tier['value_eur'].notna())
-                            & (vals_tier['value_eur'] > 0)
-                            & (vals_tier['_d'] >= w_lo)
-                            & (vals_tier['_d'] <= w_hi)].copy()
+                            & (vals_tier['value_eur'] > 0)].copy()
         if snaps.empty:
             n_no_snaps += 1
             continue
-        # v3.3 — for TM snapshots, also require club_at_time match
-        # one of the clubs this player ACTUALLY appeared for in this
-        # GPA season. Reported_fee/manual are trusted as-is.
-        season_clubs = ps_club_map.get((pid, sid), [])
-        if ps_club_map and season_clubs:
-            def _row_club_match(rr):
-                if rr['source'] in ('reported_fee', 'manual'):
-                    return True
-                return _club_matches(rr['_club_at_time'], season_clubs)
-            mask = snaps.apply(_row_club_match, axis=1)
-            snaps = snaps[mask].copy()
-            if snaps.empty:
-                n_club_mismatch += 1
-                continue
         snaps['_diff'] = (snaps['_d'] - mid).abs()
         snaps = snaps.sort_values('_diff')
+        # Reject if no snapshot within 18 months — too stale
+        if snaps.iloc[0]['_diff'] > pd.Timedelta(days=540):
+            n_no_snaps += 1
+            continue
         best = snaps.iloc[0]
         rows.append({
             'playerId': pid,
@@ -392,8 +381,7 @@ def main():
         if before > len(train):
             print(f"[v3.3 dedupe] dropped {before - len(train)} duplicate "
                    f"(player × snapshot) rows from overlapping windows")
-    print(f"[v3.3 filter] dropped: {n_no_snaps:,} (no in-season snapshot), "
-           f"{n_club_mismatch:,} (snapshot club ≠ season club)")
+    print(f"[v3.4 filter] dropped {n_no_snaps:,} GPA rows with no tier-tagged snapshot within 18 months")
     print(f"[build] Total training rows: {len(train):,} "
            f"(incl {(train['value_source'] != 'transfermarkt').sum()} user-entered)")
 
@@ -826,12 +814,13 @@ def main():
     y = train['log_value_eur'].values
     print(f"[features] X shape: {X.shape}, y shape: {y.shape}")
 
-    # v3.2 — sample weighting: user-reported transfer fees are the
-    # most authoritative training signal we have for this tier (real
-    # money changed hands). TM snapshots are noisier (TM editors
-    # estimate; senior-team B-squad players inflate the upper tail).
-    # Weight reported_fee rows 8× so the regression listens to them.
-    REPORTED_FEE_WEIGHT = 8.0
+    # v3.4 — heavier sample weighting on actual paid transfers.
+    # User asked us to lean MUCH harder on the real transfer fees
+    # vs the noisier TM snapshots. With ~8 reported_fees vs ~200 TM
+    # rows, a 25x weight makes the reported fees count for the
+    # equivalent of 200 effective rows — so the regression's
+    # gradient comes about 50/50 from real money vs TM crowd-estimates.
+    REPORTED_FEE_WEIGHT = 25.0
     sw = np.where(train['value_source'] == 'reported_fee',
                     REPORTED_FEE_WEIGHT, 1.0).astype(float)
     n_rep = int((train['value_source'] == 'reported_fee').sum())
@@ -1025,12 +1014,11 @@ def main():
             'oof_mape_pct': float(mape),
             'pos_groups_one_hot': [c for c in features if c.startswith('pos_')],
             'reference_position_group': 'CM',
-            'version': 'v3.3',
+            'version': 'v3.4',
             'changes': [
-                "Strict in-tenure filter: snapshot date must fall in the GPA season window AND club_at_time must match the player's actual Liga 3 / Camp club that season",
-                'Dedupe same (player x snapshot) rows across overlapping season windows',
-                'Manual DOB overrides for Tamble Monteiro (709015) and Juan Perea (807307)',
-                'Inherits v3.2: CVI versatility blend + 8x sample weight for reported_fees',
+                'Use all per-snapshot tier-tagged TM values within 18 months of season (reverted v3.3 strict season-window + club-match filter)',
+                'Bumped reported_fee sample weight 8x -> 25x so paid transfers dominate the regression gradient',
+                'Inherits: CVI versatility blend, manual DOB overrides for Tamble Monteiro / Juan Perea, Santi Guzman pid fix',
             ],
         }, f, indent=2)
 
@@ -1055,13 +1043,13 @@ def main():
     _dump_json_bundle(model, features, out_dir / 'eur_v2_ridge.json',
                        extra_meta={'chosen_alpha': float(chosen_alpha),
                                     'oof_r2': float(oof_r2),
-                                    'version': 'v3.3'})
+                                    'version': 'v3.4'})
     _dump_json_bundle(tv_model, true_value_features,
                        out_dir / 'true_value_ridge.json',
                        extra_meta={'chosen_alpha': float(tv_alpha),
                                     'oof_r2': float(tv_r2),
                                     'target_scale': 'MV',
-                                    'version': 'v3.3'})
+                                    'version': 'v3.4'})
     print(f"\n[done] Model + diagnostics saved to {out_dir}/")
     return 0
 
