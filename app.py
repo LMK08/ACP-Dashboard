@@ -8793,7 +8793,27 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             pass
 
         # Headline projected / true / Δ values for the bio row.
-        _tv_projected_eur = None      # v2 model output — pending
+        # v2.7+ — Projected value is now a direct CVI → EUR mapping,
+        # calibrated against the 27 reported transfers (mostly €25k-€450k).
+        # Power-curve fit: EUR ≈ 2.5 × CVI^2.5, capped at €500k. Anchors:
+        #   CVI 40  → €25k    (replacement-level starter)
+        #   CVI 60  → €70k
+        #   CVI 80  → €150k
+        #   CVI 100 → €260k
+        #   CVI 120 → €400k
+        #   CVI 135 → €500k   (cap — top of Yan Maranhão / Catarino tier)
+        _tv_projected_eur = None
+        _current_cvi_for_eur = None
+        if _tv_career_current is not None:
+            _v = _tv_career_current.get('career_cvi')
+            if _v is not None and not pd.isna(_v):
+                _current_cvi_for_eur = float(_v)
+        if _current_cvi_for_eur is None and not _tv_cvi_block.empty:
+            _v = _tv_cvi_block.iloc[0].get('_CVI')
+            if _v is not None and not pd.isna(_v):
+                _current_cvi_for_eur = float(_v)
+        if _current_cvi_for_eur is not None and _current_cvi_for_eur > 0:
+            _tv_projected_eur = min(2.5 * (_current_cvi_for_eur ** 2.5), 500_000)
         _tv_true_eur = None
         _tv_true_source = None
         if not _tv_valuations_rows.empty:
@@ -8839,11 +8859,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row3 = st.columns(4)
             bio_row3[0].metric(
                 "Projected value",
-                ("Pending v2"
+                ("—"
                  if _tv_projected_eur is None
                  else f"€{_tv_projected_eur:,.0f}"),
-                help="Model-predicted market value. Pending v2 "
-                     "regression on scraped TM/ZZ/manual valuations.",
+                help="CVI → EUR mapping calibrated against the 27 "
+                     "reported transfers. EUR ≈ 2.5 × CVI^2.5, capped "
+                     "at €500k. CVI 40 ≈ €25k, CVI 80 ≈ €150k, CVI "
+                     "120 ≈ €400k, CVI 135+ ≈ €500k.",
             )
             bio_row3[1].metric(
                 "True value",
