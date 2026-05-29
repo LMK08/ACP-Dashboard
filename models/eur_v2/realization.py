@@ -182,11 +182,16 @@ def elite_youth_perf_multiplier(perf_blend: float | None,
     perf_excess = max(0.0, (float(perf_blend) - 50.0) / 45.0)   # 0 at perf 50, 1 at perf 95
     perf_excess = min(perf_excess, 1.0)
     youth_excess = max(0.0, (24.0 - float(age)) / 6.0)            # 0 at age 24, 1 at age 18
-    # Perf dominates; youth is a smaller amplifier. The 0.65 floor on
-    # the youth factor means perf 95 always gets at least ~6x regardless
-    # of age — the regression already penalizes age in the base TMV,
-    # so we don't need to double-penalize here.
+    # Perf dominates; youth is a smaller amplifier.
     combo = perf_excess * (0.65 + 0.35 * youth_excess)
+    # v3.12 — age decay above 25 so older elite players don't get the
+    # full multiplier. User: "he should be worth a lot but he is also
+    # 29" — a 29yo perf 98 needs perf valued but age discounted, not
+    # the same as a 22yo perf 98.
+    a = float(age)
+    if a > 25:
+        decay = max(0.5, 1.0 - 0.08 * (a - 25))   # 1.0 at 25 → 0.6 at 30 → 0.5 floor at 31.25+
+        combo *= decay
     mult = 1.0 + 8.0 * combo
     return min(mult, 7.0)
 
@@ -226,33 +231,40 @@ POSITION_MV_MULTIPLIER = {
 CAMP_PENALTY = 0.65
 
 
-def position_elite_bonus(perf_blend: float | None) -> float:
-    """v3.11 — additional bonus for genuine top-of-position performers.
+def position_elite_bonus(perf_blend: float | None,
+                            age: float | None = None) -> float:
+    """v3.11 — additional bonus for genuine top-of-position performers,
+    with v3.12 age decay so old elites don't get the full bump.
 
     perf_blend is already a within-(season × position_group) percentile
     (it's the CVI Role + Action V blend), so a perf 95 player IS in the
-    top ~5% of their position. The user wanted "top players in each
-    position should also get a bump" so even the top GK / FB / CB
-    appropriately reaches the upper part of their position cap.
+    top ~5% of their position.
 
-    Tiers:
+    Tiers (under age 25 — full bonus):
       perf ≥ 95   → 2.0x  (top 5% of position — elite of elite)
       perf ≥ 90   → 1.6x  (top 10%)
       perf ≥ 85   → 1.3x  (top 15%)
       perf ≥ 80   → 1.15x (top 20%)
       perf < 80   → 1.0x  (no bonus)
 
-    Combines multiplicatively with elite_youth_perf_multiplier (which
-    is mostly about perf × youth). This bonus is pure perf-rank.
+    Above age 25, the BONUS PORTION decays linearly by 10%/year, with a
+    floor of 0.4. So a 29yo perf 98 player gets:
+      base bonus 2.0 → bonus portion 1.0 × decay 0.6 → final 1.6
+    A 32yo perf 98 player gets bonus 1.0 × 0.4 (floor) → final 1.4.
     """
     if perf_blend is None:
         return 1.0
     p = float(perf_blend)
-    if p >= 95: return 2.0
-    if p >= 90: return 1.6
-    if p >= 85: return 1.3
-    if p >= 80: return 1.15
-    return 1.0
+    if p >= 95: base = 2.0
+    elif p >= 90: base = 1.6
+    elif p >= 85: base = 1.3
+    elif p >= 80: base = 1.15
+    else: return 1.0
+    bonus_portion = base - 1.0
+    if age is not None and float(age) > 25:
+        decay = max(0.4, 1.0 - 0.10 * (float(age) - 25))
+        bonus_portion *= decay
+    return 1.0 + bonus_portion
 
 
 def apply_post_hoc_adjustments(base_value: float,
@@ -272,7 +284,7 @@ def apply_post_hoc_adjustments(base_value: float,
     em = elite_youth_perf_multiplier(perf_blend, age)
     pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
     cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
-    pe = position_elite_bonus(perf_blend)
+    pe = position_elite_bonus(perf_blend, age)
     adjusted = base_value * em * pm * cm * pe
     cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
     return min(adjusted, cap)
@@ -306,7 +318,7 @@ def expected_realized_fee(predicted_mv: float,
     em = elite_youth_perf_multiplier(perf_blend, age)
     pm = POSITION_MV_MULTIPLIER.get(position_group, 1.0)
     cm = CAMP_PENALTY if league_factor < 0.95 else 1.0
-    pe = position_elite_bonus(perf_blend)
+    pe = position_elite_bonus(perf_blend, age)
     p = p_sells_for_fee(predicted_mv, age)
     fee_if = predicted_mv * rr * em * pm * cm * pe
     cap = POSITION_MV_CAP.get(position_group, MV_CAP_EUR)
