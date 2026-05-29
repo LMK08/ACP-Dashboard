@@ -80,6 +80,9 @@ def build_features_for_player(*, age: float | None,
                                  season_year: int = 2025,
                                  xg_residual_career: float = 0.0,
                                  goals_career: float = 0.0,
+                                 goals_season: float = 0.0,
+                                 assists_career: float = 0.0,
+                                 assists_season: float = 0.0,
                                  ) -> dict:
     """Convenience builder mirroring the feature schema in
     train_eur_v2.py. Pass whatever you have; the rest fills with
@@ -93,6 +96,9 @@ def build_features_for_player(*, age: float | None,
         'season_year': season_year,
         'xg_residual_career': xg_residual_career,
         'goals_career': goals_career,
+        'goals_season': goals_season,
+        'assists_career': assists_career,
+        'assists_season': assists_season,
         # signed log of total_value_per90 with × 100 scaling (matches
         # train_eur_v2's signed_log_tv)
         'signed_log_tv': (np.sign(total_value_per90)

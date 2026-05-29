@@ -274,51 +274,85 @@ def main():
         axis=1,
     )
 
-    # --- Goals / xG residuals + assists / xA residuals (career to date) ---
-    # Per-season cumulative goals and xG residuals are durable finishing-
-    # quality signals that markets price into transfer fees.
+    # --- Goals / assists / xG residuals (career + per-season) ---
+    # Per-season + career-cumulative goals and assists are durable
+    # output signals that markets price into transfer fees.
     try:
         ev = pd.read_parquet(HERE / 'raw_events.parquet',
                               columns=['player.id', 'matchId', 'type.primary',
-                                        'shot.xg', 'shot.isGoal',
-                                        'pass.accurate'])
+                                        'type.secondary',
+                                        'shot.xg', 'shot.isGoal'])
         ms_for_xg = pd.read_parquet(HERE / 'matches_summary.parquet',
                                        columns=['matchId', 'seasonId'])
         ev = ev.merge(ms_for_xg, on='matchId', how='left').dropna(subset=['player.id'])
         ev['player.id'] = ev['player.id'].astype('int64')
         sid_order = pd.DataFrame({'seasonId': list(SEASON_YEAR.keys()),
                                      '_yr': list(SEASON_YEAR.values())})
+
+        # GOALS — from shots with isGoal
         shots = ev[ev['type.primary'].isin(['shot'])].copy()
         shots['xg'] = pd.to_numeric(shots.get('shot.xg'), errors='coerce').fillna(0)
         shots['goal'] = shots.get('shot.isGoal', False).fillna(False).astype(int)
-        per_ss = (shots.groupby(['player.id', 'seasonId'])
-                       .agg(xg_sum=('xg', 'sum'),
-                             goals=('goal', 'sum'))
-                       .reset_index()
-                       .rename(columns={'player.id': 'playerId'}))
+
+        # ASSISTS — from passes with 'assist' tag in type.secondary
+        passes = ev[ev['type.primary'] == 'pass'].copy()
+        passes['is_assist'] = passes['type.secondary'].apply(
+            lambda v: 1 if (isinstance(v, np.ndarray)
+                              and 'assist' in v)
+                       else (1 if isinstance(v, list) and 'assist' in v else 0)
+        )
+
+        per_ss_g = (shots.groupby(['player.id', 'seasonId'])
+                          .agg(xg_sum=('xg', 'sum'),
+                                goals=('goal', 'sum'))
+                          .reset_index()
+                          .rename(columns={'player.id': 'playerId'}))
+        per_ss_a = (passes.groupby(['player.id', 'seasonId'])
+                          .agg(assists=('is_assist', 'sum'))
+                          .reset_index()
+                          .rename(columns={'player.id': 'playerId'}))
+        per_ss = per_ss_g.merge(per_ss_a, on=['playerId', 'seasonId'], how='outer').fillna(0)
         per_ss = per_ss.merge(sid_order, on='seasonId', how='left')
         per_ss = per_ss.sort_values(['playerId', '_yr'])
         per_ss['xg_career'] = per_ss.groupby('playerId')['xg_sum'].cumsum()
         per_ss['goals_career'] = per_ss.groupby('playerId')['goals'].cumsum()
+        per_ss['assists_career'] = per_ss.groupby('playerId')['assists'].cumsum()
         per_ss['xg_residual_career'] = per_ss['goals_career'] - per_ss['xg_career']
+
+        # Per-(player, season) feature maps
         xg_resid_map = {(int(r['playerId']), int(r['seasonId'])): float(r['xg_residual_career'])
                           for _, r in per_ss.iterrows()}
         goals_career_map = {(int(r['playerId']), int(r['seasonId'])): float(r['goals_career'])
                               for _, r in per_ss.iterrows()}
+        goals_season_map = {(int(r['playerId']), int(r['seasonId'])): float(r['goals'])
+                              for _, r in per_ss.iterrows()}
+        assists_season_map = {(int(r['playerId']), int(r['seasonId'])): float(r['assists'])
+                                for _, r in per_ss.iterrows()}
+        assists_career_map = {(int(r['playerId']), int(r['seasonId'])): float(r['assists_career'])
+                                for _, r in per_ss.iterrows()}
+
         train['xg_residual_career'] = train.apply(
             lambda r: xg_resid_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
-            axis=1,
-        )
+            axis=1)
         train['goals_career'] = train.apply(
             lambda r: goals_career_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
-            axis=1,
-        )
-        print(f"[build] xG residuals + career goals computed for "
-               f"{len(xg_resid_map):,} player-seasons")
+            axis=1)
+        train['goals_season'] = train.apply(
+            lambda r: goals_season_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
+            axis=1)
+        train['assists_season'] = train.apply(
+            lambda r: assists_season_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
+            axis=1)
+        train['assists_career'] = train.apply(
+            lambda r: assists_career_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
+            axis=1)
+        print(f"[build] Goals/assists/xG computed for "
+               f"{len(goals_career_map):,} player-seasons")
     except Exception as e:
-        print(f"[build] xG/goals computation failed: {e}; setting to 0")
-        train['xg_residual_career'] = 0.0
-        train['goals_career'] = 0.0
+        print(f"[build] Goals/assists computation failed: {e}; setting to 0")
+        for c in ('xg_residual_career', 'goals_career', 'goals_season',
+                   'assists_season', 'assists_career'):
+            train[c] = 0.0
 
     # --- n_seasons_played (in our data, up to and including this season) ---
     seasons_to_date = {}
@@ -363,7 +397,9 @@ def main():
                      'log_career_mins', 'career_mins_k',
                      'log_mins_season',
                      'passport_pt', 'n_seasons_played', 'season_year',
-                     'xg_residual_career', 'goals_career']
+                     'xg_residual_career',
+                     'goals_career', 'goals_season',
+                     'assists_career', 'assists_season']
     cat_features = [c for c in train.columns if c.startswith('pos_')]
     features = num_features + cat_features
     print(f"\n[features] {len(features)} features: {features}")
