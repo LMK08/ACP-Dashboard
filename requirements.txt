@@ -11,5 +11,6 @@ seaborn
 plotly
 pyyaml
 scikit-learn
+joblib
 fpdf2
 tqdm
