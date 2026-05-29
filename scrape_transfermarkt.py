@@ -103,9 +103,20 @@ class TMMatch:
 def load_player_universe() -> pd.DataFrame:
     """Return a DataFrame of unique players to scrape: playerId,
     playerName (full first+last from player_details when available,
-    falling back to the abbreviated Wyscout name), teamName,
-    seasonId. Full names are critical — TM's quick search doesn't
-    expand 'S. Iheanacho' → 'Stanley Iheanacho'."""
+    falling back to the abbreviated Wyscout name), teamName (most-
+    recent for display), career_clubs (ALL distinct clubs the player
+    has played for in our data — used for TM matching), seasonId.
+
+    Full names are critical — TM's quick search doesn't expand
+    'S. Iheanacho' → 'Stanley Iheanacho'.
+
+    career_clubs (v2) — TM's quick search row shows a player's CURRENT
+    club. If a player has retired or moved on, their TM-listed club
+    won't equal our most-recent Wyscout team, so single-club matching
+    misses the deal. We now pass every distinct team they've ever
+    played for in our raw_events; the matcher takes the best-scoring
+    club overlap across the list.
+    """
     events_path = HERE / 'raw_events.parquet'
     matches_path = HERE / 'matches_summary.parquet'
     if not events_path.exists():
@@ -128,6 +139,18 @@ def load_player_universe() -> pd.DataFrame:
                     teamName=('team.name', 'last'),
                     seasonId=('seasonId', 'last')))
     last = last.rename(columns={'player.id': 'playerId'})
+
+    # Full career-clubs list per player — for robust TM matching.
+    career_clubs = (ev.dropna(subset=['team.name'])
+                       .groupby('player.id')['team.name']
+                       .apply(lambda s: list(dict.fromkeys(s.tolist())))
+                       .reset_index()
+                       .rename(columns={'player.id': 'playerId',
+                                          'team.name': 'career_clubs'}))
+    last = last.merge(career_clubs, on='playerId', how='left')
+    last['career_clubs'] = last['career_clubs'].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
 
     # Enrich with full firstName + lastName from player_details.pkl
     pd_path = HERE / 'player_details.pkl'
@@ -250,10 +273,17 @@ def search_transfermarkt(session, name: str, dob: str | None = None,
     """Hit TM's quick-search endpoint and return ranked match candidates.
 
     Scoring (higher = better):
-      name similarity 0..1   * 100
-      + age within ±1 yr       + 30
-      + age within ±3 yr       + 10
-      + club name overlap      + 25 per matching token
+      name similarity 0..1     * 100
+      + age within ±1 yr         + 30
+      + age within ±3 yr         + 10
+      + club name overlap        + 25 per overlapping token
+                                  (computed for EACH expected club,
+                                   keep the BEST match)
+
+    expected_clubs is now the player's full career-clubs list, not
+    just their most-recent team. We try every club and take the best
+    matching one — handles retired/loaned players whose TM-listed
+    "current club" doesn't match their last Wyscout team.
     """
     r = polite_get(session, TM_SEARCH, params={'query': name})
     if r is None or r.status_code != 200:
@@ -301,15 +331,32 @@ def search_transfermarkt(session, name: str, dob: str | None = None,
                 score += 10.0; fields_used.append('age±3')
         if expected_clubs and club:
             club_a = _ascii_fold(club)
+            club_tokens = set(club_a.split())
+            # Try every expected club, keep the BEST-scoring overlap.
+            # This is critical for retired/loaned players whose
+            # current TM club doesn't match their last Wyscout team —
+            # we still match on a historical club.
+            best_overlap = 0
+            best_ec = None
             for ec in expected_clubs:
                 if not ec: continue
-                # Token-set overlap so "Atlético CP" matches "Atletico CP"
                 ec_tokens = set(_ascii_fold(ec).split())
-                club_tokens = set(club_a.split())
-                if ec_tokens & club_tokens:
-                    score += 25.0 * len(ec_tokens & club_tokens)
-                    fields_used.append(f'club:{ec[:20]}')
-                    break
+                # Filter out very common noise tokens that would
+                # otherwise inflate matches (e.g. 'FC', 'SC', 'CP',
+                # 'CD' appear in many Portuguese club names).
+                noise = {'fc', 'sc', 'cp', 'cd', 'sad', 'fca',
+                          'sl', 'gd', 'ad', 'os', 'do', 'da', 'de'}
+                ec_meaningful = ec_tokens - noise
+                club_meaningful = club_tokens - noise
+                if not ec_meaningful:
+                    ec_meaningful = ec_tokens   # fallback if all-noise
+                overlap = len(ec_meaningful & club_meaningful)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_ec = ec
+            if best_overlap > 0:
+                score += 25.0 * best_overlap
+                fields_used.append(f'club:{(best_ec or "")[:20]}')
         candidates.append(TMMatch(
             tm_id=tm_id, tm_url=tm_url, name=tm_name,
             dob=None, club=club, score=score, fields_used=fields_used,
@@ -430,10 +477,14 @@ def run(*, limit: int | None = None, player_id: int | None = None,
     match_audit: list[dict] = []
     today = date.today()
 
-    # Minimum score threshold to accept a match. Tuned conservatively:
-    # 100 = identical name only (could be wrong); we want at least name +
-    # some secondary signal (age or club).
-    MIN_MATCH_SCORE = 120.0
+    # Minimum score threshold to accept a match. v2 — dropped from
+    # 120 to 100 because the new "best-of-career-clubs" matcher
+    # supplies the secondary signal more reliably than the old
+    # most-recent-team-only check. A score of 100 = perfect name match
+    # alone (Jaccard=1.0 → 100); we still require name to be at least
+    # close, but historical-team matches now compensate for cases
+    # where TM's current-club listing diverges from our last team.
+    MIN_MATCH_SCORE = 100.0
 
     from tqdm import tqdm
     for _, row in tqdm(list(universe.iterrows()), total=len(universe),
@@ -454,8 +505,19 @@ def run(*, limit: int | None = None, player_id: int | None = None,
             except (ValueError, AttributeError):
                 pass
 
-        # Expected club = the player's most recent team in our data
-        expected_clubs = [row['teamName']] if pd.notna(row.get('teamName')) else []
+        # Expected clubs = FULL career-clubs list. The matcher will
+        # try each one and keep the best-scoring overlap. This is
+        # critical for retired/loaned players where TM's listed
+        # "current club" might be a Spanish or Brazilian side they
+        # moved to, while their Portuguese-tier career club is
+        # buried deeper in their TM transfer history.
+        career = row.get('career_clubs')
+        if isinstance(career, list) and career:
+            expected_clubs = [c for c in career if c]
+        elif pd.notna(row.get('teamName')):
+            expected_clubs = [row['teamName']]
+        else:
+            expected_clubs = []
 
         try:
             candidates = search_transfermarkt(

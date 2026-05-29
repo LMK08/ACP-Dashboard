@@ -2077,12 +2077,34 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
     df['_cvi_age'] = pd.to_numeric(df['playerId'].map(age_lookup),
                                      errors='coerce')
 
-    # ---- PerformanceQuality ----
-    # Role_Score percentile = the player's best-fit Role_Score among
-    # roles eligible for their position group. Role_Score is already
-    # 0-100 normalized within its template's eligible position set, so
-    # we treat the value itself as the percentile.
-    def _best_role_score(row):
+    # ---- PerformanceQuality (Role component) ----
+    # v1.9 — versatility-aware aggregation. Pure max threw away the
+    # signal that a player good across multiple eligible roles is
+    # more flexible (and hence more valuable in the transfer market)
+    # than a one-role specialist at the same peak.
+    #
+    # Formula:
+    #   role_score = α × max(eligible_role_scores)
+    #              + (1 − α) × mean(eligible_role_scores)
+    #
+    # α = 0.6 → 60% best role + 40% mean across all eligible roles.
+    # Worked examples (a CF/SS eligible for 5 striker roles):
+    #
+    #   Player type            scores              old (max)  new (0.6/0.4)
+    #   ────────────────────── ──────────────────  ─────────  ──────────────
+    #   Specialist Poacher     [80, 30, 30, 30, 30]   80        64
+    #   Versatile #9           [70, 65, 60, 50, 40]   70        64.8
+    #   Compleat striker       [70, 70, 70, 70, 70]   70        70
+    #
+    # The compleat striker now wins — what scouts intuit. The
+    # specialist takes a bigger hit because their non-Poacher numbers
+    # really are weak (and a Mourinho would pay for an all-rounder
+    # over a one-trick pony at the same headline). α=0.6 is a starting
+    # point; once we calibrate the v2 EUR regression on TM values
+    # we'll tune α directly off transfer-market evidence.
+    CVI_ROLE_VERSATILITY_ALPHA = 0.6  # weight on max vs mean
+
+    def _role_score_blend(row):
         pos = row.get('primaryPosition')
         eligible = [r for r in WEIGHTS if pos in POSITION_GROUPS.get(r, [])]
         vals = []
@@ -2093,9 +2115,14 @@ def compute_cvi_columns(player_stats_df, *, age_lookup,
                     vals.append(float(v))
             except Exception:
                 pass
-        return max(vals) if vals else None
+        if not vals:
+            return None
+        if len(vals) == 1:
+            return vals[0]   # single-role case → no blending needed
+        a = CVI_ROLE_VERSATILITY_ALPHA
+        return a * max(vals) + (1.0 - a) * (sum(vals) / len(vals))
 
-    df['_cvi_role_score'] = df.apply(_best_role_score, axis=1)
+    df['_cvi_role_score'] = df.apply(_role_score_blend, axis=1)
 
     # Action V percentile within position group — rank Total Value
     # within same _cvi_group so a 0.05 V/90 striker isn't compared
