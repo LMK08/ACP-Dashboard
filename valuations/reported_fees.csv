@@ -45,3 +45,13 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 # 123456,Example Player A,Atlético CP,Some Liga 3 Club,permanent,150000,,15,2025-07-01,191782,2028-06-30,,,Permanent move with 15% sell-on retained
 # 234567,Example Player B,Some Camp Club,Atlético CP,loan_with_option,0,,,2025-08-15,191782,,2026-06-30,,Loan with €200k buy option
 # 345678,Example Player C,Free agent,Atlético CP,free,0,,,2025-07-15,191782,2027-06-30,,,Free transfer after contract expired
+#
+# === User-reported transfers (entered manually, highest-authority source) ===
+445341,Joãozinho,Atlético CP,Varzim,permanent,30000,,,2026-01-15,191782,,,,Liga 3 → Liga 3 winter move
+1218266,Santi Guzman,Leça,Atlético CP,permanent,27000,,,2026-01-15,191782,,,,Camp → Liga 3 step-up winter move
+489426,Elias Franco,Atlético CP,CSKA 1948,permanent,60000,,,2025-07-15,191782,,,,Liga 3 → Bulgaria Prva Liga summer move (data has him at Alverca pre-move — confirm path)
+915086,Hélder Suker,Penafiel,Atlético CP,permanent,25000,,,2026-01-15,191782,,,,Segunda Liga → Liga 3 winter move (drop-down)
+709015,Tâmble Monteiro,Felgueiras 1932,Portimonense,permanent,250000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move (Wyscout data has him at Anadia pre-Felgueiras)
+807307,Juan Perea,Académica,Lokomotiv Plovdiv,permanent,100000,,,2024-07-15,189147,,,,Liga 3 → Bulgaria Prva Liga summer move
+852792,Miguel Rebelo,Caldas,Moreirense,permanent,90000,,,2024-01-15,189147,,,,Liga 3 → Primeira Liga winter move
+650811,Yan Lincoln,Anadia,Moreirense,permanent,450000,,,2025-01-15,190090,,,,Liga 3 → Primeira Liga winter move (Wyscout lists him as 'Yan Maranhão' — same player different alias; only 'Yan' at Anadia)

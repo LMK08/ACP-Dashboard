@@ -1840,24 +1840,23 @@ CVI_PERF_WEIGHTS = {
 #   16yo CVI 126 vs 25yo CVI 65   → 2× premium for the wonderkid
 #   16yo CVI 126 vs 30yo CVI 18   → 7× premium
 CVI_AGE_VALUE_PARAMS = {
-    # v2.6 — compressed multiplier range vs v2.5 to weight performance
-    # relatively more. The career-NPV shape is unchanged (still
-    # strictly monotone decreasing, same peak/decline/end ages), only
-    # the output range is tighter. Youth-vs-veteran ratio dropped from
-    # ~18× to ~4× — matches real-world wonderkid pricing (Bellingham
-    # £25M vs same-perf 30yo £5-7M ≈ 4-5×).
+    # v2.7 — further compressed. v2.6 still felt too age-heavy in
+    # practice. Tightened the range from max~1.55 / floor~0.40
+    # (~4× spread) to max~1.30 / floor~0.55 (~2.4× spread). Performance
+    # now strongly dominates the final CVI; age is a meaningful but
+    # subordinate modifier. Career-NPV shape unchanged.
     'GK':    {'peak_age': 28, 'decline_start': 33, 'career_end': 39,
-              'max_mult': 1.35, 'old_floor': 0.45, 'youth_baseline': 0.55},
+              'max_mult': 1.20, 'old_floor': 0.60, 'youth_baseline': 0.55},
     'CB':    {'peak_age': 27, 'decline_start': 31, 'career_end': 36,
-              'max_mult': 1.50, 'old_floor': 0.40, 'youth_baseline': 0.50},
+              'max_mult': 1.28, 'old_floor': 0.55, 'youth_baseline': 0.50},
     'CM':    {'peak_age': 26, 'decline_start': 30, 'career_end': 35,
-              'max_mult': 1.50, 'old_floor': 0.40, 'youth_baseline': 0.50},
+              'max_mult': 1.28, 'old_floor': 0.55, 'youth_baseline': 0.50},
     'FB':    {'peak_age': 25, 'decline_start': 29, 'career_end': 33,
-              'max_mult': 1.52, 'old_floor': 0.40, 'youth_baseline': 0.50},
+              'max_mult': 1.30, 'old_floor': 0.55, 'youth_baseline': 0.50},
     'ST':    {'peak_age': 25, 'decline_start': 28, 'career_end': 33,
-              'max_mult': 1.55, 'old_floor': 0.40, 'youth_baseline': 0.50},
+              'max_mult': 1.32, 'old_floor': 0.55, 'youth_baseline': 0.50},
     'AM_WG': {'peak_age': 24, 'decline_start': 27, 'career_end': 32,
-              'max_mult': 1.58, 'old_floor': 0.40, 'youth_baseline': 0.50},
+              'max_mult': 1.35, 'old_floor': 0.55, 'youth_baseline': 0.50},
 }
 
 
@@ -9342,6 +9341,186 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         )
                     st.caption("📌 CVI uses placeholder parameters — to be "
                                 "calibrated against scraped market values.")
+
+                    # ---- Full CVI formula debug panel ----
+                    # Every intermediate value, every coefficient, every
+                    # decision the model made. Useful for explaining CVI
+                    # rankings to coaches / scouts ('why is X rated lower
+                    # than Y?') and for debugging weird outputs.
+                    with st.expander("🔬 Full CVI formula breakdown (debug)",
+                                       expanded=False):
+                        try:
+                            # Position group + eligible roles
+                            _dbg_pos = (_tv_single.iloc[0].get('primaryPosition')
+                                          if _tv_single is not None
+                                          and not _tv_single.empty else None)
+                            _dbg_grp = _cvi_position_group(_dbg_pos)
+                            _dbg_eligible = ([r for r in WEIGHTS
+                                                if _dbg_pos in POSITION_GROUPS.get(r, [])]
+                                              if _dbg_pos else [])
+
+                            st.markdown("**1️⃣ Position resolution**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;Wyscout primaryPosition: `{_dbg_pos}`  \n"
+                                f"&nbsp;&nbsp;CVI position group: `{_dbg_grp}`  \n"
+                                f"&nbsp;&nbsp;Eligible role templates: `{', '.join(_dbg_eligible) or '—'}`"
+                            )
+
+                            # All role scores for this player
+                            st.markdown("**2️⃣ Role_Score per eligible role** "
+                                         "(higher = better fit)")
+                            if _tv_single is not None and not _tv_single.empty:
+                                _dbg_row = _tv_single.iloc[0]
+                                _role_data = []
+                                for r in _dbg_eligible:
+                                    v = _dbg_row.get(f"{r}_Score")
+                                    if v is not None and not pd.isna(v):
+                                        _role_data.append({'Role': r,
+                                                            'Score': f"{float(v):.1f}"})
+                                if _role_data:
+                                    _rd_df = pd.DataFrame(_role_data)
+                                    st.dataframe(_rd_df, use_container_width=True,
+                                                  hide_index=True)
+                                    _vals = [float(d['Score']) for d in _role_data]
+                                    _max_role = max(_vals)
+                                    _mean_role = sum(_vals) / len(_vals)
+                                    _alpha = CVI_ROLE_VERSATILITY_ALPHA
+                                    _blend = (_alpha * _max_role
+                                              + (1 - _alpha) * _mean_role)
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;max(role)  = **{_max_role:.1f}**  \n"
+                                        f"&nbsp;&nbsp;mean(role) = **{_mean_role:.1f}**  \n"
+                                        f"&nbsp;&nbsp;blended ({_alpha:.0%} max + "
+                                        f"{1-_alpha:.0%} mean) = **{_blend:.1f}**"
+                                    )
+
+                            # Action V percentile
+                            st.markdown("**3️⃣ Action V percentile** "
+                                         "(within position group)")
+                            _dbg_tv = (_tv_single.iloc[0].get('Total Value')
+                                         if _tv_single is not None
+                                         and 'Total Value' in _tv_single.columns
+                                         and not _tv_single.empty else None)
+                            st.markdown(
+                                f"&nbsp;&nbsp;Total Value /90: "
+                                f"`{_dbg_tv if _dbg_tv is None else f'{float(_dbg_tv):.4f}'}`"
+                                f"  \n"
+                                f"&nbsp;&nbsp;Position-group percentile (Action V): "
+                                f"**{'—' if not pd.notna(_cvi_perf) else 'see PerfQuality below'}**"
+                            )
+
+                            # Performance Quality calculation
+                            st.markdown("**4️⃣ Performance Quality blend**")
+                            if _dbg_grp in CVI_PERF_WEIGHTS:
+                                _w_role, _w_av = CVI_PERF_WEIGHTS[_dbg_grp]
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Position weights: "
+                                    f"role = **{_w_role:.0%}**, "
+                                    f"Action V = **{_w_av:.0%}**  \n"
+                                    f"&nbsp;&nbsp;Raw PerformanceQuality = "
+                                    f"**{_cvi_perf:.1f}** (combined)"
+                                )
+
+                            # Reliability
+                            st.markdown("**5️⃣ Reliability (position-aware)**")
+                            _dbg_mins = (_tv_single.iloc[0].get('totalMinutes')
+                                          if _tv_single is not None
+                                          and not _tv_single.empty else None)
+                            st.markdown(
+                                f"&nbsp;&nbsp;Minutes this season: **{int(_dbg_mins or 0):,}**  \n"
+                                f"&nbsp;&nbsp;Position ceiling: "
+                                f"**{_cvi_reliab_ceil:.2f}** "
+                                f"(asymptotic max trust for this position group)  \n"
+                                f"&nbsp;&nbsp;Sample factor: "
+                                f"**{_cvi_reliab_sf:.2f}** "
+                                f"(1 − exp(−3 × mins / "
+                                f"{int(_cvi_reliab_mtc or 0):,}))  \n"
+                                f"&nbsp;&nbsp;= Reliability weight: **{_cvi_reliab:.3f}**"
+                            )
+
+                            # Empirical-Bayes prior
+                            st.markdown("**6️⃣ Empirical-Bayes prior**")
+                            if (_cvi_prior_perf is not None
+                                    and pd.notna(_cvi_prior_perf)
+                                    and _cvi_prior_str is not None
+                                    and _cvi_prior_str > 0.05):
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Player's career prior (L3-eq): "
+                                    f"**{_cvi_prior_perf:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Decay-weighted prior minutes: "
+                                    f"**{int(_cvi_prior_mins or 0):,}**  \n"
+                                    f"&nbsp;&nbsp;Prior strength: "
+                                    f"**{_cvi_prior_str:.2f}** "
+                                    f"(min(prior_mins / 1500, 1.0))  \n"
+                                    f"&nbsp;&nbsp;Effective prior used = "
+                                    f"`{_cvi_prior_str:.2f} × {_cvi_prior_perf:.1f}` + "
+                                    f"`{1-_cvi_prior_str:.2f} × {CVI_REPLACEMENT_PERF:.0f}` = "
+                                    f"**{_cvi_eff_prior:.1f}**"
+                                )
+                            else:
+                                st.markdown(
+                                    f"&nbsp;&nbsp;No prior-season data → "
+                                    f"falls back to generic replacement "
+                                    f"**{CVI_REPLACEMENT_PERF:.0f}**"
+                                )
+
+                            # Shrinkage step
+                            st.markdown("**7️⃣ Bayesian shrinkage**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;shrunk = "
+                                f"`{_cvi_reliab:.3f} × {_cvi_perf:.1f}` + "
+                                f"`{1-_cvi_reliab:.3f} × {_cvi_eff_prior:.1f}` = "
+                                f"**{_cvi_perf_shr:.1f}**"
+                            )
+
+                            # Age multiplier breakdown
+                            st.markdown("**8️⃣ Age multiplier "
+                                         "(NPV of remaining career)**")
+                            if _dbg_grp in CVI_AGE_VALUE_PARAMS and _tv_age is not None:
+                                _ap = CVI_AGE_VALUE_PARAMS[_dbg_grp]
+                                _years_to_peak = max(_ap['peak_age'] - _tv_age, 0)
+                                _years_to_decline = max(_ap['decline_start'] - _tv_age, 0)
+                                _years_to_end = max(_ap['career_end'] - _tv_age, 0)
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Age: **{_tv_age:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Position trajectory: peak "
+                                    f"@ **{_ap['peak_age']}**, decline starts "
+                                    f"@ **{_ap['decline_start']}**, end "
+                                    f"@ **{_ap['career_end']}**  \n"
+                                    f"&nbsp;&nbsp;Years until peak: "
+                                    f"**{_years_to_peak:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Years until decline starts: "
+                                    f"**{_years_to_decline:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Years until career end: "
+                                    f"**{_years_to_end:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Multiplier range for this "
+                                    f"position: `[{_ap['old_floor']:.2f}, "
+                                    f"{_ap['max_mult']:.2f}]`  \n"
+                                    f"&nbsp;&nbsp;= Age multiplier: "
+                                    f"**{_cvi_age_m:.3f}**"
+                                )
+
+                            # League
+                            st.markdown("**9️⃣ League multiplier**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;Competition: "
+                                f"`{('Camp' if _tv_comp_id==702 else 'L3' if _tv_comp_id==43324 else _tv_comp_id)}`  \n"
+                                f"&nbsp;&nbsp;Multiplier: **{_cvi_league:.2f}** "
+                                f"(Liga 3 = 1.00, Campeonato = 0.85)"
+                            )
+
+                            # Final
+                            st.markdown("**🏁 Final CVI**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;CVI = "
+                                f"`shrunk_perf × age_mult × league_mult`  \n"
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;= "
+                                f"`{_cvi_perf_shr:.1f} × {_cvi_age_m:.3f} × {_cvi_league:.2f}`  \n"
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;= **{_cvi_v:.1f}**"
+                            )
+                        except Exception as _dbg_exc:
+                            st.caption(f"Debug panel error: "
+                                        f"{type(_dbg_exc).__name__}: {_dbg_exc}")
                 else:
                     st.caption("CVI unavailable for this player-season.")
 
