@@ -2039,6 +2039,19 @@ POSITION_EUR_MULTIPLIER = {
 }
 
 
+def cvi_to_projected_eur(cvi, position_group=None):
+    """Convert a CVI score to a projected EUR figure using the power-curve
+    + position multiplier + €500k cap. Returns None if cvi is None/<=0."""
+    try:
+        v = float(cvi)
+    except (TypeError, ValueError):
+        return None
+    if v is None or not (v > 0):
+        return None
+    mult = POSITION_EUR_MULTIPLIER.get(position_group, 1.00)
+    return min(2.5 * (v ** 2.5) * mult, 500_000)
+
+
 def _cvi_position_group(primary_position):
     """Map Wyscout primaryPosition to a CVI position-group key
     (matches keys in CVI_PERF_WEIGHTS / CVI_AGE_VALUE_PARAMS)."""
@@ -8896,46 +8909,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
 
-            # Headline transfer-value figures (Projected / True / Δ).
-            # Full breakdown lives in the "Transfer Value Detail"
-            # section just above Career Trajectory.
-            bio_row3 = st.columns(4)
-            bio_row3[0].metric(
-                "Projected value",
-                ("—"
-                 if _tv_projected_eur is None
-                 else f"€{_tv_projected_eur:,.0f}"),
-                help="CVI → EUR mapping calibrated against the 27 "
-                     "reported transfers, scaled by position. "
-                     "Base: 2.5 × CVI^2.5, ×position_mult, capped at "
-                     "€500k. Position multipliers from transfer-fee "
-                     "literature (CIES/Müller/Franceschi): ST 1.30, "
-                     "AM/WG 1.25, CM 1.00, CB 0.90, FB 0.85, GK 0.70.",
-            )
-            bio_row3[1].metric(
-                "True value",
-                ("No data yet" if _tv_true_eur is None
-                 else f"€{_tv_true_eur:,.0f}"),
-                help=(f"Latest from {_tv_true_source}"
-                       if _tv_true_source else
-                       "Populates from reported transfer fees + "
-                       "manual entries."),
-            )
-            bio_row3[2].metric(
-                "Δ (proj − true)",
-                ("—" if _tv_delta_eur is None
-                 else f"{'+' if _tv_delta_eur >= 0 else ''}€{_tv_delta_eur:,.0f}"),
-                help=("Positive Δ = CVI thinks more than the last reported "
-                      "fee (undervalued buy candidate). Negative = the "
-                      "fee was higher than CVI says (visibility / "
-                      "intangibles CVI doesn't capture)."),
-            )
-            # Current CVI — career-aggregated, anchored to the player's
-            # most recent season. Decay per season back + explicit
-            # current-season bonus + minutes-weighted (small-sample
-            # seasons don't drag the avg down). League-translates Camp
-            # seasons to Liga 3 equivalent. Full breakdown in Transfer
-            # Value Detail below.
+            # Headline value figures — Projected value + Current CVI only.
+            # True value + Δ lived here historically; both are now hidden
+            # from the bio (still visible in Transfer Value Detail below
+            # if a reported_fee exists).
             _current_cvi = None
             _current_cvi_n_seasons = None
             if _tv_career_current is not None:
@@ -8958,7 +8935,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "seasons don't drag the avg down. Camp seasons translated "
                 "to Liga 3 equivalent. Full breakdown in Transfer Value Detail."
             )
-            bio_row3[3].metric(
+            bio_row3 = st.columns(2)
+            bio_row3[0].metric(
+                "Projected value",
+                ("—"
+                 if _tv_projected_eur is None
+                 else f"€{_tv_projected_eur:,.0f}"),
+                help="CVI → EUR mapping calibrated against the 27 "
+                     "reported transfers, scaled by position. "
+                     "Base: 2.5 × CVI^2.5, ×position_mult, capped at "
+                     "€500k. Position multipliers from transfer-fee "
+                     "literature (CIES/Müller/Franceschi): ST 1.30, "
+                     "AM/WG 1.25, CM 1.00, CB 0.90, FB 0.85, GK 0.70.",
+            )
+            bio_row3[1].metric(
                 "Current CVI",
                 ("—" if _current_cvi is None
                  else f"{_current_cvi:.1f}"),
@@ -11462,22 +11452,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # ranking re-sorts by CVI. Position-tuned age curve
         # (see CVI_AGE_VALUE_PARAMS) calibrated off the 27 reported transfers.
         show_cvi = st.sidebar.checkbox(
-            "Show Composite Value Index (CVI)",
+            "Show Projected value",
             value=False,
             key="player_analysis_show_cvi",
-            help="A 0-150 scout-facing index blending performance "
-                 "(position-tuned Role + Action V), age-value premium, "
-                 "sample reliability, and league strength. "
-                 "Currently uses literature-informed defaults — to be "
-                 "calibrated against scraped market values.",
+            help="CVI → EUR mapping. Base: 2.5 × CVI^2.5 × position "
+                 "multiplier (ST 1.30, AM/WG 1.25, CM 1.00, CB 0.90, "
+                 "FB 0.85, GK 0.70), capped at €500k. CVI itself "
+                 "blends performance × age × reliability × league. "
+                 "Calibrated against the 27 reported transfer fees.",
         )
         sort_by_cvi = False
         if show_cvi:
             sort_by_cvi = st.sidebar.checkbox(
-                "Sort by CVI",
+                "Sort by Projected value",
                 value=False,
                 key="player_analysis_sort_by_cvi",
-                help="Replace the Rating-based sort with a CVI sort.",
+                help="Replace the Rating-based sort with a Projected-value sort.",
             )
 
         # Pre-compute age column for the full filtered pool — used by
@@ -11715,15 +11705,28 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     display.insert(_r_idx + 1, 'Same-age %ile', adj.round(1))
                     display.insert(_r_idx + 2, 'Cohort n', cohort)
 
-            # CVI: insert next to Rating in both compact and full
-            # modes. In full mode also surface the Trajectory flag
-            # (perf - same-age-position median) — bumps a value-
-            # focused row with a "+30 vs age peer" callout when the
-            # player is meaningfully ahead of their age cohort.
+            # Projected value: insert next to Rating in both compact
+            # and full modes. EUR computed from CVI × position mult,
+            # capped at €500k. In full mode also surface the Trajectory
+            # flag (perf - same-age-position median).
             if show_cvi and '_CVI' in sorted_tdf.columns:
-                cvi_vals = pd.Series(sorted_tdf['_CVI'].values, index=display.index).round(1)
+                _pos_for_eur = pd.Series(
+                    sorted_tdf['primaryPosition'].apply(_cvi_position_group).values
+                    if 'primaryPosition' in sorted_tdf.columns
+                    else [None] * len(sorted_tdf),
+                    index=display.index,
+                )
+                _cvi_series = pd.Series(sorted_tdf['_CVI'].values, index=display.index)
+                pv_vals = [
+                    cvi_to_projected_eur(c, pos)
+                    for c, pos in zip(_cvi_series, _pos_for_eur)
+                ]
+                pv_display = [
+                    (f"€{int(v):,}" if v is not None else '')
+                    for v in pv_vals
+                ]
                 _r_idx = display.columns.get_loc('Rating')
-                display.insert(_r_idx + 1, 'CVI', cvi_vals)
+                display.insert(_r_idx + 1, 'Projected Value', pv_display)
                 if not compact and '_CVI_trajectory' in sorted_tdf.columns:
                     traj_vals = pd.Series(sorted_tdf['_CVI_trajectory'].values,
                                            index=display.index).round(0)
@@ -11771,10 +11774,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 'Full Backs', 'Center Backs', 'Goalkeepers',
             ]
             # Collect per-template data as lists aligned by rank.
-            # When CVI is on, append it as a 5th sub-column per template.
+            # When Projected Value is on, append it as a 5th sub-column
+            # per template (already EUR-formatted by _build_template_table).
             _sub_cols = ['Player', 'Team', 'Min', 'Rating']
             if show_cvi:
-                _sub_cols.append('CVI')
+                _sub_cols.append('Proj. Value')
             template_columns = {}
             for group_name in _OVERVIEW_ORDER:
                 group_templates = _TEMPLATE_GROUPS.get(group_name, [])
@@ -11790,8 +11794,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 round(float(row.get('Rating', 0)), 1),
                             ]
                             if show_cvi:
-                                _cvi_v = row.get('CVI')
-                                tup.append(round(float(_cvi_v), 1) if pd.notna(_cvi_v) else '')
+                                _pv = row.get('Projected Value', '')
+                                tup.append(_pv if _pv else '')
                             rows.append(tuple(tup))
                         template_columns[tmpl] = rows
 
@@ -11832,10 +11836,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
-                        "🟩 CVI = composite scout-facing value (0-150). "
-                        "Performance × age-value × reliability × league strength. "
+                        "🟩 Projected Value = CVI → EUR mapping "
+                        "(2.5 × CVI^2.5 × position multiplier, capped at €500k). "
                         "Calibrated against the 27 reported transfer fees."
-                        + (" Sort is by CVI." if sort_by_cvi else "")
+                        + (" Sort is by Projected Value." if sort_by_cvi else "")
                     )
                 st.dataframe(overview_df, use_container_width=True)
             else:
