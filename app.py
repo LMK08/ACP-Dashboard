@@ -8793,13 +8793,68 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             pass
 
         # Headline projected / true / Δ values for the bio row.
-        _tv_projected_eur = None      # v2 model output — pending
+        _tv_projected_eur = None
         _tv_true_eur = None
         _tv_true_source = None
         if not _tv_valuations_rows.empty:
             _latest = _tv_valuations_rows.iloc[0]
             _tv_true_eur = _latest.get('value_eur')
             _tv_true_source = _latest.get('source')
+
+        # v2 EUR regression — produces Projected value
+        try:
+            from models.eur_v2.predict import (
+                load_model as _load_eur_model,
+                predict_eur as _predict_eur,
+                build_features_for_player as _build_eur_feats,
+            )
+            _eur_bundle = _load_eur_model()
+            if _eur_bundle is not None and _tv_single is not None and not _tv_single.empty:
+                _eur_row = _tv_single.iloc[0]
+                _eur_pos_group = _cvi_position_group(
+                    _eur_row.get('primaryPosition'))
+                # Determine season year from selected_season_id (Aug 1)
+                _eur_season_year = (int(SEASON_ID_MAP.get(
+                    int(selected_season_id), '2025/26').split('/')[0])
+                    if selected_season_id is not None else 2025)
+                _eur_tv = _eur_row.get('Total Value')
+                _eur_mins = _eur_row.get('totalMinutes')
+                # passport_pt: True if Portuguese passport / birth area
+                _eur_pp = 0
+                try:
+                    if isinstance(player_bio, pd.Series):
+                        for _f in ('passportArea', 'birthArea'):
+                            _v = player_bio.get(_f)
+                            if isinstance(_v, dict) and \
+                               (_v.get('name', '') or '').lower() == 'portugal':
+                                _eur_pp = 1
+                                break
+                except Exception:
+                    pass
+                _eur_feats = _build_eur_feats(
+                    age=_tv_age,
+                    position_group=_eur_pos_group,
+                    total_value_per90=(float(_eur_tv)
+                                          if _eur_tv is not None
+                                          and pd.notna(_eur_tv) else None),
+                    league_factor=(0.85 if _tv_comp_id == 702 else 1.00),
+                    career_mins=(float(_tv_career_current.get('effective_mins'))
+                                   if _tv_career_current else
+                                   (float(_eur_mins)
+                                      if _eur_mins is not None
+                                      and pd.notna(_eur_mins) else None)),
+                    mins_season=(float(_eur_mins)
+                                   if _eur_mins is not None
+                                   and pd.notna(_eur_mins) else None),
+                    passport_pt=_eur_pp,
+                    n_seasons_played=(_tv_career_current.get('n_seasons_used', 1)
+                                        if _tv_career_current else 1),
+                    season_year=_eur_season_year,
+                )
+                _tv_projected_eur = _predict_eur(_eur_bundle, _eur_feats)
+        except Exception as _eur_exc:
+            print(f"[eur_v2 predict] {type(_eur_exc).__name__}: {_eur_exc}")
+
         _tv_delta_eur = (_tv_projected_eur - _tv_true_eur
                           if _tv_projected_eur is not None and _tv_true_eur is not None
                           else None)

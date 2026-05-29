@@ -36,6 +36,11 @@ __pycache__/
 !valuations/tm_player_metadata.parquet
 !valuations/tm_transfer_history.parquet
 !opta_ratings.parquet
+# v2 EUR regression artifacts
+!models/eur_v2/eur_v2_ridge.joblib
+!models/eur_v2/coefficients.csv
+!models/eur_v2/training_set.csv
+!models/eur_v2/meta.json
 
 # System files
 .DS_Store

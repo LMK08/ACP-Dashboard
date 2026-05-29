@@ -1,0 +1,31 @@
+{
+  "features": [
+    "signed_log_tv",
+    "age",
+    "league_factor",
+    "log_career_mins",
+    "log_mins_season",
+    "passport_pt",
+    "n_seasons_played",
+    "season_year",
+    "xg_residual_career",
+    "pos_AM_WG",
+    "pos_CB",
+    "pos_FB",
+    "pos_GK",
+    "pos_ST"
+  ],
+  "chosen_alpha": 10.0,
+  "n_training_rows": 485,
+  "oof_r2": 0.14119253204479976,
+  "oof_mae_log": 0.6848843783557673,
+  "oof_mape_pct": 48.12342990339199,
+  "pos_groups_one_hot": [
+    "pos_AM_WG",
+    "pos_CB",
+    "pos_FB",
+    "pos_GK",
+    "pos_ST"
+  ],
+  "reference_position_group": "CM"
+}
