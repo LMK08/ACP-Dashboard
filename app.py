@@ -604,6 +604,25 @@ def load_gpa_values():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def load_player_career_goals():
+    """Return dict {playerId: int} of career goals from raw_events.
+    Used as a feature in the v2 EUR regression. Cached for the
+    session — raw_events is the biggest file we read."""
+    try:
+        ev = pd.read_parquet('raw_events.parquet',
+                              columns=['player.id', 'type.primary',
+                                        'shot.isGoal'])
+        ev = ev.dropna(subset=['player.id'])
+        ev['player.id'] = ev['player.id'].astype('int64')
+        shots = ev[ev['type.primary'] == 'shot'].copy()
+        shots['goal'] = shots['shot.isGoal'].fillna(False).astype(int)
+        return shots.groupby('player.id')['goal'].sum().to_dict()
+    except Exception as e:
+        logger.warning(f"load_player_career_goals failed: {e}")
+        return {}
+
+
 # ============================================================================
 # Cross-tier translation factors (Liga 3 ↔ Campeonato)
 # ----------------------------------------------------------------------------
@@ -8831,6 +8850,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 break
                 except Exception:
                     pass
+                # Career goals from cached raw_events scan
+                _eur_career_goals = 0.0
+                try:
+                    _goals_map = load_player_career_goals()
+                    _eur_career_goals = float(_goals_map.get(int(player_id), 0))
+                except Exception:
+                    pass
                 _eur_feats = _build_eur_feats(
                     age=_tv_age,
                     position_group=_eur_pos_group,
@@ -8850,6 +8876,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     n_seasons_played=(_tv_career_current.get('n_seasons_used', 1)
                                         if _tv_career_current else 1),
                     season_year=_eur_season_year,
+                    goals_career=_eur_career_goals,
                 )
                 _tv_projected_eur = _predict_eur(_eur_bundle, _eur_feats)
         except Exception as _eur_exc:

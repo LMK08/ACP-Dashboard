@@ -274,10 +274,9 @@ def main():
         axis=1,
     )
 
-    # --- xG / xA residuals (career to date through season) ---
-    # Goals - xG and Assists - xA are durable finishing-quality signals
-    # that markets price into transfer fees (clinical finishers > xG
-    # finishers, deadeye creators > pure passers).
+    # --- Goals / xG residuals + assists / xA residuals (career to date) ---
+    # Per-season cumulative goals and xG residuals are durable finishing-
+    # quality signals that markets price into transfer fees.
     try:
         ev = pd.read_parquet(HERE / 'raw_events.parquet',
                               columns=['player.id', 'matchId', 'type.primary',
@@ -287,10 +286,8 @@ def main():
                                        columns=['matchId', 'seasonId'])
         ev = ev.merge(ms_for_xg, on='matchId', how='left').dropna(subset=['player.id'])
         ev['player.id'] = ev['player.id'].astype('int64')
-        # Order seasons chronologically for "career to date" cumulation
         sid_order = pd.DataFrame({'seasonId': list(SEASON_YEAR.keys()),
                                      '_yr': list(SEASON_YEAR.values())})
-        # For each shot: xG + isGoal; sum per (player, season) then cumsum
         shots = ev[ev['type.primary'].isin(['shot'])].copy()
         shots['xg'] = pd.to_numeric(shots.get('shot.xg'), errors='coerce').fillna(0)
         shots['goal'] = shots.get('shot.isGoal', False).fillna(False).astype(int)
@@ -306,14 +303,22 @@ def main():
         per_ss['xg_residual_career'] = per_ss['goals_career'] - per_ss['xg_career']
         xg_resid_map = {(int(r['playerId']), int(r['seasonId'])): float(r['xg_residual_career'])
                           for _, r in per_ss.iterrows()}
+        goals_career_map = {(int(r['playerId']), int(r['seasonId'])): float(r['goals_career'])
+                              for _, r in per_ss.iterrows()}
         train['xg_residual_career'] = train.apply(
             lambda r: xg_resid_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
             axis=1,
         )
-        print(f"[build] xG residuals computed for {len(xg_resid_map):,} player-seasons")
+        train['goals_career'] = train.apply(
+            lambda r: goals_career_map.get((int(r['playerId']), int(r['seasonId'])), 0.0),
+            axis=1,
+        )
+        print(f"[build] xG residuals + career goals computed for "
+               f"{len(xg_resid_map):,} player-seasons")
     except Exception as e:
-        print(f"[build] xG residual computation failed: {e}; setting to 0")
+        print(f"[build] xG/goals computation failed: {e}; setting to 0")
         train['xg_residual_career'] = 0.0
+        train['goals_career'] = 0.0
 
     # --- n_seasons_played (in our data, up to and including this season) ---
     seasons_to_date = {}
@@ -337,6 +342,14 @@ def main():
     train['log_career_mins'] = np.log(
         train['career_mins_to_date'].clip(lower=1))
     train['log_mins_season'] = np.log(train['mins_played'].clip(lower=1))
+    # Raw career mins (in thousands so coef stays interpretable;
+    # complements log_career_mins which captures concavity)
+    train['career_mins_k'] = train['career_mins_to_date'] / 1000.0
+    # Raw career goals + log(career goals) so the model can pick up
+    # both 'has scored at all' (log lifts 0→1) and 'has scored a lot'.
+    train['goals_career'] = pd.to_numeric(train['goals_career'],
+                                              errors='coerce').fillna(0)
+    train['log_goals_career'] = np.log1p(train['goals_career'])
 
     # --- Position-group one-hot (drop CM as reference) ---
     pos_dummies = pd.get_dummies(train['position_group'], prefix='pos',
@@ -347,9 +360,10 @@ def main():
 
     # --- Final feature list ---
     num_features = ['signed_log_tv', 'age', 'league_factor',
-                     'log_career_mins', 'log_mins_season',
+                     'log_career_mins', 'career_mins_k',
+                     'log_mins_season',
                      'passport_pt', 'n_seasons_played', 'season_year',
-                     'xg_residual_career']
+                     'xg_residual_career', 'goals_career']
     cat_features = [c for c in train.columns if c.startswith('pos_')]
     features = num_features + cat_features
     print(f"\n[features] {len(features)} features: {features}")
