@@ -8963,68 +8963,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 print(f"[true_value predict] "
                        f"{type(_tv_exc).__name__}: {_tv_exc}")
 
-            # Three-tier value framework
-            bio_row3 = st.columns(4)
-            bio_row3[0].metric(
-                "Predicted TMV",
-                ("Pending"
-                 if _tv_projected_eur is None
-                 else f"€{_tv_projected_eur:,.0f}"),
-                help="Predicted Transfermarkt market value (what TM "
-                     "would list this player at). v2 Ridge regression "
-                     "on 14 features incl. goals/assists/xG residuals/"
-                     "passport — captures market positioning, not just "
-                     "on-pitch quality.",
-            )
-            # MV = realistic expected sale fee (TMV × realization_ratio)
+            # Bio row — MV + True Value only (Predicted TMV and
+            # Current CVI moved to Transfer Value Detail).
             _bio_mv = None
             if _tv_realized is not None:
                 _bio_mv = _tv_realized.get('expected_fee_if_sells')
-            bio_row3[1].metric(
-                "MV",
-                ("—" if _bio_mv is None else f"€{_bio_mv:,.0f}"),
-                (f"{_tv_realized['realization_ratio']*100:.0f}% of TMV"
-                  if _tv_realized is not None and
-                  _tv_realized.get('realization_ratio') else None),
-                help="Expected realized fee IF a sale happens. "
-                     "Predicted TMV × realization_ratio (calibrated from "
-                     "actual fee/MV ratios in TM transfer history). "
-                     "At Liga 3 tier the typical realization is 25-50% "
-                     "of TM market value.",
-            )
-            # True Value is on the MV scale — directly comparable to MV
-            # (realized fee). MV − TV = market-vs-quality gap:
-            #   MV > TV → market overpaying for this player vs CVI quality
-            #   MV < TV → market underpaying (potential buy candidate)
             _mv_tv_gap = None
             _mv_tv_gap_pct = None
             if (_tv_true_value_eur is not None and _bio_mv is not None
                     and _tv_true_value_eur > 0):
                 _mv_tv_gap = _bio_mv - _tv_true_value_eur
                 _mv_tv_gap_pct = _mv_tv_gap / _tv_true_value_eur * 100
-            bio_row3[2].metric(
-                "True Value",
-                ("Pending" if _tv_true_value_eur is None
-                 else f"€{_tv_true_value_eur:,.0f}"),
-                (f"MV − TV: {'+' if _mv_tv_gap >= 0 else ''}€{_mv_tv_gap:,.0f} "
-                  f"({'+' if _mv_tv_gap_pct >= 0 else ''}{_mv_tv_gap_pct:.0f}%)"
-                  if _mv_tv_gap is not None else None),
-                help="Pure on-pitch fair value on the MV scale — "
-                     "trained on realized-fee target (TMV × realization "
-                     "ratio) using only CVI inputs (signed_log_tv + age "
-                     "+ league + position). Directly comparable to MV "
-                     "above.  \n\n"
-                     "**MV − TV** is the market-vs-quality gap:  \n"
-                     "• Positive = market overpaying for visibility/"
-                     "potential beyond pure CVI quality  \n"
-                     "• Negative = market underpaying — potential BUY "
-                     "candidate (CVI says they're worth more than the "
-                     "fee they'd command)",
-            )
-            # Current CVI — career-aggregated, anchored to the player's
-            # most recent season. Uses 0.6 decay per season back and
-            # league-translates Camp seasons to Liga 3 equivalent.
-            # Full breakdown lives in Transfer Value Detail below.
+            # Resolve Current CVI here (still used inside Transfer Value
+            # Detail later, not surfaced in the bio row).
             _current_cvi = None
             _current_cvi_n_seasons = None
             if _tv_career_current is not None:
@@ -9032,27 +8983,37 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if _v is not None and not pd.isna(_v):
                     _current_cvi = float(_v)
                 _current_cvi_n_seasons = _tv_career_current.get('n_seasons_used')
-            # Fallback to selected-season CVI if career version unavailable
             if _current_cvi is None and not _tv_cvi_block.empty:
                 _v = _tv_cvi_block.iloc[0].get('_CVI')
                 if _v is not None and not pd.isna(_v):
                     _current_cvi = float(_v)
-            _bio_cvi_help = (
-                "Career-aggregated Composite Value Index, anchored to the "
-                "player's most recent season. Combines that season + up to "
-                f"{CVI_CAREER_MAX_LOOKBACK} prior seasons with "
-                f"{CVI_CAREER_DECAY}^seasons-back decay weighting and "
-                "cross-league translation (Camp → Liga 3 equivalent). "
-                "Full breakdown in the Transfer Value Detail section below."
+
+            bio_row3 = st.columns(2)
+            bio_row3[0].metric(
+                "MV",
+                ("—" if _bio_mv is None else f"€{_bio_mv:,.0f}"),
+                (f"{_tv_realized['realization_ratio']*100:.0f}% of TMV"
+                  if _tv_realized is not None and
+                  _tv_realized.get('realization_ratio') else None),
+                help="Expected realized fee IF a sale happens. "
+                     "Predicted TMV × realization_ratio. "
+                     "At Liga 3 tier typical realization is 25-50% "
+                     "of TM market value. See Transfer Value Detail "
+                     "below for TMV + CVI breakdown.",
             )
-            bio_row3[3].metric(
-                "Current CVI",
-                ("—" if _current_cvi is None
-                 else f"{_current_cvi:.1f}"),
-                (f"{_current_cvi_n_seasons}-season aggregate"
-                  if _current_cvi_n_seasons and _current_cvi_n_seasons > 1
-                  else None),
-                help=_bio_cvi_help,
+            bio_row3[1].metric(
+                "True Value",
+                ("Pending" if _tv_true_value_eur is None
+                 else f"€{_tv_true_value_eur:,.0f}"),
+                (f"MV − TV: {'+' if _mv_tv_gap >= 0 else ''}€{_mv_tv_gap:,.0f} "
+                  f"({'+' if _mv_tv_gap_pct >= 0 else ''}{_mv_tv_gap_pct:.0f}%)"
+                  if _mv_tv_gap is not None else None),
+                help="Pure CVI-only fair value on the MV scale — "
+                     "directly comparable to MV.  \n\n"
+                     "**MV − TV** is the market-vs-quality gap:  \n"
+                     "• Positive = market overpaying for visibility/"
+                     "potential beyond pure CVI quality  \n"
+                     "• Negative = market underpaying — potential BUY",
             )
 
         st.divider()
@@ -9382,6 +9343,35 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # next to the trajectory plots that visualize them.
         st.subheader("Transfer Value Detail")
         try:
+            # Top mini-row: Predicted TMV + Current CVI (moved from
+            # bio row to keep the bio focused on MV + True Value).
+            _hdr_a, _hdr_b = st.columns(2)
+            _hdr_a.metric(
+                "Predicted TMV",
+                ("Pending" if _tv_projected_eur is None
+                  else f"€{_tv_projected_eur:,.0f}"),
+                help="Predicted Transfermarkt market value — what TM "
+                     "would list this player at. v2 Ridge regression "
+                     "on 19 features (incl. goals, assists, xG residual, "
+                     "passport, career mins, season year). Captures "
+                     "market positioning, not just pure on-pitch quality. "
+                     "MV (in the bio row) = this × realization_ratio.",
+            )
+            _hdr_b.metric(
+                "Current CVI",
+                ("—" if _current_cvi is None
+                  else f"{_current_cvi:.1f}"),
+                (f"{_current_cvi_n_seasons}-season aggregate"
+                  if _current_cvi_n_seasons and _current_cvi_n_seasons > 1
+                  else None),
+                help=("Career-aggregated Composite Value Index, anchored "
+                       "to the player's most recent season. Combines that "
+                       f"season + up to {CVI_CAREER_MAX_LOOKBACK} prior "
+                       f"seasons with {CVI_CAREER_DECAY}^seasons-back decay "
+                       "weighting and cross-league translation (Camp → "
+                       "Liga 3 equivalent). Full breakdown below."),
+            )
+            st.markdown("")  # small spacer
             _tv_left, _tv_right = st.columns(2)
             with _tv_left:
                 st.caption("**Composite Value Index (CVI) breakdown**")
