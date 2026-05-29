@@ -139,12 +139,84 @@ def main():
         188221: 2021, 188222: 2022, 189147: 2023,
         190090: 2024, 191782: 2025, 190230: 2023, 191779: 2025,
     }
+    # v3.3 — season date windows. The TIGHT job of "only count value
+    # while at Liga 3" is done by the per-season-club match below
+    # (snapshot's club_at_time must match the player's actual GPA-
+    # season club). We allow a generous ±9-month window around the
+    # season midpoint so we keep snapshots from late-pre-season and
+    # early-post-season, both of which still reflect that tenure's
+    # market value. Reported_fee/manual bypass this window — they're
+    # trusted as-tier transfers regardless of date relative to a
+    # specific GPA season.
+    SEASON_WINDOW = {
+        188221: ('2021-03-01', '2022-12-31'),
+        188222: ('2022-03-01', '2023-12-31'),
+        189147: ('2023-03-01', '2024-12-31'),
+        190090: ('2024-03-01', '2025-12-31'),
+        191782: ('2025-03-01', '2026-12-31'),
+        190230: ('2023-03-01', '2024-12-31'),
+        191779: ('2025-03-01', '2026-12-31'),
+    }
 
     # --- Build training rows ---
-    print(f"\n[build] Joining GPA seasons to nearest TM snapshot...")
+    print(f"\n[build] Joining GPA seasons to in-season TM snapshots...")
     matched_pids = set(vals['playerId'].unique())
     gpa = gpa[gpa['playerId'].isin(matched_pids)].copy()
     print(f"[build] GPA rows for TM-matched players: {len(gpa):,}")
+
+    # v3.3 — derive (player, season) → actual tier-club names from
+    # match data. We use this to verify the TM snapshot's
+    # club_at_time matches the player's real club for THAT season,
+    # not just any tier club they were ever at.
+    print(f"[build] Building (player × season) club map from raw events...")
+    try:
+        ev_cols = ['matchId', 'team.name', 'player.id']
+        ev = pd.read_parquet(HERE / 'raw_events.parquet', columns=ev_cols)
+        ms = pd.read_parquet(HERE / 'matches_summary.parquet',
+                                columns=['matchId', 'seasonId'])
+        ev = ev.merge(ms, on='matchId', how='left')
+        ev = ev.dropna(subset=['team.name', 'player.id', 'seasonId'])
+        ev['player.id'] = ev['player.id'].astype(int)
+        ev['seasonId'] = ev['seasonId'].astype(int)
+        # one row per (player, season, team) with appearance count
+        ps_clubs = (ev.groupby(['player.id', 'seasonId', 'team.name'])
+                      .size().reset_index(name='n')
+                      .rename(columns={'player.id': 'playerId'}))
+        # Build dict: (pid, sid) → list of clubs they actually appeared
+        # for that season (sorted by appearances)
+        ps_club_map = {}
+        for (pid, sid), grp in ps_clubs.groupby(['playerId', 'seasonId']):
+            clubs = grp.sort_values('n', ascending=False)['team.name'].tolist()
+            ps_club_map[(pid, sid)] = clubs
+        print(f"[build] (player × season) club map: {len(ps_club_map):,} entries")
+    except Exception as e:
+        print(f"[build] WARN: couldn't build player-season club map ({e}); "
+               f"falling back to tier-only filter")
+        ps_club_map = {}
+
+    # pull the normalize helper directly off tier_matcher
+    from tier_matcher import _normalize as _normalize_club
+
+    def _club_matches(snapshot_club, season_clubs):
+        """True if the snapshot's club_at_time is one of the clubs the
+        player actually appeared for during this GPA season. Uses the
+        tier_matcher's normalization for tolerant matching."""
+        if not snapshot_club or not season_clubs:
+            return False
+        snap_id, snap_b = _normalize_club(snapshot_club)
+        for sc in season_clubs:
+            sc_id, sc_b = _normalize_club(sc)
+            if snap_b != sc_b:
+                continue
+            if not snap_id or not sc_id:
+                continue
+            # Exact identity OR bidirectional subset (matches
+            # 'Vit. Setúbal' ↔ 'Vitória Setúbal FC' style abbreviations)
+            if snap_id == sc_id:
+                return True
+            if snap_id.issubset(sc_id) or sc_id.issubset(snap_id):
+                return True
+        return False
 
     # Filter to minimum minutes
     mins_col = next((c for c in ('mins_played', 'totalMinutes', 'Minutes')
@@ -179,6 +251,7 @@ def main():
            f"{vals[vals['_at_our_tier']]['source'].value_counts().to_dict()}")
     vals_tier = vals[vals['_at_our_tier']].copy()
     rows = []
+    n_no_snaps = n_out_of_window = n_club_mismatch = 0
     for _, r in gpa.iterrows():
         pid = int(r['playerId'])
         sid = int(r['seasonId'])
@@ -186,18 +259,38 @@ def main():
         if mid_str is None:
             continue
         mid = pd.to_datetime(mid_str)
-        # Use tier-filtered snapshots only
+        # v3.3 — narrow window: snapshot must fall within the
+        # football season represented by this seasonId.
+        win = SEASON_WINDOW.get(sid)
+        if win is None:
+            continue
+        w_lo, w_hi = pd.to_datetime(win[0]), pd.to_datetime(win[1])
+        # Tier-filtered snapshots for this player, within this season window
         snaps = vals_tier[(vals_tier['playerId'] == pid)
                             & (vals_tier['value_eur'].notna())
-                            & (vals_tier['value_eur'] > 0)].copy()
+                            & (vals_tier['value_eur'] > 0)
+                            & (vals_tier['_d'] >= w_lo)
+                            & (vals_tier['_d'] <= w_hi)].copy()
         if snaps.empty:
+            n_no_snaps += 1
             continue
+        # v3.3 — for TM snapshots, also require club_at_time match
+        # one of the clubs this player ACTUALLY appeared for in this
+        # GPA season. Reported_fee/manual are trusted as-is.
+        season_clubs = ps_club_map.get((pid, sid), [])
+        if ps_club_map and season_clubs:
+            def _row_club_match(rr):
+                if rr['source'] in ('reported_fee', 'manual'):
+                    return True
+                return _club_matches(rr['_club_at_time'], season_clubs)
+            mask = snaps.apply(_row_club_match, axis=1)
+            snaps = snaps[mask].copy()
+            if snaps.empty:
+                n_club_mismatch += 1
+                continue
         snaps['_diff'] = (snaps['_d'] - mid).abs()
         snaps = snaps.sort_values('_diff')
         best = snaps.iloc[0]
-        # Reject if no snapshot within 18 months — too stale
-        if best['_diff'] > pd.Timedelta(days=540):
-            continue
         rows.append({
             'playerId': pid,
             'seasonId': sid,
@@ -226,30 +319,40 @@ def main():
         for _, uv in user_vals.iterrows():
             pid = int(uv['playerId'])
             xfer_date = uv['_d']
-            # Find the GPA season this transfer date falls in (or the
-            # season just before, if mid-summer)
+            # v3.3 — find the seasonId whose date window CONTAINS
+            # the transfer date. If a player's user-reported transfer
+            # falls in the summer window after their final Liga 3
+            # season (e.g. Jul 2024 transfer paired with season 189147
+            # 2023-24), pair it with that season. We pick the most
+            # recent matching GPA season for this player.
             gpa_pl = gpa_all[gpa_all['playerId'] == pid]
             if gpa_pl.empty:
                 print(f"  [user-row skip] pid {pid}: no GPA rows")
                 continue
-            best_gpa = None; best_dist = pd.Timedelta(days=10_000)
+            best_gpa = None
             for _, g in gpa_pl.iterrows():
                 sid = int(g['seasonId'])
-                if sid not in SEASON_MIDPOINT: continue
-                mid = pd.to_datetime(SEASON_MIDPOINT[sid])
-                dist = abs(xfer_date - mid)
-                if dist < best_dist:
-                    best_dist = dist; best_gpa = g
-            if best_gpa is None: continue
-            # Check if this row already exists in the main training set
-            # (from the nearest-snapshot join). If so skip.
+                if sid not in SEASON_WINDOW: continue
+                w = SEASON_WINDOW[sid]
+                w_lo, w_hi = pd.to_datetime(w[0]), pd.to_datetime(w[1])
+                if w_lo <= xfer_date <= w_hi:
+                    # If multiple seasons contain the date (shouldn't
+                    # happen with non-overlapping windows but defensive),
+                    # prefer the latest one — the player just finished it.
+                    if best_gpa is None or int(g['seasonId']) > int(best_gpa['seasonId']):
+                        best_gpa = g
+            if best_gpa is None:
+                print(f"  [user-row skip] pid {pid}: no GPA season "
+                       f"window contains transfer date {xfer_date.date()}")
+                continue
+            sid_int = int(best_gpa['seasonId'])
+            # Skip if main loop already added this (pid, seasonId)
             already_present = any(
-                r['playerId'] == pid
-                and r['seasonId'] == int(best_gpa['seasonId'])
-                and abs((r['_snap_date'] - xfer_date).days) < 30
+                r['playerId'] == pid and r['seasonId'] == sid_int
                 for r in rows
             )
             if already_present: continue
+            best_dist = pd.Timedelta(days=0)
             sid_int = int(best_gpa['seasonId'])
             user_rows.append({
                 'playerId': pid,
@@ -271,6 +374,26 @@ def main():
                    f"transfer rows that the nearest-snapshot join missed")
     rows.extend(user_rows)
     train = pd.DataFrame(rows)
+    # v3.3 — dedupe: when overlapping season windows pair the SAME
+    # snapshot with two adjacent seasons, keep only the row whose
+    # season midpoint is closest to the snapshot date. This avoids
+    # double-counting Juan Perea's €100k fee across seasons 189147
+    # AND 190090 just because his Jul 2024 transfer falls in both
+    # windows.
+    if len(train):
+        train['_mid'] = train['seasonId'].map(
+            {k: pd.to_datetime(v) for k, v in SEASON_MIDPOINT.items()})
+        train['_dist_to_mid'] = (train['_snap_date'] - train['_mid']).abs()
+        before = len(train)
+        train = (train.sort_values('_dist_to_mid')
+                       .drop_duplicates(subset=['playerId', '_snap_date',
+                                                 'value_eur'], keep='first')
+                       .drop(columns=['_mid', '_dist_to_mid']))
+        if before > len(train):
+            print(f"[v3.3 dedupe] dropped {before - len(train)} duplicate "
+                   f"(player × snapshot) rows from overlapping windows")
+    print(f"[v3.3 filter] dropped: {n_no_snaps:,} (no in-season snapshot), "
+           f"{n_club_mismatch:,} (snapshot club ≠ season club)")
     print(f"[build] Total training rows: {len(train):,} "
            f"(incl {(train['value_source'] != 'transfermarkt').sum()} user-entered)")
 
@@ -328,6 +451,17 @@ def main():
                 pass
         print(f"[build] DOBs from player_details: "
                f"{len(dob_map) - filled_from_tm}, from TM metadata: {filled_from_tm}")
+    # v3.3 — user-supplied DOBs for players missing from both
+    # player_details and TM metadata. Without these the transfer
+    # rows for these players get dropped at the age filter below.
+    MANUAL_DOB_OVERRIDES = {
+        709015: '2000-11-15',   # Tâmble Monteiro
+        807307: '1999-08-21',   # Juan Perea
+    }
+    for pid, ds in MANUAL_DOB_OVERRIDES.items():
+        if pid not in dob_map:
+            dob_map[pid] = pd.to_datetime(ds)
+            print(f"[build] manual DOB override: pid {pid} → {ds}")
     # Age at the ACTUAL valuation/transfer date — not at season
     # midpoint. For a TM snapshot in Sept or a Jan-window transfer
     # this can be off by 6+ months vs the old behaviour.
@@ -891,10 +1025,12 @@ def main():
             'oof_mape_pct': float(mape),
             'pos_groups_one_hot': [c for c in features if c.startswith('pos_')],
             'reference_position_group': 'CM',
-            'version': 'v3.2',
+            'version': 'v3.3',
             'changes': [
-                'CVI-style versatility blend: 0.6 × max + 0.4 × mean across role templates',
-                'Sample-weight reported_fee transfers 8× over TM snapshots',
+                "Strict in-tenure filter: snapshot date must fall in the GPA season window AND club_at_time must match the player's actual Liga 3 / Camp club that season",
+                'Dedupe same (player x snapshot) rows across overlapping season windows',
+                'Manual DOB overrides for Tamble Monteiro (709015) and Juan Perea (807307)',
+                'Inherits v3.2: CVI versatility blend + 8x sample weight for reported_fees',
             ],
         }, f, indent=2)
 
@@ -919,13 +1055,13 @@ def main():
     _dump_json_bundle(model, features, out_dir / 'eur_v2_ridge.json',
                        extra_meta={'chosen_alpha': float(chosen_alpha),
                                     'oof_r2': float(oof_r2),
-                                    'version': 'v3.2'})
+                                    'version': 'v3.3'})
     _dump_json_bundle(tv_model, true_value_features,
                        out_dir / 'true_value_ridge.json',
                        extra_meta={'chosen_alpha': float(tv_alpha),
                                     'oof_r2': float(tv_r2),
                                     'target_scale': 'MV',
-                                    'version': 'v3.2'})
+                                    'version': 'v3.3'})
     print(f"\n[done] Model + diagnostics saved to {out_dir}/")
     return 0
 
