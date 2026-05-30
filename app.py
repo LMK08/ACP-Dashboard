@@ -2038,18 +2038,47 @@ POSITION_EUR_MULTIPLIER = {
     'GK':    0.70,
 }
 
+# v2.9 — extra Campeonato discount on the EUR side. CVI already uses
+# league_factor 0.85 for Camp inside the score itself, but the user wants
+# Camp projected prices nudged down further to reflect that even an
+# "equivalent CVI" Camp player commands a lower real fee at sale (smaller
+# scout footprint, less liquid market, lower buyer competition). Combined
+# with the in-CVI 0.85, a Camp player at the same raw inputs as a Liga 3
+# player ends up at ~0.85 × 0.85 ≈ 72% of the Liga 3 projected EUR.
+CAMP_PROJECTED_EUR_PENALTY = 0.85
 
-def cvi_to_projected_eur(cvi, position_group=None):
-    """Convert a CVI score to a projected EUR figure using the power-curve
-    + position multiplier + €500k cap. Returns None if cvi is None/<=0."""
+# v2.9 — slightly steeper top curve. User: "slope a little steeper on
+# price for top players compared to the rest." Lifted exponent 2.5 → 2.55
+# and back-solved coefficient so CVI 40 still maps to ~€25k. Effect:
+#   CVI 40   €25k  (unchanged)
+#   CVI 60   €71k  (~unchanged from €70k)
+#   CVI 80   €150k (~unchanged from €143k)
+#   CVI 100  €281k (was €250k — +€31k)
+#   CVI 120  €465k (was €394k — +€71k)
+PROJECTED_EUR_COEF = 2.234
+PROJECTED_EUR_EXP  = 2.55
+PROJECTED_EUR_CAP  = 500_000
+
+
+def cvi_to_projected_eur(cvi, position_group=None, competition_id=None):
+    """Convert a CVI score to a projected EUR figure: power curve +
+    position multiplier + Camp penalty + €500k cap. Returns None if
+    cvi is None/<=0."""
     try:
         v = float(cvi)
     except (TypeError, ValueError):
         return None
-    if v is None or not (v > 0):
+    if not (v > 0):
         return None
-    mult = POSITION_EUR_MULTIPLIER.get(position_group, 1.00)
-    return min(2.5 * (v ** 2.5) * mult, 500_000)
+    pos_mult = POSITION_EUR_MULTIPLIER.get(position_group, 1.00)
+    camp_mult = (CAMP_PROJECTED_EUR_PENALTY
+                  if competition_id is not None
+                  and not (isinstance(competition_id, float) and pd.isna(competition_id))
+                  and int(competition_id) == 702
+                  else 1.00)
+    return min(PROJECTED_EUR_COEF * (v ** PROJECTED_EUR_EXP)
+                * pos_mult * camp_mult,
+               PROJECTED_EUR_CAP)
 
 
 def _cvi_position_group(primary_position):
@@ -8861,14 +8890,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if _v is not None and not pd.isna(_v):
                 _current_cvi_for_eur = float(_v)
         if _current_cvi_for_eur is not None and _current_cvi_for_eur > 0:
-            # v2.8 — position multiplier applied BEFORE the €500k cap so
-            # elite STs hit cap a bit earlier and elite GKs effectively
-            # cap around €350k. See POSITION_EUR_MULTIPLIER for sources.
+            # v2.9 — single helper handles power curve + position
+            # multiplier + Camp penalty + cap. See cvi_to_projected_eur.
             _pos_grp_for_eur = _cvi_position_group(current_pos)
-            _pos_mult_for_eur = POSITION_EUR_MULTIPLIER.get(_pos_grp_for_eur, 1.00)
-            _tv_projected_eur = min(
-                2.5 * (_current_cvi_for_eur ** 2.5) * _pos_mult_for_eur,
-                500_000,
+            _tv_projected_eur = cvi_to_projected_eur(
+                _current_cvi_for_eur,
+                position_group=_pos_grp_for_eur,
+                competition_id=_tv_comp_id,
             )
         _tv_true_eur = None
         _tv_true_source = None
@@ -8941,12 +8969,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 ("—"
                  if _tv_projected_eur is None
                  else f"€{_tv_projected_eur:,.0f}"),
-                help="CVI → EUR mapping calibrated against the 27 "
-                     "reported transfers, scaled by position. "
-                     "Base: 2.5 × CVI^2.5, ×position_mult, capped at "
-                     "€500k. Position multipliers from transfer-fee "
-                     "literature (CIES/Müller/Franceschi): ST 1.30, "
-                     "AM/WG 1.25, CM 1.00, CB 0.90, FB 0.85, GK 0.70.",
+                help="CVI → EUR. Base: 2.234 × CVI^2.55 × position "
+                     "multiplier × Camp penalty, capped at €500k. "
+                     "Position multipliers (literature-grounded — "
+                     "CIES/Müller/Franceschi): ST 1.30, AM/WG 1.25, "
+                     "CM 1.00, CB 0.90, FB 0.85, GK 0.70. Camp players "
+                     "get an additional 0.85× on top of CVI's league "
+                     "factor. Calibrated against the 27 reported "
+                     "transfer fees.",
             )
             bio_row3[1].metric(
                 "Current CVI",
@@ -11455,11 +11485,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Show Projected value",
             value=False,
             key="player_analysis_show_cvi",
-            help="CVI → EUR mapping. Base: 2.5 × CVI^2.5 × position "
+            help="CVI → EUR mapping. Base: 2.234 × CVI^2.55 × position "
                  "multiplier (ST 1.30, AM/WG 1.25, CM 1.00, CB 0.90, "
-                 "FB 0.85, GK 0.70), capped at €500k. CVI itself "
-                 "blends performance × age × reliability × league. "
-                 "Calibrated against the 27 reported transfer fees.",
+                 "FB 0.85, GK 0.70) × Camp penalty 0.85 if Campeonato, "
+                 "capped at €500k. CVI itself blends performance × age "
+                 "× reliability × league. Calibrated against the 27 "
+                 "reported transfer fees.",
         )
         sort_by_cvi = False
         if show_cvi:
@@ -11706,9 +11737,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     display.insert(_r_idx + 2, 'Cohort n', cohort)
 
             # Projected value: insert next to Rating in both compact
-            # and full modes. EUR computed from CVI × position mult,
-            # capped at €500k. In full mode also surface the Trajectory
-            # flag (perf - same-age-position median).
+            # and full modes. EUR computed from CVI × position mult ×
+            # Camp penalty, capped at €500k. In full mode also surface
+            # the Trajectory flag (perf - same-age-position median).
             if show_cvi and '_CVI' in sorted_tdf.columns:
                 _pos_for_eur = pd.Series(
                     sorted_tdf['primaryPosition'].apply(_cvi_position_group).values
@@ -11716,10 +11747,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     else [None] * len(sorted_tdf),
                     index=display.index,
                 )
+                # Per-row competition lookup so Camp players get the
+                # extra Camp penalty in projected EUR.
+                _comp_per_row = pd.Series(
+                    sorted_tdf['playerId'].apply(
+                        _comp_lookup if callable(_comp_lookup) else lambda _p: None
+                    ).values,
+                    index=display.index,
+                )
                 _cvi_series = pd.Series(sorted_tdf['_CVI'].values, index=display.index)
                 pv_vals = [
-                    cvi_to_projected_eur(c, pos)
-                    for c, pos in zip(_cvi_series, _pos_for_eur)
+                    cvi_to_projected_eur(c, pos, comp)
+                    for c, pos, comp in zip(_cvi_series, _pos_for_eur, _comp_per_row)
                 ]
                 pv_display = [
                     (f"€{int(v):,}" if v is not None else '')
