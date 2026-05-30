@@ -2047,16 +2047,19 @@ POSITION_EUR_MULTIPLIER = {
 # player ends up at ~0.85 × 0.85 ≈ 72% of the Liga 3 projected EUR.
 CAMP_PROJECTED_EUR_PENALTY = 0.85
 
-# v2.9 — slightly steeper top curve. User: "slope a little steeper on
-# price for top players compared to the rest." Lifted exponent 2.5 → 2.55
-# and back-solved coefficient so CVI 40 still maps to ~€25k. Effect:
-#   CVI 40   €25k  (unchanged)
-#   CVI 60   €71k  (~unchanged from €70k)
-#   CVI 80   €150k (~unchanged from €143k)
-#   CVI 100  €281k (was €250k — +€31k)
-#   CVI 120  €465k (was €394k — +€71k)
-PROJECTED_EUR_COEF = 2.234
-PROJECTED_EUR_EXP  = 2.55
+# v2.10 — steeper top + lower mid/bottom. User: "top line should stay
+# similar while the middle and bottom drop off a little." Higher
+# exponent (2.55 → 2.70) widens the spread between bottom and top;
+# coefficient anchored (1.10) so CVI 110 stays at ~€355k (matches v2.9).
+# Effect vs v2.9 (CM, Liga 3):
+#   CVI 40   €27k → €23k   (−14%)
+#   CVI 60   €76k → €69k   (−9%)
+#   CVI 80   €159k → €151k (−5%)
+#   CVI 100  €281k → €275k (−2%)
+#   CVI 110  €358k → €355k (anchor)
+#   CVI 120  €447k → €450k (+1%)
+PROJECTED_EUR_COEF = 1.10
+PROJECTED_EUR_EXP  = 2.70
 PROJECTED_EUR_CAP  = 500_000
 
 
@@ -8969,7 +8972,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 ("—"
                  if _tv_projected_eur is None
                  else f"€{_tv_projected_eur:,.0f}"),
-                help="CVI → EUR. Base: 2.234 × CVI^2.55 × position "
+                help="CVI → EUR. Base: 1.10 × CVI^2.70 × position "
                      "multiplier × Camp penalty, capped at €500k. "
                      "Position multipliers (literature-grounded — "
                      "CIES/Müller/Franceschi): ST 1.30, AM/WG 1.25, "
@@ -11485,7 +11488,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Show Projected value",
             value=False,
             key="player_analysis_show_cvi",
-            help="CVI → EUR mapping. Base: 2.234 × CVI^2.55 × position "
+            help="CVI → EUR mapping. Base: 1.10 × CVI^2.70 × position "
                  "multiplier (ST 1.30, AM/WG 1.25, CM 1.00, CB 0.90, "
                  "FB 0.85, GK 0.70) × Camp penalty 0.85 if Campeonato, "
                  "capped at €500k. CVI itself blends performance × age "
