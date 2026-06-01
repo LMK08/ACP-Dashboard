@@ -9308,603 +9308,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             except Exception as e:
                 print(f"Warning: Could not compute outlier stats: {e}")
 
-        st.divider()
-
-        # --- 5a. Transfer Value Detail ------------------------------------
-        # Headline projected / true / Δ already live in the Player
-        # Information bio row at top. This section is the deep dive:
-        # CVI components + market-context features that feed the v2
-        # EUR regression. Lives here so the supporting analytics sit
-        # next to the trajectory plots that visualize them.
-        st.subheader("Transfer Value Detail")
-        try:
-            _tv_left, _tv_right = st.columns(2)
-            with _tv_left:
-                st.caption("**Composite Value Index (CVI) breakdown**")
-                if not _tv_cvi_block.empty:
-                    _cvi_row = _tv_cvi_block.iloc[0]
-                    _cvi_v = _cvi_row.get('_CVI')
-                    _cvi_perf = _cvi_row.get('_CVI_perf')
-                    _cvi_perf_shr = _cvi_row.get('_CVI_perf_shrunk')
-                    _cvi_age_m = _cvi_row.get('_CVI_age')
-                    _cvi_reliab = _cvi_row.get('_CVI_reliab')
-                    _cvi_reliab_ceil = _cvi_row.get('_CVI_reliab_ceiling')
-                    _cvi_reliab_sf = _cvi_row.get('_CVI_reliab_sample_factor')
-                    _cvi_reliab_mtc = _cvi_row.get('_CVI_reliab_mins_to_ceiling')
-                    _cvi_league = _cvi_row.get('_CVI_league')
-                    _cvi_traj = _cvi_row.get('_CVI_trajectory')
-                    if pd.notna(_cvi_v):
-                        st.metric("CVI", f"{_cvi_v:.1f}")
-                    else:
-                        st.metric("CVI", "—")
-                    # Build the "Raw → Shrunk (toward X)" string so the
-                    # user can see where the anchor came from — the
-                    # player's own career mean (when we have data) or
-                    # generic replacement (40) for debutants.
-                    _cvi_eff_prior = _cvi_row.get('_CVI_effective_prior')
-                    _cvi_prior_perf = _cvi_row.get('_CVI_prior_perf')
-                    _cvi_prior_str = _cvi_row.get('_CVI_prior_strength')
-                    _cvi_prior_mins = _cvi_row.get('_CVI_prior_mins_eff')
-                    if pd.notna(_cvi_perf) and pd.notna(_cvi_perf_shr):
-                        if (_cvi_prior_perf is not None
-                                and pd.notna(_cvi_prior_perf)
-                                and _cvi_prior_str is not None
-                                and pd.notna(_cvi_prior_str)
-                                and _cvi_prior_str > 0.05):
-                            _prior_lbl = (
-                                f"toward {_cvi_eff_prior:.0f}  "
-                                f"(your-career {_cvi_prior_perf:.0f}, "
-                                f"{int(_cvi_prior_str*100)}% strength)"
-                            )
-                        else:
-                            _prior_lbl = (
-                                f"toward {CVI_REPLACEMENT_PERF:.0f}  "
-                                f"(no prior data — replacement default)"
-                            )
-                        _perf_str = (f"{_cvi_perf:.1f}  →  "
-                                      f"{_cvi_perf_shr:.1f}  "
-                                      f"{_prior_lbl}")
-                    elif pd.notna(_cvi_perf):
-                        _perf_str = f"{_cvi_perf:.1f}"
-                    else:
-                        _perf_str = "—"
-                    # Reliability shrinkage-weight display — show how
-                    # much weight the player's own data gets vs the
-                    # replacement-level prior.
-                    if (pd.notna(_cvi_reliab) and pd.notna(_cvi_reliab_ceil)
-                            and pd.notna(_cvi_reliab_sf)):
-                        _own_pct = _cvi_reliab * 100
-                        _prior_pct = (1 - _cvi_reliab) * 100
-                        _reliab_str = (f"{_own_pct:.0f}% own / "
-                                        f"{_prior_pct:.0f}% prior  "
-                                        f"(ceil {_cvi_reliab_ceil:.2f}"
-                                        f" × sample {_cvi_reliab_sf:.2f})")
-                    elif pd.notna(_cvi_reliab):
-                        _reliab_str = f"{_cvi_reliab*100:.0f}% own data"
-                    else:
-                        _reliab_str = "—"
-                    _comp_df = pd.DataFrame([
-                        {'Component': 'Perf (raw → shrunk)',
-                         'Value': _perf_str},
-                        {'Component': 'Shrinkage weighting',
-                         'Value': _reliab_str},
-                        {'Component': '× Age-value multiplier',
-                         'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
-                        {'Component': '× League multiplier',
-                         'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
-                        {'Component': 'Trajectory vs age peer',
-                         'Value': (f"{_cvi_traj:+.1f}"
-                                    if _cvi_traj is not None and pd.notna(_cvi_traj)
-                                    else "—")},
-                    ])
-                    st.dataframe(_comp_df, use_container_width=True, hide_index=True)
-                    # Footnote — explain the shrinkage in plain English
-                    if pd.notna(_cvi_reliab_mtc) and pd.notna(_cvi_reliab_ceil):
-                        if (_cvi_prior_perf is not None
-                                and pd.notna(_cvi_prior_perf)
-                                and _cvi_prior_str is not None
-                                and pd.notna(_cvi_prior_str)
-                                and _cvi_prior_str > 0.05):
-                            _prior_note = (
-                                f"Prior built from this player's "
-                                f"**{int(_cvi_prior_mins):,} effective prior "
-                                f"minutes** (decay-weighted career, strictly "
-                                f"before {SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}). "
-                                f"With {int(_cvi_prior_str*100)}% prior "
-                                f"strength + {(1-_cvi_prior_str)*100:.0f}% "
-                                f"replacement-default, the shrinkage target "
-                                f"is **{_cvi_eff_prior:.1f}** — not the "
-                                f"generic 40. "
-                            )
-                        else:
-                            _prior_note = (
-                                f"No prior-season data for this player → "
-                                f"falls back to generic replacement-level "
-                                f"(**{CVI_REPLACEMENT_PERF:.0f}**, "
-                                f"~40th-percentile player at this position). "
-                            )
-                        st.caption(
-                            f"**Empirical-Bayes shrinkage (CVI v2.0).** "
-                            f"{_prior_note}"
-                            f"Position ceiling **{_cvi_reliab_ceil:.2f}** "
-                            f"(asymptotic max trust), reached at "
-                            f"**~{int(_cvi_reliab_mtc):,} min**. Grounded in "
-                            f"within-position YoY r from the GPA explainer "
-                            f"(Part VI). CMs stabilize faster than CBs; "
-                            f"GK V-metrics need ~2 seasons."
-                        )
-                    st.caption("📌 CVI uses placeholder parameters — to be "
-                                "calibrated against scraped market values.")
-
-                    # ---- Full CVI formula debug panel ----
-                    # Every intermediate value, every coefficient, every
-                    # decision the model made. Useful for explaining CVI
-                    # rankings to coaches / scouts ('why is X rated lower
-                    # than Y?') and for debugging weird outputs.
-                    with st.expander("🔬 Full CVI formula breakdown (debug)",
-                                       expanded=False):
-                        try:
-                            # Position group + eligible roles
-                            _dbg_pos = (_tv_single.iloc[0].get('primaryPosition')
-                                          if _tv_single is not None
-                                          and not _tv_single.empty else None)
-                            _dbg_grp = _cvi_position_group(_dbg_pos)
-                            _dbg_eligible = ([r for r in WEIGHTS
-                                                if _dbg_pos in POSITION_GROUPS.get(r, [])]
-                                              if _dbg_pos else [])
-
-                            st.markdown("**1️⃣ Position resolution**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;Wyscout primaryPosition: `{_dbg_pos}`  \n"
-                                f"&nbsp;&nbsp;CVI position group: `{_dbg_grp}`  \n"
-                                f"&nbsp;&nbsp;Eligible role templates: `{', '.join(_dbg_eligible) or '—'}`"
-                            )
-
-                            # All role scores for this player
-                            st.markdown("**2️⃣ Role_Score per eligible role** "
-                                         "(higher = better fit)")
-                            if _tv_single is not None and not _tv_single.empty:
-                                _dbg_row = _tv_single.iloc[0]
-                                _role_data = []
-                                for r in _dbg_eligible:
-                                    v = _dbg_row.get(f"{r}_Score")
-                                    if v is not None and not pd.isna(v):
-                                        _role_data.append({'Role': r,
-                                                            'Score': f"{float(v):.1f}"})
-                                if _role_data:
-                                    _rd_df = pd.DataFrame(_role_data)
-                                    st.dataframe(_rd_df, use_container_width=True,
-                                                  hide_index=True)
-                                    _vals = [float(d['Score']) for d in _role_data]
-                                    _max_role = max(_vals)
-                                    _mean_role = sum(_vals) / len(_vals)
-                                    _alpha = CVI_ROLE_VERSATILITY_ALPHA
-                                    _blend = (_alpha * _max_role
-                                              + (1 - _alpha) * _mean_role)
-                                    st.markdown(
-                                        f"&nbsp;&nbsp;max(role)  = **{_max_role:.1f}**  \n"
-                                        f"&nbsp;&nbsp;mean(role) = **{_mean_role:.1f}**  \n"
-                                        f"&nbsp;&nbsp;blended ({_alpha:.0%} max + "
-                                        f"{1-_alpha:.0%} mean) = **{_blend:.1f}**"
-                                    )
-
-                            # Action V percentile
-                            st.markdown("**3️⃣ Action V percentile** "
-                                         "(within position group)")
-                            _dbg_tv = (_tv_single.iloc[0].get('Total Value')
-                                         if _tv_single is not None
-                                         and 'Total Value' in _tv_single.columns
-                                         and not _tv_single.empty else None)
-                            st.markdown(
-                                f"&nbsp;&nbsp;Total Value /90: "
-                                f"`{_dbg_tv if _dbg_tv is None else f'{float(_dbg_tv):.4f}'}`"
-                                f"  \n"
-                                f"&nbsp;&nbsp;Position-group percentile (Action V): "
-                                f"**{'—' if not pd.notna(_cvi_perf) else 'see PerfQuality below'}**"
-                            )
-
-                            # Performance Quality calculation
-                            st.markdown("**4️⃣ Performance Quality blend**")
-                            if _dbg_grp in CVI_PERF_WEIGHTS:
-                                _w_role, _w_av = CVI_PERF_WEIGHTS[_dbg_grp]
-                                st.markdown(
-                                    f"&nbsp;&nbsp;Position weights: "
-                                    f"role = **{_w_role:.0%}**, "
-                                    f"Action V = **{_w_av:.0%}**  \n"
-                                    f"&nbsp;&nbsp;Raw PerformanceQuality = "
-                                    f"**{_cvi_perf:.1f}** (combined)"
-                                )
-
-                            # Reliability
-                            st.markdown("**5️⃣ Reliability (position-aware)**")
-                            _dbg_mins = (_tv_single.iloc[0].get('totalMinutes')
-                                          if _tv_single is not None
-                                          and not _tv_single.empty else None)
-                            st.markdown(
-                                f"&nbsp;&nbsp;Minutes this season: **{int(_dbg_mins or 0):,}**  \n"
-                                f"&nbsp;&nbsp;Position ceiling: "
-                                f"**{_cvi_reliab_ceil:.2f}** "
-                                f"(asymptotic max trust for this position group)  \n"
-                                f"&nbsp;&nbsp;Sample factor: "
-                                f"**{_cvi_reliab_sf:.2f}** "
-                                f"(1 − exp(−3 × mins / "
-                                f"{int(_cvi_reliab_mtc or 0):,}))  \n"
-                                f"&nbsp;&nbsp;= Reliability weight: **{_cvi_reliab:.3f}**"
-                            )
-
-                            # Empirical-Bayes prior
-                            st.markdown("**6️⃣ Empirical-Bayes prior**")
-                            if (_cvi_prior_perf is not None
-                                    and pd.notna(_cvi_prior_perf)
-                                    and _cvi_prior_str is not None
-                                    and _cvi_prior_str > 0.05):
-                                st.markdown(
-                                    f"&nbsp;&nbsp;Player's career prior (L3-eq): "
-                                    f"**{_cvi_prior_perf:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Decay-weighted prior minutes: "
-                                    f"**{int(_cvi_prior_mins or 0):,}**  \n"
-                                    f"&nbsp;&nbsp;Prior strength: "
-                                    f"**{_cvi_prior_str:.2f}** "
-                                    f"(min(prior_mins / 1500, 1.0))  \n"
-                                    f"&nbsp;&nbsp;Effective prior used = "
-                                    f"`{_cvi_prior_str:.2f} × {_cvi_prior_perf:.1f}` + "
-                                    f"`{1-_cvi_prior_str:.2f} × {CVI_REPLACEMENT_PERF:.0f}` = "
-                                    f"**{_cvi_eff_prior:.1f}**"
-                                )
-                            else:
-                                st.markdown(
-                                    f"&nbsp;&nbsp;No prior-season data → "
-                                    f"falls back to generic replacement "
-                                    f"**{CVI_REPLACEMENT_PERF:.0f}**"
-                                )
-
-                            # Shrinkage step
-                            st.markdown("**7️⃣ Bayesian shrinkage**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;shrunk = "
-                                f"`{_cvi_reliab:.3f} × {_cvi_perf:.1f}` + "
-                                f"`{1-_cvi_reliab:.3f} × {_cvi_eff_prior:.1f}` = "
-                                f"**{_cvi_perf_shr:.1f}**"
-                            )
-
-                            # Age multiplier breakdown
-                            st.markdown("**8️⃣ Age multiplier "
-                                         "(NPV of remaining career)**")
-                            if _dbg_grp in CVI_AGE_VALUE_PARAMS and _tv_age is not None:
-                                _ap = CVI_AGE_VALUE_PARAMS[_dbg_grp]
-                                _years_to_peak = max(_ap['peak_age'] - _tv_age, 0)
-                                _years_to_decline = max(_ap['decline_start'] - _tv_age, 0)
-                                _years_to_end = max(_ap['career_end'] - _tv_age, 0)
-                                st.markdown(
-                                    f"&nbsp;&nbsp;Age: **{_tv_age:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Position trajectory: peak "
-                                    f"@ **{_ap['peak_age']}**, decline starts "
-                                    f"@ **{_ap['decline_start']}**, end "
-                                    f"@ **{_ap['career_end']}**  \n"
-                                    f"&nbsp;&nbsp;Years until peak: "
-                                    f"**{_years_to_peak:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Years until decline starts: "
-                                    f"**{_years_to_decline:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Years until career end: "
-                                    f"**{_years_to_end:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Multiplier range for this "
-                                    f"position: `[{_ap['old_floor']:.2f}, "
-                                    f"{_ap['max_mult']:.2f}]`  \n"
-                                    f"&nbsp;&nbsp;= Age multiplier: "
-                                    f"**{_cvi_age_m:.3f}**"
-                                )
-
-                            # League
-                            st.markdown("**9️⃣ League multiplier**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;Competition: "
-                                f"`{('Camp' if _tv_comp_id==702 else 'L3' if _tv_comp_id==43324 else _tv_comp_id)}`  \n"
-                                f"&nbsp;&nbsp;Multiplier: **{_cvi_league:.2f}** "
-                                f"(Liga 3 = 1.00, Campeonato = 0.85)"
-                            )
-
-                            # Final
-                            st.markdown("**🏁 Final CVI**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;CVI = "
-                                f"`shrunk_perf × age_mult × league_mult`  \n"
-                                f"&nbsp;&nbsp;&nbsp;&nbsp;= "
-                                f"`{_cvi_perf_shr:.1f} × {_cvi_age_m:.3f} × {_cvi_league:.2f}`  \n"
-                                f"&nbsp;&nbsp;&nbsp;&nbsp;= **{_cvi_v:.1f}**"
-                            )
-                        except Exception as _dbg_exc:
-                            st.caption(f"Debug panel error: "
-                                        f"{type(_dbg_exc).__name__}: {_dbg_exc}")
-                else:
-                    st.caption("CVI unavailable for this player-season.")
-
-                # ---- Season CVI (career-aggregated, anchored to selected) ----
-                # Pairs the per-season CVI above with a career view that
-                # includes the selected season + all prior seasons with
-                # 0.6 decay. Never peeks at seasons after the anchor.
-                if _tv_career_season is not None:
-                    st.caption("")  # spacer
-                    st.caption(f"**Season CVI** — career-aggregated, "
-                                f"anchored at "
-                                f"**{SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}**")
-                    _scvi = _tv_career_season.get('career_cvi')
-                    _scvi_n = _tv_career_season.get('n_seasons_used')
-                    _scvi_em = _tv_career_season.get('effective_mins')
-                    _scvi_perf_raw = _tv_career_season.get('career_perf_raw_l3')
-                    _scvi_perf_shr = _tv_career_season.get('career_perf_shrunk')
-                    _scvi_rel = _tv_career_season.get('reliability')
-                    _scvi_age = _tv_career_season.get('age_at_anchor')
-                    _scvi_age_m = _tv_career_season.get('age_multiplier')
-                    _scvi_lg = _tv_career_season.get('league_at_anchor')
-                    if _scvi is not None and not pd.isna(_scvi):
-                        st.metric(
-                            f"Season CVI ({_scvi_n}-season aggregate)",
-                            f"{_scvi:.1f}",
-                            (f"vs season-only CVI: "
-                              f"{(_scvi - (_tv_cvi_block.iloc[0].get('_CVI') or 0)):+.1f}"
-                              if not _tv_cvi_block.empty
-                              and _tv_cvi_block.iloc[0].get('_CVI') is not None
-                              and pd.notna(_tv_cvi_block.iloc[0].get('_CVI'))
-                              else None),
-                        )
-                    _scvi_comp_df = pd.DataFrame([
-                        {'Component': 'Career perf (L3-eq, decay-weighted)',
-                         'Value': (f"{_scvi_perf_raw:.1f}"
-                                    if _scvi_perf_raw is not None
-                                    and not pd.isna(_scvi_perf_raw)
-                                    else "—")},
-                        {'Component': 'Career perf (shrunk → 40 prior)',
-                         'Value': (f"{_scvi_perf_shr:.1f}"
-                                    if _scvi_perf_shr is not None
-                                    and not pd.isna(_scvi_perf_shr)
-                                    else "—")},
-                        {'Component': 'Effective minutes (decay-weighted)',
-                         'Value': (f"{int(_scvi_em):,}"
-                                    if _scvi_em is not None
-                                    and not pd.isna(_scvi_em)
-                                    else "—")},
-                        {'Component': 'Reliability (own data weight)',
-                         'Value': (f"{_scvi_rel:.3f}"
-                                    if _scvi_rel is not None
-                                    and not pd.isna(_scvi_rel)
-                                    else "—")},
-                        {'Component': 'Age at anchor',
-                         'Value': (f"{_scvi_age:.1f}"
-                                    if _scvi_age is not None
-                                    and not pd.isna(_scvi_age)
-                                    else "—")},
-                        {'Component': '× Age-value multiplier',
-                         'Value': (f"{_scvi_age_m:.3f}"
-                                    if _scvi_age_m is not None
-                                    and not pd.isna(_scvi_age_m)
-                                    else "—")},
-                        {'Component': '× League multiplier (at anchor)',
-                         'Value': (f"{_scvi_lg:.2f}"
-                                    if _scvi_lg is not None
-                                    and not pd.isna(_scvi_lg)
-                                    else "—")},
-                    ])
-                    st.dataframe(_scvi_comp_df, use_container_width=True,
-                                  hide_index=True)
-                    # Per-season breakdown so the user can audit every
-                    # season's contribution
-                    _brk = _tv_career_season.get('breakdown', []) or []
-                    if _brk:
-                        with st.expander("Per-season breakdown (decay, "
-                                          "league translation, weight)"):
-                            _brk_rows = []
-                            _total_w = sum(r.get('weight', 0) or 0 for r in _brk)
-                            for r in _brk:
-                                _sid = int(r.get('seasonId'))
-                                _cid = r.get('competitionId')
-                                _lbl = SEASON_ID_MAP.get(_sid, str(_sid))
-                                _comp_name = ('Camp' if _cid == 702
-                                                else 'L3' if _cid == 43324
-                                                else (str(_cid)
-                                                       if _cid is not None
-                                                       else '—'))
-                                _w = r.get('weight', 0) or 0
-                                _share = (_w / _total_w * 100
-                                            if _total_w > 0 else 0)
-                                _brk_rows.append({
-                                    'Season': _lbl,
-                                    'League': _comp_name,
-                                    'Mins': f"{int(r.get('mins_played', 0) or 0):,}",
-                                    'Perf %ile': f"{(r.get('perf_pct') or 0):.0f}",
-                                    'Decay': f"{(r.get('decay_factor') or 0):.2f}",
-                                    'League factor': f"{(r.get('league_factor') or 0):.2f}",
-                                    'Weight share': f"{_share:.0f}%",
-                                })
-                            st.dataframe(pd.DataFrame(_brk_rows),
-                                          use_container_width=True,
-                                          hide_index=True)
-                            st.caption(
-                                f"Aggregation: each season's perf is "
-                                f"multiplied by its league factor "
-                                f"(Camp×0.85 → Liga 3 equivalent), then "
-                                f"weighted by `decay × minutes` with "
-                                f"decay = {CVI_CAREER_DECAY}^seasons-back. "
-                                f"Effective minutes drive the shrinkage "
-                                f"weight, so a 3-season player gets a "
-                                f"larger 'own data' share than a 1-season "
-                                f"player at the same age."
-                            )
-                elif selected_season_id is not None:
-                    st.caption("")
-                    st.caption("Season CVI unavailable — no GPA data "
-                                "found for this player on or before the "
-                                "selected season.")
-
-            with _tv_right:
-                st.caption("**Market value sources**")
-                if _tv_valuations_rows.empty:
-                    st.caption("No data yet. Populates from reported transfer "
-                                "fees + manual entries.")
-                else:
-                    _src_view = (_tv_valuations_rows
-                                  .groupby('source', as_index=False)
-                                  .first()[['source', 'value_eur', 'as_of_date']])
-                    _src_view['value_eur'] = _src_view['value_eur'].apply(
-                        lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                    )
-                    st.dataframe(_src_view, use_container_width=True, hide_index=True)
-                    if len(_tv_valuations_rows) > len(_src_view):
-                        with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
-                            _hist_view = _tv_valuations_rows[
-                                ['source', 'value_eur', 'as_of_date', 'notes']
-                            ].copy()
-                            _hist_view['value_eur'] = _hist_view['value_eur'].apply(
-                                lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                            )
-                            st.dataframe(_hist_view, use_container_width=True,
-                                          hide_index=True)
-
-                # ---- Manual valuation entry ----
-                # Add a hand-entered figure from club / agent conversations.
-                # Highest-authority source (weight 4.0 in the loader's blend).
-                with st.expander("➕ Add manual valuation", expanded=False):
-                    with st.form(f"manual_val_{player_id}_{selected_season_id}",
-                                  clear_on_submit=True):
-                        _mv_col_a, _mv_col_b = st.columns(2)
-                        _mv_eur = _mv_col_a.number_input(
-                            "Value (EUR)", min_value=0, step=10_000,
-                            value=0, help="Hand-entered figure from club "
-                                          "or agent conversation. €0 = skip.",
-                        )
-                        from datetime import date as _date_cls
-                        _mv_date = _mv_col_b.date_input(
-                            "As-of date", value=_date_cls.today(),
-                            help="When this valuation was given to you.",
-                        )
-                        _mv_notes = st.text_input(
-                            "Notes (optional)",
-                            placeholder="e.g. 'agent quote', 'club asking price', "
-                                        "'rejected bid from X'",
-                        )
-                        _mv_submitted = st.form_submit_button("Save",
-                                                                type="primary")
-                        if _mv_submitted:
-                            if _mv_eur <= 0:
-                                st.warning("Value must be > €0 — skipping.")
-                            else:
-                                try:
-                                    import csv
-                                    _man_path = (Path(__file__).resolve().parent
-                                                  / 'valuations'
-                                                  / 'manual_entries.csv')
-                                    _man_path.parent.mkdir(exist_ok=True)
-                                    _new_file = not _man_path.exists()
-                                    with open(_man_path, 'a', newline='') as _f:
-                                        _w = csv.writer(_f)
-                                        if _new_file:
-                                            _w.writerow(['playerId', 'value_eur',
-                                                          'as_of_date', 'season_id',
-                                                          'source_url', 'notes'])
-                                        _w.writerow([
-                                            int(player_id), int(_mv_eur),
-                                            _mv_date.isoformat(),
-                                            (int(selected_season_id)
-                                             if selected_season_id else ''),
-                                            '',
-                                            (f"{_mv_notes} | added via dashboard"
-                                             if _mv_notes else "added via dashboard"),
-                                        ])
-                                    st.success(
-                                        f"Saved: €{_mv_eur:,} as of {_mv_date} "
-                                        f"for {selected_player_name}. "
-                                        f"Refresh the page to see it in the True value."
-                                    )
-                                except Exception as _save_exc:
-                                    st.error(f"Could not save: "
-                                              f"{type(_save_exc).__name__}: {_save_exc}")
-
-            # ---- Market Context features ----
-            st.markdown("##### Market Context")
-            try:
-                _tv_team = (str(_tv_player_row.get('teamName'))
-                             if _tv_player_row is not None
-                             and pd.notna(_tv_player_row.get('teamName'))
-                             else None)
-                _opta_fn = (make_opta_team_strength_lookup()
-                             if 'make_opta_team_strength_lookup' in globals()
-                             else (lambda _t: None))
-                _mc = compute_market_features(
-                    player_id=player_id,
-                    season_id=selected_season_id,
-                    raw_events_df=raw_events_df,
-                    matches_summary_df=matches_summary_df,
-                    player_details_df=player_details_df,
-                    player_minutes_data=player_minutes_data,
-                    team_name=_tv_team,
-                    opta_team_lookup=_opta_fn,
-                )
-                _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
-                def _fmt_resid(v, n_dec=1):
-                    if v is None or pd.isna(v): return "—"
-                    return f"{v:+.{n_dec}f}"
-
-                _mc_c1.metric("xG O/U (season)",
-                                _fmt_resid(_mc['xg_residual_season']),
-                                help="Goals minus xG, non-penalty, this season. "
-                                     "Positive = outperforming xG (clinical "
-                                     "finishing or variance); negative = "
-                                     "underperforming.")
-                _mc_c1.metric("xG O/U (career)",
-                                _fmt_resid(_mc['xg_residual_career']),
-                                help="Cumulative across all seasons in our "
-                                     "data. More stable than single-season "
-                                     "residuals.")
-                _mc_c2.metric("xA O/U (season)",
-                                _fmt_resid(_mc['ass_residual_season']),
-                                help="Assists minus xA proxy (sum of xG of "
-                                     "shots the player set up).")
-                _mc_c2.metric("xA O/U (career)",
-                                _fmt_resid(_mc['ass_residual_career']))
-
-                _nat_p = _mc.get('passport_nationality') or '—'
-                _nat_b = _mc.get('birth_nationality') or '—'
-                _mc_c3.metric("Nationality (passport)", _nat_p)
-                if _nat_b != _nat_p:
-                    _mc_c3.metric("Birthplace", _nat_b)
-
-                _team_opta = _mc.get('team_opta_rating')
-                _team_ppm = _mc.get('team_ppm_season')
-                _team_pos = _mc.get('team_league_position')
-                _mc_c4.metric(
-                    "Team Opta",
-                    f"{_team_opta:.1f}" if _team_opta is not None else "—",
-                    help="Current team's Opta Power Ranking — proxy for "
-                         "scouting visibility and tier-internal team strength.",
-                )
-                _mc_c4.metric(
-                    "Team this season",
-                    (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
-                    + (f" · {_team_pos}." if _team_pos is not None else ""),
-                    help="Points per match + league position from parsed scores. "
-                         "Successful-team players typically carry a market premium.",
-                )
-
-                _ver = _mc.get('positions_played_career')
-                _sea = _mc.get('seasons_played')
-                if _ver is not None or _sea is not None:
-                    _bits = []
-                    if _ver is not None:
-                        _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
-                    if _sea is not None:
-                        _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
-                    st.caption("· ".join(_bits))
-                st.caption(
-                    "📌 These features feed the v2 EUR regression "
-                    "(currently pending). They don't change CVI itself."
-                )
-            except Exception as _mc_exc:
-                st.caption(f"Market Context error: "
-                            f"{type(_mc_exc).__name__}: {_mc_exc}")
-        except Exception as _tv_exc:
-            st.caption(f"Transfer Value Detail error: "
-                        f"{type(_tv_exc).__name__}: {_tv_exc}")
-
-        st.divider()
 
         # --- 5b. Career Trajectory ----------------------------------------
         # Per-season summary of the player's appearances + per-season
@@ -10475,6 +9878,603 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         
         st.divider()
         
+        # --- Transfer Value Detail ----------------------------------------
+        # Headline Projected value + Current CVI live in the bio row at
+        # top. This section is the deep dive — collapsed by default into
+        # three expanders so the page stays clean: CVI breakdown,
+        # Reported fees & manual entries, and the Market Context features
+        # block. Positioned just above the tactical pitch visualizations
+        # so scouting context flows into them.
+        st.subheader("Transfer Value Detail")
+        try:
+            with st.expander("Composite Value Index (CVI) breakdown",
+                              expanded=False):
+                if not _tv_cvi_block.empty:
+                    _cvi_row = _tv_cvi_block.iloc[0]
+                    _cvi_v = _cvi_row.get('_CVI')
+                    _cvi_perf = _cvi_row.get('_CVI_perf')
+                    _cvi_perf_shr = _cvi_row.get('_CVI_perf_shrunk')
+                    _cvi_age_m = _cvi_row.get('_CVI_age')
+                    _cvi_reliab = _cvi_row.get('_CVI_reliab')
+                    _cvi_reliab_ceil = _cvi_row.get('_CVI_reliab_ceiling')
+                    _cvi_reliab_sf = _cvi_row.get('_CVI_reliab_sample_factor')
+                    _cvi_reliab_mtc = _cvi_row.get('_CVI_reliab_mins_to_ceiling')
+                    _cvi_league = _cvi_row.get('_CVI_league')
+                    _cvi_traj = _cvi_row.get('_CVI_trajectory')
+                    if pd.notna(_cvi_v):
+                        st.metric("CVI", f"{_cvi_v:.1f}")
+                    else:
+                        st.metric("CVI", "—")
+                    # Build the "Raw → Shrunk (toward X)" string so the
+                    # user can see where the anchor came from — the
+                    # player's own career mean (when we have data) or
+                    # generic replacement (40) for debutants.
+                    _cvi_eff_prior = _cvi_row.get('_CVI_effective_prior')
+                    _cvi_prior_perf = _cvi_row.get('_CVI_prior_perf')
+                    _cvi_prior_str = _cvi_row.get('_CVI_prior_strength')
+                    _cvi_prior_mins = _cvi_row.get('_CVI_prior_mins_eff')
+                    if pd.notna(_cvi_perf) and pd.notna(_cvi_perf_shr):
+                        if (_cvi_prior_perf is not None
+                                and pd.notna(_cvi_prior_perf)
+                                and _cvi_prior_str is not None
+                                and pd.notna(_cvi_prior_str)
+                                and _cvi_prior_str > 0.05):
+                            _prior_lbl = (
+                                f"toward {_cvi_eff_prior:.0f}  "
+                                f"(your-career {_cvi_prior_perf:.0f}, "
+                                f"{int(_cvi_prior_str*100)}% strength)"
+                            )
+                        else:
+                            _prior_lbl = (
+                                f"toward {CVI_REPLACEMENT_PERF:.0f}  "
+                                f"(no prior data — replacement default)"
+                            )
+                        _perf_str = (f"{_cvi_perf:.1f}  →  "
+                                      f"{_cvi_perf_shr:.1f}  "
+                                      f"{_prior_lbl}")
+                    elif pd.notna(_cvi_perf):
+                        _perf_str = f"{_cvi_perf:.1f}"
+                    else:
+                        _perf_str = "—"
+                    # Reliability shrinkage-weight display — show how
+                    # much weight the player's own data gets vs the
+                    # replacement-level prior.
+                    if (pd.notna(_cvi_reliab) and pd.notna(_cvi_reliab_ceil)
+                            and pd.notna(_cvi_reliab_sf)):
+                        _own_pct = _cvi_reliab * 100
+                        _prior_pct = (1 - _cvi_reliab) * 100
+                        _reliab_str = (f"{_own_pct:.0f}% own / "
+                                        f"{_prior_pct:.0f}% prior  "
+                                        f"(ceil {_cvi_reliab_ceil:.2f}"
+                                        f" × sample {_cvi_reliab_sf:.2f})")
+                    elif pd.notna(_cvi_reliab):
+                        _reliab_str = f"{_cvi_reliab*100:.0f}% own data"
+                    else:
+                        _reliab_str = "—"
+                    _comp_df = pd.DataFrame([
+                        {'Component': 'Perf (raw → shrunk)',
+                         'Value': _perf_str},
+                        {'Component': 'Shrinkage weighting',
+                         'Value': _reliab_str},
+                        {'Component': '× Age-value multiplier',
+                         'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
+                        {'Component': '× League multiplier',
+                         'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
+                        {'Component': 'Trajectory vs age peer',
+                         'Value': (f"{_cvi_traj:+.1f}"
+                                    if _cvi_traj is not None and pd.notna(_cvi_traj)
+                                    else "—")},
+                    ])
+                    st.dataframe(_comp_df, use_container_width=True, hide_index=True)
+                    # Footnote — explain the shrinkage in plain English
+                    if pd.notna(_cvi_reliab_mtc) and pd.notna(_cvi_reliab_ceil):
+                        if (_cvi_prior_perf is not None
+                                and pd.notna(_cvi_prior_perf)
+                                and _cvi_prior_str is not None
+                                and pd.notna(_cvi_prior_str)
+                                and _cvi_prior_str > 0.05):
+                            _prior_note = (
+                                f"Prior built from this player's "
+                                f"**{int(_cvi_prior_mins):,} effective prior "
+                                f"minutes** (decay-weighted career, strictly "
+                                f"before {SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}). "
+                                f"With {int(_cvi_prior_str*100)}% prior "
+                                f"strength + {(1-_cvi_prior_str)*100:.0f}% "
+                                f"replacement-default, the shrinkage target "
+                                f"is **{_cvi_eff_prior:.1f}** — not the "
+                                f"generic 40. "
+                            )
+                        else:
+                            _prior_note = (
+                                f"No prior-season data for this player → "
+                                f"falls back to generic replacement-level "
+                                f"(**{CVI_REPLACEMENT_PERF:.0f}**, "
+                                f"~40th-percentile player at this position). "
+                            )
+                        st.caption(
+                            f"**Empirical-Bayes shrinkage (CVI v2.0).** "
+                            f"{_prior_note}"
+                            f"Position ceiling **{_cvi_reliab_ceil:.2f}** "
+                            f"(asymptotic max trust), reached at "
+                            f"**~{int(_cvi_reliab_mtc):,} min**. Grounded in "
+                            f"within-position YoY r from the GPA explainer "
+                            f"(Part VI). CMs stabilize faster than CBs; "
+                            f"GK V-metrics need ~2 seasons."
+                        )
+                    st.caption("📌 CVI uses placeholder parameters — to be "
+                                "calibrated against scraped market values.")
+
+                    # ---- Full CVI formula debug panel ----
+                    # Every intermediate value, every coefficient, every
+                    # decision the model made. Useful for explaining CVI
+                    # rankings to coaches / scouts ('why is X rated lower
+                    # than Y?') and for debugging weird outputs.
+                    with st.expander("🔬 Full CVI formula breakdown (debug)",
+                                       expanded=False):
+                        try:
+                            # Position group + eligible roles
+                            _dbg_pos = (_tv_single.iloc[0].get('primaryPosition')
+                                          if _tv_single is not None
+                                          and not _tv_single.empty else None)
+                            _dbg_grp = _cvi_position_group(_dbg_pos)
+                            _dbg_eligible = ([r for r in WEIGHTS
+                                                if _dbg_pos in POSITION_GROUPS.get(r, [])]
+                                              if _dbg_pos else [])
+
+                            st.markdown("**1️⃣ Position resolution**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;Wyscout primaryPosition: `{_dbg_pos}`  \n"
+                                f"&nbsp;&nbsp;CVI position group: `{_dbg_grp}`  \n"
+                                f"&nbsp;&nbsp;Eligible role templates: `{', '.join(_dbg_eligible) or '—'}`"
+                            )
+
+                            # All role scores for this player
+                            st.markdown("**2️⃣ Role_Score per eligible role** "
+                                         "(higher = better fit)")
+                            if _tv_single is not None and not _tv_single.empty:
+                                _dbg_row = _tv_single.iloc[0]
+                                _role_data = []
+                                for r in _dbg_eligible:
+                                    v = _dbg_row.get(f"{r}_Score")
+                                    if v is not None and not pd.isna(v):
+                                        _role_data.append({'Role': r,
+                                                            'Score': f"{float(v):.1f}"})
+                                if _role_data:
+                                    _rd_df = pd.DataFrame(_role_data)
+                                    st.dataframe(_rd_df, use_container_width=True,
+                                                  hide_index=True)
+                                    _vals = [float(d['Score']) for d in _role_data]
+                                    _max_role = max(_vals)
+                                    _mean_role = sum(_vals) / len(_vals)
+                                    _alpha = CVI_ROLE_VERSATILITY_ALPHA
+                                    _blend = (_alpha * _max_role
+                                              + (1 - _alpha) * _mean_role)
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;max(role)  = **{_max_role:.1f}**  \n"
+                                        f"&nbsp;&nbsp;mean(role) = **{_mean_role:.1f}**  \n"
+                                        f"&nbsp;&nbsp;blended ({_alpha:.0%} max + "
+                                        f"{1-_alpha:.0%} mean) = **{_blend:.1f}**"
+                                    )
+
+                            # Action V percentile
+                            st.markdown("**3️⃣ Action V percentile** "
+                                         "(within position group)")
+                            _dbg_tv = (_tv_single.iloc[0].get('Total Value')
+                                         if _tv_single is not None
+                                         and 'Total Value' in _tv_single.columns
+                                         and not _tv_single.empty else None)
+                            st.markdown(
+                                f"&nbsp;&nbsp;Total Value /90: "
+                                f"`{_dbg_tv if _dbg_tv is None else f'{float(_dbg_tv):.4f}'}`"
+                                f"  \n"
+                                f"&nbsp;&nbsp;Position-group percentile (Action V): "
+                                f"**{'—' if not pd.notna(_cvi_perf) else 'see PerfQuality below'}**"
+                            )
+
+                            # Performance Quality calculation
+                            st.markdown("**4️⃣ Performance Quality blend**")
+                            if _dbg_grp in CVI_PERF_WEIGHTS:
+                                _w_role, _w_av = CVI_PERF_WEIGHTS[_dbg_grp]
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Position weights: "
+                                    f"role = **{_w_role:.0%}**, "
+                                    f"Action V = **{_w_av:.0%}**  \n"
+                                    f"&nbsp;&nbsp;Raw PerformanceQuality = "
+                                    f"**{_cvi_perf:.1f}** (combined)"
+                                )
+
+                            # Reliability
+                            st.markdown("**5️⃣ Reliability (position-aware)**")
+                            _dbg_mins = (_tv_single.iloc[0].get('totalMinutes')
+                                          if _tv_single is not None
+                                          and not _tv_single.empty else None)
+                            st.markdown(
+                                f"&nbsp;&nbsp;Minutes this season: **{int(_dbg_mins or 0):,}**  \n"
+                                f"&nbsp;&nbsp;Position ceiling: "
+                                f"**{_cvi_reliab_ceil:.2f}** "
+                                f"(asymptotic max trust for this position group)  \n"
+                                f"&nbsp;&nbsp;Sample factor: "
+                                f"**{_cvi_reliab_sf:.2f}** "
+                                f"(1 − exp(−3 × mins / "
+                                f"{int(_cvi_reliab_mtc or 0):,}))  \n"
+                                f"&nbsp;&nbsp;= Reliability weight: **{_cvi_reliab:.3f}**"
+                            )
+
+                            # Empirical-Bayes prior
+                            st.markdown("**6️⃣ Empirical-Bayes prior**")
+                            if (_cvi_prior_perf is not None
+                                    and pd.notna(_cvi_prior_perf)
+                                    and _cvi_prior_str is not None
+                                    and _cvi_prior_str > 0.05):
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Player's career prior (L3-eq): "
+                                    f"**{_cvi_prior_perf:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Decay-weighted prior minutes: "
+                                    f"**{int(_cvi_prior_mins or 0):,}**  \n"
+                                    f"&nbsp;&nbsp;Prior strength: "
+                                    f"**{_cvi_prior_str:.2f}** "
+                                    f"(min(prior_mins / 1500, 1.0))  \n"
+                                    f"&nbsp;&nbsp;Effective prior used = "
+                                    f"`{_cvi_prior_str:.2f} × {_cvi_prior_perf:.1f}` + "
+                                    f"`{1-_cvi_prior_str:.2f} × {CVI_REPLACEMENT_PERF:.0f}` = "
+                                    f"**{_cvi_eff_prior:.1f}**"
+                                )
+                            else:
+                                st.markdown(
+                                    f"&nbsp;&nbsp;No prior-season data → "
+                                    f"falls back to generic replacement "
+                                    f"**{CVI_REPLACEMENT_PERF:.0f}**"
+                                )
+
+                            # Shrinkage step
+                            st.markdown("**7️⃣ Bayesian shrinkage**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;shrunk = "
+                                f"`{_cvi_reliab:.3f} × {_cvi_perf:.1f}` + "
+                                f"`{1-_cvi_reliab:.3f} × {_cvi_eff_prior:.1f}` = "
+                                f"**{_cvi_perf_shr:.1f}**"
+                            )
+
+                            # Age multiplier breakdown
+                            st.markdown("**8️⃣ Age multiplier "
+                                         "(NPV of remaining career)**")
+                            if _dbg_grp in CVI_AGE_VALUE_PARAMS and _tv_age is not None:
+                                _ap = CVI_AGE_VALUE_PARAMS[_dbg_grp]
+                                _years_to_peak = max(_ap['peak_age'] - _tv_age, 0)
+                                _years_to_decline = max(_ap['decline_start'] - _tv_age, 0)
+                                _years_to_end = max(_ap['career_end'] - _tv_age, 0)
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Age: **{_tv_age:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Position trajectory: peak "
+                                    f"@ **{_ap['peak_age']}**, decline starts "
+                                    f"@ **{_ap['decline_start']}**, end "
+                                    f"@ **{_ap['career_end']}**  \n"
+                                    f"&nbsp;&nbsp;Years until peak: "
+                                    f"**{_years_to_peak:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Years until decline starts: "
+                                    f"**{_years_to_decline:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Years until career end: "
+                                    f"**{_years_to_end:.1f}**  \n"
+                                    f"&nbsp;&nbsp;Multiplier range for this "
+                                    f"position: `[{_ap['old_floor']:.2f}, "
+                                    f"{_ap['max_mult']:.2f}]`  \n"
+                                    f"&nbsp;&nbsp;= Age multiplier: "
+                                    f"**{_cvi_age_m:.3f}**"
+                                )
+
+                            # League
+                            st.markdown("**9️⃣ League multiplier**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;Competition: "
+                                f"`{('Camp' if _tv_comp_id==702 else 'L3' if _tv_comp_id==43324 else _tv_comp_id)}`  \n"
+                                f"&nbsp;&nbsp;Multiplier: **{_cvi_league:.2f}** "
+                                f"(Liga 3 = 1.00, Campeonato = 0.85)"
+                            )
+
+                            # Final
+                            st.markdown("**🏁 Final CVI**")
+                            st.markdown(
+                                f"&nbsp;&nbsp;CVI = "
+                                f"`shrunk_perf × age_mult × league_mult`  \n"
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;= "
+                                f"`{_cvi_perf_shr:.1f} × {_cvi_age_m:.3f} × {_cvi_league:.2f}`  \n"
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;= **{_cvi_v:.1f}**"
+                            )
+                        except Exception as _dbg_exc:
+                            st.caption(f"Debug panel error: "
+                                        f"{type(_dbg_exc).__name__}: {_dbg_exc}")
+                else:
+                    st.caption("CVI unavailable for this player-season.")
+
+                # ---- Season CVI (career-aggregated, anchored to selected) ----
+                # Pairs the per-season CVI above with a career view that
+                # includes the selected season + all prior seasons with
+                # 0.6 decay. Never peeks at seasons after the anchor.
+                if _tv_career_season is not None:
+                    st.caption("")  # spacer
+                    st.caption(f"**Season CVI** — career-aggregated, "
+                                f"anchored at "
+                                f"**{SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}**")
+                    _scvi = _tv_career_season.get('career_cvi')
+                    _scvi_n = _tv_career_season.get('n_seasons_used')
+                    _scvi_em = _tv_career_season.get('effective_mins')
+                    _scvi_perf_raw = _tv_career_season.get('career_perf_raw_l3')
+                    _scvi_perf_shr = _tv_career_season.get('career_perf_shrunk')
+                    _scvi_rel = _tv_career_season.get('reliability')
+                    _scvi_age = _tv_career_season.get('age_at_anchor')
+                    _scvi_age_m = _tv_career_season.get('age_multiplier')
+                    _scvi_lg = _tv_career_season.get('league_at_anchor')
+                    if _scvi is not None and not pd.isna(_scvi):
+                        st.metric(
+                            f"Season CVI ({_scvi_n}-season aggregate)",
+                            f"{_scvi:.1f}",
+                            (f"vs season-only CVI: "
+                              f"{(_scvi - (_tv_cvi_block.iloc[0].get('_CVI') or 0)):+.1f}"
+                              if not _tv_cvi_block.empty
+                              and _tv_cvi_block.iloc[0].get('_CVI') is not None
+                              and pd.notna(_tv_cvi_block.iloc[0].get('_CVI'))
+                              else None),
+                        )
+                    _scvi_comp_df = pd.DataFrame([
+                        {'Component': 'Career perf (L3-eq, decay-weighted)',
+                         'Value': (f"{_scvi_perf_raw:.1f}"
+                                    if _scvi_perf_raw is not None
+                                    and not pd.isna(_scvi_perf_raw)
+                                    else "—")},
+                        {'Component': 'Career perf (shrunk → 40 prior)',
+                         'Value': (f"{_scvi_perf_shr:.1f}"
+                                    if _scvi_perf_shr is not None
+                                    and not pd.isna(_scvi_perf_shr)
+                                    else "—")},
+                        {'Component': 'Effective minutes (decay-weighted)',
+                         'Value': (f"{int(_scvi_em):,}"
+                                    if _scvi_em is not None
+                                    and not pd.isna(_scvi_em)
+                                    else "—")},
+                        {'Component': 'Reliability (own data weight)',
+                         'Value': (f"{_scvi_rel:.3f}"
+                                    if _scvi_rel is not None
+                                    and not pd.isna(_scvi_rel)
+                                    else "—")},
+                        {'Component': 'Age at anchor',
+                         'Value': (f"{_scvi_age:.1f}"
+                                    if _scvi_age is not None
+                                    and not pd.isna(_scvi_age)
+                                    else "—")},
+                        {'Component': '× Age-value multiplier',
+                         'Value': (f"{_scvi_age_m:.3f}"
+                                    if _scvi_age_m is not None
+                                    and not pd.isna(_scvi_age_m)
+                                    else "—")},
+                        {'Component': '× League multiplier (at anchor)',
+                         'Value': (f"{_scvi_lg:.2f}"
+                                    if _scvi_lg is not None
+                                    and not pd.isna(_scvi_lg)
+                                    else "—")},
+                    ])
+                    st.dataframe(_scvi_comp_df, use_container_width=True,
+                                  hide_index=True)
+                    # Per-season breakdown so the user can audit every
+                    # season's contribution
+                    _brk = _tv_career_season.get('breakdown', []) or []
+                    if _brk:
+                        with st.expander("Per-season breakdown (decay, "
+                                          "league translation, weight)"):
+                            _brk_rows = []
+                            _total_w = sum(r.get('weight', 0) or 0 for r in _brk)
+                            for r in _brk:
+                                _sid = int(r.get('seasonId'))
+                                _cid = r.get('competitionId')
+                                _lbl = SEASON_ID_MAP.get(_sid, str(_sid))
+                                _comp_name = ('Camp' if _cid == 702
+                                                else 'L3' if _cid == 43324
+                                                else (str(_cid)
+                                                       if _cid is not None
+                                                       else '—'))
+                                _w = r.get('weight', 0) or 0
+                                _share = (_w / _total_w * 100
+                                            if _total_w > 0 else 0)
+                                _brk_rows.append({
+                                    'Season': _lbl,
+                                    'League': _comp_name,
+                                    'Mins': f"{int(r.get('mins_played', 0) or 0):,}",
+                                    'Perf %ile': f"{(r.get('perf_pct') or 0):.0f}",
+                                    'Decay': f"{(r.get('decay_factor') or 0):.2f}",
+                                    'League factor': f"{(r.get('league_factor') or 0):.2f}",
+                                    'Weight share': f"{_share:.0f}%",
+                                })
+                            st.dataframe(pd.DataFrame(_brk_rows),
+                                          use_container_width=True,
+                                          hide_index=True)
+                            st.caption(
+                                f"Aggregation: each season's perf is "
+                                f"multiplied by its league factor "
+                                f"(Camp×0.85 → Liga 3 equivalent), then "
+                                f"weighted by `decay × minutes` with "
+                                f"decay = {CVI_CAREER_DECAY}^seasons-back. "
+                                f"Effective minutes drive the shrinkage "
+                                f"weight, so a 3-season player gets a "
+                                f"larger 'own data' share than a 1-season "
+                                f"player at the same age."
+                            )
+                elif selected_season_id is not None:
+                    st.caption("")
+                    st.caption("Season CVI unavailable — no GPA data "
+                                "found for this player on or before the "
+                                "selected season.")
+
+            with st.expander("Reported transfer fees & manual entries",
+                              expanded=False):
+                st.caption("**Market value sources**")
+                if _tv_valuations_rows.empty:
+                    st.caption("No data yet. Populates from reported transfer "
+                                "fees + manual entries.")
+                else:
+                    _src_view = (_tv_valuations_rows
+                                  .groupby('source', as_index=False)
+                                  .first()[['source', 'value_eur', 'as_of_date']])
+                    _src_view['value_eur'] = _src_view['value_eur'].apply(
+                        lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                    )
+                    st.dataframe(_src_view, use_container_width=True, hide_index=True)
+                    if len(_tv_valuations_rows) > len(_src_view):
+                        with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
+                            _hist_view = _tv_valuations_rows[
+                                ['source', 'value_eur', 'as_of_date', 'notes']
+                            ].copy()
+                            _hist_view['value_eur'] = _hist_view['value_eur'].apply(
+                                lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                            )
+                            st.dataframe(_hist_view, use_container_width=True,
+                                          hide_index=True)
+
+                # ---- Manual valuation entry ----
+                # Add a hand-entered figure from club / agent conversations.
+                # Highest-authority source (weight 4.0 in the loader's blend).
+                with st.expander("➕ Add manual valuation", expanded=False):
+                    with st.form(f"manual_val_{player_id}_{selected_season_id}",
+                                  clear_on_submit=True):
+                        _mv_col_a, _mv_col_b = st.columns(2)
+                        _mv_eur = _mv_col_a.number_input(
+                            "Value (EUR)", min_value=0, step=10_000,
+                            value=0, help="Hand-entered figure from club "
+                                          "or agent conversation. €0 = skip.",
+                        )
+                        from datetime import date as _date_cls
+                        _mv_date = _mv_col_b.date_input(
+                            "As-of date", value=_date_cls.today(),
+                            help="When this valuation was given to you.",
+                        )
+                        _mv_notes = st.text_input(
+                            "Notes (optional)",
+                            placeholder="e.g. 'agent quote', 'club asking price', "
+                                        "'rejected bid from X'",
+                        )
+                        _mv_submitted = st.form_submit_button("Save",
+                                                                type="primary")
+                        if _mv_submitted:
+                            if _mv_eur <= 0:
+                                st.warning("Value must be > €0 — skipping.")
+                            else:
+                                try:
+                                    import csv
+                                    _man_path = (Path(__file__).resolve().parent
+                                                  / 'valuations'
+                                                  / 'manual_entries.csv')
+                                    _man_path.parent.mkdir(exist_ok=True)
+                                    _new_file = not _man_path.exists()
+                                    with open(_man_path, 'a', newline='') as _f:
+                                        _w = csv.writer(_f)
+                                        if _new_file:
+                                            _w.writerow(['playerId', 'value_eur',
+                                                          'as_of_date', 'season_id',
+                                                          'source_url', 'notes'])
+                                        _w.writerow([
+                                            int(player_id), int(_mv_eur),
+                                            _mv_date.isoformat(),
+                                            (int(selected_season_id)
+                                             if selected_season_id else ''),
+                                            '',
+                                            (f"{_mv_notes} | added via dashboard"
+                                             if _mv_notes else "added via dashboard"),
+                                        ])
+                                    st.success(
+                                        f"Saved: €{_mv_eur:,} as of {_mv_date} "
+                                        f"for {selected_player_name}. "
+                                        f"Refresh the page to see it in the True value."
+                                    )
+                                except Exception as _save_exc:
+                                    st.error(f"Could not save: "
+                                              f"{type(_save_exc).__name__}: {_save_exc}")
+
+            # ---- Market Context features ----
+            st.markdown("##### Market Context")
+            try:
+                _tv_team = (str(_tv_player_row.get('teamName'))
+                             if _tv_player_row is not None
+                             and pd.notna(_tv_player_row.get('teamName'))
+                             else None)
+                _opta_fn = (make_opta_team_strength_lookup()
+                             if 'make_opta_team_strength_lookup' in globals()
+                             else (lambda _t: None))
+                _mc = compute_market_features(
+                    player_id=player_id,
+                    season_id=selected_season_id,
+                    raw_events_df=raw_events_df,
+                    matches_summary_df=matches_summary_df,
+                    player_details_df=player_details_df,
+                    player_minutes_data=player_minutes_data,
+                    team_name=_tv_team,
+                    opta_team_lookup=_opta_fn,
+                )
+                _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
+                def _fmt_resid(v, n_dec=1):
+                    if v is None or pd.isna(v): return "—"
+                    return f"{v:+.{n_dec}f}"
+
+                _mc_c1.metric("xG O/U (season)",
+                                _fmt_resid(_mc['xg_residual_season']),
+                                help="Goals minus xG, non-penalty, this season. "
+                                     "Positive = outperforming xG (clinical "
+                                     "finishing or variance); negative = "
+                                     "underperforming.")
+                _mc_c1.metric("xG O/U (career)",
+                                _fmt_resid(_mc['xg_residual_career']),
+                                help="Cumulative across all seasons in our "
+                                     "data. More stable than single-season "
+                                     "residuals.")
+                _mc_c2.metric("xA O/U (season)",
+                                _fmt_resid(_mc['ass_residual_season']),
+                                help="Assists minus xA proxy (sum of xG of "
+                                     "shots the player set up).")
+                _mc_c2.metric("xA O/U (career)",
+                                _fmt_resid(_mc['ass_residual_career']))
+
+                _nat_p = _mc.get('passport_nationality') or '—'
+                _nat_b = _mc.get('birth_nationality') or '—'
+                _mc_c3.metric("Nationality (passport)", _nat_p)
+                if _nat_b != _nat_p:
+                    _mc_c3.metric("Birthplace", _nat_b)
+
+                _team_opta = _mc.get('team_opta_rating')
+                _team_ppm = _mc.get('team_ppm_season')
+                _team_pos = _mc.get('team_league_position')
+                _mc_c4.metric(
+                    "Team Opta",
+                    f"{_team_opta:.1f}" if _team_opta is not None else "—",
+                    help="Current team's Opta Power Ranking — proxy for "
+                         "scouting visibility and tier-internal team strength.",
+                )
+                _mc_c4.metric(
+                    "Team this season",
+                    (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
+                    + (f" · {_team_pos}." if _team_pos is not None else ""),
+                    help="Points per match + league position from parsed scores. "
+                         "Successful-team players typically carry a market premium.",
+                )
+
+                _ver = _mc.get('positions_played_career')
+                _sea = _mc.get('seasons_played')
+                if _ver is not None or _sea is not None:
+                    _bits = []
+                    if _ver is not None:
+                        _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
+                    if _sea is not None:
+                        _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
+                    st.caption("· ".join(_bits))
+                st.caption(
+                    "📌 These features feed the v2 EUR regression "
+                    "(currently pending). They don't change CVI itself."
+                )
+            except Exception as _mc_exc:
+                st.caption(f"Market Context error: "
+                            f"{type(_mc_exc).__name__}: {_mc_exc}")
+        except Exception as _tv_exc:
+            st.caption(f"Transfer Value Detail error: "
+                        f"{type(_tv_exc).__name__}: {_tv_exc}")
+
+        st.divider()
+
         # --- 7. SHOT ANALYSIS (UPDATED) ---
         st.subheader("Shot Analysis")
         
