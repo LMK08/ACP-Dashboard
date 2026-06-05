@@ -493,6 +493,39 @@ def load_data():
         if isinstance(player_minutes_data, pd.DataFrame):
             player_minutes_data = {CURRENT_SEASON_ID: player_minutes_data}
 
+        # Apply PLAYER_ID_ALIASES to per-season minutes dataframes so a
+        # duplicate pid's minutes flow under the canonical pid. Sum the
+        # mins per position if both pids appear in the same season.
+        try:
+            if PLAYER_ID_ALIASES:
+                for _sid, _mdf in list(player_minutes_data.items()):
+                    if not isinstance(_mdf, pd.DataFrame) or _mdf.empty:
+                        continue
+                    if 'playerId' not in _mdf.columns:
+                        continue
+                    _mdf = _mdf.copy()
+                    _mdf['playerId'] = _mdf['playerId'].map(
+                        lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                        if p is not None and not pd.isna(p) else p)
+                    # Sum minutes-like numeric columns per (playerId,
+                    # optionally position) so collisions merge cleanly.
+                    group_cols = ['playerId']
+                    if 'position' in _mdf.columns:
+                        group_cols.append('position')
+                    if _mdf.duplicated(subset=group_cols, keep=False).any():
+                        num_cols = [c for c in _mdf.columns if c not in group_cols
+                                      and pd.api.types.is_numeric_dtype(_mdf[c])]
+                        non_num = [c for c in _mdf.columns if c not in group_cols
+                                     and c not in num_cols]
+                        agg_dict = {c: 'sum' for c in num_cols}
+                        for c in non_num:
+                            agg_dict[c] = 'first'
+                        _mdf = (_mdf.groupby(group_cols, as_index=False)
+                                     .agg(agg_dict))
+                    player_minutes_data[_sid] = _mdf
+        except NameError:
+            pass  # PLAYER_ID_ALIASES not defined yet
+
         # Handle old season_team_stats format {team_name: stats} vs new {season_id: {team: stats}}
         # Old format has string keys (team names), new format has int keys (season IDs)
         if season_team_stats and isinstance(next(iter(season_team_stats.keys())), str):
@@ -656,11 +689,48 @@ def load_gpa_values():
         df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
         df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
         # Apply PLAYER_ID_ALIASES so duplicates' GPA flows to the canonical pid.
+        # Then minutes-weighted-merge any (canonical_pid, seasonId) collisions
+        # so two pids that BOTH have data for the same season combine correctly
+        # (sum mins, weighted-average the per-90 V columns by mins).
         if PLAYER_ID_ALIASES:
             df['playerId'] = df['playerId'].map(
                 lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
                 if p is not None and not pd.isna(p) else p
             ).astype('Int64')
+            # Identify which (pid, sid) groups have >1 row after the remap
+            dup_mask = df.duplicated(subset=['playerId', 'seasonId'], keep=False)
+            if dup_mask.any():
+                dups = df[dup_mask].copy()
+                singles = df[~dup_mask].copy()
+                # Columns to handle: numeric value/per-90 columns get
+                # minutes-weighted average; mins_played sums; everything else
+                # keeps the first non-null.
+                key = ['playerId', 'seasonId']
+                num_cols = [c for c in dups.columns
+                              if c not in key and pd.api.types.is_numeric_dtype(dups[c])]
+                non_num = [c for c in dups.columns if c not in key and c not in num_cols]
+                merged_rows = []
+                for (pid, sid), grp in dups.groupby(key, dropna=False):
+                    row = {'playerId': pid, 'seasonId': sid}
+                    mins = grp['mins_played'].fillna(0).clip(lower=0)
+                    total_mins = float(mins.sum())
+                    for c in num_cols:
+                        if c == 'mins_played':
+                            row[c] = total_mins
+                        elif total_mins > 0:
+                            # minutes-weighted average for per-90 stats
+                            vals = grp[c].fillna(0).astype(float).values
+                            row[c] = float((vals * mins.values).sum() / total_mins)
+                        else:
+                            row[c] = float(grp[c].mean())
+                    for c in non_num:
+                        first_non_null = grp[c].dropna()
+                        row[c] = first_non_null.iloc[0] if len(first_non_null) else None
+                    merged_rows.append(row)
+                df = pd.concat([singles, pd.DataFrame(merged_rows)],
+                                 ignore_index=True)
+                logger.info(f"PLAYER_ID_ALIASES: minutes-weighted-merged "
+                              f"{len(merged_rows)} (pid, season) collisions")
         logger.info(f"Loaded GPA values: {len(df):,} rows × {df.shape[1]} cols")
         return df
     except Exception as e:
