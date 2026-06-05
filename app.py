@@ -455,6 +455,16 @@ def load_data():
         # Normalize direct free kick shots so all shot filters include them
         fk_shot_mask = (raw_events_df['type.primary'] == 'free_kick') & (raw_events_df['shot.xg'].notna())
         raw_events_df.loc[fk_shot_mask, 'type.primary'] = 'shot'
+        # Apply PLAYER_ID_ALIASES so duplicate pids in raw_events flow
+        # under the canonical pid. Defined below; we reference by name
+        # which is fine because this load runs after the module body.
+        try:
+            if 'player.id' in raw_events_df.columns and PLAYER_ID_ALIASES:
+                raw_events_df['player.id'] = raw_events_df['player.id'].map(
+                    lambda p: PLAYER_ID_ALIASES.get(int(p), p)
+                    if p is not None and not pd.isna(p) else p)
+        except NameError:
+            pass  # PLAYER_ID_ALIASES not yet defined at module load time
         # Backfill competitionId if not present (first run after upgrade)
         if 'competitionId' not in raw_events_df.columns:
             raw_events_df['competitionId'] = raw_events_df['seasonId'].map(competition_for_season)
@@ -511,6 +521,46 @@ def load_data():
         logger.exception("Unexpected error in load_data")
         return None, None, None, None, None, None
 
+
+# ============================================================================
+# PLAYER_ID_ALIASES — Wyscout sometimes splits one real-world player across
+# two playerIds (different scrapes, different sources, mistyped name, etc.).
+# Map FROM the duplicate pid → TO the canonical pid we want to keep.
+#
+# After alias resolution every downstream pipeline (GPA, raw_events,
+# player_details, valuations, reported_fees) sees only the canonical pid.
+# Player_details for the canonical pid wins the bio, so put the pid whose
+# bio you want to keep on the RIGHT side of the mapping.
+#
+# Add a new entry by appending a line like:  <wrong_pid>: <canonical_pid>,
+# with a comment naming the player + reason.
+PLAYER_ID_ALIASES = {
+    # Mamadu Camará at Brito (25-26 Camp). Wyscout has two records:
+    # pid 71835 holds the GPA stats but DOB 1991-12-31 is the wrong
+    # (older) profile; pid 1322978 has the correct DOB 2001-11-20 but
+    # no stats. Remap 71835 → 1322978 so the GPA flows under the
+    # correct younger bio.
+    71835: 1322978,
+}
+
+
+def _resolve_pid(pid):
+    """Translate any pid through PLAYER_ID_ALIASES. Pass-through for
+    pids without an alias. Safe on None / NaN."""
+    if pid is None:
+        return pid
+    try:
+        if pd.isna(pid):
+            return pid
+    except (TypeError, ValueError):
+        pass
+    try:
+        ipid = int(pid)
+    except (TypeError, ValueError):
+        return pid
+    return PLAYER_ID_ALIASES.get(ipid, ipid)
+
+
 @st.cache_data(ttl=3600)
 def load_player_details():
     """Loads the player details (foot, height, etc.) from the pkl file."""
@@ -527,6 +577,14 @@ def load_player_details():
             logger.warning(f"{invalid_ids} player IDs could not be converted to numeric")
         players_df = players_df.dropna(subset=['playerId'])
         players_df['playerId'] = players_df['playerId'].astype(int)
+        # Drop alias-FROM rows so only the canonical bio remains.
+        # (We never want to display the duplicate's wrong DOB/name.)
+        if PLAYER_ID_ALIASES:
+            n_before = len(players_df)
+            players_df = players_df[~players_df['playerId'].isin(PLAYER_ID_ALIASES.keys())]
+            n_dropped = n_before - len(players_df)
+            if n_dropped:
+                logger.info(f"PLAYER_ID_ALIASES dropped {n_dropped} duplicate bio(s)")
         players_df = players_df.set_index('playerId')
         logger.info(f"Loaded {len(players_df)} player details")
         return players_df
@@ -597,6 +655,12 @@ def load_gpa_values():
         df = pd.read_parquet(path)
         df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
         df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        # Apply PLAYER_ID_ALIASES so duplicates' GPA flows to the canonical pid.
+        if PLAYER_ID_ALIASES:
+            df['playerId'] = df['playerId'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                if p is not None and not pd.isna(p) else p
+            ).astype('Int64')
         logger.info(f"Loaded GPA values: {len(df):,} rows × {df.shape[1]} cols")
         return df
     except Exception as e:
