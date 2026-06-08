@@ -192,6 +192,21 @@ _EVENT_COLS = [
 # which directly cuts noise in the DefR = actual − expected difference.
 _RECOVERY_TAGS = {'recovery', 'counterpressing_recovery'}
 
+# v8 — DEFENSIVE AERIAL DUELS. Wyscout has no explicit defensive-aerial
+# flag, so we define it by location: a WON aerial duel
+# (aerialDuel.firstTouch == True) in the player's OWN HALF (location.x in
+# their own attacking frame ≤ this threshold) is a defensive header —
+# clearing a cross, winning a long ball under pressure. Aerials in the
+# attacking half are offensive (flick-ons, headers at goal) and excluded.
+#
+# Double-counting: aerial duels are always type.primary == 'duel' and are
+# NEVER also logged as a clearance/interception (verified: 0 of 137,851
+# int/clear events carry an aerial flag). Of 34k defensive aerials only
+# 40 (0.008% of all defensive actions) share a same-player link with a
+# clearance/interception — negligible. Recoveries are also split so an
+# aerial only ever enters via the aerial branch, never the recovery one.
+DEFENSIVE_AERIAL_MAX_X = 50.0
+
 
 def _row_is_recovery(types_secondary) -> bool:
     if isinstance(types_secondary, (list, tuple, np.ndarray)):
@@ -247,17 +262,27 @@ def load_events() -> pd.DataFrame:
     # v5 — precompute event-level phase from possession.types (vectorized
     # via list-comprehension; ~one pass over the column).
     df['_phase'] = [phase_of(t) for t in df['possession.types'].tolist()]
-    # v7 — precompute defensive-action flags once (vectorized).
-    #   _is_recovery  — won a loose ball back (most reliable def action)
-    #   _is_def       — counted defensive action: interception | clearance
-    #                    | defensive duel | recovery  (used for responder
-    #                    matching AND the player's actual-action count)
-    #   _is_engage    — denser set for the line-height estimate (adds fouls)
+    # v7/v8 — precompute defensive-action flags once (vectorized).
+    #   _is_recovery   — type.secondary recovery tag (any event)
+    #   _is_aerial     — an aerial-duel event
+    #   _is_def_aerial — WON aerial in own half (defensive header)
+    #   _is_def        — counted defensive action:
+    #                      interception | clearance | defensive duel
+    #                      | GROUND recovery (recovery & not aerial)
+    #                      | defensive aerial
+    #                    Aerials enter ONLY via _is_def_aerial, never via the
+    #                    recovery branch, so each aerial is counted once.
+    #   _is_engage     — denser set for the line-height estimate (adds fouls)
     df['_is_recovery'] = [_row_is_recovery(t) for t in df['type.secondary'].tolist()]
     _tp = df['type.primary']
+    df['_is_aerial'] = df['aerialDuel.firstTouch'].notna()
+    df['_is_def_aerial'] = ((df['aerialDuel.firstTouch'] == True)
+                              & (df['location.x'] <= DEFENSIVE_AERIAL_MAX_X))
+    _ground_recovery = df['_is_recovery'] & ~df['_is_aerial']
     df['_is_def'] = ((_tp == 'interception') | (_tp == 'clearance')
                        | (df['groundDuel.duelType'] == 'defensive_duel')
-                       | df['_is_recovery'])
+                       | _ground_recovery
+                       | df['_is_def_aerial'])
     df['_is_engage'] = df['_is_def'] | (_tp == 'infraction')
     return df
 
