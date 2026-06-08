@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """StatsBomb-style DefR scatterplots, faceted by position group.
 
-Each outfield panel plots a player at (expected def actions/90, actual/90).
+Each panel plots a player at (expected def actions/90, actual/90).
 The four quadrants are the StatsBomb archetypes (Front-Foot Aggressor,
 System Absorber, Passive Line-Holder, Selective "Van Dijk zone"); the
 dashed line is the position-typical actual/expected ratio (above = the
 player over-performs the defensive demand placed on them).
 
-The GK panel is different — keepers use the shot-stopping DefR
-(goals prevented from post-shot xG), so it plots shot-stopping workload
-(post-shot xG faced /90) vs goals prevented /90; above the y=0 line =
-better than an average keeper.
+DefR is an outfield metric — there is no goalkeeper panel.
 
 Run from the Dashboard dir: python models/defr/plot_defr_scatter.py
 Output: models/defr/plots/defr_scatter_2526.png
@@ -72,7 +69,6 @@ GROUP = {'GK': 'GK', 'CB': 'CB', 'LCB': 'CB', 'RCB': 'CB', 'LB': 'FB', 'RB': 'FB
 df['grp'] = df['position'].map(GROUP)
 df['exp90'] = df['expected_def_actions'] / (df['mins_played'] / 90)
 df['act90'] = df['actual_def_actions'] / (df['mins_played'] / 90)
-df['psxg90'] = df['gk_psxg_faced'] / (df['mins_played'] / 90)
 
 SEASON_LBL = {191782: 'Liga 3', 191779: 'Camp'}
 cur = df[df['seasonId'].isin([191782, 191779]) & (df['mins_played'] >= 700)].copy()
@@ -137,41 +133,7 @@ def outfield_panel(ax, g):
     style_axes(ax)
 
 
-def gk_panel(ax):
-    sub = cur[(cur['grp'] == 'GK') & cur['psxg90'].notna()
-                & cur['gk_gp_per90'].notna()].copy()
-    if sub.empty:
-        ax.set_visible(False)
-        return
-    x = sub['psxg90'].values           # shot-stopping workload
-    y = sub['gk_gp_per90'].values      # goals prevented / 90
-    lim_x = np.percentile(x, 98) * 1.15
-    yabs = max(abs(y.min()), abs(y.max())) * 1.32
-    # zero reference (average keeper)
-    ax.axhline(0, color=C_LINE, lw=1.1, ls='--', zorder=1)
-    ax.scatter(x, y, c=sub['color'], s=34, alpha=0.6, edgecolors='white',
-                linewidths=0.5, zorder=3)
-    ax.text(0.985, 0.97, 'Over-performs\n(saves shots)', transform=ax.transAxes,
-             ha='right', va='top', fontsize=7.5, color=C_QUAD, style='italic')
-    ax.text(0.985, 0.03, 'Under-performs', transform=ax.transAxes,
-             ha='right', va='bottom', fontsize=7.5, color=C_QUAD, style='italic')
-    top = sub.nlargest(5, 'gk_gp_per90')
-    ax.scatter(top['psxg90'], top['gk_gp_per90'], s=58, facecolors='none',
-                edgecolors='#202124', linewidths=1.1, zorder=4)
-    texts = [ax.text(r['psxg90'], r['gk_gp_per90'], r['name'], fontsize=8,
-                      fontweight='bold', color=C_TXT, zorder=5)
-              for _, r in top.iterrows()]
-    if _HAS_ADJUST and texts:
-        adjust_text(texts, ax=ax, only_move={'text': 'xy'},
-                     arrowprops=dict(arrowstyle='-', color='#9aa0a6', lw=0.6),
-                     expand=(1.4, 1.6))
-    ax.set_xlim(0, lim_x)
-    ax.set_ylim(-yabs, yabs)
-    ax.set_title('GK  (shot-stopping)', fontsize=13, fontweight='bold',
-                  color=C_TXT, pad=8)
-    ax.set_xlabel('Post-shot xG faced / 90  (workload)', fontsize=8.5, color='#5f6368')
-    ax.set_ylabel('Goals prevented / 90', fontsize=8.5, color='#5f6368')
-    style_axes(ax)
+# DefR is an outfield metric — no GK panel.
 
 
 # ---- figure ----
@@ -180,14 +142,13 @@ fig.patch.set_facecolor('white')
 fig.suptitle('Defensive Responsibility (DefR) — 25/26 Liga 3 + Campeonato',
               fontsize=18, fontweight='bold', color=C_TXT, x=0.5, y=0.985)
 fig.text(0.5, 0.945,
-          'Outfield: expected vs actual defensive actions per 90 (≥700 min). '
-          'Above the dashed line = does more defending than the role demands. '
-          'GK: shot-stopping (goals prevented).',
+          'Expected vs actual defensive actions per 90 (≥700 min). '
+          'Above the dashed line = does more defending than the role demands.',
           ha='center', fontsize=10.5, color='#5f6368')
 
 for ax, g in zip(axes.flat[:5], ['ST', 'AM/W', 'CM', 'FB', 'CB']):
     outfield_panel(ax, g)
-gk_panel(axes.flat[5])
+axes.flat[5].set_visible(False)   # DefR is outfield-only — no GK panel
 
 handles = [
     Line2D([0], [0], marker='o', color='w', markerfacecolor=C_L3, markersize=9, label='Liga 3'),

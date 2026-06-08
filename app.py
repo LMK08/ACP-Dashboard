@@ -816,7 +816,7 @@ def load_defr_values():
 
 def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
     """Merge DefR per-90 columns (DefR Interceptions/Clearances/Tackles/
-    Recoveries/Aerials/Total + DefR Shot-Stopping for GKs) into the stats DF.
+    Recoveries/Aerials/Total) into the stats DF. Outfield-only (no GKs).
 
     DefR counts are summed across the active seasons per player and per-90
     is recomputed from the totals (so multi-season views aggregate
@@ -833,7 +833,7 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
     if defr.empty:
         return player_stats_df
 
-    count_cols = list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr', 'gk_goals_prevented']
+    count_cols = list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr']
     count_cols = [c for c in count_cols if c in defr.columns]
     g = defr.copy()
     g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
@@ -846,8 +846,6 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
             new_cols[disp] = agg[raw] / mins90
     if 'defr' in agg.columns:
         new_cols['DefR Total'] = agg['defr'] / mins90
-    if 'gk_goals_prevented' in agg.columns:
-        new_cols['DefR Shot-Stopping'] = agg['gk_goals_prevented'] / mins90
     defr_sub = pd.DataFrame({'playerId': agg['playerId'], **new_cols})
 
     df = player_stats_df
@@ -894,8 +892,7 @@ def _add_defr_percentiles(df):
     """Add `<DefR metric>_percentile` columns, ranked within broad position
     bucket among 500+ minute players — so the radar's percentile mode can
     render DefR axes."""
-    metrics = [m for m in (DEFR_DISPLAY_METRICS + ['DefR Shot-Stopping'])
-                 if m in df.columns]
+    metrics = [m for m in DEFR_DISPLAY_METRICS if m in df.columns]
     if not metrics:
         return df
     pos_col = 'primaryPosition' if 'primaryPosition' in df.columns else (
@@ -9490,7 +9487,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     metrics_to_plot = _mapped
                 # Percentile for each DefR axis vs same-position peers
                 for _m in metrics_to_plot:
-                    if (_m in DEFR_DISPLAY_METRICS or _m == 'DefR Shot-Stopping') \
+                    if _m in DEFR_DISPLAY_METRICS \
                             and _m in radar_player_data_row.columns \
                             and _m in final_population.columns:
                         _pv = final_population[_m].dropna()
@@ -10132,7 +10129,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Output": OUTPUT_METRICS,
             "Passing": PASSING_METRICS,
             "Defensive": DEFENSIVE_METRICS,
-            "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS + ['DefR Shot-Stopping'],
+            "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
             "Dribbling": DRIBBLING_METRICS,
             "Goalkeeping": GOALKEEPING_METRICS
         }
@@ -10181,8 +10178,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         for group_name, group_metrics in stat_groups.items():
 
-            _defr_group = group_name == 'Defensive Responsibility (DefR)'
-            if player_is_gk and group_name != 'Goalkeeping' and not _defr_group:
+            if player_is_gk and group_name != 'Goalkeeping':
                 continue
             if not player_is_gk and group_name == 'Goalkeeping':
                 continue
@@ -12260,7 +12256,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "Output": OUTPUT_METRICS,
                 "Passing": PASSING_METRICS,
                 "Defensive": DEFENSIVE_METRICS,
-                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS + ['DefR Shot-Stopping'],
+                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
                 "Dribbling": DRIBBLING_METRICS,
                 "Goalkeeping": GOALKEEPING_METRICS,
                 "Set Pieces": SET_PIECE_METRICS,

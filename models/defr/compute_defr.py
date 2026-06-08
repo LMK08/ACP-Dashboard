@@ -181,8 +181,7 @@ _EVENT_COLS = [
     'carry.endLocation.x', 'carry.endLocation.y',
     'possession.types',
     'groundDuel.duelType', 'aerialDuel.firstTouch',
-    'shot.onTarget', 'shot.isGoal', 'shot.postShotXg',
-    'shot.goalkeeper.id', 'competitionId',
+    'competitionId',
 ]
 
 # v7 — recovery is the most reliable defensive action (within-season
@@ -740,40 +739,10 @@ def compute_per_player(ev: pd.DataFrame,
         out['mins_played'] = np.nan
         out['defr_per90'] = np.nan
 
-    # v6 — GK shot-stopping DefR. The outfield "respond to opp pass/carry"
-    # model doesn't fit keepers (they barely register). A GK's real
-    # defensive responsibility is shot-stopping, and the DefR concept maps
-    # cleanly: expected = post-shot xG of shots faced (goals an average
-    # keeper concedes), actual prevention = expected − goals conceded.
-    #   gk_goals_prevented = psxg_faced − goals_conceded   (+ = good keeper)
-    # For GK rows we REPLACE defr_per90 with goals_prevented/90 so the
-    # downstream position-normalization treats shot-stopping as their DefR.
-    gk = ev[(ev['type.primary'] == 'shot')
-              & (ev['shot.onTarget'] == True)
-              & ev['shot.goalkeeper.id'].notna()].copy()
-    if not gk.empty:
-        gk['gk_id'] = gk['shot.goalkeeper.id'].astype(int)
-        gk['psxg'] = pd.to_numeric(gk['shot.postShotXg'], errors='coerce').fillna(0)
-        gk['goal'] = gk['shot.isGoal'].fillna(False).astype(int)
-        gk['seasonId'] = pd.to_numeric(gk['seasonId'], errors='coerce').astype('Int64')
-        gks = (gk.groupby(['gk_id', 'seasonId'])
-                  .agg(gk_shots_faced=('goal', 'size'),
-                        gk_psxg_faced=('psxg', 'sum'),
-                        gk_goals_conceded=('goal', 'sum'))
-                  .reset_index()
-                  .rename(columns={'gk_id': 'playerId'}))
-        gks['gk_goals_prevented'] = gks['gk_psxg_faced'] - gks['gk_goals_conceded']
-        gks['playerId'] = gks['playerId'].astype('Int64')
-        out = out.merge(gks, on=['playerId', 'seasonId'], how='left')
-        # For GK rows: override defr_per90 with goals-prevented per 90.
-        is_gk = (out['position'] == 'GK') & out['gk_goals_prevented'].notna()
-        out.loc[is_gk, 'defr_per90'] = np.where(
-            out.loc[is_gk, 'mins_played'].fillna(0) > 0,
-            out.loc[is_gk, 'gk_goals_prevented'] / (out.loc[is_gk, 'mins_played'] / 90.0),
-            np.nan)
-        out['gk_gp_per90'] = np.where(
-            (out['position'] == 'GK') & (out['mins_played'].fillna(0) > 0),
-            out['gk_goals_prevented'] / (out['mins_played'] / 90.0), np.nan)
+    # DefR is an OUTFIELD metric — the "respond to opp pass/carry/shot"
+    # model doesn't fit keepers. Drop GK rows entirely so DefR carries no
+    # goalkeeper data.
+    out = out[out['position'] != 'GK'].reset_index(drop=True)
 
     # v4 — position-fair DefR with minutes shrinkage.
     #
