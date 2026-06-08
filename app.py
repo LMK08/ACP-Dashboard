@@ -739,6 +739,187 @@ def load_gpa_values():
 
 
 # ============================================================================
+# Defensive Responsibility (DefR) — per-(player, season) per-type metrics.
+# Loaded from models/defr/defr_per_player_season.parquet and merged into the
+# stats DF as per-90 "DefR <action>" columns so they show in Overall Season
+# Stats / Player Analysis and can be swapped onto radars.
+# ============================================================================
+# parquet count-column  ->  dashboard display metric name
+DEFR_TYPE_TO_DISPLAY = {
+    'defr_interception': 'DefR Interceptions',
+    'defr_clearance':    'DefR Clearances',
+    'defr_tackle':       'DefR Tackles',
+    'defr_recovery':     'DefR Recoveries',
+    'defr_def_aerial':   'DefR Aerials',
+}
+DEFR_DISPLAY_METRICS = list(DEFR_TYPE_TO_DISPLAY.values()) + ['DefR Total']
+# Base defensive metric (as shown on radars / stat tables)  ->  DefR equivalent.
+# Lets the radar "DefR mode" swap each defensive axis to its DefR value.
+DEFR_RADAR_MAP = {
+    'Interceptions': 'DefR Interceptions',
+    'Clearances': 'DefR Clearances',
+    'Defensive duels': 'DefR Tackles',
+    'Defensive duels successful': 'DefR Tackles',
+    'Defensive duels successful %': 'DefR Tackles',
+    'Sliding tackles': 'DefR Tackles',
+    'Sliding tackles successful': 'DefR Tackles',
+    'Sliding tackles successful %': 'DefR Tackles',
+    'Recoveries': 'DefR Recoveries',
+    'Recoveries Opp Half': 'DefR Recoveries',
+    'Counterpressing Recoveries': 'DefR Recoveries',
+    'Aerial duels': 'DefR Aerials',
+    'Aerial duels successful': 'DefR Aerials',
+    'Aerial duels successful %': 'DefR Aerials',
+}
+
+
+@st.cache_data(ttl=3600)
+def load_defr_values():
+    """Load per-(playerId, seasonId) DefR metrics. Returns empty DF if the
+    file is missing so the rest of the app is unaffected."""
+    path = os.path.join(os.path.dirname(__file__),
+                          'models', 'defr', 'defr_per_player_season.parquet')
+    if not os.path.exists(path):
+        logger.info("defr_per_player_season.parquet not found — DefR disabled")
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+        df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        if PLAYER_ID_ALIASES:
+            df['playerId'] = df['playerId'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                if p is not None and not pd.isna(p) else p).astype('Int64')
+            # sum the count columns on (pid, season) collisions
+            cnt = [c for c in df.columns if c.startswith(('defr_', 'act_', 'exp_',
+                     'gk_')) and not c.endswith('_p90') and c not in (
+                     'defr_per90', 'defr_per90_vs_position', 'defr_adj', 'defr_career')]
+            cnt = [c for c in cnt if pd.api.types.is_numeric_dtype(df[c])]
+            cnt += ['mins_played']
+            dup = df.duplicated(subset=['playerId', 'seasonId'], keep=False)
+            if dup.any():
+                singles = df[~dup]
+                agg = (df[dup].groupby(['playerId', 'seasonId'], as_index=False)
+                         [list(dict.fromkeys(cnt))].sum())
+                # keep position from the longest-minutes row
+                pos = (df[dup].sort_values('mins_played')
+                         .drop_duplicates(['playerId', 'seasonId'], keep='last')
+                         [['playerId', 'seasonId', 'position']])
+                agg = agg.merge(pos, on=['playerId', 'seasonId'], how='left')
+                df = pd.concat([singles, agg], ignore_index=True)
+        logger.info(f"Loaded DefR values: {len(df):,} rows × {df.shape[1]} cols")
+        return df
+    except Exception as e:
+        logger.error(f"Failed to load DefR parquet: {e}")
+        return pd.DataFrame()
+
+
+def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
+    """Merge DefR per-90 columns (DefR Interceptions/Clearances/Tackles/
+    Recoveries/Aerials/Total + DefR Shot-Stopping for GKs) into the stats DF.
+
+    DefR counts are summed across the active seasons per player and per-90
+    is recomputed from the totals (so multi-season views aggregate
+    correctly). Merged on playerId; missing players get 0."""
+    if player_stats_df is None or len(player_stats_df) == 0:
+        return player_stats_df
+    defr = load_defr_values()
+    if defr is None or defr.empty:
+        return player_stats_df
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                   else [season_ids])]
+        defr = defr[defr['seasonId'].isin(sids)]
+    if defr.empty:
+        return player_stats_df
+
+    count_cols = list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr', 'gk_goals_prevented']
+    count_cols = [c for c in count_cols if c in defr.columns]
+    g = defr.copy()
+    g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
+    g['_mins'] = pd.to_numeric(g['mins_played'], errors='coerce').fillna(0)
+    agg = g.groupby('playerId', as_index=False)[count_cols + ['_mins']].sum()
+    mins90 = (agg['_mins'] / 90.0).clip(lower=1e-9)
+    new_cols = {}
+    for raw, disp in DEFR_TYPE_TO_DISPLAY.items():
+        if raw in agg.columns:
+            new_cols[disp] = agg[raw] / mins90
+    if 'defr' in agg.columns:
+        new_cols['DefR Total'] = agg['defr'] / mins90
+    if 'gk_goals_prevented' in agg.columns:
+        new_cols['DefR Shot-Stopping'] = agg['gk_goals_prevented'] / mins90
+    defr_sub = pd.DataFrame({'playerId': agg['playerId'], **new_cols})
+
+    df = player_stats_df
+    had_index = df.index.name == 'playerId'
+    if had_index:
+        df = df.reset_index()
+    df = df.copy()
+    df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+    drop = [c for c in defr_sub.columns if c != 'playerId' and c in df.columns]
+    if drop:
+        df = df.drop(columns=drop)
+    merged = df.merge(defr_sub, on='playerId', how='left')
+    for c in defr_sub.columns:
+        if c != 'playerId':
+            merged[c] = pd.to_numeric(merged[c], errors='coerce').fillna(0.0)
+    merged = _add_defr_percentiles(merged)
+    if had_index:
+        merged = merged.set_index('playerId')
+    return merged
+
+
+def _defr_pos_bucket(pos):
+    """Collapse a Wyscout position code to a broad bucket for DefR
+    percentile ranking (peer group)."""
+    if pos is None or (isinstance(pos, float) and pd.isna(pos)):
+        return 'OTHER'
+    p = str(pos).upper()
+    if p == 'GK':
+        return 'GK'
+    if 'CB' in p:
+        return 'CB'
+    if p in ('LB', 'RB', 'LWB', 'RWB') or p.startswith(('LB', 'RB')):
+        return 'FB'
+    if p in ('CF', 'ST', 'SS'):
+        return 'ST'
+    if any(t in p for t in ('AMF', 'AM', 'LW', 'RW', 'LWF', 'RWF', 'LAMF', 'RAMF')):
+        return 'AM_W'
+    if 'M' in p:   # DMF/CMF/etc
+        return 'CM'
+    return 'OTHER'
+
+
+def _add_defr_percentiles(df):
+    """Add `<DefR metric>_percentile` columns, ranked within broad position
+    bucket among 500+ minute players — so the radar's percentile mode can
+    render DefR axes."""
+    metrics = [m for m in (DEFR_DISPLAY_METRICS + ['DefR Shot-Stopping'])
+                 if m in df.columns]
+    if not metrics:
+        return df
+    pos_col = 'primaryPosition' if 'primaryPosition' in df.columns else (
+        'position' if 'position' in df.columns else None)
+    if pos_col is None:
+        return df
+    bucket = df[pos_col].map(_defr_pos_bucket)
+    if 'totalMinutes' in df.columns:
+        qual = pd.to_numeric(df['totalMinutes'], errors='coerce').fillna(0) >= 500
+    else:
+        qual = pd.Series(True, index=df.index)
+    for m in metrics:
+        pctl = pd.Series(np.nan, index=df.index)
+        for b, idx in df.groupby(bucket).groups.items():
+            sub = [i for i in idx if qual.get(i, False)]
+            if len(sub) < 3:
+                continue
+            ranks = df.loc[sub, m].rank(pct=True)
+            pctl.loc[sub] = ranks
+        df[m + '_percentile'] = pctl.fillna(0.5)
+    return df
+
+
+# ============================================================================
 # Cross-tier translation factors (Liga 3 ↔ Campeonato)
 # ----------------------------------------------------------------------------
 # Two sources for "translate this player's metric to the other tier":
@@ -8718,6 +8899,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df, season_id=selected_season_id)
                 # Merge GPA Value columns (scoped to active season × competition)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
@@ -9211,6 +9393,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     if not pos_player_row.empty:
                         radar_player_data_row = pos_player_row
 
+        # Ensure the radar population carries DefR columns (the percentile
+        # function is disk-cached and may drop them) — used by the radar
+        # population, the DefR-mode toggle, and Overall Season Stats coloring.
+        radar_stats_df = merge_defr_values_into_stats(
+            radar_stats_df, active_season_ids, selected_comp_ids)
+
         # 3. Find the "Best Fit" Template for this Raw Position
         # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
         
@@ -9268,6 +9456,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # 4. Generate Chart for the Winner
             st.caption(f"Best Template Match: **{best_role}**")
             _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
+            _use_defr = st.toggle(
+                "Defensive metrics → DefR",
+                value=False, key=f"defr_mode_{player_id}",
+                help="Swap each defensive axis (tackles, interceptions, recoveries, "
+                     "clearances, aerials) to its Defensive Responsibility value — "
+                     "actions above/below what the player's role is expected to make.")
 
             # Prepare data for plotting
             metrics_to_plot = list(WEIGHTS[best_role].keys())
@@ -9280,6 +9474,32 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
             ]
             if len(final_population) < 5: final_population = radar_stats_df
+
+            # --- DefR mode: swap each defensive axis to its DefR value ---
+            if _use_defr:
+                final_population = merge_defr_values_into_stats(
+                    final_population, active_season_ids, selected_comp_ids)
+                radar_player_data_row = merge_defr_values_into_stats(
+                    radar_player_data_row, active_season_ids, selected_comp_ids)
+                _mapped, _seen = [], set()
+                for _m in metrics_to_plot:
+                    _mm = DEFR_RADAR_MAP.get(_m, _m)
+                    if _mm in radar_player_data_row.columns and _mm not in _seen:
+                        _mapped.append(_mm); _seen.add(_mm)
+                if _mapped:
+                    metrics_to_plot = _mapped
+                # Percentile for each DefR axis vs same-position peers
+                for _m in metrics_to_plot:
+                    if (_m in DEFR_DISPLAY_METRICS or _m == 'DefR Shot-Stopping') \
+                            and _m in radar_player_data_row.columns \
+                            and _m in final_population.columns:
+                        _pv = final_population[_m].dropna()
+                        if not _pv.empty:
+                            _val = radar_player_data_row[_m].values[0]
+                            radar_player_data_row[_m + '_percentile'] = (
+                                scipy.stats.percentileofscore(_pv, _val, kind='weak') / 100.0)
+                if _mapped:
+                    st.caption("🛡️ Defensive axes show **DefR** (actions above/below role expectation).")
 
             # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
             # This ensures that if the user selects a raw position that maps to multiple templates
@@ -9912,6 +10132,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Output": OUTPUT_METRICS,
             "Passing": PASSING_METRICS,
             "Defensive": DEFENSIVE_METRICS,
+            "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS + ['DefR Shot-Stopping'],
             "Dribbling": DRIBBLING_METRICS,
             "Goalkeeping": GOALKEEPING_METRICS
         }
@@ -9960,7 +10181,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         for group_name, group_metrics in stat_groups.items():
 
-            if player_is_gk and group_name != 'Goalkeeping':
+            _defr_group = group_name == 'Defensive Responsibility (DefR)'
+            if player_is_gk and group_name != 'Goalkeeping' and not _defr_group:
                 continue
             if not player_is_gk and group_name == 'Goalkeeping':
                 continue
@@ -10916,6 +11138,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
@@ -11052,6 +11275,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
@@ -12036,6 +12260,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "Output": OUTPUT_METRICS,
                 "Passing": PASSING_METRICS,
                 "Defensive": DEFENSIVE_METRICS,
+                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS + ['DefR Shot-Stopping'],
                 "Dribbling": DRIBBLING_METRICS,
                 "Goalkeeping": GOALKEEPING_METRICS,
                 "Set Pieces": SET_PIECE_METRICS,
@@ -13005,6 +13230,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with st.spinner("Loading player statistics..."):
                 player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
