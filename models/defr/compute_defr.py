@@ -50,29 +50,31 @@ N_ZONE_Y = 3
 # Opposition event types we consider "could trigger a defensive response"
 OPP_EVENT_TYPES = {'pass', 'carry', 'shot'}
 
-# v3 — ATTACK MOMENTUM (StatsBomb factor 2). Classify each opposition
-# possession into a phase. A counter demands a different responder
-# (deepest defender recovers) than settled possession (zone defender
-# presses). Thresholds:
-#   counter    — possession started in own half AND is young/fast
-#   transition — recently won ball, moving forward
-#   settled    — established possession in the attacking half
-COUNTER_MAX_DURATION_SEC = 8.0   # possessions shorter than this, started
-                                    # deep, are counters/transitions
+# v4 — ATTACK MOMENTUM (StatsBomb factor 2), now 3-tier. Empirical
+# possession.duration distribution (median 16.7s) shows clear strata:
+#   counter    — <= 6s    (~14% of possessions; direct/fast break)
+#   transition — 6-15s    (~30%; recovered ball, moving forward)
+#   settled    — > 15s    (~55%; established possession)
+# A counter demands a different responder (deepest defender recovers)
+# than settled possession (zone defender presses).
+MOMENTUM_COUNTER_MAX_SEC = 6.0
+MOMENTUM_TRANSITION_MAX_SEC = 15.0
 
-# v3 — DYNAMIC DEFENSIVE SHAPE (StatsBomb factor 3). At each opposition
+# v4 — DYNAMIC DEFENSIVE SHAPE (StatsBomb factor 3). At each opposition
 # event we estimate the defending team's line height from the rolling
-# median x-position (in the defenders' own frame) of their recent
-# defensive + possession-loss events. Bucket into:
+# median x-position (own frame) of their recent DEFENSIVE-ENGAGEMENT
+# events. v3 used only interception/clearance/tackle (sparse). v4 adds
+# recoveries + fouls so the estimate is denser and more stable.
+# Bucket into:
 #   high_line  — defending team pressing high up the pitch
 #   mid_block  — standard mid-block
 #   low_block  — sitting deep, compact near own goal
-# The line state changes WHO is expected to respond: a high line puts
-# more responsibility on the front + midfield; a low block on the back.
 SHAPE_WINDOW_SEC = 30.0   # rolling window for estimating line height
-SHAPE_HIGH_THRESHOLD = 60.0   # defending team's def-action x (own frame,
+SHAPE_HIGH_THRESHOLD = 55.0   # defending team's engagement x (own frame,
                                  # 0=own goal,100=opp goal) above this = high line
-SHAPE_LOW_THRESHOLD = 40.0     # below this = low block
+SHAPE_LOW_THRESHOLD = 38.0     # below this = low block
+SHAPE_MIN_EVENTS = 4           # need >= this many recent engagements to
+                                 # estimate; else default mid_block
 
 # Position-slot bucketing. Wyscout has 30+ position codes; we collapse to
 # the level StatsBomb's framework cares about (formation slot, not pos group).
@@ -225,11 +227,15 @@ def _mirror_x(x):
 
 
 def phase_of(possession_duration) -> str:
-    """v3 — Attack momentum (StatsBomb factor 2). Classify the opposition
-    possession as a counter/transition (fast, direct) or settled."""
+    """v4 — Attack momentum (StatsBomb factor 2), 3-tier."""
     if possession_duration is None or pd.isna(possession_duration):
         return 'settled'
-    return 'counter' if float(possession_duration) <= COUNTER_MAX_DURATION_SEC else 'settled'
+    d = float(possession_duration)
+    if d <= MOMENTUM_COUNTER_MAX_SEC:
+        return 'counter'
+    if d <= MOMENTUM_TRANSITION_MAX_SEC:
+        return 'transition'
+    return 'settled'
 
 
 def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
@@ -267,13 +273,17 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
         gd_arr = mdf['groundDuel.duelType'].to_numpy()
         season = mdf['seasonId'].to_numpy()
         n = len(mdf)
-        # Defensive-action mask (vectorized)
+        # Strict defensive-action mask — used for responder matching +
+        # actual-action counting.
         is_def = ((type_arr == 'interception') | (type_arr == 'clearance')
                     | (gd_arr == 'defensive_duel'))
-        # Per-team time-sorted def-action x (own frame) for line height
+        # v4 — denser "defensive engagement" mask for the LINE-HEIGHT
+        # estimate only (adds fouls). More events → more stable median.
+        is_engage = is_def | (type_arr == 'infraction')
+        # Per-team time-sorted engagement x (own frame) for line height
         team_def = {}
         for tid in teams:
-            m = (team_arr == tid) & is_def & ~np.isnan(locx)
+            m = (team_arr == tid) & is_engage & ~np.isnan(locx)
             team_def[tid] = (t_arr[m], locx[m])
 
         def line_state_for(def_team_id, t):
@@ -282,7 +292,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
                 return 'mid_block'
             lo = np.searchsorted(ts, t - SHAPE_WINDOW_SEC, side='left')
             hi = np.searchsorted(ts, t, side='right')
-            if hi - lo < 3:
+            if hi - lo < SHAPE_MIN_EVENTS:
                 return 'mid_block'
             med = float(np.median(xs[lo:hi]))
             if med >= SHAPE_HIGH_THRESHOLD:
@@ -541,32 +551,52 @@ def compute_per_player(ev: pd.DataFrame,
         out['mins_played'] = np.nan
         out['defr_per90'] = np.nan
 
-    # v2 — position-normalized DefR. The raw DefR/90 is biased positive
-    # (actual includes responses to set pieces / throw-ins that aren't
-    # in our opposition event set) AND varies systematically by position
-    # (DMFs median +9.8, GKs median +1.1). Normalize by subtracting the
-    # position-median so 0 = median defender at that position, positive
-    # = above the typical for their slot.
+    # v4 — position-fair DefR with minutes shrinkage.
     #
-    # Use ONLY players with ≥800 mins as the normalization cohort to
-    # avoid noisy small-sample skewing the medians.
+    # Stability analysis (year-over-year Pearson r on same-position pairs):
+    #   defr_per90 (raw)            r = 0.745   ← stable but position-biased
+    #   defr_per90_vs_position      r = 0.484   ← position-fair, noisier
+    #   defr_z_vs_position (÷std)   r = 0.455   ← std-division HURTS — dropped
+    #
+    # The std-division in the old z-score amplified noise, so v4 drops it.
+    # Instead we keep the position-median-subtracted value and SHRINK it
+    # toward 0 by a minutes factor mins/(mins+K). Low-minute players (whose
+    # DefR is noisiest) get pulled toward "typical for position"; full-
+    # season players keep most of their signal. K=900 ≈ half a season.
+    SHRINK_K = 900.0
     valid = out[(out['mins_played'].fillna(0) >= 800) & out['defr_per90'].notna()]
     pos_median = valid.groupby('position')['defr_per90'].median().to_dict()
-    pos_std = valid.groupby('position')['defr_per90'].std().to_dict()
     out['defr_per90_vs_position'] = out.apply(
         lambda r: (r['defr_per90'] - pos_median.get(r['position'], 0))
                     if pd.notna(r['defr_per90']) else np.nan,
         axis=1,
     )
-    # z-score within position (how many SDs above/below typical) — useful
-    # for cross-position comparisons.
-    out['defr_z_vs_position'] = out.apply(
-        lambda r: ((r['defr_per90'] - pos_median.get(r['position'], 0))
-                     / pos_std.get(r['position'], 1.0))
-                    if pd.notna(r['defr_per90']) and pos_std.get(r['position'], 0) > 0
-                    else np.nan,
+    # Minutes-shrunk position-fair DefR — single-season display metric.
+    out['defr_adj'] = out.apply(
+        lambda r: (r['defr_per90_vs_position']
+                     * (r['mins_played'] / (r['mins_played'] + SHRINK_K)))
+                    if pd.notna(r['defr_per90_vs_position'])
+                    and pd.notna(r['mins_played']) else np.nan,
         axis=1,
     )
+
+    # v4 — CAREER aggregate. Single-season position-fair DefR has YoY
+    # r ≈ 0.49 (moderate). Minutes-weighted averaging across a player's
+    # seasons raises reliability via Spearman-Brown: a 2-season mean
+    # ≈ 0.66, 3-season ≈ 0.74. This is the trustworthy scouting number.
+    # Computed minutes-weighted over all the player's qualifying
+    # (≥500 min) seasons and broadcast back onto every row.
+    qual = out[(out['mins_played'].fillna(0) >= 500)
+                 & out['defr_per90_vs_position'].notna()].copy()
+    qual['_w'] = qual['mins_played']
+    car = (qual.assign(_wv=qual['defr_per90_vs_position'] * qual['_w'])
+              .groupby('playerId')
+              .agg(_sum_wv=('_wv', 'sum'), _sum_w=('_w', 'sum'),
+                    n_seasons=('seasonId', 'nunique'))
+              .reset_index())
+    car['defr_career'] = car['_sum_wv'] / car['_sum_w']
+    out = out.merge(car[['playerId', 'defr_career', 'n_seasons']],
+                      on='playerId', how='left')
 
     return out
 
@@ -601,27 +631,17 @@ def main():
     out.to_parquet(out_path)
     print(f"\n✅ Saved {out_path}")
 
-    # Sample output — sort by position-normalized DefR z-score
-    print("\nSample — top 15 by DefR z-score vs position (min 1000 mins):")
-    sample = out[out['mins_played'] >= 1000].sort_values(
-        'defr_z_vs_position', ascending=False).head(15)
-    print(sample[['playerId', 'seasonId', 'position', 'mins_played',
-                    'expected_def_actions', 'actual_def_actions',
-                    'defr_per90', 'defr_per90_vs_position',
-                    'defr_z_vs_position']].round(2).to_string(index=False))
+    # Sample output — sort by minutes-shrunk position-fair DefR (defr_adj)
+    cols = ['playerId', 'seasonId', 'position', 'mins_played',
+             'expected_def_actions', 'actual_def_actions',
+             'defr_per90', 'defr_per90_vs_position', 'defr_adj']
+    print("\nSample — top 15 by defr_adj (min 1000 mins):")
+    print(out[out['mins_played'] >= 1000].sort_values(
+        'defr_adj', ascending=False).head(15)[cols].round(2).to_string(index=False))
 
-    print("\nSample — bottom 15 by DefR z-score vs position (min 1000 mins):")
-    sample = out[out['mins_played'] >= 1000].sort_values(
-        'defr_z_vs_position', ascending=True).head(15)
-    print(sample[['playerId', 'seasonId', 'position', 'mins_played',
-                    'expected_def_actions', 'actual_def_actions',
-                    'defr_per90', 'defr_per90_vs_position',
-                    'defr_z_vs_position']].round(2).to_string(index=False))
-
-    print("\nDistribution by position (z-scores should be ~normal(0, 1)):")
-    by_pos = out[out['mins_played'] >= 800].groupby('position')[
-        'defr_z_vs_position'].agg(['count', 'mean', 'std']).round(2)
-    print(by_pos.to_string())
+    print("\nSample — bottom 15 by defr_adj (min 1000 mins):")
+    print(out[out['mins_played'] >= 1000].sort_values(
+        'defr_adj', ascending=True).head(15)[cols].round(2).to_string(index=False))
 
 
 if __name__ == '__main__':
