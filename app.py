@@ -5041,7 +5041,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         if metric in OFF_BALL_DEFENDING_METRICS: color = category_colors['off_ball_defending']
         elif metric in OUTPUT_METRICS: color = category_colors['output']
         elif metric in PASSING_METRICS: color = category_colors['passing']
-        elif metric in DEFENSIVE_METRICS: color = category_colors['defensive']
+        elif metric in DEFENSIVE_METRICS or metric in DEFR_DISPLAY_METRICS: color = category_colors['defensive']
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
@@ -5154,7 +5154,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist = plt.subplot(gs_distributions[i])
             if metric in OUTPUT_METRICS: color = 'green'
             elif metric in PASSING_METRICS: color = 'orange'
-            elif metric in DEFENSIVE_METRICS: color = 'red'
+            elif metric in DEFENSIVE_METRICS or metric in DEFR_DISPLAY_METRICS: color = 'red'
             elif metric in DRIBBLING_METRICS: color = 'purple'
             elif metric in GOALKEEPING_METRICS: color = 'cyan'
             else: color = 'blue'
@@ -5477,7 +5477,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         if metric in OFF_BALL_DEFENDING_METRICS: color = category_colors['off_ball_defending']
         elif metric in OUTPUT_METRICS: color = category_colors['output']
         elif metric in PASSING_METRICS: color = category_colors['passing']
-        elif metric in DEFENSIVE_METRICS: color = category_colors['defensive']
+        elif metric in DEFENSIVE_METRICS or metric in DEFR_DISPLAY_METRICS: color = category_colors['defensive']
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
