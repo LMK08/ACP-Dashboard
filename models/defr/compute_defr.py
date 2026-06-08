@@ -73,12 +73,18 @@ _PHASE_TRANSITION_TAGS = {'transition_medium', 'transition_low'}
 #   high_line  — defending team pressing high up the pitch
 #   mid_block  — standard mid-block
 #   low_block  — sitting deep, compact near own goal
-SHAPE_WINDOW_SEC = 30.0   # rolling window for estimating line height
-SHAPE_HIGH_THRESHOLD = 55.0   # defending team's engagement x (own frame,
-                                 # 0=own goal,100=opp goal) above this = high line
-SHAPE_LOW_THRESHOLD = 38.0     # below this = low block
-SHAPE_MIN_EVENTS = 4           # need >= this many recent engagements to
-                                 # estimate; else default mid_block
+# v6.1 — recalibrated. Diagnostic showed the 30s/min-4 estimate left
+# 98% of events at the mid_block fallback (too few recent engagements).
+# Widened the window to 90s and dropped the min to 3 so far more events
+# get a real estimate. Thresholds set to the empirical terciles of the
+# line-height distribution (median engagement x, own frame: p33≈20,
+# p67≈38) so the three buckets are BALANCED and the factor carries
+# information. (When it does differentiate, responder-distribution shift
+# is TVD 0.21-0.24 — real signal that was being wasted.)
+SHAPE_WINDOW_SEC = 90.0   # rolling window for estimating line height
+SHAPE_HIGH_THRESHOLD = 38.0   # engagement x (own frame) >= this = higher line
+SHAPE_LOW_THRESHOLD = 20.0    # <= this = deep/low block
+SHAPE_MIN_EVENTS = 3          # need >= this many recent engagements to estimate
 
 # Position-slot bucketing. Wyscout has 30+ position codes; we collapse to
 # the level StatsBomb's framework cares about (formation slot, not pos group).
