@@ -50,6 +50,30 @@ N_ZONE_Y = 3
 # Opposition event types we consider "could trigger a defensive response"
 OPP_EVENT_TYPES = {'pass', 'carry', 'shot'}
 
+# v3 — ATTACK MOMENTUM (StatsBomb factor 2). Classify each opposition
+# possession into a phase. A counter demands a different responder
+# (deepest defender recovers) than settled possession (zone defender
+# presses). Thresholds:
+#   counter    — possession started in own half AND is young/fast
+#   transition — recently won ball, moving forward
+#   settled    — established possession in the attacking half
+COUNTER_MAX_DURATION_SEC = 8.0   # possessions shorter than this, started
+                                    # deep, are counters/transitions
+
+# v3 — DYNAMIC DEFENSIVE SHAPE (StatsBomb factor 3). At each opposition
+# event we estimate the defending team's line height from the rolling
+# median x-position (in the defenders' own frame) of their recent
+# defensive + possession-loss events. Bucket into:
+#   high_line  — defending team pressing high up the pitch
+#   mid_block  — standard mid-block
+#   low_block  — sitting deep, compact near own goal
+# The line state changes WHO is expected to respond: a high line puts
+# more responsibility on the front + midfield; a low block on the back.
+SHAPE_WINDOW_SEC = 30.0   # rolling window for estimating line height
+SHAPE_HIGH_THRESHOLD = 60.0   # defending team's def-action x (own frame,
+                                 # 0=own goal,100=opp goal) above this = high line
+SHAPE_LOW_THRESHOLD = 40.0     # below this = low block
+
 # Position-slot bucketing. Wyscout has 30+ position codes; we collapse to
 # the level StatsBomb's framework cares about (formation slot, not pos group).
 # A slot is the COMBINATION (side × line × specialism) — granular enough
@@ -121,18 +145,56 @@ def is_defensive_action(row) -> bool:
 
 
 # ----- Step 1 — Load + filter events --------------------------------------
+# v3 — unified event source: BOTH Liga 3 AND Campeonato. The dashboard's
+# own raw_events.parquet is Liga-3-only, so DefR previously couldn't cover
+# Camp. The GPA v2 project's parquet_data/ has both leagues from the same
+# scrape pipeline (consistent vintage). We read from there for the DefR
+# precompute; the output parquet (which is what ships) covers both leagues.
+ACP_ROOT = DASHBOARD_DIR.parent.parent   # …/ACP_Official
+GPA_V2_DATA = ACP_ROOT / 'GPA Model Project v2' / 'parquet_data'
+EVENT_SOURCES = [
+    GPA_V2_DATA / 'liga3_portugal_events.parquet',         # Liga 3 (all 5 seasons)
+    GPA_V2_DATA / 'campeonato_portugal_events.parquet',    # Campeonato (2 seasons)
+]
+# Fallback if the v2 project dir isn't present (e.g. running elsewhere):
+# the dashboard's Liga-3-only events.
+FALLBACK_SOURCE = DASHBOARD_DIR / 'raw_events.parquet'
+
+_EVENT_COLS = [
+    'matchId', 'matchPeriod', 'minute', 'second', 'seasonId',
+    'team.id', 'team.name', 'player.id', 'player.position',
+    'type.primary', 'location.x', 'location.y',
+    'pass.endLocation.x', 'pass.endLocation.y',
+    'carry.endLocation.x', 'carry.endLocation.y',
+    'possession.duration', 'possession.eventIndex',
+    'groundDuel.duelType', 'aerialDuel.firstTouch',
+    'shot.onTarget', 'competitionId',
+]
+
+
 def load_events() -> pd.DataFrame:
-    cols = [
-        'matchId', 'matchPeriod', 'minute', 'second', 'seasonId',
-        'team.id', 'team.name', 'player.id', 'player.position',
-        'type.primary', 'location.x', 'location.y',
-        'pass.endLocation.x', 'pass.endLocation.y',
-        'carry.endLocation.x', 'carry.endLocation.y',
-        'possession.duration', 'possession.eventIndex',
-        'groundDuel.duelType', 'aerialDuel.firstTouch',
-        'shot.onTarget',
-    ]
-    df = pd.read_parquet(DASHBOARD_DIR / 'raw_events.parquet', columns=cols)
+    frames = []
+    sources = [p for p in EVENT_SOURCES if p.exists()]
+    if not sources:
+        print(f"  [warn] v2 event sources not found; "
+               f"falling back to dashboard raw_events (Liga 3 only)")
+        sources = [FALLBACK_SOURCE]
+    for src in sources:
+        # Read only the columns that exist in this file (schemas differ
+        # slightly between the two leagues' files)
+        import pyarrow.parquet as pq
+        avail = set(pq.read_schema(src).names)
+        use_cols = [c for c in _EVENT_COLS if c in avail]
+        part = pd.read_parquet(src, columns=use_cols)
+        # Ensure every expected column exists (fill missing with NaN)
+        for c in _EVENT_COLS:
+            if c not in part.columns:
+                part[c] = np.nan
+        print(f"  Loaded {len(part):,} events from {src.name} "
+               f"(seasons {sorted(part['seasonId'].dropna().unique().astype(int).tolist())})")
+        frames.append(part)
+    df = pd.concat(frames, ignore_index=True)
+
     # Drop events with no actor or no location
     df = df.dropna(subset=['player.id', 'team.id'])
     df['player.id'] = df['player.id'].astype(int)
@@ -162,60 +224,121 @@ def _mirror_x(x):
     return 100.0 - x
 
 
+def phase_of(possession_duration) -> str:
+    """v3 — Attack momentum (StatsBomb factor 2). Classify the opposition
+    possession as a counter/transition (fast, direct) or settled."""
+    if possession_duration is None or pd.isna(possession_duration):
+        return 'settled'
+    return 'counter' if float(possession_duration) <= COUNTER_MAX_DURATION_SEC else 'settled'
+
+
 def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
-    """For every opposition event with a location, find the next defensive
-    event by the opposing team within RESPONSE_WINDOW_SEC AND in the same
-    or adjacent zone (after mirroring the responder's coords into the opp
-    team's frame). The spatial constraint stops chronologically-close but
-    spatially-unrelated events from being tagged as responses."""
+    """For every opposition event, find the responder AND tag the event
+    with attack momentum (phase) and dynamic defensive shape (line_state).
+
+    Responder match: next defensive action by the OTHER team within
+    RESPONSE_WINDOW_SEC AND in the same/adjacent zone (coords mirrored
+    into the opp frame).
+
+    v3 adds:
+      phase      — counter | settled  (from possession.duration)
+      line_state — high_line | mid_block | low_block  (from the defending
+                    team's recent defensive-action x-position, own frame)
+    """
     rows = []
+    zsx = 100.0 / N_ZONE_X
+    zsy = 100.0 / N_ZONE_Y
     for mid, mdf in ev.groupby('matchId'):
         mdf = mdf.sort_values('_t').reset_index(drop=True)
-        mdf['_is_def'] = mdf.apply(is_defensive_action, axis=1)
-        for i, row in mdf.iterrows():
-            if row['type.primary'] not in OPP_EVENT_TYPES:
+        teams = mdf['team.id'].unique()
+        if len(teams) < 2:
+            continue
+        # Pull everything into numpy arrays (vectorized; no per-row .apply)
+        t_arr = mdf['_t'].to_numpy()
+        team_arr = mdf['team.id'].to_numpy()
+        type_arr = mdf['type.primary'].to_numpy()
+        locx = mdf['location.x'].to_numpy(dtype=float)
+        locy = mdf['location.y'].to_numpy(dtype=float)
+        effx = mdf['_eff_x'].to_numpy(dtype=float)
+        effy = mdf['_eff_y'].to_numpy(dtype=float)
+        pos_arr = mdf['player.position'].to_numpy()
+        pid_arr = mdf['player.id'].to_numpy()
+        poss_dur = mdf['possession.duration'].to_numpy(dtype=float)
+        gd_arr = mdf['groundDuel.duelType'].to_numpy()
+        season = mdf['seasonId'].to_numpy()
+        n = len(mdf)
+        # Defensive-action mask (vectorized)
+        is_def = ((type_arr == 'interception') | (type_arr == 'clearance')
+                    | (gd_arr == 'defensive_duel'))
+        # Per-team time-sorted def-action x (own frame) for line height
+        team_def = {}
+        for tid in teams:
+            m = (team_arr == tid) & is_def & ~np.isnan(locx)
+            team_def[tid] = (t_arr[m], locx[m])
+
+        def line_state_for(def_team_id, t):
+            ts, xs = team_def.get(def_team_id, (np.array([]), np.array([])))
+            if ts.size == 0:
+                return 'mid_block'
+            lo = np.searchsorted(ts, t - SHAPE_WINDOW_SEC, side='left')
+            hi = np.searchsorted(ts, t, side='right')
+            if hi - lo < 3:
+                return 'mid_block'
+            med = float(np.median(xs[lo:hi]))
+            if med >= SHAPE_HIGH_THRESHOLD:
+                return 'high_line'
+            if med <= SHAPE_LOW_THRESHOLD:
+                return 'low_block'
+            return 'mid_block'
+
+        # Mirrored responder zones for the whole match (vectorized)
+        r_x_opp = 100.0 - locx
+        r_y_opp = 100.0 - locy
+        r_zx = np.clip((r_x_opp / zsx).astype('float'), 0, N_ZONE_X - 1)
+        r_zy = np.clip((r_y_opp / zsy).astype('float'), 0, N_ZONE_Y - 1)
+        # NaN-safe int conversion (NaN → -99 so it never matches a zone)
+        r_zx = np.where(np.isnan(locx), -99, r_zx).astype(int)
+        r_zy = np.where(np.isnan(locy), -99, r_zy).astype(int)
+
+        for i in range(n):
+            if type_arr[i] not in OPP_EVENT_TYPES:
                 continue
-            # v2 — use effective location (pass.endLocation for passes,
-            # carry.endLocation for carries) instead of event origin.
-            x, y = row.get('_eff_x'), row.get('_eff_y')
-            if pd.isna(x) or pd.isna(y):
+            x, y = effx[i], effy[i]
+            if np.isnan(x) or np.isnan(y):
                 continue
-            opp_team = row['team.id']
-            t0 = row['_t']
-            zx, zy = zone_of(x, y)
-            # Candidate responders: time window + other team + defensive
-            window = mdf[(mdf['_t'] >= t0)
-                          & (mdf['_t'] <= t0 + RESPONSE_WINDOW_SEC)
-                          & (mdf['team.id'] != opp_team)
-                          & (mdf['_is_def'])
-                          & (mdf['location.x'].notna())
-                          & (mdf['location.y'].notna())]
-            # Spatial filter: responder's event (in OPP coordinate frame)
-            # must be in same or adjacent zone as the opp event.
+            opp_team = team_arr[i]
+            t0 = t_arr[i]
+            zx = min(max(int(x / zsx), 0), N_ZONE_X - 1)
+            zy = min(max(int(y / zsy), 0), N_ZONE_Y - 1)
+            def_team_known = next((tt for tt in teams if tt != opp_team), None)
+            phase = phase_of(poss_dur[i])
+            line_state = (line_state_for(def_team_known, t0)
+                            if def_team_known is not None else 'mid_block')
+            # Responder window: searchsorted on the time-sorted slice
+            hi = np.searchsorted(t_arr, t0 + RESPONSE_WINDOW_SEC, side='right')
             responder_slot = None
             responder_pid = None
-            def_team = None
-            if not window.empty:
-                # Mirror responder coords to opp frame, then bucket
-                r_x_opp = window['location.x'].apply(_mirror_x)
-                r_y_opp = 100 - window['location.y']  # mirror y too (same convention)
-                r_zx = (r_x_opp / (100.0 / N_ZONE_X)).clip(0, N_ZONE_X - 1).astype(int)
-                r_zy = (r_y_opp / (100.0 / N_ZONE_Y)).clip(0, N_ZONE_Y - 1).astype(int)
-                # Same or adjacent (Chebyshev distance ≤ 1) zone
-                spatial_ok = ((r_zx - zx).abs() <= 1) & ((r_zy - zy).abs() <= 1)
-                close = window[spatial_ok]
-                if not close.empty:
-                    r0 = close.iloc[0]
-                    responder_slot = slot_of(r0.get('player.position'))
-                    responder_pid = int(r0['player.id'])
-                    def_team = int(r0['team.id'])
+            def_team = def_team_known
+            # Scan the (small) slice [i, hi) for first adjacent-zone def
+            # event by the other team.
+            for j in range(i, hi):
+                if team_arr[j] == opp_team or not is_def[j]:
+                    continue
+                if r_zx[j] < 0:   # responder had no location
+                    continue
+                if abs(r_zx[j] - zx) <= 1 and abs(r_zy[j] - zy) <= 1:
+                    responder_slot = slot_of(pos_arr[j])
+                    responder_pid = int(pid_arr[j])
+                    def_team = int(team_arr[j])
+                    break
             rows.append({
                 'matchId': mid,
-                'seasonId': int(row['seasonId']) if pd.notna(row['seasonId']) else None,
+                'seasonId': int(season[i]) if not pd.isna(season[i]) else None,
                 'opp_team': opp_team,
                 'def_team': def_team,
-                'opp_type': row['type.primary'],
-                'opp_x': float(x), 'opp_y': float(y),
+                'opp_type': type_arr[i],
+                'phase': phase,
+                'line_state': line_state,
                 'zx': zx, 'zy': zy,
                 't': t0,
                 'responder_slot': responder_slot,
@@ -225,23 +348,50 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
 
 
 # ----- Step 2 — Empirical conditional probability -------------------------
+# Empirical-Bayes backoff constant. A fine (zone × type × phase × line)
+# bucket with n events gets weight n/(n+K) on its own estimate and
+# K/(n+K) on the coarse (zone × type) estimate. K=60 means a fine bucket
+# needs ~60 events to be trusted at ~50%.
+PROB_SMOOTHING_K = 60.0
+
+FINE_KEYS = ['zx', 'zy', 'opp_type', 'phase', 'line_state']
+COARSE_KEYS = ['zx', 'zy', 'opp_type']
+
+
 def build_prob_table(resp: pd.DataFrame) -> pd.DataFrame:
-    """For each (zx, zy, opp_type, slot) bucket, compute the
-    UNCONDITIONAL empirical probability that the slot is the responder
-    given this kind of opposition event happens. About 70% of opp
-    events get NO response within the window, so the sum across slots
-    per (zone, type) is ~0.30, not 1.0. That's the correct number to
-    use for expected — multiplying by it across all opp events the
-    player faced gives a calibrated expected count."""
+    """v3 — probability of each responder slot given the FULL context
+    (zone × opp_type × phase × line_state), with empirical-Bayes backoff
+    toward the coarse (zone × opp_type) probability so sparse fine
+    buckets don't produce noisy estimates.
+
+    Returns one row per (FINE_KEYS, responder_slot) with column
+    'prob' = the shrunk unconditional P(this slot responds | context).
+    The unconditional framing (denominator = ALL opp events in the
+    bucket, ~70% of which get no response) keeps expected calibrated."""
     matched = resp.dropna(subset=['responder_slot'])
-    # Numerator: events responded by this slot in this bucket
-    by_slot = (matched.groupby(['zx', 'zy', 'opp_type', 'responder_slot'])
-                  .size().reset_index(name='n_responded'))
-    # Denominator: TOTAL opp events in the bucket (matched + unmatched)
-    by_bucket = (resp.groupby(['zx', 'zy', 'opp_type'])
-                    .size().reset_index(name='n_total'))
-    grp = by_slot.merge(by_bucket, on=['zx', 'zy', 'opp_type'])
-    grp['prob'] = grp['n_responded'] / grp['n_total']
+
+    # --- Coarse layer: P(slot | zone, type) ---
+    coarse_num = (matched.groupby(COARSE_KEYS + ['responder_slot'])
+                     .size().reset_index(name='c_n'))
+    coarse_den = (resp.groupby(COARSE_KEYS).size()
+                     .reset_index(name='c_total'))
+    coarse = coarse_num.merge(coarse_den, on=COARSE_KEYS)
+    coarse['coarse_prob'] = coarse['c_n'] / coarse['c_total']
+
+    # --- Fine layer: P(slot | zone, type, phase, line) ---
+    fine_num = (matched.groupby(FINE_KEYS + ['responder_slot'])
+                   .size().reset_index(name='f_n'))
+    fine_den = (resp.groupby(FINE_KEYS).size()
+                   .reset_index(name='f_total'))
+    fine = fine_num.merge(fine_den, on=FINE_KEYS)
+    fine['fine_prob'] = fine['f_n'] / fine['f_total']
+
+    # --- Backoff blend ---
+    grp = fine.merge(coarse[COARSE_KEYS + ['responder_slot', 'coarse_prob']],
+                       on=COARSE_KEYS + ['responder_slot'], how='left')
+    grp['coarse_prob'] = grp['coarse_prob'].fillna(0.0)
+    w = grp['f_total'] / (grp['f_total'] + PROB_SMOOTHING_K)
+    grp['prob'] = w * grp['fine_prob'] + (1 - w) * grp['coarse_prob']
     return grp
 
 
@@ -265,9 +415,10 @@ def compute_per_player(ev: pd.DataFrame,
     player_matches = (ev_with_slot[['player.id', 'matchId', 'seasonId']]
                         .drop_duplicates())
 
-    # Index prob_table for fast lookup
-    prob_lookup = prob_table.set_index(['zx', 'zy', 'opp_type',
-                                           'responder_slot'])['prob']
+    # Index prob_table for fast lookup — full v3 key
+    # (zone × type × phase × line_state × slot)
+    prob_lookup = prob_table.set_index(
+        FINE_KEYS + ['responder_slot'])['prob'].to_dict()
 
     # For each opposition event in resp, distribute expected probability
     # across players on the pitch at that match in the relevant slot.
@@ -306,37 +457,47 @@ def compute_per_player(ev: pd.DataFrame,
     player_slot_lookup = player_slot.set_index(['player.id', 'seasonId'])['slot']
 
     print(f"  Processing {len(resp):,} opposition events…", flush=True)
-    for _, r in resp.iterrows():
-        mid = r['matchId']
-        opp_team = r['opp_team']
+    # Vectorized column access (numpy) — ~10x faster than .iterrows()
+    R_mid = resp['matchId'].to_numpy()
+    R_opp = resp['opp_team'].to_numpy()
+    R_zx = resp['zx'].to_numpy()
+    R_zy = resp['zy'].to_numpy()
+    R_type = resp['opp_type'].to_numpy()
+    R_phase = resp['phase'].to_numpy()
+    R_line = resp['line_state'].to_numpy()
+    R_t = resp['t'].to_numpy(dtype=float)
+    psl = player_slot_lookup.to_dict()
+    for k in range(len(resp)):
+        mid = R_mid[k]
+        opp_team = R_opp[k]
         teams = match_teams.get(mid)
         if teams is None or len(teams) < 2:
             continue
         def_team = next((t for t in teams if t != opp_team), None)
         if def_team is None:
             continue
-        t_event = float(r['t'])
-        players_in_match = def_team_players.get((mid, def_team), [])
-        for pid, sid in players_in_match:
-            # v2 — mins-share: skip the event if the player wasn't on the
-            # pitch (t outside their first/last event timestamp window).
+        t_event = R_t[k]
+        ctx = (R_zx[k], R_zy[k], R_type[k], R_phase[k], R_line[k])
+        for pid, sid in def_team_players.get((mid, def_team), []):
             t_in_out = pmt_lookup.get((pid, mid))
             if t_in_out is None:
                 continue
             t_in, t_out = t_in_out
             if t_event < t_in or t_event > t_out:
                 continue
-            slot = player_slot_lookup.get((pid, sid))
+            slot = psl.get((pid, sid))
             if slot is None:
                 continue
-            p = prob_lookup.get((r['zx'], r['zy'], r['opp_type'], slot), 0.0)
+            p = prob_lookup.get(ctx + (slot,), 0.0)
             if p > 0:
                 expected_acc[(pid, sid)] = expected_acc.get((pid, sid), 0) + p
             n_opp_acc[(pid, sid)] = n_opp_acc.get((pid, sid), 0) + 1
 
-    # Actual defensive actions per (player, season)
-    ev_with_slot['_is_def'] = ev_with_slot.apply(is_defensive_action, axis=1)
-    actual = (ev_with_slot[ev_with_slot['_is_def']]
+    # Actual defensive actions per (player, season) — vectorized mask
+    _is_def_vec = ((ev_with_slot['type.primary'] == 'interception')
+                     | (ev_with_slot['type.primary'] == 'clearance')
+                     | (ev_with_slot['groundDuel.duelType'] == 'defensive_duel'))
+    actual = (ev_with_slot[_is_def_vec]
                 .groupby(['player.id', 'seasonId']).size()
                 .reset_index(name='actual_def_actions')
                 .rename(columns={'player.id': 'playerId'}))
