@@ -173,6 +173,7 @@ EVENT_SOURCES = [
 FALLBACK_SOURCE = DASHBOARD_DIR / 'raw_events.parquet'
 
 _EVENT_COLS = [
+    'id', 'relatedEventId',
     'matchId', 'matchPeriod', 'minute', 'second', 'seasonId',
     'team.id', 'team.name', 'player.id', 'player.position',
     'type.primary', 'type.secondary', 'location.x', 'location.y',
@@ -192,19 +193,25 @@ _EVENT_COLS = [
 # which directly cuts noise in the DefR = actual − expected difference.
 _RECOVERY_TAGS = {'recovery', 'counterpressing_recovery'}
 
-# v8 — DEFENSIVE AERIAL DUELS. Wyscout has no explicit defensive-aerial
-# flag, so we define it by location: a WON aerial duel
-# (aerialDuel.firstTouch == True) in the player's OWN HALF (location.x in
-# their own attacking frame ≤ this threshold) is a defensive header —
-# clearing a cross, winning a long ball under pressure. Aerials in the
-# attacking half are offensive (flick-ons, headers at goal) and excluded.
+# v8.1 — DEFENSIVE AERIAL DUELS. Wyscout has no defensive-aerial flag, so
+# we define one. An aerial duel is defensive — regardless of whether the
+# player won it (firstTouch True OR False) — when:
+#   • it's in the player's OWN HALF (location.x ≤ 50, own attacking
+#     frame), OR
+#   • it's in the OPPONENT'S half (x > 50) AND the immediately preceding
+#     action was by the opponent (i.e. the player is contesting a header
+#     during the opponent's phase of play — a high defensive header /
+#     pressing duel, not an own-team flick-on).
+# "Preceded by opponent action" is read from the team of the most recent
+# non-aerial event before the duel (the cross / long ball / touch that
+# led to it). For the two sides of one physical duel this correctly keeps
+# the defender's side and drops the attacker's side.
 #
 # Double-counting: aerial duels are always type.primary == 'duel' and are
 # NEVER also logged as a clearance/interception (verified: 0 of 137,851
-# int/clear events carry an aerial flag). Of 34k defensive aerials only
-# 40 (0.008% of all defensive actions) share a same-player link with a
-# clearance/interception — negligible. Recoveries are also split so an
-# aerial only ever enters via the aerial branch, never the recovery one.
+# int/clear events carry an aerial flag). Same-player aerial↔clearance
+# links are ~0.01% of all defensive actions — negligible. Recoveries are
+# split so an aerial only ever enters via the aerial branch.
 DEFENSIVE_AERIAL_MAX_X = 50.0
 
 
@@ -276,8 +283,38 @@ def load_events() -> pd.DataFrame:
     df['_is_recovery'] = [_row_is_recovery(t) for t in df['type.secondary'].tolist()]
     _tp = df['type.primary']
     df['_is_aerial'] = df['aerialDuel.firstTouch'].notna()
-    df['_is_def_aerial'] = ((df['aerialDuel.firstTouch'] == True)
-                              & (df['location.x'] <= DEFENSIVE_AERIAL_MAX_X))
+    # v8.1 — team of the most recent NON-aerial event before each event
+    # (the action that led into the duel). Used to test "preceded by
+    # opponent action" for opponent-half aerials. ffill within match,
+    # over rows in chronological (load) order; aerial rows are NaN so
+    # ffill carries the preceding non-aerial team into them.
+    _na_team = df['team.id'].where(~df['_is_aerial'])
+    df['_prev_team'] = _na_team.groupby(df['matchId']).ffill()
+    _own_half = df['location.x'] <= DEFENSIVE_AERIAL_MAX_X
+    _opp_half_def = ((df['location.x'] > DEFENSIVE_AERIAL_MAX_X)
+                       & df['_prev_team'].notna()
+                       & (df['_prev_team'] != df['team.id']))
+    df['_is_def_aerial'] = df['_is_aerial'] & (_own_half | _opp_half_def)
+    # v8.1 — dedup the ~0.02% of defensive aerials whose relatedEventId
+    # points to a SAME-player clearance/interception (one physical header
+    # logged as both a duel and a clearance). Drop the aerial side so the
+    # moment counts once (via the clearance). Verified to be the only
+    # same-player double-count path — aerials are never themselves a
+    # clearance/interception type.
+    if 'id' in df.columns and 'relatedEventId' in df.columns:
+        _ci = df.loc[df['type.primary'].isin(['interception', 'clearance']),
+                       ['id', 'player.id']].rename(
+                         columns={'id': '_rid', 'player.id': '_rpid'})
+        _da = df.loc[df['_is_def_aerial'],
+                       ['relatedEventId', 'player.id']].reset_index()
+        _m = _da.merge(_ci, left_on='relatedEventId', right_on='_rid',
+                         how='left')
+        _dup = _m.loc[(_m['_rpid'].notna())
+                        & (_m['_rpid'] == _m['player.id']), 'index']
+        if len(_dup):
+            df.loc[_dup, '_is_def_aerial'] = False
+            print(f"  [defr] deduped {len(_dup)} aerial↔clearance "
+                   f"same-player double-counts")
     _ground_recovery = df['_is_recovery'] & ~df['_is_aerial']
     df['_is_def'] = ((_tp == 'interception') | (_tp == 'clearance')
                        | (df['groundDuel.duelType'] == 'defensive_duel')
