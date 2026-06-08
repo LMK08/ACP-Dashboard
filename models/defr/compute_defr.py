@@ -36,8 +36,10 @@ DASHBOARD_DIR = HERE.parent.parent
 
 # ----- Tunables ------------------------------------------------------------
 # Time window (seconds) after an opposition event in which we count a
-# defensive action as the "response" to that event.
-RESPONSE_WINDOW_SEC = 5.0
+# defensive action as the "response" to that event. v2: tightened from
+# 5s to 3s so distant-in-time defensive events aren't mis-tagged as
+# responses.
+RESPONSE_WINDOW_SEC = 3.0
 
 # Zone grid for opposition events. 4 columns × 3 rows = 12 zones, standard
 # tactical grid. Coordinates are 0-100 in Wyscout, from the acting team's
@@ -124,6 +126,9 @@ def load_events() -> pd.DataFrame:
         'matchId', 'matchPeriod', 'minute', 'second', 'seasonId',
         'team.id', 'team.name', 'player.id', 'player.position',
         'type.primary', 'location.x', 'location.y',
+        'pass.endLocation.x', 'pass.endLocation.y',
+        'carry.endLocation.x', 'carry.endLocation.y',
+        'possession.duration', 'possession.eventIndex',
         'groundDuel.duelType', 'aerialDuel.firstTouch',
         'shot.onTarget',
     ]
@@ -134,6 +139,19 @@ def load_events() -> pd.DataFrame:
     df['team.id'] = df['team.id'].astype(int)
     df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
     df['_t'] = df.apply(event_time_seconds, axis=1)
+    # v2 — for each event, the EFFECTIVE LOCATION for defensive responsibility:
+    #   pass:  pass.endLocation (where the ball ends up = defensive demand)
+    #   carry: carry.endLocation (where the carrier moved to)
+    #   shot:  location (the shooter's spot)
+    #   other: location
+    df['_eff_x'] = df['location.x']
+    df['_eff_y'] = df['location.y']
+    pass_mask = (df['type.primary'] == 'pass') & df['pass.endLocation.x'].notna()
+    df.loc[pass_mask, '_eff_x'] = df.loc[pass_mask, 'pass.endLocation.x']
+    df.loc[pass_mask, '_eff_y'] = df.loc[pass_mask, 'pass.endLocation.y']
+    carry_mask = (df['type.primary'] == 'carry') & df['carry.endLocation.x'].notna()
+    df.loc[carry_mask, '_eff_x'] = df.loc[carry_mask, 'carry.endLocation.x']
+    df.loc[carry_mask, '_eff_y'] = df.loc[carry_mask, 'carry.endLocation.y']
     return df
 
 
@@ -157,7 +175,9 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
         for i, row in mdf.iterrows():
             if row['type.primary'] not in OPP_EVENT_TYPES:
                 continue
-            x, y = row.get('location.x'), row.get('location.y')
+            # v2 — use effective location (pass.endLocation for passes,
+            # carry.endLocation for carries) instead of event origin.
+            x, y = row.get('_eff_x'), row.get('_eff_y')
             if pd.isna(x) or pd.isna(y):
                 continue
             opp_team = row['team.id']
@@ -253,13 +273,18 @@ def compute_per_player(ev: pd.DataFrame,
     # across players on the pitch at that match in the relevant slot.
     # "On the pitch" approximation: any player with at least one event in
     # the match. (We'll refine for substitutions in v2.)
-    # v1 simplification: skip per-slot n-player division. The original
-    # idea was "if two LCBs share the slot in a match, split the
-    # expected." But Wyscout's per-event player.position field changes
-    # mid-match (positional rotations), so naive counting inflates
-    # n_at_slot 3-4x and crushes expected values to ~25% of correct.
-    # Without division, matches with subs over-attribute slightly to
-    # both starter+sub (~5% effect). Acceptable for v1.
+    # v2 — mins-share weighting. For each (player, match) compute the
+    # approximate minutes played as (last_event_time - first_event_time)/60.
+    # An opp event is only counted in a player's expected if it happened
+    # while they were on the pitch (t between first and last event time).
+    # This replaces v1's "any player with an event = on for the whole match"
+    # which over-attributed expected to subs.
+    pmt = (ev_with_slot.groupby(['player.id', 'matchId'])['_t']
+              .agg(['min', 'max']).reset_index()
+              .rename(columns={'min': 't_in', 'max': 't_out'}))
+    pmt_lookup = {(int(r['player.id']), r['matchId']):
+                    (float(r['t_in']), float(r['t_out']))
+                    for _, r in pmt.iterrows()}
 
     # Sum expected per (player, season) by iterating through resp events
     expected_acc = {}   # (pid, sid) → sum of expected_p
@@ -287,14 +312,20 @@ def compute_per_player(ev: pd.DataFrame,
         teams = match_teams.get(mid)
         if teams is None or len(teams) < 2:
             continue
-        # Defending team is the other team in the match
         def_team = next((t for t in teams if t != opp_team), None)
         if def_team is None:
             continue
-        # Players on the defending team in this match
+        t_event = float(r['t'])
         players_in_match = def_team_players.get((mid, def_team), [])
-        # For each such player, compute their probability of being the responder
         for pid, sid in players_in_match:
+            # v2 — mins-share: skip the event if the player wasn't on the
+            # pitch (t outside their first/last event timestamp window).
+            t_in_out = pmt_lookup.get((pid, mid))
+            if t_in_out is None:
+                continue
+            t_in, t_out = t_in_out
+            if t_event < t_in or t_event > t_out:
+                continue
             slot = player_slot_lookup.get((pid, sid))
             if slot is None:
                 continue
@@ -349,6 +380,33 @@ def compute_per_player(ev: pd.DataFrame,
         out['mins_played'] = np.nan
         out['defr_per90'] = np.nan
 
+    # v2 — position-normalized DefR. The raw DefR/90 is biased positive
+    # (actual includes responses to set pieces / throw-ins that aren't
+    # in our opposition event set) AND varies systematically by position
+    # (DMFs median +9.8, GKs median +1.1). Normalize by subtracting the
+    # position-median so 0 = median defender at that position, positive
+    # = above the typical for their slot.
+    #
+    # Use ONLY players with ≥800 mins as the normalization cohort to
+    # avoid noisy small-sample skewing the medians.
+    valid = out[(out['mins_played'].fillna(0) >= 800) & out['defr_per90'].notna()]
+    pos_median = valid.groupby('position')['defr_per90'].median().to_dict()
+    pos_std = valid.groupby('position')['defr_per90'].std().to_dict()
+    out['defr_per90_vs_position'] = out.apply(
+        lambda r: (r['defr_per90'] - pos_median.get(r['position'], 0))
+                    if pd.notna(r['defr_per90']) else np.nan,
+        axis=1,
+    )
+    # z-score within position (how many SDs above/below typical) — useful
+    # for cross-position comparisons.
+    out['defr_z_vs_position'] = out.apply(
+        lambda r: ((r['defr_per90'] - pos_median.get(r['position'], 0))
+                     / pos_std.get(r['position'], 1.0))
+                    if pd.notna(r['defr_per90']) and pos_std.get(r['position'], 0) > 0
+                    else np.nan,
+        axis=1,
+    )
+
     return out
 
 
@@ -382,20 +440,27 @@ def main():
     out.to_parquet(out_path)
     print(f"\n✅ Saved {out_path}")
 
-    # Sample output
-    print("\nSample — top 15 by DefR per 90 (min 1000 mins):")
+    # Sample output — sort by position-normalized DefR z-score
+    print("\nSample — top 15 by DefR z-score vs position (min 1000 mins):")
     sample = out[out['mins_played'] >= 1000].sort_values(
-        'defr_per90', ascending=False).head(15)
+        'defr_z_vs_position', ascending=False).head(15)
     print(sample[['playerId', 'seasonId', 'position', 'mins_played',
-                    'expected_def_actions', 'actual_def_actions', 'defr',
-                    'defr_per90']].to_string(index=False))
+                    'expected_def_actions', 'actual_def_actions',
+                    'defr_per90', 'defr_per90_vs_position',
+                    'defr_z_vs_position']].round(2).to_string(index=False))
 
-    print("\nSample — bottom 15 by DefR per 90 (min 1000 mins):")
+    print("\nSample — bottom 15 by DefR z-score vs position (min 1000 mins):")
     sample = out[out['mins_played'] >= 1000].sort_values(
-        'defr_per90', ascending=True).head(15)
+        'defr_z_vs_position', ascending=True).head(15)
     print(sample[['playerId', 'seasonId', 'position', 'mins_played',
-                    'expected_def_actions', 'actual_def_actions', 'defr',
-                    'defr_per90']].to_string(index=False))
+                    'expected_def_actions', 'actual_def_actions',
+                    'defr_per90', 'defr_per90_vs_position',
+                    'defr_z_vs_position']].round(2).to_string(index=False))
+
+    print("\nDistribution by position (z-scores should be ~normal(0, 1)):")
+    by_pos = out[out['mins_played'] >= 800].groupby('position')[
+        'defr_z_vs_position'].agg(['count', 'mean', 'std']).round(2)
+    print(by_pos.to_string())
 
 
 if __name__ == '__main__':
