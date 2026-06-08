@@ -175,7 +175,7 @@ FALLBACK_SOURCE = DASHBOARD_DIR / 'raw_events.parquet'
 _EVENT_COLS = [
     'matchId', 'matchPeriod', 'minute', 'second', 'seasonId',
     'team.id', 'team.name', 'player.id', 'player.position',
-    'type.primary', 'location.x', 'location.y',
+    'type.primary', 'type.secondary', 'location.x', 'location.y',
     'pass.endLocation.x', 'pass.endLocation.y',
     'carry.endLocation.x', 'carry.endLocation.y',
     'possession.types',
@@ -183,6 +183,23 @@ _EVENT_COLS = [
     'shot.onTarget', 'shot.isGoal', 'shot.postShotXg',
     'shot.goalkeeper.id', 'competitionId',
 ]
+
+# v7 — recovery is the most reliable defensive action (within-season
+# split-half full-season r = 0.936, vs 0.933 for the int+clear+tackle
+# set). Recoveries live in type.secondary as 'recovery' or
+# 'counterpressing_recovery' (~254k events). Adding them to the
+# defensive-action set both improves reliability and densifies `actual`,
+# which directly cuts noise in the DefR = actual − expected difference.
+_RECOVERY_TAGS = {'recovery', 'counterpressing_recovery'}
+
+
+def _row_is_recovery(types_secondary) -> bool:
+    if isinstance(types_secondary, (list, tuple, np.ndarray)):
+        for t in types_secondary:
+            if t in _RECOVERY_TAGS:
+                return True
+        return False
+    return types_secondary in _RECOVERY_TAGS
 
 
 def load_events() -> pd.DataFrame:
@@ -230,6 +247,18 @@ def load_events() -> pd.DataFrame:
     # v5 — precompute event-level phase from possession.types (vectorized
     # via list-comprehension; ~one pass over the column).
     df['_phase'] = [phase_of(t) for t in df['possession.types'].tolist()]
+    # v7 — precompute defensive-action flags once (vectorized).
+    #   _is_recovery  — won a loose ball back (most reliable def action)
+    #   _is_def       — counted defensive action: interception | clearance
+    #                    | defensive duel | recovery  (used for responder
+    #                    matching AND the player's actual-action count)
+    #   _is_engage    — denser set for the line-height estimate (adds fouls)
+    df['_is_recovery'] = [_row_is_recovery(t) for t in df['type.secondary'].tolist()]
+    _tp = df['type.primary']
+    df['_is_def'] = ((_tp == 'interception') | (_tp == 'clearance')
+                       | (df['groundDuel.duelType'] == 'defensive_duel')
+                       | df['_is_recovery'])
+    df['_is_engage'] = df['_is_def'] | (_tp == 'infraction')
     return df
 
 
@@ -290,16 +319,11 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
         pos_arr = mdf['player.position'].to_numpy()
         pid_arr = mdf['player.id'].to_numpy()
         phase_col = mdf['_phase'].to_numpy()
-        gd_arr = mdf['groundDuel.duelType'].to_numpy()
         season = mdf['seasonId'].to_numpy()
         n = len(mdf)
-        # Strict defensive-action mask — used for responder matching +
-        # actual-action counting.
-        is_def = ((type_arr == 'interception') | (type_arr == 'clearance')
-                    | (gd_arr == 'defensive_duel'))
-        # v4 — denser "defensive engagement" mask for the LINE-HEIGHT
-        # estimate only (adds fouls). More events → more stable median.
-        is_engage = is_def | (type_arr == 'infraction')
+        # v7 — precomputed defensive-action masks (now include recoveries)
+        is_def = mdf['_is_def'].to_numpy()           # responder match + actual
+        is_engage = mdf['_is_engage'].to_numpy()     # line-height estimate
         # Per-team time-sorted engagement x (own frame) for line height
         team_def = {}
         for tid in teams:
@@ -523,11 +547,9 @@ def compute_per_player(ev: pd.DataFrame,
                 expected_acc[(pid, sid)] = expected_acc.get((pid, sid), 0) + p
             n_opp_acc[(pid, sid)] = n_opp_acc.get((pid, sid), 0) + 1
 
-    # Actual defensive actions per (player, season) — vectorized mask
-    _is_def_vec = ((ev_with_slot['type.primary'] == 'interception')
-                     | (ev_with_slot['type.primary'] == 'clearance')
-                     | (ev_with_slot['groundDuel.duelType'] == 'defensive_duel'))
-    actual = (ev_with_slot[_is_def_vec]
+    # Actual defensive actions per (player, season) — v7 precomputed mask
+    # (interception | clearance | defensive duel | recovery).
+    actual = (ev_with_slot[ev_with_slot['_is_def']]
                 .groupby(['player.id', 'seasonId']).size()
                 .reset_index(name='actual_def_actions')
                 .rename(columns={'player.id': 'playerId'}))
