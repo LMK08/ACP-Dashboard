@@ -321,6 +321,19 @@ def load_events() -> pd.DataFrame:
                        | _ground_recovery
                        | df['_is_def_aerial'])
     df['_is_engage'] = df['_is_def'] | (_tp == 'infraction')
+    # v9 — mutually-exclusive defensive TYPE per event (priority order
+    # avoids any event being two types; the five sum to _is_def). Used to
+    # produce per-type DefR (expected vs actual for each action type).
+    _dtype = np.full(len(df), None, dtype=object)
+    _dtype[df['_is_def_aerial'].to_numpy()] = 'def_aerial'
+    _gd = df['groundDuel.duelType'].to_numpy()
+    _tpn = _tp.to_numpy()
+    _gr = _ground_recovery.to_numpy()
+    _m = (_dtype == None) & (_tpn == 'interception'); _dtype[_m] = 'interception'
+    _m = (_dtype == None) & (_tpn == 'clearance');    _dtype[_m] = 'clearance'
+    _m = (_dtype == None) & (_gd == 'defensive_duel'); _dtype[_m] = 'tackle'
+    _m = (_dtype == None) & _gr;                       _dtype[_m] = 'recovery'
+    df['_dtype'] = _dtype
     return df
 
 
@@ -382,6 +395,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
         pid_arr = mdf['player.id'].to_numpy()
         phase_col = mdf['_phase'].to_numpy()
         season = mdf['seasonId'].to_numpy()
+        dtype_arr = mdf['_dtype'].to_numpy()         # responder action type
         n = len(mdf)
         # v7 — precomputed defensive-action masks (now include recoveries)
         is_def = mdf['_is_def'].to_numpy()           # responder match + actual
@@ -434,6 +448,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
             hi = np.searchsorted(t_arr, t0 + RESPONSE_WINDOW_SEC, side='right')
             responder_slot = None
             responder_pid = None
+            responder_type = None
             def_team = def_team_known
             # Scan the (small) slice [i, hi) for first adjacent-zone def
             # event by the other team.
@@ -445,6 +460,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
                 if abs(r_zx[j] - zx) <= 1 and abs(r_zy[j] - zy) <= 1:
                     responder_slot = slot_of(pos_arr[j])
                     responder_pid = int(pid_arr[j])
+                    responder_type = dtype_arr[j]
                     def_team = int(team_arr[j])
                     break
             rows.append({
@@ -459,6 +475,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
                 't': t0,
                 'responder_slot': responder_slot,
                 'responder_pid': responder_pid,
+                'responder_type': responder_type,
             })
     return pd.DataFrame(rows)
 
@@ -511,6 +528,41 @@ def build_prob_table(resp: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
+# v9 — the five mutually-exclusive defensive action types we score
+# per-type DefR for. Names match _dtype values.
+DEFR_TYPES = ['interception', 'clearance', 'tackle', 'recovery', 'def_aerial']
+
+
+def build_prob_table_by_type(resp: pd.DataFrame) -> dict:
+    """P(responder_slot responds WITH action-type T | full context), same
+    empirical-Bayes backoff as build_prob_table but split by the
+    responder's action type. Returns a dict keyed
+    (zx, zy, opp_type, phase, line_state, slot) -> {T: prob} so the
+    expected loop can add each type's contribution in one pass."""
+    matched = resp.dropna(subset=['responder_slot', 'responder_type'])
+    KT = ['responder_slot', 'responder_type']
+    coarse_num = (matched.groupby(COARSE_KEYS + KT).size()
+                     .reset_index(name='c_n'))
+    coarse_den = resp.groupby(COARSE_KEYS).size().reset_index(name='c_total')
+    coarse = coarse_num.merge(coarse_den, on=COARSE_KEYS)
+    coarse['coarse_prob'] = coarse['c_n'] / coarse['c_total']
+    fine_num = (matched.groupby(FINE_KEYS + KT).size()
+                   .reset_index(name='f_n'))
+    fine_den = resp.groupby(FINE_KEYS).size().reset_index(name='f_total')
+    fine = fine_num.merge(fine_den, on=FINE_KEYS)
+    fine['fine_prob'] = fine['f_n'] / fine['f_total']
+    grp = fine.merge(coarse[COARSE_KEYS + KT + ['coarse_prob']],
+                       on=COARSE_KEYS + KT, how='left')
+    grp['coarse_prob'] = grp['coarse_prob'].fillna(0.0)
+    w = grp['f_total'] / (grp['f_total'] + PROB_SMOOTHING_K)
+    grp['prob'] = w * grp['fine_prob'] + (1 - w) * grp['coarse_prob']
+    out = {}
+    for r in grp.itertuples(index=False):
+        key = (r.zx, r.zy, r.opp_type, r.phase, r.line_state, r.responder_slot)
+        out.setdefault(key, {})[r.responder_type] = r.prob
+    return out
+
+
 # ----- Step 3 — Per-player expected + actual ------------------------------
 def compute_per_player(ev: pd.DataFrame,
                          resp: pd.DataFrame,
@@ -535,6 +587,9 @@ def compute_per_player(ev: pd.DataFrame,
     # (zone × type × phase × line_state × slot)
     prob_lookup = prob_table.set_index(
         FINE_KEYS + ['responder_slot'])['prob'].to_dict()
+    # v9 — per-type expected probabilities, keyed (ctx, slot) -> {type: p}
+    ptype_lookup = build_prob_table_by_type(resp)
+    expected_type_acc = {}   # (pid, sid, type) → sum of per-type expected_p
 
     # For each opposition event in resp, distribute expected probability
     # across players on the pitch at that match in the relevant slot.
@@ -607,6 +662,12 @@ def compute_per_player(ev: pd.DataFrame,
             p = prob_lookup.get(ctx + (slot,), 0.0)
             if p > 0:
                 expected_acc[(pid, sid)] = expected_acc.get((pid, sid), 0) + p
+            # v9 — per-type expected
+            d = ptype_lookup.get(ctx + (slot,))
+            if d:
+                for T, pT in d.items():
+                    kk = (pid, sid, T)
+                    expected_type_acc[kk] = expected_type_acc.get(kk, 0) + pT
             n_opp_acc[(pid, sid)] = n_opp_acc.get((pid, sid), 0) + 1
 
     # Actual defensive actions per (player, season) — v7 precomputed mask
@@ -630,6 +691,27 @@ def compute_per_player(ev: pd.DataFrame,
                       on=['playerId', 'seasonId'], how='left')
     out['actual_def_actions'] = out['actual_def_actions'].fillna(0).astype(int)
     out['defr'] = out['actual_def_actions'] - out['expected_def_actions']
+
+    # v9 — per-type actual + expected + DefR (count level; per-90 added
+    # after minutes attach).
+    act_by_type = (ev_with_slot[ev_with_slot['_dtype'].notna()]
+                     .groupby(['player.id', 'seasonId', '_dtype']).size()
+                     .reset_index(name='n'))
+    for T in DEFR_TYPES:
+        sub = (act_by_type[act_by_type['_dtype'] == T]
+                 .rename(columns={'player.id': 'playerId', 'n': f'act_{T}'})
+                 [['playerId', 'seasonId', f'act_{T}']])
+        out = out.merge(sub, on=['playerId', 'seasonId'], how='left')
+        out[f'act_{T}'] = out[f'act_{T}'].fillna(0).astype(int)
+    # expected per type from the accumulator
+    exp_rows = {}
+    for (pid, sid, T), v in expected_type_acc.items():
+        exp_rows.setdefault((pid, sid), {})[T] = v
+    for T in DEFR_TYPES:
+        out[f'exp_{T}'] = [exp_rows.get((p, s), {}).get(T, 0.0)
+                             for p, s in zip(out['playerId'], out['seasonId'])]
+        out[f'defr_{T}'] = out[f'act_{T}'] - out[f'exp_{T}']
+
     # Most-common slot
     ps = player_slot.rename(columns={'player.id': 'playerId',
                                        'slot': 'position'})
@@ -645,11 +727,14 @@ def compute_per_player(ev: pd.DataFrame,
         out['playerId'] = out['playerId'].astype('Int64')
         out['seasonId'] = out['seasonId'].astype('Int64')
         out = out.merge(gpa, on=['playerId', 'seasonId'], how='left')
-        out['defr_per90'] = np.where(
-            out['mins_played'].fillna(0) > 0,
-            out['defr'] / (out['mins_played'] / 90.0),
-            np.nan,
-        )
+        _mp90 = out['mins_played'].fillna(0) / 90.0
+        out['defr_per90'] = np.where(_mp90 > 0, out['defr'] / _mp90, np.nan)
+        # v9 — per-type DefR per 90 (the dashboard display metrics)
+        for T in DEFR_TYPES:
+            out[f'defr_{T}_p90'] = np.where(
+                _mp90 > 0, out[f'defr_{T}'] / _mp90, np.nan)
+            out[f'act_{T}_p90'] = np.where(
+                _mp90 > 0, out[f'act_{T}'] / _mp90, np.nan)
     except Exception as e:
         print(f"  [warn] could not attach minutes: {e}")
         out['mins_played'] = np.nan
