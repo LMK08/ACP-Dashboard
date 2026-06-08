@@ -50,15 +50,19 @@ N_ZONE_Y = 3
 # Opposition event types we consider "could trigger a defensive response"
 OPP_EVENT_TYPES = {'pass', 'carry', 'shot'}
 
-# v4 — ATTACK MOMENTUM (StatsBomb factor 2), now 3-tier. Empirical
-# possession.duration distribution (median 16.7s) shows clear strata:
-#   counter    — <= 6s    (~14% of possessions; direct/fast break)
-#   transition — 6-15s    (~30%; recovered ball, moving forward)
-#   settled    — > 15s    (~55%; established possession)
-# A counter demands a different responder (deepest defender recovers)
-# than settled possession (zone defender presses).
-MOMENTUM_COUNTER_MAX_SEC = 6.0
-MOMENTUM_TRANSITION_MAX_SEC = 15.0
+# v5 — ATTACK MOMENTUM (StatsBomb factor 2) from Wyscout's possession.types
+# momentum tags. We use ONLY the momentum tags (counterattack / transition_*)
+# which describe the state of play, NOT the set-piece-origin tags
+# (throw_in / free_kick / corner). Those are possession-LEVEL markers of
+# how the possession STARTED — a possession that begins with a throw-in
+# then recycles into open play would (wrongly) tag all its events as a set
+# piece, which over-counts set pieces to ~45% of events. The momentum tags
+# are far more stable across a possession's events.
+#   counter    — 'counterattack' OR 'transition_high'  (fast break)
+#   transition — 'transition_medium' OR 'transition_low'  (slower build off a turnover)
+#   settled    — everything else ('attack' / set-piece-origin / untagged)
+_PHASE_COUNTER_TAGS = {'counterattack', 'transition_high'}
+_PHASE_TRANSITION_TAGS = {'transition_medium', 'transition_low'}
 
 # v4 — DYNAMIC DEFENSIVE SHAPE (StatsBomb factor 3). At each opposition
 # event we estimate the defending team's line height from the rolling
@@ -168,7 +172,7 @@ _EVENT_COLS = [
     'type.primary', 'location.x', 'location.y',
     'pass.endLocation.x', 'pass.endLocation.y',
     'carry.endLocation.x', 'carry.endLocation.y',
-    'possession.duration', 'possession.eventIndex',
+    'possession.types',
     'groundDuel.duelType', 'aerialDuel.firstTouch',
     'shot.onTarget', 'competitionId',
 ]
@@ -216,6 +220,9 @@ def load_events() -> pd.DataFrame:
     carry_mask = (df['type.primary'] == 'carry') & df['carry.endLocation.x'].notna()
     df.loc[carry_mask, '_eff_x'] = df.loc[carry_mask, 'carry.endLocation.x']
     df.loc[carry_mask, '_eff_y'] = df.loc[carry_mask, 'carry.endLocation.y']
+    # v5 — precompute event-level phase from possession.types (vectorized
+    # via list-comprehension; ~one pass over the column).
+    df['_phase'] = [phase_of(t) for t in df['possession.types'].tolist()]
     return df
 
 
@@ -226,14 +233,20 @@ def _mirror_x(x):
     return 100.0 - x
 
 
-def phase_of(possession_duration) -> str:
-    """v4 — Attack momentum (StatsBomb factor 2), 3-tier."""
-    if possession_duration is None or pd.isna(possession_duration):
+def phase_of(types) -> str:
+    """v5 — Attack momentum from Wyscout possession.types momentum tags.
+    Priority: counter > transition > settled."""
+    if types is None:
         return 'settled'
-    d = float(possession_duration)
-    if d <= MOMENTUM_COUNTER_MAX_SEC:
+    if isinstance(types, float) and pd.isna(types):
+        return 'settled'
+    try:
+        tset = set(types) if not isinstance(types, str) else {types}
+    except TypeError:
+        return 'settled'
+    if tset & _PHASE_COUNTER_TAGS:
         return 'counter'
-    if d <= MOMENTUM_TRANSITION_MAX_SEC:
+    if tset & _PHASE_TRANSITION_TAGS:
         return 'transition'
     return 'settled'
 
@@ -269,7 +282,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
         effy = mdf['_eff_y'].to_numpy(dtype=float)
         pos_arr = mdf['player.position'].to_numpy()
         pid_arr = mdf['player.id'].to_numpy()
-        poss_dur = mdf['possession.duration'].to_numpy(dtype=float)
+        phase_col = mdf['_phase'].to_numpy()
         gd_arr = mdf['groundDuel.duelType'].to_numpy()
         season = mdf['seasonId'].to_numpy()
         n = len(mdf)
@@ -321,7 +334,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
             zx = min(max(int(x / zsx), 0), N_ZONE_X - 1)
             zy = min(max(int(y / zsy), 0), N_ZONE_Y - 1)
             def_team_known = next((tt for tt in teams if tt != opp_team), None)
-            phase = phase_of(poss_dur[i])
+            phase = phase_col[i]
             line_state = (line_state_for(def_team_known, t0)
                             if def_team_known is not None else 'mid_block')
             # Responder window: searchsorted on the time-sorted slice
