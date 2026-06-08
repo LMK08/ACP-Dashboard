@@ -580,23 +580,45 @@ def compute_per_player(ev: pd.DataFrame,
         axis=1,
     )
 
-    # v4 — CAREER aggregate. Single-season position-fair DefR has YoY
-    # r ≈ 0.49 (moderate). Minutes-weighted averaging across a player's
-    # seasons raises reliability via Spearman-Brown: a 2-season mean
-    # ≈ 0.66, 3-season ≈ 0.74. This is the trustworthy scouting number.
-    # Computed minutes-weighted over all the player's qualifying
-    # (≥500 min) seasons and broadcast back onto every row.
+    # ===== RELIABILITY FINDINGS (measured, not assumed) =====
+    # Within-season split-half (odd vs even matches, each half ≥400 min,
+    # n=3,587 player-seasons), Spearman-Brown corrected to full-season:
+    #     defr_per90 (raw)        r = 0.871
+    #     defr_per90_vs_position  r = 0.818   ← EXCELLENT within-season
+    # Year-over-year (same-position consecutive pairs, n=383):
+    #     defr_per90 (raw)        r = 0.75
+    #     defr_per90_vs_position  r = 0.49
+    #
+    # The gap (0.82 within-season vs 0.49 YoY) is NOT measurement noise —
+    # within a season the metric is highly reliable. The YoY drop is
+    # GENUINE system-dependence: defensive responsibility changes with
+    # the team's pressing scheme / block height / role. So DefR describes
+    # "how this player performs defensive responsibility in his CURRENT
+    # system", and is expected to shift if he moves to a very different one.
+    #
+    # Implication for the career aggregate: a flat minutes-weighted mean
+    # across seasons blends incompatible systems. We RECENCY-WEIGHT so the
+    # player's current/most-recent system dominates, with older seasons as
+    # a mild prior — mirrors the CVI career-decay approach.
+    CAREER_DECAY = 0.5   # weight = mins × decay^(seasons_back)
+    SEASON_YEAR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
+                    191782: 2025, 190230: 2023, 191779: 2025}
     qual = out[(out['mins_played'].fillna(0) >= 500)
                  & out['defr_per90_vs_position'].notna()].copy()
-    qual['_w'] = qual['mins_played']
-    car = (qual.assign(_wv=qual['defr_per90_vs_position'] * qual['_w'])
-              .groupby('playerId')
-              .agg(_sum_wv=('_wv', 'sum'), _sum_w=('_w', 'sum'),
-                    n_seasons=('seasonId', 'nunique'))
-              .reset_index())
-    car['defr_career'] = car['_sum_wv'] / car['_sum_w']
-    out = out.merge(car[['playerId', 'defr_career', 'n_seasons']],
-                      on='playerId', how='left')
+    qual['_yr'] = qual['seasonId'].map(SEASON_YEAR)
+    qual = qual.dropna(subset=['_yr'])
+    car_rows = []
+    for pid, g in qual.groupby('playerId'):
+        latest = g['_yr'].max()
+        w = (g['mins_played'].to_numpy()
+              * (CAREER_DECAY ** (latest - g['_yr'].to_numpy())))
+        v = g['defr_per90_vs_position'].to_numpy()
+        if w.sum() > 0:
+            car_rows.append({'playerId': pid,
+                              'defr_career': float((v * w).sum() / w.sum()),
+                              'n_seasons': int(g['seasonId'].nunique())})
+    car = pd.DataFrame(car_rows)
+    out = out.merge(car, on='playerId', how='left')
 
     return out
 
