@@ -75,6 +75,12 @@ jobs:
             fi
           done
 
+          # Strip generated image artifacts — the running app never loads
+          # them, and HF's pre-receive hook rejects raw binaries (e.g. PNGs)
+          # that aren't stored via LFS/Xet. Drop any plots dirs + loose images.
+          find ../hf-repo -type d -name plots -exec rm -rf {} + 2>/dev/null || true
+          find ../hf-repo -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
+
           echo "✅ Code files updated"
 
       - name: Push to Hugging Face Space
