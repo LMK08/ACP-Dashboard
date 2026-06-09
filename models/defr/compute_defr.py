@@ -490,41 +490,118 @@ FINE_KEYS = ['zx', 'zy', 'opp_type', 'phase', 'line_state']
 COARSE_KEYS = ['zx', 'zy', 'opp_type']
 
 
-def build_prob_table(resp: pd.DataFrame) -> pd.DataFrame:
-    """v3 — probability of each responder slot given the FULL context
-    (zone × opp_type × phase × line_state), with empirical-Bayes backoff
-    toward the coarse (zone × opp_type) probability so sparse fine
-    buckets don't produce noisy estimates.
+# ----- v10 shared lookups ---------------------------------------------------
+def compute_modal_slots(ev: pd.DataFrame):
+    """Most-frequent slot per (player, season). Returns (df, dict)."""
+    e = ev.copy()
+    e['slot'] = e['player.position'].map(slot_of)
+    player_slot = (e.dropna(subset=['slot'])
+                     .groupby(['player.id', 'seasonId', 'slot'])
+                     .size().reset_index(name='n')
+                     .sort_values('n', ascending=False)
+                     .drop_duplicates(['player.id', 'seasonId'])
+                     [['player.id', 'seasonId', 'slot']])
+    psl = player_slot.set_index(['player.id', 'seasonId'])['slot'].to_dict()
+    return player_slot, psl
 
-    Returns one row per (FINE_KEYS, responder_slot) with column
-    'prob' = the shrunk unconditional P(this slot responds | context).
-    The unconditional framing (denominator = ALL opp events in the
-    bucket, ~70% of which get no response) keeps expected calibrated."""
-    matched = resp.dropna(subset=['responder_slot'])
 
-    # --- Coarse layer: P(slot | zone, type) ---
-    coarse_num = (matched.groupby(COARSE_KEYS + ['responder_slot'])
-                     .size().reset_index(name='c_n'))
-    coarse_den = (resp.groupby(COARSE_KEYS).size()
-                     .reset_index(name='c_total'))
-    coarse = coarse_num.merge(coarse_den, on=COARSE_KEYS)
-    coarse['coarse_prob'] = coarse['c_n'] / coarse['c_total']
+def match_lookups(ev: pd.DataFrame):
+    """(match → teams, (match, team) → players, (player, match) → on-pitch
+    window from first/last event timestamps)."""
+    match_teams = ev.groupby('matchId')['team.id'].unique().to_dict()
+    def_team_players = (ev[['matchId', 'team.id', 'player.id', 'seasonId']]
+                          .drop_duplicates()
+                          .groupby(['matchId', 'team.id'])
+                          [['player.id', 'seasonId']]
+                          .apply(lambda g: list(zip(g['player.id'], g['seasonId'])))
+                          .to_dict())
+    pmt = (ev.groupby(['player.id', 'matchId'])['_t']
+              .agg(['min', 'max']).reset_index())
+    pmt_lookup = {(int(r['player.id']), r['matchId']):
+                    (float(r['min']), float(r['max']))
+                    for _, r in pmt.iterrows()}
+    return match_teams, def_team_players, pmt_lookup
 
-    # --- Fine layer: P(slot | zone, type, phase, line) ---
-    fine_num = (matched.groupby(FINE_KEYS + ['responder_slot'])
+
+def build_presence_tables(resp, match_teams, def_team_players, pmt_lookup, psl):
+    """v10 — per-context counts of opposition events where each slot was
+    actually ON THE PITCH for the defending team. These are the correct
+    probability denominators: the old all-events denominator diluted slots
+    that aren't in every formation (DMF present for only ~28% of events,
+    back-3 CB ~24%, LAM/RAM ~10%), understating their expected ~3-10x.
+    Returns (fine, coarse) dicts keyed ctx+(slot,)."""
+    R_mid = resp['matchId'].to_numpy()
+    R_opp = resp['opp_team'].to_numpy()
+    R_zx = resp['zx'].to_numpy(); R_zy = resp['zy'].to_numpy()
+    R_ot = resp['opp_type'].to_numpy()
+    R_ph = resp['phase'].to_numpy(); R_ls = resp['line_state'].to_numpy()
+    R_t = resp['t'].to_numpy(dtype=float)
+    fine, coarse = {}, {}
+    for k in range(len(resp)):
+        mid = R_mid[k]; opp = R_opp[k]
+        teams = match_teams.get(mid)
+        if teams is None or len(teams) < 2:
+            continue
+        dft = next((t for t in teams if t != opp), None)
+        if dft is None:
+            continue
+        te = R_t[k]
+        slots_here = set()
+        for pid, sid in def_team_players.get((mid, dft), []):
+            w = pmt_lookup.get((pid, mid))
+            if w is None or te < w[0] or te > w[1]:
+                continue
+            s = psl.get((pid, sid))
+            if s is not None:
+                slots_here.add(s)
+        fk = (R_zx[k], R_zy[k], R_ot[k], R_ph[k], R_ls[k])
+        ck = (R_zx[k], R_zy[k], R_ot[k])
+        for s in slots_here:
+            fine[fk + (s,)] = fine.get(fk + (s,), 0) + 1
+            coarse[ck + (s,)] = coarse.get(ck + (s,), 0) + 1
+    return fine, coarse
+
+
+def build_prob_table(resp: pd.DataFrame, presence_fine: dict,
+                       presence_coarse: dict) -> pd.DataFrame:
+    """v10 — P(slot responds | context, SLOT PRESENT ON PITCH), with
+    empirical-Bayes backoff toward the coarse (zone × opp_type) layer.
+
+    Two v10 fixes vs the v3-v9 table:
+      - Denominators are presence-conditioned (events where the slot was
+        actually on the pitch), not all events — removes the formation-
+        dilution artifact for DMF / back-3 CB / LAM / RAM.
+      - Numerators use the responder's seasonal MODAL slot
+        (resp['responder_modal']) instead of the event-moment position —
+        33% of matched rows carried a rotated position code, which leaked
+        probability mass between slots.
+    Output keeps the 'responder_slot' column name for compatibility."""
+    matched = resp.dropna(subset=['responder_modal'])
+
+    fine_num = (matched.groupby(FINE_KEYS + ['responder_modal'])
                    .size().reset_index(name='f_n'))
-    fine_den = (resp.groupby(FINE_KEYS).size()
-                   .reset_index(name='f_total'))
-    fine = fine_num.merge(fine_den, on=FINE_KEYS)
-    fine['fine_prob'] = fine['f_n'] / fine['f_total']
+    fine_num['f_total'] = [
+        presence_fine.get((r.zx, r.zy, r.opp_type, r.phase, r.line_state,
+                             r.responder_modal), 0)
+        for r in fine_num.itertuples(index=False)]
+    fine_num = fine_num[fine_num['f_total'] > 0].copy()
+    fine_num['fine_prob'] = (fine_num['f_n'] / fine_num['f_total']).clip(upper=1.0)
 
-    # --- Backoff blend ---
-    grp = fine.merge(coarse[COARSE_KEYS + ['responder_slot', 'coarse_prob']],
-                       on=COARSE_KEYS + ['responder_slot'], how='left')
+    coarse_num = (matched.groupby(COARSE_KEYS + ['responder_modal'])
+                     .size().reset_index(name='c_n'))
+    coarse_num['c_total'] = [
+        presence_coarse.get((r.zx, r.zy, r.opp_type, r.responder_modal), 0)
+        for r in coarse_num.itertuples(index=False)]
+    coarse_num = coarse_num[coarse_num['c_total'] > 0].copy()
+    coarse_num['coarse_prob'] = (coarse_num['c_n'] / coarse_num['c_total']).clip(upper=1.0)
+
+    grp = fine_num.merge(
+        coarse_num[COARSE_KEYS + ['responder_modal', 'coarse_prob']],
+        on=COARSE_KEYS + ['responder_modal'], how='left')
     grp['coarse_prob'] = grp['coarse_prob'].fillna(0.0)
     w = grp['f_total'] / (grp['f_total'] + PROB_SMOOTHING_K)
     grp['prob'] = w * grp['fine_prob'] + (1 - w) * grp['coarse_prob']
-    return grp
+    return grp.rename(columns={'responder_modal': 'responder_slot'})
 
 
 # v9 — the five mutually-exclusive defensive action types we score
@@ -532,32 +609,38 @@ def build_prob_table(resp: pd.DataFrame) -> pd.DataFrame:
 DEFR_TYPES = ['interception', 'clearance', 'tackle', 'recovery', 'def_aerial']
 
 
-def build_prob_table_by_type(resp: pd.DataFrame) -> dict:
-    """P(responder_slot responds WITH action-type T | full context), same
-    empirical-Bayes backoff as build_prob_table but split by the
-    responder's action type. Returns a dict keyed
-    (zx, zy, opp_type, phase, line_state, slot) -> {T: prob} so the
-    expected loop can add each type's contribution in one pass."""
-    matched = resp.dropna(subset=['responder_slot', 'responder_type'])
-    KT = ['responder_slot', 'responder_type']
-    coarse_num = (matched.groupby(COARSE_KEYS + KT).size()
-                     .reset_index(name='c_n'))
-    coarse_den = resp.groupby(COARSE_KEYS).size().reset_index(name='c_total')
-    coarse = coarse_num.merge(coarse_den, on=COARSE_KEYS)
-    coarse['coarse_prob'] = coarse['c_n'] / coarse['c_total']
-    fine_num = (matched.groupby(FINE_KEYS + KT).size()
-                   .reset_index(name='f_n'))
-    fine_den = resp.groupby(FINE_KEYS).size().reset_index(name='f_total')
-    fine = fine_num.merge(fine_den, on=FINE_KEYS)
-    fine['fine_prob'] = fine['f_n'] / fine['f_total']
-    grp = fine.merge(coarse[COARSE_KEYS + KT + ['coarse_prob']],
-                       on=COARSE_KEYS + KT, how='left')
+def build_prob_table_by_type(resp: pd.DataFrame, presence_fine: dict,
+                               presence_coarse: dict) -> dict:
+    """v10 — P(slot responds WITH action-type T | context, slot present);
+    same presence denominators + modal numerators as build_prob_table.
+    Returns dict keyed ctx+(slot,) -> {T: prob}; the per-type probs sum to
+    the combined table's prob for that (ctx, slot)."""
+    matched = resp.dropna(subset=['responder_modal', 'responder_type'])
+    KT = ['responder_modal', 'responder_type']
+
+    fine_num = (matched.groupby(FINE_KEYS + KT).size().reset_index(name='f_n'))
+    fine_num['f_total'] = [
+        presence_fine.get((r.zx, r.zy, r.opp_type, r.phase, r.line_state,
+                             r.responder_modal), 0)
+        for r in fine_num.itertuples(index=False)]
+    fine_num = fine_num[fine_num['f_total'] > 0].copy()
+    fine_num['fine_prob'] = (fine_num['f_n'] / fine_num['f_total']).clip(upper=1.0)
+
+    coarse_num = (matched.groupby(COARSE_KEYS + KT).size().reset_index(name='c_n'))
+    coarse_num['c_total'] = [
+        presence_coarse.get((r.zx, r.zy, r.opp_type, r.responder_modal), 0)
+        for r in coarse_num.itertuples(index=False)]
+    coarse_num = coarse_num[coarse_num['c_total'] > 0].copy()
+    coarse_num['coarse_prob'] = (coarse_num['c_n'] / coarse_num['c_total']).clip(upper=1.0)
+
+    grp = fine_num.merge(coarse_num[COARSE_KEYS + KT + ['coarse_prob']],
+                           on=COARSE_KEYS + KT, how='left')
     grp['coarse_prob'] = grp['coarse_prob'].fillna(0.0)
     w = grp['f_total'] / (grp['f_total'] + PROB_SMOOTHING_K)
     grp['prob'] = w * grp['fine_prob'] + (1 - w) * grp['coarse_prob']
     out = {}
     for r in grp.itertuples(index=False):
-        key = (r.zx, r.zy, r.opp_type, r.phase, r.line_state, r.responder_slot)
+        key = (r.zx, r.zy, r.opp_type, r.phase, r.line_state, r.responder_modal)
         out.setdefault(key, {})[r.responder_type] = r.prob
     return out
 
@@ -565,69 +648,32 @@ def build_prob_table_by_type(resp: pd.DataFrame) -> dict:
 # ----- Step 3 — Per-player expected + actual ------------------------------
 def compute_per_player(ev: pd.DataFrame,
                          resp: pd.DataFrame,
-                         prob_table: pd.DataFrame) -> pd.DataFrame:
+                         prob_table: pd.DataFrame,
+                         ptype_lookup: dict,
+                         player_slot: pd.DataFrame,
+                         psl: dict,
+                         match_teams: dict,
+                         def_team_players: dict,
+                         pmt_lookup: dict) -> pd.DataFrame:
     """Compute expected + actual defensive actions per (player, season).
-    Returns DataFrame with one row per (playerId, seasonId)."""
-    # Most-frequent slot per (player, season) — handles slight pos changes
+    Returns DataFrame with one row per (playerId, seasonId).
+
+    v10 — probabilities are presence-conditioned P(slot responds | slot on
+    pitch), so an opp event only adds expected for players actually on the
+    pitch at that moment, and when 2+ players of the SAME slot are on
+    simultaneously (subs/rotations — 15-21% of events for the main slots)
+    the slot's expected is SPLIT between them instead of double-credited.
+    Sum of expected across all players ≈ matched responses (calibrated)."""
     ev_with_slot = ev.copy()
     ev_with_slot['slot'] = ev_with_slot['player.position'].map(slot_of)
-    player_slot = (ev_with_slot.dropna(subset=['slot'])
-                                  .groupby(['player.id', 'seasonId', 'slot'])
-                                  .size().reset_index(name='n')
-                                  .sort_values('n', ascending=False)
-                                  .drop_duplicates(['player.id', 'seasonId'])
-                                  [['player.id', 'seasonId', 'slot']])
 
-    # Per (player, season): which matches did they participate in?
-    player_matches = (ev_with_slot[['player.id', 'matchId', 'seasonId']]
-                        .drop_duplicates())
-
-    # Index prob_table for fast lookup — full v3 key
-    # (zone × type × phase × line_state × slot)
     prob_lookup = prob_table.set_index(
         FINE_KEYS + ['responder_slot'])['prob'].to_dict()
-    # v9 — per-type expected probabilities, keyed (ctx, slot) -> {type: p}
-    ptype_lookup = build_prob_table_by_type(resp)
+    expected_acc = {}        # (pid, sid) → sum of expected_p
     expected_type_acc = {}   # (pid, sid, type) → sum of per-type expected_p
-
-    # For each opposition event in resp, distribute expected probability
-    # across players on the pitch at that match in the relevant slot.
-    # "On the pitch" approximation: any player with at least one event in
-    # the match. (We'll refine for substitutions in v2.)
-    # v2 — mins-share weighting. For each (player, match) compute the
-    # approximate minutes played as (last_event_time - first_event_time)/60.
-    # An opp event is only counted in a player's expected if it happened
-    # while they were on the pitch (t between first and last event time).
-    # This replaces v1's "any player with an event = on for the whole match"
-    # which over-attributed expected to subs.
-    pmt = (ev_with_slot.groupby(['player.id', 'matchId'])['_t']
-              .agg(['min', 'max']).reset_index()
-              .rename(columns={'min': 't_in', 'max': 't_out'}))
-    pmt_lookup = {(int(r['player.id']), r['matchId']):
-                    (float(r['t_in']), float(r['t_out']))
-                    for _, r in pmt.iterrows()}
-
-    # Sum expected per (player, season) by iterating through resp events
-    expected_acc = {}   # (pid, sid) → sum of expected_p
-    n_opp_acc = {}      # (pid, sid) → count of opposition events seen
-    # Pre-compute (match → defending team) for each row, defended by joining
-    # via opposition team. For a match with teams A and B, when team A is the
-    # opp_team, the defending team is B.
-    # Build match_id → set of teams
-    match_teams = ev_with_slot.groupby('matchId')['team.id'].unique().to_dict()
-    # Build (matchId, defending team) → list of players
-    def_team_players = (ev_with_slot[['matchId', 'team.id', 'player.id',
-                                          'seasonId']]
-                          .drop_duplicates()
-                          .groupby(['matchId', 'team.id'])
-                          [['player.id', 'seasonId']]
-                          .apply(lambda g: list(zip(g['player.id'], g['seasonId'])))
-                          .to_dict())
-    # Player → slot lookup
-    player_slot_lookup = player_slot.set_index(['player.id', 'seasonId'])['slot']
+    n_opp_acc = {}           # (pid, sid) → count of opposition events seen
 
     print(f"  Processing {len(resp):,} opposition events…", flush=True)
-    # Vectorized column access (numpy) — ~10x faster than .iterrows()
     R_mid = resp['matchId'].to_numpy()
     R_opp = resp['opp_team'].to_numpy()
     R_zx = resp['zx'].to_numpy()
@@ -636,7 +682,6 @@ def compute_per_player(ev: pd.DataFrame,
     R_phase = resp['phase'].to_numpy()
     R_line = resp['line_state'].to_numpy()
     R_t = resp['t'].to_numpy(dtype=float)
-    psl = player_slot_lookup.to_dict()
     for k in range(len(resp)):
         mid = R_mid[k]
         opp_team = R_opp[k]
@@ -648,25 +693,34 @@ def compute_per_player(ev: pd.DataFrame,
             continue
         t_event = R_t[k]
         ctx = (R_zx[k], R_zy[k], R_type[k], R_phase[k], R_line[k])
+        # Who is on the pitch for the defending team right now, and at
+        # which modal slot?
+        onpitch = []
         for pid, sid in def_team_players.get((mid, def_team), []):
             t_in_out = pmt_lookup.get((pid, mid))
             if t_in_out is None:
                 continue
-            t_in, t_out = t_in_out
-            if t_event < t_in or t_event > t_out:
+            if t_event < t_in_out[0] or t_event > t_in_out[1]:
                 continue
             slot = psl.get((pid, sid))
             if slot is None:
                 continue
+            onpitch.append((pid, sid, slot))
+        if not onpitch:
+            continue
+        slot_cnt = {}
+        for _, _, s in onpitch:
+            slot_cnt[s] = slot_cnt.get(s, 0) + 1
+        for pid, sid, slot in onpitch:
+            share = slot_cnt[slot]
             p = prob_lookup.get(ctx + (slot,), 0.0)
             if p > 0:
-                expected_acc[(pid, sid)] = expected_acc.get((pid, sid), 0) + p
-            # v9 — per-type expected
+                expected_acc[(pid, sid)] = expected_acc.get((pid, sid), 0) + p / share
             d = ptype_lookup.get(ctx + (slot,))
             if d:
                 for T, pT in d.items():
                     kk = (pid, sid, T)
-                    expected_type_acc[kk] = expected_type_acc.get(kk, 0) + pT
+                    expected_type_acc[kk] = expected_type_acc.get(kk, 0) + pT / share
             n_opp_acc[(pid, sid)] = n_opp_acc.get((pid, sid), 0) + 1
 
     # Actual defensive actions per (player, season) — v7 precomputed mask
@@ -757,10 +811,27 @@ def compute_per_player(ev: pd.DataFrame,
     # DefR is noisiest) get pulled toward "typical for position"; full-
     # season players keep most of their signal. K=900 ≈ half a season.
     SHRINK_K = 900.0
+    # v10 — LEAGUE-AWARE normalization. The validation battery measured a
+    # +0.86/90 bias: with pooled position medians, Campeonato players sat
+    # systematically above Liga 3 on the "position-fair" metric (Camp games
+    # have more defensive events). Medians are now per (position, league),
+    # falling back to the pooled median when a league cell has <8 players.
+    SEASON_LEAGUE = {190230: 'CAMP', 191779: 'CAMP'}   # everything else L3
+    out['league'] = out['seasonId'].map(
+        lambda s: SEASON_LEAGUE.get(int(s), 'L3') if pd.notna(s) else 'L3')
     valid = out[(out['mins_played'].fillna(0) >= 800) & out['defr_per90'].notna()]
-    pos_median = valid.groupby('position')['defr_per90'].median().to_dict()
+    med_lg = valid.groupby(['position', 'league'])['defr_per90'].median().to_dict()
+    n_lg = valid.groupby(['position', 'league']).size().to_dict()
+    med_pooled = valid.groupby('position')['defr_per90'].median().to_dict()
+
+    def _pos_median(r):
+        key = (r['position'], r['league'])
+        if n_lg.get(key, 0) >= 8:
+            return med_lg[key]
+        return med_pooled.get(r['position'], 0)
+
     out['defr_per90_vs_position'] = out.apply(
-        lambda r: (r['defr_per90'] - pos_median.get(r['position'], 0))
+        lambda r: (r['defr_per90'] - _pos_median(r))
                     if pd.notna(r['defr_per90']) else np.nan,
         axis=1,
     )
@@ -773,21 +844,31 @@ def compute_per_player(ev: pd.DataFrame,
         axis=1,
     )
 
-    # ===== RELIABILITY FINDINGS (measured, not assumed) =====
-    # Within-season split-half (odd vs even matches, each half ≥400 min,
-    # n=3,587 player-seasons), Spearman-Brown corrected to full-season:
-    #     defr_per90 (raw)        r = 0.871
-    #     defr_per90_vs_position  r = 0.818   ← EXCELLENT within-season
-    # Year-over-year (same-position consecutive pairs, n=383):
-    #     defr_per90 (raw)        r = 0.75
-    #     defr_per90_vs_position  r = 0.49
+    # ===== RELIABILITY & VALIDATION FINDINGS (v10, measured) =====
+    # Within-season split-half (odd/even matches, each half ≥450 min,
+    # n=3,078), Spearman-Brown corrected to full-season:
+    #     defr_per90 (raw)        r = 0.857
+    #     defr_per90_vs_position  r = 0.847
+    # Year-over-year (same-position consecutive pairs, n=326):
+    #     defr_per90 / vs_position  r ≈ 0.49 / 0.46
+    # NOTE: v9 showed higher reliabilities (0.89-0.91 within-season) but
+    # that stability was partly BORROWED from raw volume — v9's expected
+    # was under-scaled (~17% of actual) due to formation dilution, so
+    # DefR ≈ actual volume in disguise. v10's calibrated expected
+    # (Σ expected ≈ matched responses, ratio 0.955) measures the real
+    # over/under-performance signal; ~0.85 is the honest reliability.
     #
-    # The gap (0.82 within-season vs 0.49 YoY) is NOT measurement noise —
-    # within a season the metric is highly reliable. The YoY drop is
-    # GENUINE system-dependence: defensive responsibility changes with
-    # the team's pressing scheme / block height / role. So DefR describes
-    # "how this player performs defensive responsibility in his CURRENT
-    # system", and is expected to shift if he moves to a very different one.
+    # Validation battery (see git history):
+    #   - LOSO out-of-sample: prob table w/o a season ranks it identically
+    #     (Spearman 0.9999) — no overfitting.
+    #   - Window sensitivity: 2s vs 3s rank corr 0.94; 5s vs 3s 0.85.
+    #   - Discriminant: ~zero corr with all offensive GPA values; +0.02
+    #     with Interrupting Value (DefR = workload, not value — they are
+    #     complementary, not redundant).
+    #
+    # The within-vs-YoY gap is GENUINE system-dependence: defensive
+    # responsibility changes with the team's pressing scheme / block
+    # height / role. DefR describes the player in his CURRENT system.
     #
     # Implication for the career aggregate: a flat minutes-weighted mean
     # across seasons blends incompatible systems. We RECENCY-WEIGHT so the
@@ -833,14 +914,37 @@ def main():
            f"{matched:,} ({matched/len(resp)*100:.0f}%) had a defensive "
            f"response within {RESPONSE_WINDOW_SEC:.0f}s.")
 
-    print("\n[3/4] Estimating empirical P(responder_slot | zone, type)…",
+    print("\n[3/5] Modal slots, on-pitch lookups, slot-presence scan…",
             flush=True)
-    prob = build_prob_table(resp)
+    player_slot, psl = compute_modal_slots(ev)
+    match_teams, def_team_players, pmt_lookup = match_lookups(ev)
+    # v10 — numerators use the responder's seasonal MODAL slot (the
+    # event-moment position disagrees with it on 33% of matched rows).
+    resp['responder_modal'] = [
+        psl.get((int(p), s)) if pd.notna(p) else None
+        for p, s in zip(resp['responder_pid'], resp['seasonId'])]
+    presence_fine, presence_coarse = build_presence_tables(
+        resp, match_teams, def_team_players, pmt_lookup, psl)
+    print(f"  Presence tables: {len(presence_fine):,} fine cells.")
+
+    print("\n[4/5] Estimating presence-conditioned P(slot responds | ctx)…",
+            flush=True)
+    prob = build_prob_table(resp, presence_fine, presence_coarse)
+    ptype_lookup = build_prob_table_by_type(resp, presence_fine, presence_coarse)
     print(f"  Probability table: {len(prob):,} bucket × slot combinations.")
 
-    print("\n[4/4] Computing per-(player, season) expected + actual…", flush=True)
-    out = compute_per_player(ev, resp, prob)
+    print("\n[5/5] Computing per-(player, season) expected + actual…", flush=True)
+    out = compute_per_player(ev, resp, prob, ptype_lookup, player_slot, psl,
+                               match_teams, def_team_players, pmt_lookup)
     print(f"  {len(out):,} (player, season) rows produced.")
+
+    # Calibration: with presence-conditioned probs + concurrent splitting,
+    # the sum of expected across all players should ≈ matched responses.
+    total_exp = float(out['expected_def_actions'].sum())
+    total_matched = int(resp['responder_pid'].notna().sum())
+    print(f"  Calibration: Σ expected = {total_exp:,.0f} vs matched responses "
+           f"= {total_matched:,} (ratio {total_exp/total_matched:.3f}; "
+           f"GK rows dropped from output keep ratio slightly under 1)")
 
     out_path = HERE / 'defr_per_player_season.parquet'
     out.to_parquet(out_path)

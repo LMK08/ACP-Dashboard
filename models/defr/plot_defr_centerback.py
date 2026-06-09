@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Dedicated centre-back DefR chart (StatsBomb-article style).
-Single panel, back-four CBs (LCB+RCB) — the 'CB' code is a back-3 central
-role with a different defensive demand and is excluded.
+Single panel, all centre-backs (LCB/RCB + back-3 'CB'). Since DefR v10's
+presence-conditioned probabilities, back-3 central CBs get correctly
+scaled expected (~13.5/90, same as LCB/RCB) so all CB types share one
+comparable cloud.
 Run from the Dashboard dir: python models/defr/plot_defr_centerback.py
 Output: models/defr/plots/defr_centerback_2526.png"""
 from pathlib import Path
@@ -24,7 +26,7 @@ def short(pid):
     parts=n.split()
     return f"{parts[0][0]}. {parts[-1]}" if len(parts)>=2 else n
 
-CB={'LCB','RCB'}  # back-four centre-backs (the 'CB' code is back-3 central, a different role)
+CB={'CB','LCB','RCB'}  # all CB types — comparable since v10 presence conditioning
 cur=df[df['position'].isin(CB) & df['seasonId'].isin([191782,191779]) & (df['mins_played']>=900)].copy()
 cur['exp90']=cur['expected_def_actions']/(cur['mins_played']/90)
 cur['act90']=cur['actual_def_actions']/(cur['mins_played']/90)
@@ -70,7 +72,7 @@ for s in ('top','right'): ax.spines[s].set_visible(False)
 ax.tick_params(labelsize=10,colors='#5f6368',length=0)
 ax.set_xlabel('Expected defensive actions per 90  (how much the role/situation demands)',fontsize=12,color='#3c4043',labelpad=10)
 ax.set_ylabel('Actual defensive actions per 90  (what the player delivers)',fontsize=12,color='#3c4043',labelpad=10)
-ax.set_title('Centre-Back (back-four) Defensive Responsibility — 25/26 Liga 3 + Campeonato',fontsize=16,fontweight='bold',color=C_TXT,pad=14)
+ax.set_title('Centre-Back Defensive Responsibility — 25/26 Liga 3 + Campeonato',fontsize=16,fontweight='bold',color=C_TXT,pad=14)
 fig.text(0.5,0.915,'Above the dashed line = does more defending than a typical CB in the same situation.  ≥900 min.',ha='center',fontsize=10.5,color='#5f6368')
 handles=[Line2D([0],[0],marker='o',color='w',markerfacecolor='#2E6FB0',markersize=11,label='Liga 3'),
          Line2D([0],[0],marker='o',color='w',markerfacecolor='#E08A2B',markersize=11,label='Campeonato'),

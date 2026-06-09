@@ -128,9 +128,6 @@ def make(grp, sid, league, lkey, color):
     sub = (f'Dashboard group "{grp}" — positions: {", ".join(codes)}.  '
             f'≥700 min ({len(cur)} players, {len(lab)} labelled). '
             'Above the dashed line = more than typical for the group.')
-    if grp == 'CM':
-        sub += ('\nNote: the low-expected left tail is single-pivot holding mids '
-                 '(DMF) — the model gives them lower expected (read their ranking).')
     fig.text(0.5, 0.912, sub, ha='center', fontsize=9.5, color='#5f6368')
     plt.tight_layout(rect=[0, 0, 1, 0.92])
     out = str(_HERE / 'plots' / f'defr_{grp.lower()}_{lkey}_2526.png')
