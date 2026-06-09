@@ -36,11 +36,13 @@ def make(sid, label, color, fname):
     fig,ax=plt.subplots(figsize=(14,11.5))
     x,y=cur['exp90'].values,cur['act90'].values
     mx,my=np.median(x),np.median(y)
-    lim_x=np.percentile(x,99)*1.10; lim_y=max(y.max(),np.percentile(y,99))*1.13
+    # zoom to the data range (with padding) so the points fill the chart
+    padx=(x.max()-x.min())*0.08; pady=(y.max()-y.min())*0.08
+    xlo,xhi=x.min()-padx,x.max()+padx; ylo,yhi=y.min()-pady,y.max()+pady
     ax.axvline(mx,color='#f1f3f4',lw=10,zorder=0); ax.axhline(my,color='#f1f3f4',lw=10,zorder=0)
     ax.grid(True,color=C_GRID,lw=0.7,zorder=0); ax.set_axisbelow(True)
     slope=my/mx if mx>0 else 1
-    ax.plot([0,lim_x],[0,slope*lim_x],'--',color=C_LINE,lw=1.3,zorder=1)
+    ax.plot([0,xhi*1.3],[0,slope*xhi*1.3],'--',color=C_LINE,lw=1.3,zorder=1)  # ratio line (clipped to view)
     ax.scatter(x,y,c=color,s=110,alpha=0.65,edgecolors='white',linewidths=1.0,zorder=3)
     ax.text(0.985,0.975,'FRONT-FOOT AGGRESSOR\nhigh demand · over-delivers',transform=ax.transAxes,ha='right',va='top',fontsize=10,color=C_QUAD,style='italic',linespacing=1.4)
     ax.text(0.985,0.025,'SYSTEM ABSORBER\nhigh demand · falls short',transform=ax.transAxes,ha='right',va='bottom',fontsize=10,color=C_QUAD,style='italic',linespacing=1.4)
@@ -58,7 +60,7 @@ def make(sid, label, color, fname):
     ax.scatter(lab['exp90'],lab['act90'],s=135,facecolors='none',edgecolors='#202124',linewidths=1.2,zorder=4)
     texts=[ax.text(r['exp90'],r['act90'],r['name'],fontsize=9,fontweight='bold',color=C_TXT,zorder=5) for _,r in lab.iterrows()]
     if HAS: adjust_text(texts,ax=ax,only_move={'text':'xy'},arrowprops=dict(arrowstyle='-',color='#9aa0a6',lw=0.6),expand=(1.25,1.45))
-    ax.set_xlim(0,lim_x); ax.set_ylim(0,lim_y)
+    ax.set_xlim(xlo,xhi); ax.set_ylim(ylo,yhi)
     for s in ('top','right'): ax.spines[s].set_visible(False)
     ax.tick_params(labelsize=10,colors='#5f6368',length=0)
     ax.set_xlabel('Expected defensive actions per 90  (how much the role/situation demands)',fontsize=12,color='#3c4043',labelpad=10)
