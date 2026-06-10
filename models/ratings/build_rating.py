@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ACP Rating v3 — the production player rating.
+"""ACP Rating v4 — the production player rating.
 
 v2 adds the DUEL component (Glicko ladders, models/duels/): a player's
 trait ratings (aerial/takeon/stopper/shield/press, >=30 contests each)
@@ -63,15 +63,32 @@ CAMP = {190230, 191779}
 #   rapm = intangibles.
 # Quality > responsibility in EVERY role (Lucas: doing it well beats
 # doing lots of it).
+# v4 (Lucas): qual ~3x resp everywhere; datt trimmed to 0.05 flat; rapm
+# HELD at 0.10 — raising a career-level one-number trait mechanically
+# inflates measured YoY (same value both seasons) without adding truth,
+# and RAPM's own gates passed only marginally (split-half 0.31).
+# off weights HELD at v3 levels (off is the noisiest season axis — the
+# first v4 draft raised them and rating YoY fell 0.41->0.30; reverted);
+# the weight freed from resp/datt goes to QUAL per Lucas.
 ROLE_WEIGHTS = {
-    'Striker':              {'off': 0.55, 'resp': 0.075, 'qual': 0.175, 'datt': 0.10,  'rapm': 0.10},
-    'Wide Attacker':        {'off': 0.55, 'resp': 0.075, 'qual': 0.15,  'datt': 0.125, 'rapm': 0.10},
-    'Advanced Midfielder':  {'off': 0.50, 'resp': 0.125, 'qual': 0.175, 'datt': 0.10,  'rapm': 0.10},
-    'Deep Midfielder':      {'off': 0.45, 'resp': 0.15,  'qual': 0.20,  'datt': 0.10,  'rapm': 0.10},
-    'Wide Defender':        {'off': 0.40, 'resp': 0.175, 'qual': 0.225, 'datt': 0.10,  'rapm': 0.10},
-    'Central Defender':     {'off': 0.325,'resp': 0.20,  'qual': 0.30,  'datt': 0.075, 'rapm': 0.10},
+    'Striker':              {'off': 0.55,  'resp': 0.05,  'qual': 0.25,  'datt': 0.05, 'rapm': 0.10},
+    'Wide Attacker':        {'off': 0.55,  'resp': 0.05,  'qual': 0.25,  'datt': 0.05, 'rapm': 0.10},
+    'Advanced Midfielder':  {'off': 0.50,  'resp': 0.075, 'qual': 0.275, 'datt': 0.05, 'rapm': 0.10},
+    'Deep Midfielder':      {'off': 0.45,  'resp': 0.10,  'qual': 0.30,  'datt': 0.05, 'rapm': 0.10},
+    'Wide Defender':        {'off': 0.40,  'resp': 0.125, 'qual': 0.325, 'datt': 0.05, 'rapm': 0.10},
+    'Central Defender':     {'off': 0.325, 'resp': 0.15,  'qual': 0.375, 'datt': 0.05, 'rapm': 0.10},
 }
-DEFAULT_W = {'off': 0.45, 'resp': 0.15, 'qual': 0.20, 'datt': 0.10, 'rapm': 0.10}
+DEFAULT_W = {'off': 0.45, 'resp': 0.10, 'qual': 0.30, 'datt': 0.05, 'rapm': 0.10}
+# v4 offence axis: reliability x relevance weighted GPA CATEGORY blend.
+# Measured (2026-06): 53% of striker offence is Shooting Value at YoY
+# 0.09 — finishing variance, not skill; receiving/dribbling/set-piece
+# craft repeat far better. Category weight = value-share x max(YoY,.05),
+# estimated per role on all seasons (meta-parameters, noted in-sample).
+# big-4 only: dead-ball categories are zero-inflated (percentile noise);
+# measured YoY of the offence axis: total 0.163 / 8-cat blend 0.186 /
+# big-4 blend 0.197 -> big-4 share x reliability adopted.
+GPA_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
+             'Dribbling Value']
 SHRINK_K = 900.0          # minutes shrink toward role-mean (0.5), as defr_adj
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
@@ -79,7 +96,7 @@ MIN_MINS = 500            # rating eligibility / percentile cohort floor
 print("[1/4] assemble components…", flush=True)
 g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
                       columns=['playerId', 'seasonId', 'name', 'position_group',
-                                'mins_played', 'Total Offensive Value'])
+                                'mins_played', 'Total Offensive Value'] + GPA_CATS)
 g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
 g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
 d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
@@ -114,7 +131,32 @@ def role_pct(col):
     return s.fillna(0.5)
 
 
-df['off_pct'] = role_pct('Total Offensive Value')
+# --- v4 offence: category blend ------------------------------------------
+from scipy.stats import pearsonr as _pr
+for c in GPA_CATS:
+    df[c + '90'] = df[c] / df['mins_played'] * 90
+    df[c + '_pct'] = role_pct(c + '90')
+_off_blend = pd.Series(0.0, index=df.index)
+for role, sub in df.groupby('role'):
+    shares = np.array([sub[c + '90'].abs().mean() for c in GPA_CATS])
+    shares = shares / max(shares.sum(), 1e-9)
+    rels = []
+    for c in GPA_CATS:
+        P = []
+        for pid, gg in sub.sort_values('yr').groupby('playerId'):
+            rr = gg[[c + '_pct', 'yr']].to_dict('records')
+            for a, b in zip(rr, rr[1:]):
+                if b['yr'] - a['yr'] == 1:
+                    P.append((a[c + '_pct'], b[c + '_pct']))
+        P = pd.DataFrame(P)
+        rels.append(_pr(P[0], P[1])[0] if len(P) >= 30 else 0.15)
+    w = shares * np.clip(np.array(rels), 0.05, None)
+    w = w / w.sum()
+    _off_blend.loc[sub.index] = sum(
+        wi * sub[c + '_pct'] for wi, c in zip(w, GPA_CATS))
+df['off_blend'] = _off_blend
+df['off_pct'] = role_pct('off_blend')   # re-uniform within role x league x season
+df['off_total_pct'] = role_pct('Total Offensive Value')   # kept for reference
 df['defr_pct'] = role_pct('defr_adj')
 df['dwae_pct'] = role_pct('defr_dwae_p90')
 df['rapm_pct'] = role_pct('rapm_v3')
