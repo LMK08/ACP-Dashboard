@@ -39,6 +39,11 @@ _DASH = _HERE.parent.parent
 NX, NY = 8, 5
 MAP_COLS = [f'ip_{i:02d}' for i in range(NX * NY)] + \
             [f'op_{i:02d}' for i in range(NX * NY)]
+# v2 — within-team-match percentile ranks (teammate-relative position):
+# scale-free orderings (deepest pivot, wide-CB vs wing-back) on top of the
+# absolute maps. Measured: team context is only ~2% of player-x variance
+# in these leagues, so ranks are a sharpener, not a fix.
+RANK_COLS = ['rank_x_ip', 'rank_x_op', 'rank_yf_ip']
 N_NMF = 10
 DEF_SHARE_WEIGHT = 1.5
 TAXONOMY_MIN_MINS = 600
@@ -54,10 +59,11 @@ X_maps = tax[MAP_COLS].fillna(0).to_numpy()
 nmf = NMF(n_components=N_NMF, init='nndsvda', random_state=RANDOM_STATE,
             max_iter=600)
 W = nmf.fit_transform(X_maps)
-feat = np.column_stack([W, tax['def_share'].fillna(0).to_numpy()])
+feat = np.column_stack([W, tax['def_share'].fillna(0).to_numpy(),
+                          tax[RANK_COLS].fillna(0.5).to_numpy()])
 scaler = StandardScaler().fit(feat)
 Z = scaler.transform(feat)
-Z[:, -1] *= DEF_SHARE_WEIGHT
+Z[:, N_NMF] *= DEF_SHARE_WEIGHT
 print(f"taxonomy sample: {len(tax):,} player-seasons, NMF reconstruction "
        f"err {nmf.reconstruction_err_:.3f}")
 
@@ -101,9 +107,10 @@ for rid, g in tax.groupby('role_id'):
 # ---- 3. per-match assignment -------------------------------------------------
 def transform(df):
     Wm = nmf.transform(df[MAP_COLS].fillna(0).to_numpy())
-    f = np.column_stack([Wm, df['def_share'].fillna(0).to_numpy()])
+    f = np.column_stack([Wm, df['def_share'].fillna(0).to_numpy(),
+                           df[RANK_COLS].fillna(0.5).to_numpy()])
     Zm = scaler.transform(f)
-    Zm[:, -1] *= DEF_SHARE_WEIGHT
+    Zm[:, N_NMF] *= DEF_SHARE_WEIGHT
     return Zm
 
 Zm = transform(mat)
@@ -148,7 +155,7 @@ for (pid, sid), g in mat.groupby(['playerId', 'seasonId']):
     halves = []
     for par in (0, 1):
         h = g[g.index % 2 == par]
-        m = h[MAP_COLS + ['def_share']].mean().to_frame().T
+        m = h[MAP_COLS + ['def_share'] + RANK_COLS].mean().to_frame().T
         halves.append(km.predict(transform(m))[0])
     val.append((halves[0], halves[1]))
 val = np.array(val)
@@ -178,13 +185,39 @@ ct = pd.crosstab(season_roles['primary_role'], season_roles['bucket'],
 print("\nrole x lineup-bucket (row-normalized):")
 print((ct * 100).round(0).to_string())
 
+# ---- naming: carry names from the previous model when clusters correspond ---
+ROLE_FALLBACK = None
+try:
+    prev = pd.read_parquet(_HERE / 'role_assignments_season.parquet')
+    if 'primary_role_name' in prev.columns:
+        j = season_roles.merge(prev[['playerId', 'seasonId', 'primary_role_name']]
+                                  .rename(columns={'primary_role_name': 'prev_name'}),
+                                  on=['playerId', 'seasonId'], how='inner')
+        name_map = (j.groupby('primary_role')['prev_name']
+                       .agg(lambda s: s.mode().iloc[0]).to_dict())
+        if len(set(name_map.values())) == K:
+            ROLE_FALLBACK = name_map
+            print(f"\nauto-named from previous model: {name_map}")
+        else:
+            print(f"\n[warn] cluster->name mapping not 1:1 ({name_map}) — "
+                   f"name manually from the atlas")
+except Exception as e:
+    print(f"[warn] no previous names to carry: {e}")
+if ROLE_FALLBACK:
+    season_roles['primary_role_name'] = season_roles['primary_role'].map(ROLE_FALLBACK)
+    season_roles['season_role_name'] = season_roles['season_role'].map(ROLE_FALLBACK)
+    mat['role_name'] = mat['role_id'].map(ROLE_FALLBACK)
+
 # ---- 5. save + atlas ----------------------------------------------------------
 joblib.dump({'nmf': nmf, 'scaler': scaler, 'kmeans': km, 'k': K,
               'def_share_weight': DEF_SHARE_WEIGHT, 'map_cols': MAP_COLS,
-              'hints': hints}, _HERE / 'role_model.joblib')
+              'rank_cols': RANK_COLS, 'n_nmf': N_NMF,
+              'role_names': ROLE_FALLBACK, 'hints': hints},
+             _HERE / 'role_model.joblib')
 season_roles.to_parquet(_HERE / 'role_assignments_season.parquet')
-mat[['playerId', 'matchId', 'seasonId', 'role_id', 'role_margin',
-      'n_ip', 'n_op']].to_parquet(_HERE / 'role_assignments_match.parquet')
+keep_m = ['playerId', 'matchId', 'seasonId', 'role_id', 'role_margin',
+            'n_ip', 'n_op'] + (['role_name'] if ROLE_FALLBACK else [])
+mat[keep_m].to_parquet(_HERE / 'role_assignments_match.parquet')
 print(f"\nsaved model + assignments (k={K})")
 
 # atlas: mean IP/OOP map per role + exemplars

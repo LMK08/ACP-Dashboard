@@ -144,6 +144,58 @@ def build_level(ev, keys, min_ev, label):
     return pd.DataFrame(rows)
 
 
+def rank_features(ev, gk):
+    """v2 — within-team-match percentile ranks (teammate-RELATIVE position).
+    For each (player, match): where does the player's mean action location
+    rank among his own team's outfielders that match?
+      rank_x_ip  — depth rank in possession   (0 = deepest, 1 = highest)
+      rank_x_op  — depth rank out of possession
+      rank_yf_ip — width rank in possession   (0 = most central, 1 = widest)
+    Scale-free, so it sharpens orderings (deepest pivot, wide-CB vs WB)
+    without re-importing team context. GKs excluded from the rank pool.
+    Returns (per-match df, per-season df aggregated event-weighted)."""
+    gkdf = pd.DataFrame(list(gk), columns=['player.id', 'seasonId'])
+    gkdf['_gk'] = 1
+    out_m = None
+    for ch, val, name in [('_ip', 'location.x', 'rank_x_ip'),
+                            ('_op', 'location.x', 'rank_x_op'),
+                            ('_ip', '_yfv', 'rank_yf_ip')]:
+        sub = ev[ev[ch]].copy()
+        if val == '_yfv':
+            sub['_yfv'] = (sub['location.y'] - 50.0).abs()
+        g = (sub.groupby(['matchId', 'team.id', 'seasonId', 'player.id'])[val]
+                .agg(['mean', 'size']).reset_index())
+        g = g.merge(gkdf, on=['player.id', 'seasonId'], how='left')
+        g = g[g['_gk'].isna()].drop(columns=['_gk'])
+        g[name] = g.groupby(['matchId', 'team.id'])['mean'].rank(pct=True)
+        g = g.rename(columns={'player.id': 'playerId', 'size': f'_n_{name}'})
+        # A handful of players carry events under both team.ids in one
+        # match (duel bookkeeping) — keep the dominant team's row so the
+        # (player, match) key stays unique and the channel merge doesn't
+        # cartesian-expand.
+        g = (g.sort_values(f'_n_{name}', ascending=False)
+                .drop_duplicates(['playerId', 'matchId', 'seasonId']))
+        g = g[['playerId', 'matchId', 'seasonId', name, f'_n_{name}']]
+        out_m = g if out_m is None else out_m.merge(
+            g, on=['playerId', 'matchId', 'seasonId'], how='outer')
+    # season aggregate: event-weighted mean of match ranks
+    out_s = out_m.copy()
+    rows = {'playerId': out_s['playerId'], 'seasonId': out_s['seasonId']}
+    sea_parts = []
+    for name in ['rank_x_ip', 'rank_x_op', 'rank_yf_ip']:
+        w = out_s[f'_n_{name}'].fillna(0)
+        v = out_s[name]
+        t = pd.DataFrame({'playerId': out_s['playerId'],
+                            'seasonId': out_s['seasonId'],
+                            '_wv': v * w, '_w': w.where(v.notna(), 0)})
+        a = t.groupby(['playerId', 'seasonId'])[['_wv', '_w']].sum()
+        sea_parts.append((a['_wv'] / a['_w'].replace(0, np.nan)).rename(name))
+    out_sea = pd.concat(sea_parts, axis=1).reset_index()
+    out_m = out_m[['playerId', 'matchId', 'seasonId',
+                     'rank_x_ip', 'rank_x_op', 'rank_yf_ip']]
+    return out_m, out_sea
+
+
 def main():
     print("[1/4] Loading events…", flush=True)
     ev = load_events()
@@ -165,10 +217,14 @@ def main():
                .itertuples(index=False, name=None))
     print(f"  GK player-seasons excluded: {len(gk):,}")
 
+    print("  computing within-team rank features…", flush=True)
+    rank_m, rank_s = rank_features(ev, gk)
+
     print("[3/4] Season-level signatures…", flush=True)
     sea = build_level(ev.rename(columns={'player.id': 'playerId'}),
                         ['playerId', 'seasonId'], MIN_EV_SEASON, 'season')
     sea = sea.merge(modal, on=['playerId', 'seasonId'], how='left')
+    sea = sea.merge(rank_s, on=['playerId', 'seasonId'], how='left')
     sea = sea[~sea.apply(lambda r: (r['playerId'], r['seasonId']) in gk, axis=1)]
     # attach minutes for thresholds downstream
     try:
@@ -189,6 +245,8 @@ def main():
                         ['playerId', 'matchId', 'seasonId'], MIN_EV_MATCH, 'match')
     mat['playerId'] = mat['playerId'].astype('Int64')
     mat = mat[~mat.apply(lambda r: (r['playerId'], r['seasonId']) in gk, axis=1)]
+    rank_m['playerId'] = rank_m['playerId'].astype('Int64')
+    mat = mat.merge(rank_m, on=['playerId', 'matchId', 'seasonId'], how='left')
     mat.to_parquet(_HERE / 'role_features_match.parquet')
     print(f"  {len(mat):,} match signatures -> role_features_match.parquet")
     print("done")
