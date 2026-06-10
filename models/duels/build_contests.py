@@ -45,6 +45,7 @@ ev = pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet', columns=cols)
                  ignore_index=True)
 ev = ev.dropna(subset=['player.id'])
 ev['player.id'] = ev['player.id'].astype(int)
+ev = ev[ev['player.id'] > 0]          # 0 = Wyscout's unattributed sentinel
 # situational context: zone depth (4 bands, contest event's frame) + phase
 import numpy as _np
 ev['zx'] = _np.clip((pd.to_numeric(ev['location.x'], errors='coerce')
@@ -150,6 +151,7 @@ print(f"  ground contests: {len(ground):,}")
 
 print("[4/4] save…", flush=True)
 contests = pd.concat([aerial, ground], ignore_index=True)
+contests = contests[(contests['playerA'] > 0) & (contests['playerB'] > 0)]
 contests['date'] = contests['matchId'].map(dates)
 contests = contests.dropna(subset=['date'])
 contests = contests.sort_values(['date', 'matchId', 't']).reset_index(drop=True)
