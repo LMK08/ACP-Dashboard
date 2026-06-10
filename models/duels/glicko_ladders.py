@@ -264,9 +264,17 @@ print(f"  duel_ratings.parquet ({len(out):,} player-traits), "
 gpa = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
                         columns=['playerId', 'name'])
 nm = gpa.groupby('playerId')['name'].first().to_dict()
+# Ranking policy (validated 2026-06-10): rank ELIGIBLE players by RAW
+# rating — eligibility = volume (n) + recency (active last 12 months).
+# Conservative (rating − RD) ranking was tested against 25/26 outcomes
+# and LOSES to raw on every ladder (e.g. press Spearman 0.040 vs 0.120):
+# Glicko ratings are already prior-shrunk and RD overstates true spread
+# (the tau<1 finding), so subtracting RD double-penalizes uncertainty.
+# rating_conservative stays in the parquet as a risk-averse floor view.
+_recent = out['last_date'] >= (out['last_date'].max() - pd.Timedelta(days=365))
 for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
-    top = (out[(out["trait"] == trait) & (out["n"] >= 100)]
-             .nlargest(10, 'rating_conservative'))
+    top = (out[(out["trait"] == trait) & (out["n"] >= 100) & _recent]
+             .nlargest(10, 'rating'))
     names = [f"{str(nm.get(int(p), p))} ({int(n)} duels, {r:.0f}±{rd:.0f})"
               for p, n, r, rd in zip(top['playerId'], top['n'],
                                        top['rating'], top['rd'])]
