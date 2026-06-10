@@ -93,8 +93,12 @@ DEFAULT_W = {'off': 0.45, 'resp': 0.10, 'qual': 0.30, 'datt': 0.05, 'rapm': 0.10
 GPA_RAW_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
                  'Dribbling Value', 'Set Piece Value', 'Corner Value',
                  'Free Kick Value', 'Throw-In Value']
+# v5.1 (Lucas): dead-ball SEPARATED from the overall rating — it is a
+# specialist skill the club wants visible as its own score, not folded
+# into the headline. Offence axis = big-4 open-play value only;
+# setpiece_pct exported alongside.
 GPA_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
-             'Dribbling Value', 'Dead-Ball Value']
+             'Dribbling Value']
 SHRINK_K = 900.0          # minutes shrink toward role-mean (0.5), as defr_adj
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
@@ -152,6 +156,7 @@ for c in GPA_CATS:
 # (regression-to-mean: best estimate of true value = r x observed),
 # then summed in goals/90 and percentiled ONCE for display.
 _off_adj = pd.Series(0.0, index=df.index)
+_lam_log = []
 for role, sub in df.groupby('role'):
     for c in GPA_CATS:
         P = []
@@ -166,7 +171,13 @@ for role, sub in df.groupby('role'):
         dev = (sub[c + '90']
                  - sub.groupby(['league', 'seasonId'])[c + '90'].transform('mean'))
         _off_adj.loc[sub.index] += lam * dev
+        _lam_log.append({'role': role, 'cat': c.replace(' Value', ''),
+                           'lam': round(lam, 2),
+                           'infl': lam * float(dev.std())})
 df['off_blend'] = _off_adj
+# standalone set-piece score (not in the rating)
+df['Dead-Ball Value90'] = df['Dead-Ball Value'] / df['mins_played'] * 90
+df['setpiece_pct'] = role_pct('Dead-Ball Value90')
 df['off_pct'] = role_pct('off_blend')   # re-uniform within role x league x season
 df['off_total_pct'] = role_pct('Total Offensive Value')   # kept for reference
 df['defr_pct'] = role_pct('defr_adj')
@@ -194,6 +205,13 @@ df['qual_raw'] = (df['dwae_pct'] + df['ddef_pct']) / 2.0
 df['qual_pct'] = role_pct('qual_raw')
 df['duel_pct'] = df['ddef_pct']    # kept for backward compat in exports
 
+_lt = pd.DataFrame(_lam_log)
+_lt['infl_share'] = _lt['infl'] / _lt.groupby('role')['infl'].transform('sum')
+print("  off-axis lambda (reliability shrink) and influence share:")
+print(_lt.pivot(index='role', columns='cat', values='lam').to_string())
+print((_lt.pivot(index='role', columns='cat', values='infl_share') * 100)
+        .round(0).to_string())
+
 print("[2/4] role-weighted blend + minutes shrink…", flush=True)
 AXES = {'off': 'off_pct', 'resp': 'defr_pct', 'qual': 'qual_pct',
          'datt': 'datt_pct', 'rapm': 'rapm_pct'}
@@ -218,10 +236,10 @@ df = df.merge(pd.DataFrame(car_rows), on='playerId', how='left')
 
 out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'position_group', 'mins_played', 'off_pct', 'defr_pct',
-              'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
+              'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v5'
+out['rating_version'] = 'v5.1'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
