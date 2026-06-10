@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ACP Rating v4 — the production player rating.
+"""ACP Rating v5 — the production player rating.
 
 v2 adds the DUEL component (Glicko ladders, models/duels/): a player's
 trait ratings (aerial/takeon/stopper/shield/press, >=30 contests each)
@@ -144,11 +144,15 @@ from scipy.stats import pearsonr as _pr
 for c in GPA_CATS:
     df[c + '90'] = df[c] / df['mins_played'] * 90
     df[c + '_pct'] = role_pct(c + '90')
-_off_blend = pd.Series(0.0, index=df.index)
+# v5 offence: combine in VALUE space, not percentile space. GPA
+# categories are all in goals, so they SUM — percentile-averaging is
+# ordinal arithmetic that caps specialists (the root cause of the
+# v4 share-weighting machinery, now deleted). Each category deviation
+# from the cohort mean is shrunk by its per-role rank reliability
+# (regression-to-mean: best estimate of true value = r x observed),
+# then summed in goals/90 and percentiled ONCE for display.
+_off_adj = pd.Series(0.0, index=df.index)
 for role, sub in df.groupby('role'):
-    shares = np.array([sub[c + '90'].abs().mean() for c in GPA_CATS])
-    shares = shares / max(shares.sum(), 1e-9)
-    rels = []
     for c in GPA_CATS:
         P = []
         for pid, gg in sub.sort_values('yr').groupby('playerId'):
@@ -157,19 +161,12 @@ for role, sub in df.groupby('role'):
                 if b['yr'] - a['yr'] == 1:
                     P.append((a[c + '_pct'], b[c + '_pct']))
         P = pd.DataFrame(P)
-        rels.append(_pr(P[0], P[1])[0] if len(P) >= 30 else 0.15)
-    rels_c = np.clip(np.array(rels), 0.05, None)
-    # v4.2: 50/50 blend of ROLE value-shares and PLAYER value-shares —
-    # pure role shares dilute specialists (a 49%-dead-ball winger gets
-    # the role's 14% weight on his best stable skill); pure player
-    # shares are noisy. Shrink halfway.
-    pv = sub[[c + '90' for c in GPA_CATS]].abs()
-    pshare = pv.div(pv.sum(axis=1).replace(0, 1), axis=0)
-    wrow = (0.5 * shares + 0.5 * pshare) * rels_c
-    wrow = wrow.div(wrow.sum(axis=1).replace(0, 1), axis=0)
-    _off_blend.loc[sub.index] = sum(
-        wrow[c + '90'] * sub[c + '_pct'] for c in GPA_CATS)
-df['off_blend'] = _off_blend
+        lam = _pr(P[0], P[1])[0] if len(P) >= 30 else 0.15
+        lam = float(np.clip(lam, 0.05, 1.0))
+        dev = (sub[c + '90']
+                 - sub.groupby(['league', 'seasonId'])[c + '90'].transform('mean'))
+        _off_adj.loc[sub.index] += lam * dev
+df['off_blend'] = _off_adj
 df['off_pct'] = role_pct('off_blend')   # re-uniform within role x league x season
 df['off_total_pct'] = role_pct('Total Offensive Value')   # kept for reference
 df['defr_pct'] = role_pct('defr_adj')
@@ -224,7 +221,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v4.1'
+out['rating_version'] = 'v5'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
