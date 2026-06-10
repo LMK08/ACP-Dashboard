@@ -84,11 +84,17 @@ DEFAULT_W = {'off': 0.45, 'resp': 0.10, 'qual': 0.30, 'datt': 0.05, 'rapm': 0.10
 # 0.09 — finishing variance, not skill; receiving/dribbling/set-piece
 # craft repeat far better. Category weight = value-share x max(YoY,.05),
 # estimated per role on all seasons (meta-parameters, noted in-sample).
-# big-4 only: dead-ball categories are zero-inflated (percentile noise);
-# measured YoY of the offence axis: total 0.163 / 8-cat blend 0.186 /
-# big-4 blend 0.197 -> big-4 share x reliability adopted.
+# v4.1: big-4 + ONE merged Dead-Ball category. Separately the four
+# dead-ball cats are zero-inflated (percentile noise -> excluded in the
+# first v4), but exclusion DELETED real skill: dead-ball delivery is
+# 14-26% of wide/AM role offence (Joao Pais: 51%!) and the MOST
+# repeatable skill measured (corners YoY 0.44-0.56). Merging the four
+# into one category concentrates the non-zero mass.
+GPA_RAW_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
+                 'Dribbling Value', 'Set Piece Value', 'Corner Value',
+                 'Free Kick Value', 'Throw-In Value']
 GPA_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
-             'Dribbling Value']
+             'Dribbling Value', 'Dead-Ball Value']
 SHRINK_K = 900.0          # minutes shrink toward role-mean (0.5), as defr_adj
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
@@ -96,7 +102,9 @@ MIN_MINS = 500            # rating eligibility / percentile cohort floor
 print("[1/4] assemble components…", flush=True)
 g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
                       columns=['playerId', 'seasonId', 'name', 'position_group',
-                                'mins_played', 'Total Offensive Value'] + GPA_CATS)
+                                'mins_played', 'Total Offensive Value'] + GPA_RAW_CATS)
+g['Dead-Ball Value'] = (g['Set Piece Value'] + g['Corner Value']
+                          + g['Free Kick Value'] + g['Throw-In Value'])
 g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
 g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
 d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
@@ -150,10 +158,17 @@ for role, sub in df.groupby('role'):
                     P.append((a[c + '_pct'], b[c + '_pct']))
         P = pd.DataFrame(P)
         rels.append(_pr(P[0], P[1])[0] if len(P) >= 30 else 0.15)
-    w = shares * np.clip(np.array(rels), 0.05, None)
-    w = w / w.sum()
+    rels_c = np.clip(np.array(rels), 0.05, None)
+    # v4.2: 50/50 blend of ROLE value-shares and PLAYER value-shares —
+    # pure role shares dilute specialists (a 49%-dead-ball winger gets
+    # the role's 14% weight on his best stable skill); pure player
+    # shares are noisy. Shrink halfway.
+    pv = sub[[c + '90' for c in GPA_CATS]].abs()
+    pshare = pv.div(pv.sum(axis=1).replace(0, 1), axis=0)
+    wrow = (0.5 * shares + 0.5 * pshare) * rels_c
+    wrow = wrow.div(wrow.sum(axis=1).replace(0, 1), axis=0)
     _off_blend.loc[sub.index] = sum(
-        wi * sub[c + '_pct'] for wi, c in zip(w, GPA_CATS))
+        wrow[c + '90'] * sub[c + '_pct'] for c in GPA_CATS)
 df['off_blend'] = _off_blend
 df['off_pct'] = role_pct('off_blend')   # re-uniform within role x league x season
 df['off_total_pct'] = role_pct('Total Offensive Value')   # kept for reference
@@ -172,8 +187,14 @@ def duel_composite(traits):
     return np.where(den > 0, num / den.replace(0, 1), 0.5)
 
 df['ddef_pct'] = duel_composite(['aerial', 'stopper', 'press'])
-df['datt_pct'] = duel_composite(['takeon', 'shield'])
-df['qual_pct'] = (df['dwae_pct'] + df['ddef_pct']) / 2.0
+# composites are averages of percentiles -> their spread is compressed
+# (an average of two uniforms cannot reach the tails), so RE-PERCENTILE
+# them within role x league x season before weighting (v4.1 fix: the
+# heaviest defensive axis could never say "elite").
+df['datt_raw'] = duel_composite(['takeon', 'shield'])
+df['datt_pct'] = role_pct('datt_raw')
+df['qual_raw'] = (df['dwae_pct'] + df['ddef_pct']) / 2.0
+df['qual_pct'] = role_pct('qual_raw')
 df['duel_pct'] = df['ddef_pct']    # kept for backward compat in exports
 
 print("[2/4] role-weighted blend + minutes shrink…", flush=True)
@@ -203,6 +224,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
+out['rating_version'] = 'v4.1'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
