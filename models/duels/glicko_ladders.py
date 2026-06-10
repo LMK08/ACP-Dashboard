@@ -4,9 +4,12 @@
 Three latent traits across two contest types, processed chronologically
 with Glicko-1 updates (rating + RD uncertainty; idle-time RD inflation):
 
-  aerial : symmetric — both players rate on the 'aerial' ladder
-  ground : asymmetric — defender's 'tackle' rating vs attacker's 'carry'
-            rating (offensive duels AND dribble take-ons)
+  aerial : symmetric — both players rate on the 'aerial' ladder. NO
+            offsets, not even height (user call): the ladder answers
+            "who is best in the air", not "best relative to size".
+  ground : asymmetric, split by duel kind — takeon vs stopper (dribble
+            contests), shield vs press (offensive duels). Situational
+            offsets only (duel kind x zone x phase).
 
 Draws (stalemates, no-clean-first-touch aerials) update at s = 0.5.
 
@@ -54,20 +57,19 @@ con['date'] = pd.to_datetime(con['date'])
 con = con.sort_values(['date', 'matchId', 't']).reset_index(drop=True)
 con['grpA'] = con['posA'].map(GRP).fillna('UNK')
 con['grpB'] = con['posB'].map(GRP).fillna('UNK')
-con['hdiff'] = (pd.to_numeric(con['heightA'], errors='coerce')
-                  - pd.to_numeric(con['heightB'], errors='coerce'))
-con['hbin'] = pd.cut(con['hdiff'], [-99, -8, -3, 3, 8, 99],
-                       labels=['<<', '<', '=', '>', '>>']).astype(str)
 con['zx'] = con['zx'].fillna(1).astype(int)
 con['phase'] = con['phase'].fillna('settled')
 print(f"{len(con):,} contests, {con['date'].min().date()} -> {con['date'].max().date()}")
 
-# ---- v3 (ablation-adopted config C): SITUATIONAL offsets only -------------
-# The positional matchup factor is REMOVED (user call, validated by the
-# ablation): ground situational context (duel kind x zone x phase) beats
-# positional offsets decisively (holdout AUC 0.692 vs 0.620) and keeps
-# ratings ABSOLUTE; aerial keeps only the height-differential offset
-# (costs ~0.015 AUC vs positional — accepted for absolute semantics).
+# ---- v4: SITUATIONAL offsets, ground only ----------------------------------
+# Positional matchup factor REMOVED (user call, validated by ablation):
+# ground situational context (duel kind x zone x phase) beats positional
+# offsets decisively (holdout AUC 0.692 vs 0.620) and keeps ratings
+# ABSOLUTE. Aerial has NO offsets at all (user call: the ladder answers
+# "who is best in the air", not "best relative to size" — height is the
+# player's own asset and the ratings absorb it; the ablation agreed:
+# no-offset aerial predicted slightly better AND was more stable than
+# the height-adjusted variant).
 _tr = con[(~con['seasonId'].isin(EVAL_SEASONS)) & (con['scoreA'] != 0.5)]
 
 
@@ -79,16 +81,7 @@ def _logit_off(df, keys):
     return out
 
 _situ_g = _logit_off(_tr[_tr['ladder'] == 'ground'], ['att_kind', 'zx', 'phase'])
-_situ_a = _logit_off(_tr[_tr['ladder'] == 'aerial'], ['hbin'])
-_REV = {'<<': '>>', '<': '>', '=': '=', '>': '<', '>>': '<<'}
-for k in list(_situ_a):
-    rev = _REV.get(k[0])
-    if rev is None:
-        _situ_a[k] = 0.0
-        continue
-    m = (_situ_a[k] - _situ_a.get((rev,), 0.0)) / 2.0
-    _situ_a[k] = m; _situ_a[(rev,)] = -m
-print(f"situational offsets: ground {len(_situ_g)} cells, aerial {len(_situ_a)} height bins")
+print(f"situational offsets: ground {len(_situ_g)} cells; aerial none (absolute)")
 
 
 def g_of(rd):
@@ -98,20 +91,21 @@ def g_of(rd):
 CAMP_SEASONS = {190230, 191779}
 
 
-def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau=1.0):
+def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD,
+          tau_a=1.0, tau_g=1.0):
     """Sequential Glicko over `sub`. Returns (state, eval_records, xw_season)."""
     R, RD, N, W, LAST = {}, {}, {}, {}, {}
     LG = {}    # last league seen per key
     xw = {}
     ev_rows = []
     arr = sub[['ladder', 'playerA', 'playerB', 'scoreA', 'seasonId',
-                 'grpA', 'grpB', 'att_kind', 'zx', 'phase', 'hbin']].to_numpy()
+                 'grpA', 'grpB', 'att_kind', 'zx', 'phase']].to_numpy()
     days = (sub['date'] - sub['date'].min()).dt.days.to_numpy()
     # prequential baselines
     base_n, base_s = {}, {}
     buck_n, buck_s = {}, {}
     for i in range(len(arr)):
-        ladder, pA, pB, s, season, gA, gB, ak, zx, ph, hb = arr[i]
+        ladder, pA, pB, s, season, gA, gB, ak, zx, ph = arr[i]
         d = days[i]
         # 5 ladders: ground splits by duel kind (option 1 — like-for-like
         # skills): take-ons rate attacker 'takeon' vs defender 'stopper';
@@ -134,13 +128,14 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
         LG[tA] = LG[tB] = ('CAMP' if season in CAMP_SEASONS else 'L3')
         rA, rdA = R[tA], RD[tA]
         rB, rdB = R[tB], RD[tB]
-        M = (_situ_g.get((ak, zx, ph), 0.0) if ladder == 'ground'
-               else _situ_a.get((hb,), 0.0))
+        M = _situ_g.get((ak, zx, ph), 0.0) if ladder == 'ground' else 0.0
         eA = 1.0 / (1.0 + 10 ** (-(g_of(rdB) * (rA - rB) + M) / 400.0))
         # prediction-side calibration: compress the skill term by tau —
         # the Glicko scale (chess-calibrated) overstates how much a rating
-        # gap moves duel win probability. Updates keep tau=1 dynamics.
-        eA_pred = 1.0 / (1.0 + 10 ** (-(tau * g_of(rdB) * (rA - rB) + M) / 400.0))
+        # gap moves duel win probability. Per-ladder tau (the ladders have
+        # different offset structures). Updates keep tau=1 dynamics.
+        tt = tau_g if ladder == 'ground' else tau_a
+        eA_pred = 1.0 / (1.0 + 10 ** (-(tt * g_of(rdB) * (rA - rB) + M) / 400.0))
         # prequential eval bookkeeping (decisive only, warmed-up players)
         if collect_eval and season in eval_seasons and s != 0.5 \
                 and N[tA] >= MIN_PRIOR and N[tB] >= MIN_PRIOR:
@@ -177,22 +172,34 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
 print("\n[0/3] tune INIT_RD on 24/25 validation window (25/26 untouched)…",
         flush=True)
 VAL = {190090}
+
+
+def _ll(p, s):
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return float(-(s * np.log(p) + (1 - s) * np.log(1 - p)).mean())
+
 tune = {}
 for ird in (60.0, 100.0):
     for tau in (0.3, 0.45, 0.6, 0.8, 1.0):
         _, evr, _ = run(con[~con['seasonId'].isin(EVAL_SEASONS)],
                           collect_eval=True, eval_seasons=VAL,
-                          init_rd=ird, tau=tau)
+                          init_rd=ird, tau_a=tau, tau_g=tau)
         e = pd.DataFrame(evr, columns=['ladder', 'glicko', 'base', 'bucket', 's'])
-        ll = -(e['s'] * np.log(np.clip(e['glicko'], 1e-6, 1)) +
-                (1 - e['s']) * np.log(np.clip(1 - e['glicko'], 1e-6, 1))).mean()
-        tune[(ird, tau)] = ll
-        print(f"  INIT_RD={ird:>4.0f} tau={tau:.2f}  24/25 log-loss={ll:.4f}")
-BEST_RD, BEST_TAU = min(tune, key=tune.get)
-print(f"  -> INIT_RD={BEST_RD:.0f}, tau={BEST_TAU:.2f}")
+        la = _ll(e[e['ladder'] == 'aerial']['glicko'], e[e['ladder'] == 'aerial']['s'])
+        lg = _ll(e[e['ladder'] == 'ground']['glicko'], e[e['ladder'] == 'ground']['s'])
+        tune[(ird, tau)] = (la, lg, _ll(e['glicko'], e['s']))
+        print(f"  INIT_RD={ird:>4.0f} tau={tau:.2f}  24/25 LL aerial={la:.4f} ground={lg:.4f}")
+BEST_RD = min({k[0] for k in tune},
+                key=lambda i: min(v[2] for k, v in tune.items() if k[0] == i))
+BEST_TAU_A = min((k[1] for k in tune if k[0] == BEST_RD),
+                   key=lambda t: tune[(BEST_RD, t)][0])
+BEST_TAU_G = min((k[1] for k in tune if k[0] == BEST_RD),
+                   key=lambda t: tune[(BEST_RD, t)][1])
+print(f"  -> INIT_RD={BEST_RD:.0f}, tau_aerial={BEST_TAU_A:.2f}, tau_ground={BEST_TAU_G:.2f}")
 
 print("\n[1/3] full chronological run + prequential gates…", flush=True)
-(R, RD, N, W, LAST, LG), ev_rows, xw = run(con, collect_eval=True, init_rd=BEST_RD, tau=BEST_TAU)
+(R, RD, N, W, LAST, LG), ev_rows, xw = run(con, collect_eval=True, init_rd=BEST_RD,
+                                              tau_a=BEST_TAU_A, tau_g=BEST_TAU_G)
 ev = pd.DataFrame(ev_rows, columns=['ladder', 'glicko', 'base', 'bucket', 's'])
 print(f"  eval contests (25/26, decisive, warmed-up): {len(ev):,}")
 
@@ -219,7 +226,8 @@ print((cal.round(3)).to_string())
 print("\n[2/3] G3 split-half (independent odd/even-match runs)…", flush=True)
 half_states = []
 for par in (0, 1):
-    st, _, _ = run(con[con['matchId'].astype('int64') % 2 == par], init_rd=BEST_RD, tau=BEST_TAU)
+    st, _, _ = run(con[con['matchId'].astype('int64') % 2 == par], init_rd=BEST_RD,
+                     tau_a=BEST_TAU_A, tau_g=BEST_TAU_G)
     half_states.append(st)
 rows = []
 for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
