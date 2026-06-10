@@ -54,30 +54,41 @@ con['date'] = pd.to_datetime(con['date'])
 con = con.sort_values(['date', 'matchId', 't']).reset_index(drop=True)
 con['grpA'] = con['posA'].map(GRP).fillna('UNK')
 con['grpB'] = con['posB'].map(GRP).fillna('UNK')
+con['hdiff'] = (pd.to_numeric(con['heightA'], errors='coerce')
+                  - pd.to_numeric(con['heightB'], errors='coerce'))
+con['hbin'] = pd.cut(con['hdiff'], [-99, -8, -3, 3, 8, 99],
+                       labels=['<<', '<', '=', '>', '>>']).astype(str)
+con['zx'] = con['zx'].fillna(1).astype(int)
+con['phase'] = con['phase'].fillna('settled')
 print(f"{len(con):,} contests, {con['date'].min().date()} -> {con['date'].max().date()}")
 
-# ---- v2: MATCHUP OFFSETS inside the Glicko expectation ----------------------
-# v1 finding: pure Glicko lost to the position-pair bucket baseline — the
-# bucket knows structure (CB-vs-ST base rates 50-69%) that ratings must
-# learn slowly, and matchup mix polluted the ratings. Fix: estimate
-# matchup offsets (in rating points) from the TRAIN window and add them to
-# the expectation, so E = f(g·Δrating + M[gA,gB]) — ratings then measure
-# skill BEYOND matchup, and the model nests the bucket baseline.
+# ---- v3 (ablation-adopted config C): SITUATIONAL offsets only -------------
+# The positional matchup factor is REMOVED (user call, validated by the
+# ablation): ground situational context (duel kind x zone x phase) beats
+# positional offsets decisively (holdout AUC 0.692 vs 0.620) and keeps
+# ratings ABSOLUTE; aerial keeps only the height-differential offset
+# (costs ~0.015 AUC vs positional — accepted for absolute semantics).
 _tr = con[(~con['seasonId'].isin(EVAL_SEASONS)) & (con['scoreA'] != 0.5)]
-_off = {}
-for (lad, ga, gb), gsub in _tr.groupby(['ladder', 'grpA', 'grpB']):
-    n = len(gsub)
-    p = (gsub['scoreA'].sum() + 10 * 0.5) / (n + 10)      # shrink to 0.5
-    _off[(lad, ga, gb)] = log(p / (1 - p)) / Q              # logit -> rating pts
-# antisymmetrize the symmetric aerial ladder (A/B side is arbitrary)
-for (lad, ga, gb) in list(_off.keys()):
-    if lad == 'aerial':
-        rev = _off.get((lad, gb, ga), 0.0)
-        m = (_off[(lad, ga, gb)] - rev) / 2.0
-        _off[(lad, ga, gb)] = m
-        _off[(lad, gb, ga)] = -m
-print(f"matchup offsets: {len(_off)} cells "
-       f"(e.g. ground CB-vs-ST {_off.get(('ground','CB','ST'), 0):+.0f} pts)")
+
+
+def _logit_off(df, keys):
+    out = {}
+    for vals, g in df.groupby(keys):
+        p = (g['scoreA'].sum() + 5.0) / (len(g) + 10.0)
+        out[vals if isinstance(vals, tuple) else (vals,)] = log(p / (1 - p)) / Q
+    return out
+
+_situ_g = _logit_off(_tr[_tr['ladder'] == 'ground'], ['att_kind', 'zx', 'phase'])
+_situ_a = _logit_off(_tr[_tr['ladder'] == 'aerial'], ['hbin'])
+_REV = {'<<': '>>', '<': '>', '=': '=', '>': '<', '>>': '<<'}
+for k in list(_situ_a):
+    rev = _REV.get(k[0])
+    if rev is None:
+        _situ_a[k] = 0.0
+        continue
+    m = (_situ_a[k] - _situ_a.get((rev,), 0.0)) / 2.0
+    _situ_a[k] = m; _situ_a[(rev,)] = -m
+print(f"situational offsets: ground {len(_situ_g)} cells, aerial {len(_situ_a)} height bins")
 
 
 def g_of(rd):
@@ -90,13 +101,13 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
     xw = {}
     ev_rows = []
     arr = sub[['ladder', 'playerA', 'playerB', 'scoreA', 'seasonId',
-                 'grpA', 'grpB']].to_numpy()
+                 'grpA', 'grpB', 'att_kind', 'zx', 'phase', 'hbin']].to_numpy()
     days = (sub['date'] - sub['date'].min()).dt.days.to_numpy()
     # prequential baselines
     base_n, base_s = {}, {}
     buck_n, buck_s = {}, {}
     for i in range(len(arr)):
-        ladder, pA, pB, s, season, gA, gB = arr[i]
+        ladder, pA, pB, s, season, gA, gB, ak, zx, ph, hb = arr[i]
         d = days[i]
         tA = ('tackle', pA) if ladder == 'ground' else ('aerial', pA)
         tB = ('carry', pB) if ladder == 'ground' else ('aerial', pB)
@@ -109,7 +120,8 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
             LAST[key] = d
         rA, rdA = R[tA], RD[tA]
         rB, rdB = R[tB], RD[tB]
-        M = _off.get((ladder, gA, gB), 0.0)
+        M = (_situ_g.get((ak, zx, ph), 0.0) if ladder == 'ground'
+               else _situ_a.get((hb,), 0.0))
         eA = 1.0 / (1.0 + 10 ** (-(g_of(rdB) * (rA - rB) + M) / 400.0))
         # prediction-side calibration: compress the skill term by tau —
         # the Glicko scale (chess-calibrated) overstates how much a rating

@@ -32,6 +32,7 @@ PERIOD_OFF = {'1H': 0, '2H': 45 * 60, 'E1': 90 * 60, 'E2': 105 * 60, 'P': 120 * 
 print("[1/4] events…", flush=True)
 cols = ['id', 'matchId', 'seasonId', 'matchPeriod', 'minute', 'second',
          'team.id', 'player.id', 'player.position', 'type.primary',
+         'location.x', 'possession.types',
          'groundDuel.duelType', 'groundDuel.relatedDuelId',
          'groundDuel.opponent.id', 'groundDuel.stoppedProgress',
          'groundDuel.recoveredPossession', 'groundDuel.keptPossession',
@@ -44,6 +45,19 @@ ev = pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet', columns=cols)
                  ignore_index=True)
 ev = ev.dropna(subset=['player.id'])
 ev['player.id'] = ev['player.id'].astype(int)
+# situational context: zone depth (4 bands, contest event's frame) + phase
+import numpy as _np
+ev['zx'] = _np.clip((pd.to_numeric(ev['location.x'], errors='coerce')
+                       .fillna(50) / 25.0).astype(int), 0, 3)
+_CTR = {'counterattack', 'transition_high'}
+_TRN = {'transition_medium', 'transition_low'}
+def _phase(t):
+    if isinstance(t, (list, tuple, _np.ndarray)):
+        ts = set(t)
+        if ts & _CTR: return 'counter'
+        if ts & _TRN: return 'transition'
+    return 'settled'
+ev['phase'] = [_phase(t) for t in ev['possession.types'].tolist()]
 ev['_t'] = (ev['matchPeriod'].map(PERIOD_OFF).fillna(0)
               + pd.to_numeric(ev['minute'], errors='coerce').fillna(0) * 60
               + pd.to_numeric(ev['second'], errors='coerce').fillna(0))
@@ -82,7 +96,7 @@ aerial = pd.DataFrame({
     'seasonId': keep['seasonId'], 't': keep['_t'],
     'playerA': keep['player.id'], 'playerB': keep['pB'],
     'scoreA': _aer_score,
-    'att_kind': None,
+    'att_kind': None, 'zx': keep['zx'], 'phase': keep['phase'],
     'posA': keep['player.position'], 'posB': keep['posB'],
     'heightA': pd.to_numeric(keep['aerialDuel.height'], errors='coerce'),
     'heightB': pd.to_numeric(keep['hB'], errors='coerce')})
@@ -129,6 +143,7 @@ ground = pd.DataFrame({
     'seasonId': gp['seasonId'], 't': gp['_t'],
     'playerA': gp['player.id'], 'playerB': gp['pB'],   # A = defender (tackle)
     'scoreA': scoreA, 'att_kind': gp['att_kind'],
+    'zx': gp['zx'], 'phase': gp['phase'],
     'posA': gp['player.position'], 'posB': gp['posB'],
     'heightA': np.nan, 'heightB': np.nan})
 print(f"  ground contests: {len(ground):,}")
