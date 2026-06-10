@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""ACP Rating v1 — the production player rating.
+"""ACP Rating v2 — the production player rating.
+
+v2 adds the DUEL component (Glicko ladders, models/duels/): a player's
+trait ratings (aerial/takeon/stopper/shield/press, >=30 contests each)
+percentiled within role x league and volume-weighted into one duel
+score. Career-level trait merged on playerId, like RAPM. Weights
+rebalanced; duel quality now enters via both DWAE (season-level,
+static-expectation) and the ladders (career-level, opponent-adjusted).
 
 Architecture settled by the GPA audit + ratings harness + gated RAPM:
   - GPA possession value is the on-ball ENGINE (use Total OFFENSIVE
@@ -44,7 +51,8 @@ _DASH = _HERE.parent.parent
 SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
               191782: 2025, 190230: 2023, 191779: 2025}
 CAMP = {190230, 191779}
-WEIGHTS = {'off_pct': 0.50, 'defr_pct': 0.20, 'dwae_pct': 0.15, 'rapm_pct': 0.15}
+WEIGHTS = {'off_pct': 0.45, 'defr_pct': 0.20, 'dwae_pct': 0.125,
+            'duel_pct': 0.125, 'rapm_pct': 0.10}
 SHRINK_K = 900.0          # minutes shrink toward role-mean (0.5), as defr_adj
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
@@ -60,10 +68,18 @@ d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
 r = pd.read_parquet(_DASH / 'models/roles/role_assignments_season.parquet',
                       columns=['playerId', 'seasonId', 'primary_role_name', 'side'])
 rapm = pd.read_parquet(_HERE / 'rapm_v3_coefficients.parquet')   # one coef/player
+duels = pd.read_parquet(_DASH / 'models/duels/duel_ratings.parquet')
+duels = duels[(duels['playerId'] > 0) & (duels['n'] >= 30)]
+duelw = duels.pivot_table(index='playerId', columns='trait',
+                            values=['rating', 'n'], aggfunc='first')
 
 df = (g.merge(d, on=['playerId', 'seasonId'], how='left')
         .merge(r, on=['playerId', 'seasonId'], how='left')
         .merge(rapm, on='playerId', how='left'))
+TRAITS = ['aerial', 'takeon', 'stopper', 'shield', 'press']
+for t in TRAITS:
+    df[f'duel_{t}'] = df['playerId'].map(duelw[('rating', t)])
+    df[f'dueln_{t}'] = df['playerId'].map(duelw[('n', t)])
 df['role'] = df['primary_role_name'].fillna(df['position_group'])
 df['league'] = np.where(df['seasonId'].isin(CAMP), 'CAMP', 'L3')
 df['yr'] = df['seasonId'].map(SEASON_YR)
@@ -83,6 +99,14 @@ df['off_pct'] = role_pct('Total Offensive Value')
 df['defr_pct'] = role_pct('defr_adj')
 df['dwae_pct'] = role_pct('defr_dwae_p90')
 df['rapm_pct'] = role_pct('rapm_v3')
+# duel composite: per-trait role-fair percentiles, volume-weighted
+_num = 0.0; _den = 0.0
+for t in TRAITS:
+    pct_t = df.groupby(['role', 'league', 'seasonId'])[f'duel_{t}'].rank(pct=True)
+    w_t = df[f'dueln_{t}'].fillna(0.0) * pct_t.notna()
+    _num = _num + pct_t.fillna(0.5) * w_t
+    _den = _den + w_t
+df['duel_pct'] = np.where(_den > 0, _num / _den.replace(0, 1), 0.5)
 
 print("[2/4] blend + minutes shrink…", flush=True)
 raw = sum(WEIGHTS[c] * df[c] for c in WEIGHTS)              # 0-1
@@ -104,7 +128,7 @@ df = df.merge(pd.DataFrame(car_rows), on='playerId', how='left')
 
 out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'position_group', 'mins_played', 'off_pct', 'defr_pct',
-              'dwae_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
+              'dwae_pct', 'duel_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
