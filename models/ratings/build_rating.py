@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ACP Rating v2 — the production player rating.
+"""ACP Rating v3 — the production player rating.
 
 v2 adds the DUEL component (Glicko ladders, models/duels/): a player's
 trait ratings (aerial/takeon/stopper/shield/press, >=30 contests each)
@@ -51,8 +51,27 @@ _DASH = _HERE.parent.parent
 SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
               191782: 2025, 190230: 2023, 191779: 2025}
 CAMP = {190230, 191779}
-WEIGHTS = {'off_pct': 0.45, 'defr_pct': 0.20, 'dwae_pct': 0.125,
-            'duel_pct': 0.125, 'rapm_pct': 0.10}
+# v3 ROLE-SPECIFIC weights over 5 axes (Lucas-confirmed design):
+#   off  = GPA Total Offensive (role-pct)
+#   resp = DefR — defensive RESPONSIBILITY ABOVE EXPECTATION (not raw
+#           volume: presence-conditioned expected vs actual)
+#   qual = defensive quality, MERGED dwae+defensive-ladders (r=0.43
+#           overlap — two measurements of one skill, one weight)
+#   datt = take-on/shield ladders. NOT redundant with off: within-role
+#           r = -0.05..+0.11 — press resistance & 1v1 are skills the
+#           possession-value engine doesn't capture. Small weight.
+#   rapm = intangibles.
+# Quality > responsibility in EVERY role (Lucas: doing it well beats
+# doing lots of it).
+ROLE_WEIGHTS = {
+    'Striker':              {'off': 0.55, 'resp': 0.075, 'qual': 0.175, 'datt': 0.10,  'rapm': 0.10},
+    'Wide Attacker':        {'off': 0.55, 'resp': 0.075, 'qual': 0.15,  'datt': 0.125, 'rapm': 0.10},
+    'Advanced Midfielder':  {'off': 0.50, 'resp': 0.125, 'qual': 0.175, 'datt': 0.10,  'rapm': 0.10},
+    'Deep Midfielder':      {'off': 0.45, 'resp': 0.15,  'qual': 0.20,  'datt': 0.10,  'rapm': 0.10},
+    'Wide Defender':        {'off': 0.40, 'resp': 0.175, 'qual': 0.225, 'datt': 0.10,  'rapm': 0.10},
+    'Central Defender':     {'off': 0.325,'resp': 0.20,  'qual': 0.30,  'datt': 0.075, 'rapm': 0.10},
+}
+DEFAULT_W = {'off': 0.45, 'resp': 0.15, 'qual': 0.20, 'datt': 0.10, 'rapm': 0.10}
 SHRINK_K = 900.0          # minutes shrink toward role-mean (0.5), as defr_adj
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
@@ -99,17 +118,28 @@ df['off_pct'] = role_pct('Total Offensive Value')
 df['defr_pct'] = role_pct('defr_adj')
 df['dwae_pct'] = role_pct('defr_dwae_p90')
 df['rapm_pct'] = role_pct('rapm_v3')
-# duel composite: per-trait role-fair percentiles, volume-weighted
-_num = 0.0; _den = 0.0
-for t in TRAITS:
-    pct_t = df.groupby(['role', 'league', 'seasonId'])[f'duel_{t}'].rank(pct=True)
-    w_t = df[f'dueln_{t}'].fillna(0.0) * pct_t.notna()
-    _num = _num + pct_t.fillna(0.5) * w_t
-    _den = _den + w_t
-df['duel_pct'] = np.where(_den > 0, _num / _den.replace(0, 1), 0.5)
+# duel composites split by side: defensive ladders feed QUALITY (merged
+# with DWAE); take-on/shield are their own small axis
+def duel_composite(traits):
+    num = 0.0; den = 0.0
+    for t in traits:
+        pct_t = df.groupby(['role', 'league', 'seasonId'])[f'duel_{t}'].rank(pct=True)
+        w_t = df[f'dueln_{t}'].fillna(0.0) * pct_t.notna()
+        num = num + pct_t.fillna(0.5) * w_t
+        den = den + w_t
+    return np.where(den > 0, num / den.replace(0, 1), 0.5)
 
-print("[2/4] blend + minutes shrink…", flush=True)
-raw = sum(WEIGHTS[c] * df[c] for c in WEIGHTS)              # 0-1
+df['ddef_pct'] = duel_composite(['aerial', 'stopper', 'press'])
+df['datt_pct'] = duel_composite(['takeon', 'shield'])
+df['qual_pct'] = (df['dwae_pct'] + df['ddef_pct']) / 2.0
+df['duel_pct'] = df['ddef_pct']    # kept for backward compat in exports
+
+print("[2/4] role-weighted blend + minutes shrink…", flush=True)
+AXES = {'off': 'off_pct', 'resp': 'defr_pct', 'qual': 'qual_pct',
+         'datt': 'datt_pct', 'rapm': 'rapm_pct'}
+W = pd.DataFrame([ROLE_WEIGHTS.get(ro, DEFAULT_W) for ro in df['role']],
+                   index=df.index)
+raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 # shrink the player-vs-role deviation toward 0.5 by minutes reliability
 shrink = df['mins_played'] / (df['mins_played'] + SHRINK_K)
 df['acp_rating'] = (0.5 + (raw - 0.5) * shrink) * 100.0
@@ -128,7 +158,7 @@ df = df.merge(pd.DataFrame(car_rows), on='playerId', how='left')
 
 out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'position_group', 'mins_played', 'off_pct', 'defr_pct',
-              'dwae_pct', 'duel_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
+              'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
@@ -152,7 +182,7 @@ print(f"  acp_rating YoY (same pos): r = {r_s:.3f} (n={n})")
 # component contribution check: corr of each component with the rating
 cur = df[df['seasonId'].isin({191782, 191779})]
 print("  component corr with rating (25/26):")
-for c in WEIGHTS:
+for c in ['off_pct', 'defr_pct', 'qual_pct', 'datt_pct', 'rapm_pct']:
     print(f"    {c:<10} {pearsonr(cur[c], cur['acp_rating'])[0]:+.2f}")
 print(f"\n  Top 12 by career rating (>=2 seasons):")
 top = (df.drop_duplicates('playerId')
