@@ -95,9 +95,13 @@ def g_of(rd):
     return 1.0 / sqrt(1.0 + 3.0 * Q * Q * rd * rd / (pi * pi))
 
 
+CAMP_SEASONS = {190230, 191779}
+
+
 def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau=1.0):
     """Sequential Glicko over `sub`. Returns (state, eval_records, xw_season)."""
     R, RD, N, W, LAST = {}, {}, {}, {}, {}
+    LG = {}    # last league seen per key
     xw = {}
     ev_rows = []
     arr = sub[['ladder', 'playerA', 'playerB', 'scoreA', 'seasonId',
@@ -127,6 +131,7 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
             if idle > 0:
                 RD[key] = min(RD_MAX, sqrt(RD[key]**2 + C2_PER_DAY * idle))
             LAST[key] = d
+        LG[tA] = LG[tB] = ('CAMP' if season in CAMP_SEASONS else 'L3')
         rA, rdA = R[tA], RD[tA]
         rB, rdB = R[tB], RD[tB]
         M = (_situ_g.get((ak, zx, ph), 0.0) if ladder == 'ground'
@@ -166,7 +171,7 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
             RD[key] = max(RD_MIN, sqrt(1.0 / denom))
             N[key] += 1
             W[key] += sc
-    return (R, RD, N, W), ev_rows, xw
+    return (R, RD, N, W, LAST, LG), ev_rows, xw
 
 
 print("\n[0/3] tune INIT_RD on 24/25 validation window (25/26 untouched)…",
@@ -187,7 +192,7 @@ BEST_RD, BEST_TAU = min(tune, key=tune.get)
 print(f"  -> INIT_RD={BEST_RD:.0f}, tau={BEST_TAU:.2f}")
 
 print("\n[1/3] full chronological run + prequential gates…", flush=True)
-(R, RD, N, W), ev_rows, xw = run(con, collect_eval=True, init_rd=BEST_RD, tau=BEST_TAU)
+(R, RD, N, W, LAST, LG), ev_rows, xw = run(con, collect_eval=True, init_rd=BEST_RD, tau=BEST_TAU)
 ev = pd.DataFrame(ev_rows, columns=['ladder', 'glicko', 'base', 'bucket', 's'])
 print(f"  eval contests (25/26, decisive, warmed-up): {len(ev):,}")
 
@@ -218,7 +223,7 @@ for par in (0, 1):
     half_states.append(st)
 rows = []
 for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
-    (R0, _, N0, _), (R1, _, N1, _) = half_states
+    (R0, _, N0, _, _, _), (R1, _, N1, _, _, _) = half_states
     common = [k for k in R0 if k in R1 and k[0] == trait
                 and N0[k] >= 40 and N1[k] >= 40]
     a = np.array([R0[k] for k in common]); b = np.array([R1[k] for k in common])
@@ -227,8 +232,19 @@ for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
     print(f"  {trait:<8} split-half r = {r:.3f} (n={len(common)})")
 
 print("\n[3/3] outputs + face validity…", flush=True)
-out = pd.DataFrame([{'playerId': k[1], 'trait': k[0], 'rating': R[k],
-                       'rd': RD[k], 'n': N[k], 'wins': W[k]} for k in R])
+_dmax = (con['date'].max() - con['date'].min()).days
+_d0 = con['date'].min()
+out = pd.DataFrame([{
+    'playerId': k[1], 'trait': k[0], 'rating': R[k],
+    # FIX (staleness bug): stored RD is as-of-last-contest because idle
+    # inflation is applied lazily. Inflate to the dataset end so inactive
+    # players carry honest uncertainty.
+    'rd': min(RD_MAX, sqrt(RD[k]**2 + C2_PER_DAY * max(0, _dmax - LAST[k]))),
+    'rd_at_last': RD[k],
+    'last_date': _d0 + pd.Timedelta(days=int(LAST[k])),
+    'league': LG.get(k, '?'),
+    'rating_conservative': R[k] - min(RD_MAX, sqrt(RD[k]**2 + C2_PER_DAY * max(0, _dmax - LAST[k]))),
+    'n': N[k], 'wins': W[k]} for k in R])
 xws = pd.DataFrame([{'playerId': p, 'trait': t, 'seasonId': s,
                        'xwins': v[0], 'wins': v[1], 'n': v[2]}
                       for (p, t, s), v in xw.items()])
@@ -242,7 +258,7 @@ gpa = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
 nm = gpa.groupby('playerId')['name'].first().to_dict()
 for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
     top = (out[(out["trait"] == trait) & (out["n"] >= 100)]
-             .nlargest(10, 'rating'))
+             .nlargest(10, 'rating_conservative'))
     names = [f"{str(nm.get(int(p), p))} ({int(n)} duels, {r:.0f}±{rd:.0f})"
               for p, n, r, rd in zip(top['playerId'], top['n'],
                                        top['rating'], top['rd'])]
