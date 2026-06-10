@@ -128,8 +128,9 @@ season_roles['primary_role'] = season_roles['primary_role'].astype(int)
 # attach side attribute + season-map fallback role for low-match players
 sea_z = transform(sea)
 sea['season_role'] = km.predict(sea_z)
-side = np.where(sea['y_signed'] > 6, 'L',
-          np.where(sea['y_signed'] < -6, 'R', 'C'))
+# Wyscout y: LOW y = left flank (verified against lineup positions)
+side = np.where(sea['y_signed'] < -6, 'L',
+          np.where(sea['y_signed'] > 6, 'R', 'C'))
 sea['side'] = side
 season_roles = season_roles.merge(
     sea[['playerId', 'seasonId', 'season_role', 'side', 'raw_pos',
