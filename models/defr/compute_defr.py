@@ -181,6 +181,8 @@ _EVENT_COLS = [
     'carry.endLocation.x', 'carry.endLocation.y',
     'possession.types',
     'groundDuel.duelType', 'aerialDuel.firstTouch',
+    'groundDuel.stoppedProgress', 'groundDuel.recoveredPossession',
+    'groundDuel.opponent.position', 'aerialDuel.opponent.position',
     'competitionId',
 ]
 
@@ -645,6 +647,72 @@ def build_prob_table_by_type(resp: pd.DataFrame, presence_fine: dict,
     return out
 
 
+# ----- v11 — defensive QUALITY: wins above expectation (DWAE) ---------------
+# DefR measures workload (actions above role expectation); DWAE measures
+# QUALITY: of the contested engagements a player actually took on, how many
+# did he win versus how many an average player would have won in the same
+# spots? Success flags: defensive ground duel won := stoppedProgress OR
+# recoveredPossession; defensive aerial won := firstTouch. Interceptions /
+# recoveries / clearances are success-by-definition, so quality lives in
+# the contested engagements only.
+DWAE_K_FINE = 60.0     # EB shrink: (etype, oppgrp, zx, phase) -> (etype, oppgrp)
+DWAE_K_MID = 200.0     # EB shrink: (etype, oppgrp) -> (etype)
+
+# Opponent position-group for MATCHUP conditioning. Without it, DWAE
+# carried a structural position gap (CB median +0.49/90 vs FB +0.02):
+# CBs duel strikers, wingers duel fullbacks — different base win rates
+# that aren't the defender's skill.
+_OPP_GRP = {'GK': 'GK',
+             'CB': 'CB', 'LCB': 'CB', 'RCB': 'CB', 'LCB3': 'CB', 'RCB3': 'CB',
+             'LB': 'FB', 'RB': 'FB', 'LB5': 'FB', 'RB5': 'FB', 'LWB': 'FB', 'RWB': 'FB',
+             'CMF': 'CM', 'LCMF': 'CM', 'RCMF': 'CM', 'LCMF3': 'CM', 'RCMF3': 'CM',
+             'DMF': 'CM', 'LDMF': 'CM', 'RDMF': 'CM',
+             'AMF': 'AM', 'LAMF': 'AM', 'RAMF': 'AM', 'LMF': 'AM', 'RMF': 'AM',
+             'LW': 'AM', 'RW': 'AM', 'LWF': 'AM', 'RWF': 'AM',
+             'CF': 'ST', 'SS': 'ST'}
+
+
+def build_defensive_engagements(ev: pd.DataFrame) -> pd.DataFrame:
+    """One row per contested defensive engagement with the EB-shrunk
+    expected win probability p_win, conditioned on engagement type,
+    OPPONENT position-group (matchup), zone depth and phase.
+    DWAE = won − p_win sums ≈ 0 league-wide by construction and is
+    volume-free (conditioned on the engagements actually contested)."""
+    is_tackle = (ev['groundDuel.duelType'] == 'defensive_duel')
+    eng = ev[is_tackle | ev['_is_def_aerial']].copy()
+    eng['etype'] = np.where(eng['groundDuel.duelType'] == 'defensive_duel',
+                              'tackle', 'aerial')
+    won_tackle = ((eng['groundDuel.stoppedProgress'] == True)
+                    | (eng['groundDuel.recoveredPossession'] == True))
+    won_aerial = (eng['aerialDuel.firstTouch'] == True)
+    eng['won'] = np.where(eng['etype'] == 'tackle',
+                            won_tackle, won_aerial).astype(int)
+    opp_pos = np.where(eng['etype'] == 'tackle',
+                         eng['groundDuel.opponent.position'],
+                         eng['aerialDuel.opponent.position'])
+    eng['oppgrp'] = pd.Series(opp_pos, index=eng.index).map(_OPP_GRP).fillna('UNK')
+    x = eng['location.x'].to_numpy(dtype=float)
+    eng['zx'] = np.clip((x / (100.0 / N_ZONE_X)).astype(int), 0, N_ZONE_X - 1)
+    eng['phase'] = eng['_phase']
+
+    # EB-shrunk expected win rate: (etype,oppgrp,zx,phase) -> (etype,oppgrp) -> (etype)
+    g1 = eng.groupby('etype')['won'].agg(['sum', 'size'])
+    p1 = (g1['sum'] / g1['size']).to_dict()
+    g2 = eng.groupby(['etype', 'oppgrp'])['won'].agg(['sum', 'size']).reset_index()
+    g2['p1'] = g2['etype'].map(p1)
+    g2['p2'] = (g2['sum'] + DWAE_K_MID * g2['p1']) / (g2['size'] + DWAE_K_MID)
+    p2 = g2.set_index(['etype', 'oppgrp'])['p2'].to_dict()
+    g4 = (eng.groupby(['etype', 'oppgrp', 'zx', 'phase'])['won']
+             .agg(['sum', 'size']).reset_index())
+    g4['p2'] = [p2[(e, o)] for e, o in zip(g4['etype'], g4['oppgrp'])]
+    g4['p_win'] = (g4['sum'] + DWAE_K_FINE * g4['p2']) / (g4['size'] + DWAE_K_FINE)
+    pw = g4.set_index(['etype', 'oppgrp', 'zx', 'phase'])['p_win'].to_dict()
+    eng['p_win'] = [pw[(e, o, a, c)] for e, o, a, c in
+                      zip(eng['etype'], eng['oppgrp'], eng['zx'], eng['phase'])]
+    eng = eng.rename(columns={'player.id': 'playerId'})
+    return eng[['playerId', 'seasonId', 'matchId', 'etype', 'oppgrp', 'won', 'p_win']]
+
+
 # ----- Step 3 — Per-player expected + actual ------------------------------
 def compute_per_player(ev: pd.DataFrame,
                          resp: pd.DataFrame,
@@ -945,6 +1013,28 @@ def main():
     print(f"  Calibration: Σ expected = {total_exp:,.0f} vs matched responses "
            f"= {total_matched:,} (ratio {total_exp/total_matched:.3f}; "
            f"GK rows dropped from output keep ratio slightly under 1)")
+
+    print("\n[+] Defensive quality — wins above expectation (DWAE)…", flush=True)
+    eng = build_defensive_engagements(ev)
+    eng.to_parquet(HERE / 'defensive_engagements.parquet')
+    agg = (eng.groupby(['playerId', 'seasonId'])
+              .agg(dwae_n=('won', 'size'), dwae_wins=('won', 'sum'),
+                    dwae_exp=('p_win', 'sum')).reset_index())
+    agg['defr_dwae'] = agg['dwae_wins'] - agg['dwae_exp']
+    per_t = (eng.assign(_d=eng['won'] - eng['p_win'])
+                .groupby(['playerId', 'seasonId', 'etype'])['_d']
+                .sum().unstack(fill_value=0.0))
+    per_t.columns = [f'defr_dwae_{c}' for c in per_t.columns]
+    agg = agg.merge(per_t.reset_index(), on=['playerId', 'seasonId'], how='left')
+    agg['playerId'] = agg['playerId'].astype('Int64')
+    agg['seasonId'] = pd.to_numeric(agg['seasonId'], errors='coerce').astype('Int64')
+    out = out.merge(agg, on=['playerId', 'seasonId'], how='left')
+    _m90 = out['mins_played'].fillna(0) / 90.0
+    for c in ['defr_dwae', 'defr_dwae_tackle', 'defr_dwae_aerial']:
+        if c in out.columns:
+            out[f'{c}_p90'] = np.where(_m90 > 0, out[c] / _m90, np.nan)
+    print(f"  {len(eng):,} engagements; league DWAE sum = "
+           f"{agg['defr_dwae'].sum():+.1f} (≈0 by construction)")
 
     out_path = HERE / 'defr_per_player_season.parquet'
     out.to_parquet(out_path)

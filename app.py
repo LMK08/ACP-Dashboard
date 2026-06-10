@@ -752,7 +752,15 @@ DEFR_TYPE_TO_DISPLAY = {
     'defr_recovery':     'DefR Recoveries',
     'defr_def_aerial':   'DefR Aerials',
 }
-DEFR_DISPLAY_METRICS = list(DEFR_TYPE_TO_DISPLAY.values()) + ['DefR Total']
+# DWAE — defensive QUALITY (wins above expectation on contested
+# engagements, matchup-conditioned), complementing DefR's workload.
+DWAE_TO_DISPLAY = {
+    'defr_dwae':         'Def Wins Above Exp',
+    'defr_dwae_tackle':  'Tackle Wins AE',
+    'defr_dwae_aerial':  'Aerial Wins AE',
+}
+DEFR_DISPLAY_METRICS = (list(DEFR_TYPE_TO_DISPLAY.values()) + ['DefR Total']
+                          + list(DWAE_TO_DISPLAY.values()))
 # Base defensive metric (as shown on radars / stat tables)  ->  DefR equivalent.
 # Lets the radar "DefR mode" swap each defensive axis to its DefR value.
 DEFR_RADAR_MAP = {
@@ -833,7 +841,8 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
     if defr.empty:
         return player_stats_df
 
-    count_cols = list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr']
+    count_cols = (list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr']
+                    + list(DWAE_TO_DISPLAY.keys()))
     count_cols = [c for c in count_cols if c in defr.columns]
     g = defr.copy()
     g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
@@ -846,6 +855,9 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
             new_cols[disp] = agg[raw] / mins90
     if 'defr' in agg.columns:
         new_cols['DefR Total'] = agg['defr'] / mins90
+    for raw, disp in DWAE_TO_DISPLAY.items():
+        if raw in agg.columns:
+            new_cols[disp] = agg[raw] / mins90
     defr_sub = pd.DataFrame({'playerId': agg['playerId'], **new_cols})
 
     df = player_stats_df
