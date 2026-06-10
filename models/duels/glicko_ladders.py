@@ -109,8 +109,17 @@ def run(sub, collect_eval=False, eval_seasons=EVAL_SEASONS, init_rd=INIT_RD, tau
     for i in range(len(arr)):
         ladder, pA, pB, s, season, gA, gB, ak, zx, ph, hb = arr[i]
         d = days[i]
-        tA = ('tackle', pA) if ladder == 'ground' else ('aerial', pA)
-        tB = ('carry', pB) if ladder == 'ground' else ('aerial', pB)
+        # 5 ladders: ground splits by duel kind (option 1 — like-for-like
+        # skills): take-ons rate attacker 'takeon' vs defender 'stopper';
+        # shields (offensive duels) rate attacker 'shield' (press
+        # resistance) vs defender 'press' (ball-winning in the press).
+        if ladder == 'ground':
+            if ak == 'dribble':
+                tA, tB = ('stopper', pA), ('takeon', pB)
+            else:
+                tA, tB = ('press', pA), ('shield', pB)
+        else:
+            tA, tB = ('aerial', pA), ('aerial', pB)
         for key in (tA, tB):
             if key not in R:
                 R[key], RD[key], N[key], W[key], LAST[key] = INIT_R, init_rd, 0, 0.0, d
@@ -208,7 +217,7 @@ for par in (0, 1):
     st, _, _ = run(con[con['matchId'].astype('int64') % 2 == par], init_rd=BEST_RD, tau=BEST_TAU)
     half_states.append(st)
 rows = []
-for trait in ['aerial', 'tackle', 'carry']:
+for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
     (R0, _, N0, _), (R1, _, N1, _) = half_states
     common = [k for k in R0 if k in R1 and k[0] == trait
                 and N0[k] >= 40 and N1[k] >= 40]
@@ -231,12 +240,12 @@ print(f"  duel_ratings.parquet ({len(out):,} player-traits), "
 gpa = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
                         columns=['playerId', 'name'])
 nm = gpa.groupby('playerId')['name'].first().to_dict()
-for trait in ['aerial', 'tackle', 'carry']:
-    top = (out[(out['trait'] == trait) & (out['n'] >= 150)]
+for trait in ['aerial', 'stopper', 'takeon', 'press', 'shield']:
+    top = (out[(out["trait"] == trait) & (out["n"] >= 100)]
              .nlargest(10, 'rating'))
     names = [f"{str(nm.get(int(p), p))} ({int(n)} duels, {r:.0f}±{rd:.0f})"
               for p, n, r, rd in zip(top['playerId'], top['n'],
                                        top['rating'], top['rd'])]
-    print(f"\n  TOP {trait.upper()} (>=150 contests):")
+    print(f"\n  TOP {trait.upper()} (>=100 contests):")
     for s in names:
         print(f"    {s}")
