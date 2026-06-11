@@ -181,21 +181,37 @@ print(f"  alpha={ALPHA:.0f} (train CV)")
 model = Ridge(alpha=ALPHA).fit(Xtr, tr['next_rating'])
 pred_te = model.predict(Xte)
 marcel_te = te['career_asof'] + te['age_delta']     # literature 'Marcel' form
+# REPLACEMENT-SHRINK candidate (Lucas hypothesis, CONFIRMED on train:
+# implied convergence targets 44.7 / 47.6 / 51.7 for 500-900 / 900-1500 /
+# 1500+ minutes — thin evidence converges to REPLACEMENT level, not the
+# mean, because playing time is information: only 23% of low-minute
+# players survive to a rated next season vs 37% of starters).
+# Continuous form: next ~ c0 + c1*w + c2*career + c3*career*w,
+# w = mins/(mins+900). Level pull toward replacement when w is small.
+_wtr = (tr['mins_played'] / (tr['mins_played'] + 900.0)).values
+_Xr = np.column_stack([np.ones(len(tr)), _wtr, tr['career_asof'].values,
+                         tr['career_asof'].values * _wtr])
+_cr, *_ = np.linalg.lstsq(_Xr, tr['next_rating'].values, rcond=None)
+_wte = (te['mins_played'] / (te['mins_played'] + 900.0)).values
+repl_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
+                              te['career_asof'].values * _wte]) @ _cr)
 g_model = spearmanr(pred_te, te['next_rating'])[0]
 g_cur = spearmanr(te['cur_rating'], te['next_rating'])[0]
 g_car = spearmanr(te['career_asof'], te['next_rating'])[0]
 g_mar = spearmanr(marcel_te, te['next_rating'])[0]
+g_rep = spearmanr(repl_te, te['next_rating'])[0]
 print(f"  G1 test Spearman: model {g_model:.3f} | carry-rating {g_cur:.3f} | "
-       f"carry-career {g_car:.3f} | marcel {g_mar:.3f}")
+       f"carry-career {g_car:.3f} | marcel {g_mar:.3f} | replacement {g_rep:.3f}")
 mae_m = np.mean(np.abs(pred_te - te['next_rating']))
 mae_c = np.mean(np.abs(te['cur_rating'] - te['next_rating']))
 mae_k = np.mean(np.abs(te['career_asof'] - te['next_rating']))
 mae_r = np.mean(np.abs(marcel_te - te['next_rating']))
+mae_rp = np.mean(np.abs(repl_te - te['next_rating']))
 print(f"  G1 test MAE:      model {mae_m:.2f} | carry-rating {mae_c:.2f} | "
-       f"carry-career {mae_k:.2f} | marcel {mae_r:.2f}")
+       f"carry-career {mae_k:.2f} | marcel {mae_r:.2f} | replacement {mae_rp:.2f}")
 # SHIP RULE (pre-registered criterion = test Spearman; MAE tiebreak):
 cands = {'ridge': (g_model, mae_m), 'career': (g_car, mae_k),
-           'marcel': (g_mar, mae_r)}
+           'marcel': (g_mar, mae_r), 'replacement': (g_rep, mae_rp)}
 SHIP = max(cands, key=lambda k: (round(cands[k][0], 2), -cands[k][1]))
 print(f"  -> SHIP: {SHIP} (gate winner; ridge "
        f"{'PASSES' if SHIP=='ridge' else 'documented, not shipped'})")
@@ -214,10 +230,16 @@ if SHIP == 'ridge':
     cur['projection'] = final.predict((cur[FEATS] - mu) / sd)
 elif SHIP == 'marcel':
     cur['projection'] = cur['career_asof'] + cur['age_delta']
+elif SHIP == 'replacement':
+    _wc = (cur['mins_played'] / (cur['mins_played'] + 900.0)).values
+    cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
+        cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cr)
 else:
     cur['projection'] = cur['career_asof']
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
-                       else marcel_te if SHIP == 'marcel' else te['career_asof'])
+                       else marcel_te if SHIP == 'marcel'
+                       else repl_te if SHIP == 'replacement'
+                       else te['career_asof'])
 te2 = te.copy()
 te2['resid'] = te2['next_rating'] - te2['__ship_pred']
 band = te2.groupby('role')['resid'].std().rename('band_sd')
