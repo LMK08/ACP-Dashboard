@@ -226,12 +226,16 @@ print((_lt.pivot(index='role', columns='cat', values='infl_share') * 100)
 # So: shrink the OFF axis individually (K=2000) where low-minute noise
 # actually leaks in, and lighten the blanket blend shrink (900->300)
 # to avoid double-shrinking the source-shrunk axes.
-# v5.4 (Lucas): shrink LOW-minute players only — a full season stands
-# at face value (the rating is DESCRIPTIVE; regression-to-mean lives in
-# the projection). Renormalize the EB factor so the cohort's
-# full-season anchor (2,500 min) keeps 100% of its deviation.
-_FULL = 2500.0
-_anchor = _FULL / (_FULL + 2000.0)
+# v5.4 form KEPT after Lucas's reexamination of universal (v5.3)
+# shrinkage. Fixed-target A/B (predicting face-value next-season
+# rating with each input version): v5.4 inputs career 0.497 /
+# replacement 0.507; universal inputs 0.499 / 0.482 — a tie on carry,
+# v5.4 better for the shipped replacement form. Universal shrinkage's
+# apparent YoY/predictive edge (0.56 vs 0.47) is a SMOOTHED-TARGET
+# artifact: shrunk ratings are easier to predict because they are
+# shrunk. Conclusion: full seasons at face value; prediction-side
+# shrinkage lives in the projection only.
+_anchor = 2500.0 / (2500.0 + 2000.0)
 _s_off = np.minimum((df['mins_played'] / (df['mins_played'] + 2000.0)) / _anchor, 1.0)
 df['off_pct'] = 0.5 + (df['off_pct'] - 0.5) * _s_off
 
@@ -242,8 +246,8 @@ W = pd.DataFrame([ROLE_WEIGHTS.get(ro, DEFAULT_W) for ro in df['role']],
                    index=df.index)
 raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 # shrink the player-vs-role deviation toward 0.5 by minutes reliability
-_anchor_b = 2500.0 / (2500.0 + SHRINK_K)
-shrink = np.minimum((df['mins_played'] / (df['mins_played'] + SHRINK_K)) / _anchor_b, 1.0)
+_ab = 2500.0 / (2500.0 + SHRINK_K)
+shrink = np.minimum((df['mins_played'] / (df['mins_played'] + SHRINK_K)) / _ab, 1.0)
 df['acp_rating'] = (0.5 + (raw - 0.5) * shrink) * 100.0
 
 print("[3/4] recency-weighted career rating…", flush=True)
