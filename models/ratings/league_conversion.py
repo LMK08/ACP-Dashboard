@@ -193,17 +193,31 @@ delta = float(np.average(vs, weights=ws))
 delta_se = float(1 / np.sqrt(sum(ws)))
 print(f"  COMBINED: Liga 3 minus Campeonato = {delta:+.2f} ±{delta_se:.2f} "
        f"rating pts\n  (a Camp rating R ~ L3 rating R - {delta:.1f})")
-json.dump({'reference': 'L3', 'delta_pts_L3_minus_CAMP': delta,
+# RECRUITMENT conversion (Lucas 2026-06-11: Camp projections still too
+# high): the both-directions average is right for DESCRIPTION, but the
+# up-mover direction (+0.10) is contaminated by elite selection — those
+# players held their level BECAUSE they were the chosen few. For
+# projecting a typical Camp player into L3 terms (the recruitment
+# counterfactual), use the L3->Camp direction estimate, which is free
+# of up-selection (its own bias runs the other way, making it the
+# conservative bound).
+delta_recruit = res['L3->CAMP'][0]
+print(f"  RECRUIT delta (down-mover bound): {delta_recruit:+.2f} "
+       f"±{res['L3->CAMP'][1]:.2f} — applied to projections")
+json.dump({'reference': 'L3',
+             'delta_pts_L3_minus_CAMP_descriptive': delta,
              'delta_se': delta_se,
+             'delta_pts_recruit': delta_recruit,
              'anchors': {k: {'delta': (None if v != v else round(v, 3)),
                               'se': (None if se != se else round(se, 3))}
                           for k, (v, se) in anchors.items()}},
             open(_HERE / 'league_conversion.json', 'w'), indent=2)
 
-# append absolute columns (L3 reference)
-for fname, col in [('acp_rating_per_player_season.parquet', 'acp_rating'),
-                     ('acp_projection.parquet', 'projection')]:
+# absolute columns: descriptive delta for the rating, recruit delta for
+# the projection (L3 reference)
+for fname, col, dd in [('acp_rating_per_player_season.parquet', 'acp_rating', delta),
+                          ('acp_projection.parquet', 'projection', delta_recruit)]:
     df = pd.read_parquet(_HERE / fname)
-    df[col + '_abs'] = df[col] - np.where(df['league'] == 'CAMP', delta, 0.0)
+    df[col + '_abs'] = df[col] - np.where(df['league'] == 'CAMP', dd, 0.0)
     df.to_parquet(_HERE / fname)
-    print(f"  {fname}: wrote {col}_abs")
+    print(f"  {fname}: wrote {col}_abs (delta {dd:+.2f})")
