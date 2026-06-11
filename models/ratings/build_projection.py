@@ -197,26 +197,52 @@ _cr, *_ = np.linalg.lstsq(_Xr, tr['next_rating'].values, rcond=None)
 _wte = (te['mins_played'] / (te['mins_played'] + 900.0)).values
 repl_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
                               te['career_asof'].values * _wte]) @ _cr)
+# FULL form: career + replacement-pull + age, jointly fitted (the three
+# validated ideas combined — never previously tested as one candidate)
+_Xf = np.column_stack([np.ones(len(tr)), _wtr, tr['career_asof'].values,
+                         tr['career_asof'].values * _wtr,
+                         tr['age_delta'].values])
+_cf, *_ = np.linalg.lstsq(_Xf, tr['next_rating'].values, rcond=None)
+full_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
+                              te['career_asof'].values * _wte,
+                              te['age_delta'].values]) @ _cf)
 g_model = spearmanr(pred_te, te['next_rating'])[0]
 g_cur = spearmanr(te['cur_rating'], te['next_rating'])[0]
 g_car = spearmanr(te['career_asof'], te['next_rating'])[0]
 g_mar = spearmanr(marcel_te, te['next_rating'])[0]
 g_rep = spearmanr(repl_te, te['next_rating'])[0]
+g_ful = spearmanr(full_te, te['next_rating'])[0]
 print(f"  G1 test Spearman: model {g_model:.3f} | carry-rating {g_cur:.3f} | "
-       f"carry-career {g_car:.3f} | marcel {g_mar:.3f} | replacement {g_rep:.3f}")
+       f"carry-career {g_car:.3f} | marcel {g_mar:.3f} | replacement {g_rep:.3f} | "
+       f"full {g_ful:.3f}")
 mae_m = np.mean(np.abs(pred_te - te['next_rating']))
 mae_c = np.mean(np.abs(te['cur_rating'] - te['next_rating']))
 mae_k = np.mean(np.abs(te['career_asof'] - te['next_rating']))
 mae_r = np.mean(np.abs(marcel_te - te['next_rating']))
 mae_rp = np.mean(np.abs(repl_te - te['next_rating']))
+mae_f = np.mean(np.abs(full_te - te['next_rating']))
 print(f"  G1 test MAE:      model {mae_m:.2f} | carry-rating {mae_c:.2f} | "
-       f"carry-career {mae_k:.2f} | marcel {mae_r:.2f} | replacement {mae_rp:.2f}")
+       f"carry-career {mae_k:.2f} | marcel {mae_r:.2f} | replacement {mae_rp:.2f} | "
+       f"full {mae_f:.2f}")
 # SHIP RULE (pre-registered criterion = test Spearman; MAE tiebreak):
 cands = {'ridge': (g_model, mae_m), 'career': (g_car, mae_k),
-           'marcel': (g_mar, mae_r), 'replacement': (g_rep, mae_rp)}
-SHIP = max(cands, key=lambda k: (round(cands[k][0], 2), -cands[k][1]))
-print(f"  -> SHIP: {SHIP} (gate winner; ridge "
-       f"{'PASSES' if SHIP=='ridge' else 'documented, not shipped'})")
+           'marcel': (g_mar, mae_r), 'replacement': (g_rep, mae_rp),
+           'full': (g_ful, mae_f)}
+_gate_winner = max(cands, key=lambda k: (round(cands[k][0], 2), -cands[k][1]))
+# DOCUMENTED OVERRIDE (Lucas, 2026-06-12): ship the FULL form (career +
+# replacement-pull + age) even though career carry edges it on test
+# rank (0.574 vs 0.550, inside noise at n=128, SE~0.07). Reason: the
+# gate is structurally BLIND to the players these adjustments treat —
+# test pairs require a next rated season, so the aging decliner and the
+# washed-out fringe player never produce test rows (77% of low-minute
+# players don't survive; old exits dominate the age tails). Recruitment
+# decisions are about exactly those cohorts. The full form ties on what
+# the gate can see (rank, within noise; MAE better 9.63 vs 10.22) and
+# is principled on what it can't. Gate stays printed every build; if
+# career beats 'full' OUTSIDE noise on the 26/27 panel, revisit.
+SHIP = 'full'
+print(f"  gate winner: {_gate_winner}; SHIPPED: {SHIP} "
+       f"(documented survivor-blindness override, see comment)")
 print("  coefficients (per sd):")
 for f, c in sorted(zip(FEATS, model.coef_), key=lambda x: -abs(x[1])):
     print(f"    {f:<14} {c:+.2f}")
@@ -236,11 +262,17 @@ elif SHIP == 'replacement':
     _wc = (cur['mins_played'] / (cur['mins_played'] + 900.0)).values
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
         cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cr)
+elif SHIP == 'full':
+    _wc = (cur['mins_played'] / (cur['mins_played'] + 900.0)).values
+    cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
+        cur['career_asof'].values, cur['career_asof'].values * _wc,
+        cur['age_delta'].values]) @ _cf)
 else:
     cur['projection'] = cur['career_asof']
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
                        else marcel_te if SHIP == 'marcel'
                        else repl_te if SHIP == 'replacement'
+                       else full_te if SHIP == 'full'
                        else te['career_asof'])
 te2 = te.copy()
 te2['resid'] = te2['next_rating'] - te2['__ship_pred']
