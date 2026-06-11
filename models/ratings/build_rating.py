@@ -70,13 +70,20 @@ CAMP = {190230, 191779}
 # off weights HELD at v3 levels (off is the noisiest season axis — the
 # first v4 draft raised them and rating YoY fell 0.41->0.30; reverted);
 # the weight freed from resp/datt goes to QUAL per Lucas.
+# v5.2 post outcome-audit (commit 7f8ce5d): resp KEPT small (micro-
+# anchored, YoY 0.41, orthogonal to qual — the team-level null is the
+# test's blindness, not the metric's); qual UP (cleanest defensive
+# outcome link, -0.38 xGA; ceiling acknowledged — it only measures
+# contested defence); datt UP for ball-playing roles (links both ends
+# +0.38 xGF/-0.21 xGA, measured non-overlap with off); rapm HELD 0.10
+# (gate-earned; split-half 0.31 caps it).
 ROLE_WEIGHTS = {
-    'Striker':              {'off': 0.55,  'resp': 0.05,  'qual': 0.25,  'datt': 0.05, 'rapm': 0.10},
-    'Wide Attacker':        {'off': 0.55,  'resp': 0.05,  'qual': 0.25,  'datt': 0.05, 'rapm': 0.10},
-    'Advanced Midfielder':  {'off': 0.50,  'resp': 0.075, 'qual': 0.275, 'datt': 0.05, 'rapm': 0.10},
-    'Deep Midfielder':      {'off': 0.45,  'resp': 0.10,  'qual': 0.30,  'datt': 0.05, 'rapm': 0.10},
-    'Wide Defender':        {'off': 0.40,  'resp': 0.125, 'qual': 0.325, 'datt': 0.05, 'rapm': 0.10},
-    'Central Defender':     {'off': 0.325, 'resp': 0.15,  'qual': 0.375, 'datt': 0.05, 'rapm': 0.10},
+    'Striker':              {'off': 0.525, 'resp': 0.05,  'qual': 0.25,  'datt': 0.075, 'rapm': 0.10},
+    'Wide Attacker':        {'off': 0.525, 'resp': 0.05,  'qual': 0.25,  'datt': 0.075, 'rapm': 0.10},
+    'Advanced Midfielder':  {'off': 0.50,  'resp': 0.05,  'qual': 0.275, 'datt': 0.075, 'rapm': 0.10},
+    'Deep Midfielder':      {'off': 0.45,  'resp': 0.075, 'qual': 0.30,  'datt': 0.075, 'rapm': 0.10},
+    'Wide Defender':        {'off': 0.40,  'resp': 0.10,  'qual': 0.35,  'datt': 0.05,  'rapm': 0.10},
+    'Central Defender':     {'off': 0.35,  'resp': 0.10,  'qual': 0.40,  'datt': 0.05,  'rapm': 0.10},
 }
 DEFAULT_W = {'off': 0.45, 'resp': 0.10, 'qual': 0.30, 'datt': 0.05, 'rapm': 0.10}
 # v4 offence axis: reliability x relevance weighted GPA CATEGORY blend.
@@ -239,7 +246,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v5.1'
+out['rating_version'] = 'v5.2'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
