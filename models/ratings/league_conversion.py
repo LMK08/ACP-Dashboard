@@ -2,18 +2,20 @@
 """League conversion: how many ACP rating points is Campeonato worth
 relative to Liga 3? Triangulated from independent anchors.
 
-  A1 MOVERS    — same player, consecutive seasons, league switch. The
-                  rating change beyond age expectation, averaged across
-                  BOTH directions (cancels mean selection).
+  A1 MOVERS    — same player, consecutive seasons, league switch,
+                  benchmarked against a STAYER shrinkage model
+                  (next_dev = r x cur_dev + age-bin intercepts) so
+                  regression-to-the-mean from selection-on-extremes is
+                  removed (Lucas's catch: movers up are selected HIGH,
+                  movers down LOW — both inflate the naive gap; the
+                  naive +2.23 was ~37% RTM artifact, corrected +1.40).
   A2 TEAMS     — same club appearing in both leagues (promotion/releg):
-                  xGD/90 shift, converted to rating points via the
-                  within-league slope of team xGD on team mean rating.
-  A3 MARKET    — Transfermarkt values are one cross-league scale:
-                  log(MV) ~ rating + age + league. The league
-                  coefficient divided by the rating coefficient = the
-                  market's view of the gap in rating points.
-  (A4 duel-ladder mover residuals measured earlier: L3 > Camp by
-   ~10-25 Glicko pts, direction-consistent — cited as corroboration.)
+                  xGD/90 shift / within-league slope of team xGD on
+                  team mean rating. Direction check; magnitude inflated
+                  by squad turnover.
+  (Transfermarkt anchor REMOVED — Lucas directive: TM values are
+   near-nonexistent at L3/Camp level; ignore moving forward. Duel-
+   ladder mover residuals corroborate direction: L3 > Camp.)
 
 Output: league_conversion.json {delta_pts: Camp rating - delta = L3-
 equivalent}, and acp_rating_abs / projection_abs columns appended to
@@ -65,16 +67,43 @@ DL = pd.DataFrame(dl, columns=['ab', 'd'])
 AGE_D = {b: (DL[DL['ab'] == b]['d'].sum() + PRIOR[b] * 60)
             / (len(DL[DL['ab'] == b]) + 60) for b in range(5)}
 
-print("=== A1: MOVERS (rating change beyond age expectation) ===")
-mv = []
+print("=== A1: MOVERS (vs STAYER shrinkage model — RTM-corrected) ===")
+# Regression-to-mean correction (Lucas): movers up are selected on HIGH
+# observed ratings (lucky noise included) and would regress down anyway;
+# movers down the reverse — both inflate the naive gap. Benchmark every
+# mover against what an identical STAYER would do: fit on within-league
+# pairs  next_dev = r * cur_dev + c[age_bin], dev = rating minus the
+# league-season mean of rated players; mover residual = actual - that.
+o['_lgmean'] = o.groupby(['league', 'seasonId'])['acp_rating'].transform('mean')
+o['_dev'] = o['acp_rating'] - o['_lgmean']
+stay, mv = [], []
 for pid, g in o.dropna(subset=['age']).sort_values('yr').groupby('playerId'):
     rr = g.to_dict('records')
     for a, b in zip(rr, rr[1:]):
-        if b['yr'] - a['yr'] == 1 and a['league'] != b['league']:
-            resid = (b['acp_rating'] - a['acp_rating']) - AGE_D[bin_of(a['age'])]
-            mv.append({'dir': f"{a['league']}->{b['league']}", 'resid': resid,
-                         'w': min(a['mins_played'], b['mins_played'])})
+        if b['yr'] - a['yr'] != 1:
+            continue
+        row = {'cur_dev': a['_dev'], 'nxt_dev': b['_dev'],
+                 'ab': bin_of(a['age']),
+                 'w': min(a['mins_played'], b['mins_played'])}
+        if a['league'] == b['league']:
+            stay.append(row)
+        else:
+            mv.append(row | {'dir': f"{a['league']}->{b['league']}"})
+ST = pd.DataFrame(stay)
+Xs = np.column_stack([ST['cur_dev'].values] +
+                       [(ST['ab'] == k).astype(float).values for k in range(5)])
+beta_s, *_ = np.linalg.lstsq(Xs, ST['nxt_dev'].values, rcond=None)
+r_shrink = beta_s[0]
+print(f"  stayer shrinkage r = {r_shrink:.2f} (n={len(ST)}; a +10 dev player "
+       f"regresses to +{10*r_shrink:.1f} in a year)")
 MV = pd.DataFrame(mv)
+exp_dev = (MV['cur_dev'] * r_shrink
+             + MV['ab'].map({k: beta_s[1 + k] for k in range(5)}))
+MV['resid'] = MV['nxt_dev'] - exp_dev
+print("  mover selection profile (Lucas's question — how selected are they?):")
+for d, g in MV.groupby('dir'):
+    print(f"    {d}: mean prior dev {np.average(g['cur_dev'], weights=g['w']):+.1f} pts"
+           f" vs own-league average")
 res = {}
 for d, g in MV.groupby('dir'):
     m = np.average(g['resid'], weights=g['w'])
@@ -148,38 +177,12 @@ else:
     a2, a2_se = np.nan, np.nan
     print("  A2: too few club pairs — skipped")
 
-print("\n=== A3: MARKET VALUES (Transfermarkt, one scale) ===")
-val = pd.read_parquet(_DASH / 'valuations' / 'valuations.parquet')
-val = val[val['source'] != 'reported_fee'].dropna(subset=['value_eur'])
-val['as_of_date'] = pd.to_datetime(val['as_of_date'], errors='coerce')
-val['yr'] = val['as_of_date'].dt.year - (val['as_of_date'].dt.month < 7)
-pv = (val.groupby(['playerId', 'yr'])['value_eur'].max().reset_index())
-M = o.merge(pv, on=['playerId', 'yr'], how='inner')
-M = M[(M['value_eur'] > 0) & M['age'].notna()]
-print(f"  player-seasons with TM value + rating: {len(M)} "
-       f"({M.groupby('league').size().to_dict()})")
-X = pd.DataFrame({'rating': M['acp_rating'], 'age': M['age'],
-                    'age2': (M['age'] - 26) ** 2,
-                    'camp': (M['league'] == 'CAMP').astype(float)})
-X['const'] = 1.0
-y = np.log(M['value_eur'])
-beta, *_ = np.linalg.lstsq(X.values, y.values, rcond=None)
-b = dict(zip(X.columns, beta))
-a3 = -b['camp'] / b['rating'] if b['rating'] > 0 else np.nan
-# crude SE via residual bootstrap-lite
-resid = y.values - X.values @ beta
-se_scale = np.sqrt(np.diag(np.linalg.inv(X.T.values @ X.values))
-                     * (resid ** 2).mean())
-se_map = dict(zip(X.columns, se_scale))
-a3_se = abs(a3) * np.sqrt((se_map['camp'] / max(abs(b['camp']), 1e-9)) ** 2
-                            + (se_map['rating'] / max(abs(b['rating']), 1e-9)) ** 2) \
-          if a3 == a3 else np.nan
-print(f"  log(MV): rating {b['rating']:+.4f}/pt, camp {b['camp']:+.3f}")
-print(f"  A3 delta = {a3:+.2f} ±{a3_se:.2f} rating pts")
+# A3 MARKET VALUES — REMOVED (Lucas directive 2026-06-11): Transfermarkt
+# coverage at Liga 3 / Campeonato level is near-nonexistent (9 Camp
+# player-seasons) — ignore TM values moving forward.
 
 print("\n=== SYNTHESIS ===")
-anchors = {'A1 movers': (a1, a1_se), 'A2 teams': (a2, a2_se),
-             'A3 market': (a3, a3_se)}
+anchors = {'A1 movers': (a1, a1_se), 'A2 teams': (a2, a2_se)}
 ws, vs = [], []
 for k, (v, se) in anchors.items():
     if v == v and se and se > 0:
