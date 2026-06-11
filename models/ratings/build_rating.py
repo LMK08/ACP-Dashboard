@@ -97,15 +97,21 @@ DEFAULT_W = {'off': 0.45, 'resp': 0.10, 'qual': 0.30, 'datt': 0.05, 'rapm': 0.10
 # 14-26% of wide/AM role offence (Joao Pais: 51%!) and the MOST
 # repeatable skill measured (corners YoY 0.44-0.56). Merging the four
 # into one category concentrates the non-zero mass.
-GPA_RAW_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
-                 'Dribbling Value', 'Set Piece Value', 'Corner Value',
-                 'Free Kick Value', 'Throw-In Value']
+# v6.0 UNITS FIX: the dashboard's 'X Value' columns are ALREADY per-90
+# (caught by the pass-split sanity check, 2026-06-12) — this builder had
+# been dividing them by minutes again since v1, ranking players on
+# per-90/minutes and systematically understating high-minute players'
+# offence. Now: RAW season sums loaded, per-90 computed exactly once.
+# Passing additionally split into CREATING (final-third/box/cross/
+# through/shot-assist passes) vs LINKING (futi adoption #2), from
+# pass_split.parquet (raw action-value sums, set-piece passes excluded).
+GPA_RAW_CATS = ['Shooting', 'Receiving', 'Dribbling',
+                 'SetPiece', 'Corner', 'FreeKick', 'ThrowIn']
 # v5.1 (Lucas): dead-ball SEPARATED from the overall rating — it is a
 # specialist skill the club wants visible as its own score, not folded
 # into the headline. Offence axis = big-4 open-play value only;
 # setpiece_pct exported alongside.
-GPA_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
-             'Dribbling Value']
+GPA_CATS = ['Shooting', 'Creating', 'Linking', 'Receiving', 'Dribbling']
 SHRINK_K = 300.0          # residual blend shrink, renormalized to full season (v5.4)
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
@@ -114,10 +120,14 @@ print("[1/4] assemble components…", flush=True)
 g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
                       columns=['playerId', 'seasonId', 'name', 'position_group',
                                 'mins_played', 'Total Offensive Value'] + GPA_RAW_CATS)
-g['Dead-Ball Value'] = (g['Set Piece Value'] + g['Corner Value']
-                          + g['Free Kick Value'] + g['Throw-In Value'])
+g['DeadBall'] = (g['SetPiece'] + g['Corner'] + g['FreeKick'] + g['ThrowIn'])
 g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
 g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
+ps = pd.read_parquet(_HERE / 'pass_split.parquet')
+g = g.merge(ps.rename(columns={'Creating Value': 'Creating',
+                                  'Linking Value': 'Linking'}),
+              on=['playerId', 'seasonId'], how='left')
+g[['Creating', 'Linking']] = g[['Creating', 'Linking']].fillna(0.0)
 d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
                       columns=['playerId', 'seasonId', 'defr_adj', 'defr_dwae_p90'])
 r = pd.read_parquet(_DASH / 'models/roles/role_assignments_season.parquet',
@@ -183,8 +193,8 @@ for role, sub in df.groupby('role'):
                            'infl': lam * float(dev.std())})
 df['off_blend'] = _off_adj
 # standalone set-piece score (not in the rating)
-df['Dead-Ball Value90'] = df['Dead-Ball Value'] / df['mins_played'] * 90
-df['setpiece_pct'] = role_pct('Dead-Ball Value90')
+df['DeadBall90'] = df['DeadBall'] / df['mins_played'] * 90
+df['setpiece_pct'] = role_pct('DeadBall90')
 df['off_pct'] = role_pct('off_blend')   # re-uniform within role x league x season
 df['off_total_pct'] = role_pct('Total Offensive Value')   # kept for reference
 df['defr_pct'] = role_pct('defr_adj')
@@ -246,9 +256,19 @@ W = pd.DataFrame([ROLE_WEIGHTS.get(ro, DEFAULT_W) for ro in df['role']],
                    index=df.index)
 raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 # shrink the player-vs-role deviation toward 0.5 by minutes reliability
+# v6.0 (futi adoptions #1 + #3): blend -> z-score within role x league
+# x season, low-minute players shrunk toward REPLACEMENT level (z=-0.4,
+# our measured convergence target: 44.7 vs mean 48.8 on the old scale —
+# playing time is information; pulling unknowns to AVERAGE flattered
+# them), full-season anchor kept (2,500 min = no shrink). Display on
+# futi's variance-preserving scale: 50 + 17*z, clipped [1, 99].
+Z_REPL = -0.4
+zraw = (raw - raw.groupby([df['role'], df['league'], df['seasonId']])
+                  .transform('mean'))          / raw.groupby([df['role'], df['league'], df['seasonId']])               .transform('std')
 _ab = 2500.0 / (2500.0 + SHRINK_K)
 shrink = np.minimum((df['mins_played'] / (df['mins_played'] + SHRINK_K)) / _ab, 1.0)
-df['acp_rating'] = (0.5 + (raw - 0.5) * shrink) * 100.0
+zsh = Z_REPL + (zraw - Z_REPL) * shrink
+df['acp_rating'] = np.clip(50.0 + 17.0 * zsh, 1.0, 99.0)
 
 print("[3/4] recency-weighted career rating…", flush=True)
 car_rows = []
@@ -271,7 +291,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v5.4'
+out['rating_version'] = 'v6.0'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
@@ -290,6 +310,23 @@ def yoy(col):
 
 r_s, n = yoy('acp_rating')
 print(f"  acp_rating YoY (same pos): r = {r_s:.3f} (n={n})")
+# futi adoption #4: ratings should hold when players SWITCH TEAMS
+# within a league — the cleanest test that we measure players, not
+# team contexts.
+_pt = pd.read_parquet(_HERE / 'player_teams.parquet')
+df = df.merge(_pt, on=['playerId', 'seasonId'], how='left')
+_sw = {'stay': [], 'switch': []}
+for pid, gg in df.sort_values('yr').groupby('playerId'):
+    rr = gg.to_dict('records')
+    for a, b in zip(rr, rr[1:]):
+        if (b['yr'] - a['yr'] == 1 and a['position_group'] == b['position_group']
+                and a['league'] == b['league'] and pd.notna(a['team'])
+                and pd.notna(b['team'])):
+            _sw['stay' if a['team'] == b['team'] else 'switch'].append(
+                (a['acp_rating'], b['acp_rating']))
+for k, v in _sw.items():
+    V = pd.DataFrame(v)
+    print(f"  YoY team-{k:<7}: r = {pearsonr(V[0], V[1])[0]:.3f} (n={len(V)})")
 # component contribution check: corr of each component with the rating
 cur = df[df['seasonId'].isin({191782, 191779})]
 print("  component corr with rating (25/26):")

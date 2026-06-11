@@ -58,13 +58,15 @@ o = o.merge(npxg, on=['playerId', 'seasonId'], how='left').fillna({'npxg': 0})
 o['npxg90'] = o['npxg'] / o['mins_played'] * 90
 o['p_npxg'] = o.groupby(['role', 'league', 'seasonId'])['npxg90'].rank(pct=True)
 
+# v6.0 units fix: 'X Value' cols are per-90 already — use RAW sums and
+# compute per-90 exactly once (same bug as the rating builder had).
 g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
-                      columns=['playerId', 'seasonId', 'Receiving Value',
-                                'Dribbling Value'])
+                      columns=['playerId', 'seasonId', 'Receiving',
+                                'Dribbling'])
 g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
 g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
 o = o.merge(g, on=['playerId', 'seasonId'], how='left')
-for c, nm in [('Receiving Value', 'p_recv'), ('Dribbling Value', 'p_drib')]:
+for c, nm in [('Receiving', 'p_recv'), ('Dribbling', 'p_drib')]:
     o[c + '90'] = o[c] / o['mins_played'] * 90
     o[nm] = o.groupby(['role', 'league', 'seasonId'])[c + '90'].rank(pct=True)
 
