@@ -1,0 +1,19 @@
+{
+  "reference": "L3",
+  "delta_pts_L3_minus_CAMP": 2.611983460127926,
+  "delta_se": 0.6074329598252288,
+  "anchors": {
+    "A1 movers": {
+      "delta": 2.227,
+      "se": 0.628
+    },
+    "A2 teams": {
+      "delta": 8.386,
+      "se": 2.42
+    },
+    "A3 market": {
+      "delta": -54.231,
+      "se": 84.592
+    }
+  }
+}
