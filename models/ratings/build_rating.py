@@ -106,7 +106,7 @@ GPA_RAW_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
 # setpiece_pct exported alongside.
 GPA_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
              'Dribbling Value']
-SHRINK_K = 900.0          # minutes shrink toward role-mean (0.5), as defr_adj
+SHRINK_K = 300.0          # residual blend shrink (per-component shrink does the heavy lifting)
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
 
@@ -219,6 +219,16 @@ print(_lt.pivot(index='role', columns='cat', values='lam').to_string())
 print((_lt.pivot(index='role', columns='cat', values='infl_share') * 100)
         .round(0).to_string())
 
+# v5.3 per-component shrinkage: reliability scales with minutes
+# DIFFERENTLY per axis (off YoY 0.09 at 500-900min vs 0.21 at 1500+;
+# qual nearly flat 0.48->0.58 because its inputs are already shrunk at
+# source: DWAE/defr EB-shrunk, ladders RD-shrunk, rapm ridge-shrunk).
+# So: shrink the OFF axis individually (K=2000) where low-minute noise
+# actually leaks in, and lighten the blanket blend shrink (900->300)
+# to avoid double-shrinking the source-shrunk axes.
+_s_off = df['mins_played'] / (df['mins_played'] + 2000.0)
+df['off_pct'] = 0.5 + (df['off_pct'] - 0.5) * _s_off
+
 print("[2/4] role-weighted blend + minutes shrink…", flush=True)
 AXES = {'off': 'off_pct', 'resp': 'defr_pct', 'qual': 'qual_pct',
          'datt': 'datt_pct', 'rapm': 'rapm_pct'}
@@ -231,22 +241,26 @@ df['acp_rating'] = (0.5 + (raw - 0.5) * shrink) * 100.0
 
 print("[3/4] recency-weighted career rating…", flush=True)
 car_rows = []
-for pid, gg in df.groupby('playerId'):
+for pid, gg in df.sort_values('yr').groupby('playerId'):
+    gg = gg.reset_index(drop=True)
     latest = gg['yr'].max()
     w = gg['mins_played'].to_numpy() * (CAREER_DECAY ** (latest - gg['yr'].to_numpy()))
-    if w.sum() <= 0:
-        continue
-    car_rows.append({'playerId': pid,
-                      'acp_rating_career': float((gg['acp_rating'] * w).sum() / w.sum()),
-                      'n_seasons': int(gg['seasonId'].nunique())})
-df = df.merge(pd.DataFrame(car_rows), on='playerId', how='left')
+    car = float((gg['acp_rating'] * w).sum() / w.sum()) if w.sum() > 0 else np.nan
+    for i in range(len(gg)):
+        h = gg.iloc[:i + 1]
+        wa = h['mins_played'].to_numpy() * (CAREER_DECAY ** (gg.loc[i, 'yr'] - h['yr'].to_numpy()))
+        car_rows.append({'playerId': pid, 'seasonId': gg.loc[i, 'seasonId'],
+                           'acp_rating_career': car,   # full career (display; has lookahead on old rows)
+                           'career_asof': float((h['acp_rating'] * wa).sum() / wa.sum()),
+                           'n_seasons': int(gg['seasonId'].nunique())})
+df = df.merge(pd.DataFrame(car_rows), on=['playerId', 'seasonId'], how='left')
 
 out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'position_group', 'mins_played', 'off_pct', 'defr_pct',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v5.2'
+out['rating_version'] = 'v5.3'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
