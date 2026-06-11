@@ -106,7 +106,7 @@ GPA_RAW_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
 # setpiece_pct exported alongside.
 GPA_CATS = ['Shooting Value', 'Passing Value', 'Receiving Value',
              'Dribbling Value']
-SHRINK_K = 300.0          # residual blend shrink (per-component shrink does the heavy lifting)
+SHRINK_K = 300.0          # residual blend shrink, renormalized to full season (v5.4)
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
 MIN_MINS = 500            # rating eligibility / percentile cohort floor
 
@@ -226,7 +226,13 @@ print((_lt.pivot(index='role', columns='cat', values='infl_share') * 100)
 # So: shrink the OFF axis individually (K=2000) where low-minute noise
 # actually leaks in, and lighten the blanket blend shrink (900->300)
 # to avoid double-shrinking the source-shrunk axes.
-_s_off = df['mins_played'] / (df['mins_played'] + 2000.0)
+# v5.4 (Lucas): shrink LOW-minute players only — a full season stands
+# at face value (the rating is DESCRIPTIVE; regression-to-mean lives in
+# the projection). Renormalize the EB factor so the cohort's
+# full-season anchor (2,500 min) keeps 100% of its deviation.
+_FULL = 2500.0
+_anchor = _FULL / (_FULL + 2000.0)
+_s_off = np.minimum((df['mins_played'] / (df['mins_played'] + 2000.0)) / _anchor, 1.0)
 df['off_pct'] = 0.5 + (df['off_pct'] - 0.5) * _s_off
 
 print("[2/4] role-weighted blend + minutes shrink…", flush=True)
@@ -236,7 +242,8 @@ W = pd.DataFrame([ROLE_WEIGHTS.get(ro, DEFAULT_W) for ro in df['role']],
                    index=df.index)
 raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 # shrink the player-vs-role deviation toward 0.5 by minutes reliability
-shrink = df['mins_played'] / (df['mins_played'] + SHRINK_K)
+_anchor_b = 2500.0 / (2500.0 + SHRINK_K)
+shrink = np.minimum((df['mins_played'] / (df['mins_played'] + SHRINK_K)) / _anchor_b, 1.0)
 df['acp_rating'] = (0.5 + (raw - 0.5) * shrink) * 100.0
 
 print("[3/4] recency-weighted career rating…", flush=True)
@@ -260,7 +267,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v5.3'
+out['rating_version'] = 'v5.4'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
