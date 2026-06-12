@@ -1004,9 +1004,14 @@ def load_player_engine():
 ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'ACP Projection (abs)', 'Projection Band',
                            'Evidence Weight', 'Offensive Value %',
-                           'Def Quality Grade %', 'Engine RAPM %',
+                           'Def Quality Grade %', 'Aerial Grade %',
+                           'Ground Def Grade %', 'Engine RAPM %',
                            'Def Volume Grade %', 'Off Duel Grade %',
-                           'Engine Set Piece %']
+                           'Engine Set Piece %', 'Shooting Grade %',
+                           'Creating Grade %', 'Linking Grade %',
+                           'Receiving Grade %', 'Dribbling Grade %',
+                           'Aerial WOE /90', 'Ground WOE /90',
+                           'Engine Value EUR']
 
 
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
@@ -1043,6 +1048,15 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         'Off Duel Grade %': e['datt_pct'] * 100.0,
         'Engine Set Piece %': e['setpiece_pct'] * 100.0,
         'Engine Value EUR': e['engine_value_eur'],
+        'Aerial Grade %': e['aerial_grade_pct'] * 100.0,
+        'Ground Def Grade %': e['ground_grade_pct'] * 100.0,
+        'Shooting Grade %': e['Shooting_pct'] * 100.0,
+        'Creating Grade %': e['Creating_pct'] * 100.0,
+        'Linking Grade %': e['Linking_pct'] * 100.0,
+        'Receiving Grade %': e['Receiving_pct'] * 100.0,
+        'Dribbling Grade %': e['Dribbling_pct'] * 100.0,
+        'Aerial WOE /90': e['woe_aerial_p90'],
+        'Ground WOE /90': e['woe_ground_p90'],
     })
     df = player_stats_df
     had_index = df.index.name == 'playerId'
