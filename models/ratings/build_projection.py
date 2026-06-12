@@ -280,9 +280,10 @@ band = te2.groupby('role')['resid'].std().rename('band_sd')
 print(band.round(1).to_string())
 cur['band_sd'] = cur['role'].map(band).fillna(float(te2['resid'].std()))
 cur['proj_delta'] = cur['projection'] - cur['acp_rating']
+cur['w_evidence'] = cur['mins_played'] / (cur['mins_played'] + 900.0)
 out = cur[['playerId', 'seasonId', 'name', 'role', 'side', 'league', 'age',
-             'mins_played', 'acp_rating', 'career_asof', 'projection',
-             'band_sd', 'proj_delta']].copy()
+             'mins_played', 'acp_rating', 'career_asof', 'age_delta',
+             'w_evidence', 'projection', 'band_sd', 'proj_delta']].copy()
 out['projection_version'] = 'v1-' + SHIP
 out.to_parquet(_HERE / 'acp_projection.parquet')
 print(f"  acp_projection.parquet ({len(out):,} current players)")
