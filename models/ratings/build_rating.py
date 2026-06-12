@@ -155,7 +155,9 @@ r = pd.read_parquet(_DASH / 'models/roles/role_assignments_season.parquet',
                                 'primary_role'] + [f'role_share_{k}' for k in range(6)])
 _idn = r.dropna(subset=['primary_role', 'primary_role_name']).drop_duplicates('primary_role')
 ROLE_ID2NAME = dict(zip(_idn['primary_role'].astype(int), _idn['primary_role_name']))
-rapm = pd.read_parquet(_HERE / 'rapm_v3_coefficients.parquet')   # one coef/player
+# v6.6 (Lucas): RAPM per (player, season) — leak-free walk-forward with
+# 0.7/yr decay (rapm_v4.py); replaces the single career coefficient
+rapm = pd.read_parquet(_HERE / 'rapm_v4_per_season.parquet')
 duels = pd.read_parquet(_DASH / 'models/duels/duel_ratings.parquet')
 duels = duels[(duels['playerId'] > 0) & (duels['n'] >= 30)]
 duelw = duels.pivot_table(index='playerId', columns='trait',
@@ -163,7 +165,7 @@ duelw = duels.pivot_table(index='playerId', columns='trait',
 
 df = (g.merge(d, on=['playerId', 'seasonId'], how='left')
         .merge(r, on=['playerId', 'seasonId'], how='left')
-        .merge(rapm, on='playerId', how='left'))
+        .merge(rapm, on=['playerId', 'seasonId'], how='left'))
 TRAITS = ['aerial', 'takeon', 'stopper', 'shield', 'press']
 for t in TRAITS:
     df[f'duel_{t}'] = df['playerId'].map(duelw[('rating', t)])
@@ -292,7 +294,7 @@ df['dwae_shrunk_p90'] = (df['defr_dwae'] * df['dwae_n']
                            / (df['dwae_n'] + 80.0)
                            / df['mins_played'] * 90.0)
 df['dwae_pct'] = role_pct('dwae_shrunk_p90')
-df['rapm_pct'] = role_pct('rapm_v3')
+df['rapm_pct'] = role_pct('rapm_v4')
 # duel composites split by side: defensive ladders feed QUALITY (merged
 # with DWAE); take-on/shield are their own small axis
 def duel_composite(traits):
@@ -394,7 +396,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'n_seasons']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.5'
+out['rating_version'] = 'v6.6'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
