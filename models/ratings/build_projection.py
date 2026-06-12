@@ -112,6 +112,9 @@ o['career_asof'] = _car
 o['eff_mins'] = _e5
 o['eff8'] = _e8
 o['eff10'] = _e10
+# pooled within-season minutes (winter movers carry two rows/season) —
+# the "playing time is information" signal for the full2 level pull
+o['season_mins'] = o.groupby(['playerId', 'yr'])['mins_played'].transform('sum')
 
 # ---- survivorship-corrected AGE CURVE (delta method) -----------------------
 # Lucas's concern, backed by the literature (Dendir 2016: soccer peak
@@ -209,6 +212,7 @@ for pid, gg in o.sort_values('yr').groupby('playerId'):
         if (b['yr'] - a['yr'] == 1 and a['role'] == b['role']
                 and a['mins_played'] >= 500 and b['mins_played'] >= 500):
             rows.append({**{f: a[f] for f in FEATS},
+                           'season_mins': a['season_mins'],
                            'cur_rating': a['acp_rating'], 'role': a['role'],
                            'start_yr': a['yr'], 'next_rating': b['acp_rating']})
 P = pd.DataFrame(rows).dropna()
@@ -279,6 +283,33 @@ _cf, *_ = np.linalg.lstsq(_Xf, (tr['next_rating'].values
 full_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
                               te['career_asof'].values * _wte]) @ _cf
              + te['age_delta'].values)
+# full2 (Lucas): TWO-TERM evidence. With eff10 as the only w, "thin
+# evidence" means SHORT CAREER — mostly young improvers — so the fitted
+# convergence target drifted to ~league mean. Career evidence keeps the
+# career slope; CURRENT-SEASON minutes (pooled across competitions)
+# carry the level pull — that is the fringe-player signal the original
+# replacement target (44.7) was measured on.
+_ws_tr = (tr['season_mins'] / (tr['season_mins'] + 900.0)).values
+_ws_te = (te['season_mins'] / (te['season_mins'] + 900.0)).values
+_Xf2 = np.column_stack([np.ones(len(tr)), _wtr, _ws_tr,
+                          tr['career_asof'].values,
+                          tr['career_asof'].values * _wtr])
+_cf2, *_ = np.linalg.lstsq(_Xf2, (tr['next_rating'].values
+                                    - tr['age_delta'].values), rcond=None)
+full2_te = (np.column_stack([np.ones(len(te)), _wte, _ws_te,
+                               te['career_asof'].values,
+                               te['career_asof'].values * _wte]) @ _cf2
+              + te['age_delta'].values)
+print(f"  full  coefs: c0 {_cf[0]:+.1f}, w_career {_cf[1]:+.1f}, "
+       f"career {_cf[2]:+.3f}, career*w {_cf[3]:+.3f}")
+print(f"  full2 coefs: c0 {_cf2[0]:+.1f}, w_career {_cf2[1]:+.1f}, "
+       f"w_season {_cf2[2]:+.1f}, career {_cf2[3]:+.3f}, career*w {_cf2[4]:+.3f}")
+for _sm in (300, 900, 2000):
+    _wsx = _sm / (_sm + 900.0)
+    for _wcx in (0.2, 0.6):
+        _fp = ((_cf2[0] + _cf2[1] * _wcx + _cf2[2] * _wsx)
+                / (1 - (_cf2[3] + _cf2[4] * _wcx)))
+        print(f"    full2 convergence @ season_mins={_sm}, w_career={_wcx}: {_fp:.1f}")
 print("  age-curve coefficient FIXED at c = 1.00 (literature volume)")
 g_model = spearmanr(pred_te, te['next_rating'])[0]
 g_cur = spearmanr(te['cur_rating'], te['next_rating'])[0]
@@ -286,22 +317,24 @@ g_car = spearmanr(te['career_asof'], te['next_rating'])[0]
 g_mar = spearmanr(marcel_te, te['next_rating'])[0]
 g_rep = spearmanr(repl_te, te['next_rating'])[0]
 g_ful = spearmanr(full_te, te['next_rating'])[0]
+g_f2 = spearmanr(full2_te, te['next_rating'])[0]
 print(f"  G1 test Spearman: model {g_model:.3f} | carry-rating {g_cur:.3f} | "
        f"carry-career {g_car:.3f} | marcel {g_mar:.3f} | replacement {g_rep:.3f} | "
-       f"full {g_ful:.3f}")
+       f"full {g_ful:.3f} | full2 {g_f2:.3f}")
 mae_m = np.mean(np.abs(pred_te - te['next_rating']))
 mae_c = np.mean(np.abs(te['cur_rating'] - te['next_rating']))
 mae_k = np.mean(np.abs(te['career_asof'] - te['next_rating']))
 mae_r = np.mean(np.abs(marcel_te - te['next_rating']))
 mae_rp = np.mean(np.abs(repl_te - te['next_rating']))
 mae_f = np.mean(np.abs(full_te - te['next_rating']))
+mae_f2 = np.mean(np.abs(full2_te - te['next_rating']))
 print(f"  G1 test MAE:      model {mae_m:.2f} | carry-rating {mae_c:.2f} | "
        f"carry-career {mae_k:.2f} | marcel {mae_r:.2f} | replacement {mae_rp:.2f} | "
-       f"full {mae_f:.2f}")
+       f"full {mae_f:.2f} | full2 {mae_f2:.2f}")
 # SHIP RULE (pre-registered criterion = test Spearman; MAE tiebreak):
 cands = {'ridge': (g_model, mae_m), 'career': (g_car, mae_k),
            'marcel': (g_mar, mae_r), 'replacement': (g_rep, mae_rp),
-           'full': (g_ful, mae_f)}
+           'full': (g_ful, mae_f), 'full2': (g_f2, mae_f2)}
 _gate_winner = max(cands, key=lambda k: (round(cands[k][0], 2), -cands[k][1]))
 # DOCUMENTED OVERRIDE (Lucas, 2026-06-12): ship the FULL form (career +
 # replacement-pull + age) even though career carry edges it on test
@@ -357,12 +390,19 @@ elif SHIP == 'full':
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
         cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cf
         + cur['age_delta'].values)
+elif SHIP == 'full2':
+    _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
+    _wsc = (cur['season_mins'] / (cur['season_mins'] + 900.0)).values
+    cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc, _wsc,
+        cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cf2
+        + cur['age_delta'].values)
 else:
     cur['projection'] = cur['career_asof']
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
                        else marcel_te if SHIP == 'marcel'
                        else repl_te if SHIP == 'replacement'
                        else full_te if SHIP == 'full'
+                       else full2_te if SHIP == 'full2'
                        else te['career_asof'])
 te2 = te.copy()
 te2['resid'] = te2['next_rating'] - te2['__ship_pred']

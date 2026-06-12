@@ -77,15 +77,34 @@ CAMP = {190230, 191779}
 # contested defence); datt UP for ball-playing roles (links both ends
 # +0.38 xGF/-0.21 xGA, measured non-overlap with off); rapm HELD 0.10
 # (gate-earned; split-half 0.31 caps it).
+# v6.5 (Lucas): Off +0.075 for every role — on-ball value is the
+# engine's best-validated axis and should carry more of the headline.
+# Taken from qual (and a sliver of datt for attackers); rapm flat 0.10.
 ROLE_WEIGHTS = {
-    'Striker':              {'off': 0.525, 'resp': 0.05,  'qual': 0.25,  'datt': 0.075, 'rapm': 0.10},
-    'Wide Attacker':        {'off': 0.525, 'resp': 0.05,  'qual': 0.25,  'datt': 0.075, 'rapm': 0.10},
-    'Advanced Midfielder':  {'off': 0.50,  'resp': 0.05,  'qual': 0.275, 'datt': 0.075, 'rapm': 0.10},
-    'Deep Midfielder':      {'off': 0.45,  'resp': 0.075, 'qual': 0.30,  'datt': 0.075, 'rapm': 0.10},
-    'Wide Defender':        {'off': 0.40,  'resp': 0.10,  'qual': 0.35,  'datt': 0.05,  'rapm': 0.10},
-    'Central Defender':     {'off': 0.35,  'resp': 0.10,  'qual': 0.40,  'datt': 0.05,  'rapm': 0.10},
+    'Striker':              {'off': 0.60,  'resp': 0.05,  'qual': 0.20,  'datt': 0.05,  'rapm': 0.10},
+    'Wide Attacker':        {'off': 0.60,  'resp': 0.05,  'qual': 0.20,  'datt': 0.05,  'rapm': 0.10},
+    'Advanced Midfielder':  {'off': 0.575, 'resp': 0.05,  'qual': 0.225, 'datt': 0.05,  'rapm': 0.10},
+    'Deep Midfielder':      {'off': 0.525, 'resp': 0.075, 'qual': 0.25,  'datt': 0.05,  'rapm': 0.10},
+    'Wide Defender':        {'off': 0.475, 'resp': 0.10,  'qual': 0.275, 'datt': 0.05,  'rapm': 0.10},
+    'Central Defender':     {'off': 0.425, 'resp': 0.10,  'qual': 0.325, 'datt': 0.05,  'rapm': 0.10},
 }
-DEFAULT_W = {'off': 0.45, 'resp': 0.10, 'qual': 0.30, 'datt': 0.05, 'rapm': 0.10}
+DEFAULT_W = {'off': 0.525, 'resp': 0.075, 'qual': 0.25, 'datt': 0.05, 'rapm': 0.10}
+
+# v6.5 (Lucas): ROLE-RELEVANCE multipliers inside the Off axis. The
+# pure reliability x variance weighting drifted from what each role is
+# FOR (striker Shooting carried 11% of striker offence; DM Shooting
+# 39%). Relevance re-anchors influence to role needs while the lambda
+# reliability shrink keeps damping the noisy categories — influence is
+# now relevance x reliability x variance. Multipliers kept modest
+# (0.6-1.5) so reliability still dominates.
+ROLE_CAT_RELEVANCE = {
+    'Striker':             {'Shooting': 1.5,  'Receiving': 1.25, 'Creating': 1.0,  'Dribbling': 0.85, 'Linking': 0.7},
+    'Wide Attacker':       {'Shooting': 1.15, 'Receiving': 1.0,  'Creating': 1.25, 'Dribbling': 1.1,  'Linking': 0.7},
+    'Advanced Midfielder': {'Shooting': 1.05, 'Receiving': 1.0,  'Creating': 1.3,  'Dribbling': 0.9,  'Linking': 0.9},
+    'Deep Midfielder':     {'Shooting': 0.75, 'Receiving': 1.0,  'Creating': 1.05, 'Dribbling': 0.85, 'Linking': 1.4},
+    'Wide Defender':       {'Shooting': 0.6,  'Receiving': 0.9,  'Creating': 1.25, 'Dribbling': 1.0,  'Linking': 1.2},
+    'Central Defender':    {'Shooting': 0.6,  'Receiving': 1.0,  'Creating': 0.9,  'Dribbling': 0.8,  'Linking': 1.5},
+}
 # v4 offence axis: reliability x relevance weighted GPA CATEGORY blend.
 # Measured (2026-06): 53% of striker offence is Shooting Value at YoY
 # 0.09 — finishing variance, not skill; receiving/dribbling/set-piece
@@ -252,10 +271,11 @@ for role, sub in df.groupby('role'):
         _cm = (sub[c + '90'].where(sub['_cohort'])
                  .groupby([sub['league'], sub['seasonId']]).transform('mean'))
         dev = (sub[c + '90'] - _cm).fillna(0.0)
-        _off_adj.loc[sub.index] += lam * dev
+        rel = ROLE_CAT_RELEVANCE.get(role, {}).get(c, 1.0)
+        _off_adj.loc[sub.index] += rel * lam * dev
         _lam_log.append({'role': role, 'cat': c.replace(' Value', ''),
-                           'lam': round(lam, 2),
-                           'infl': lam * float(dev.std())})
+                           'lam': round(lam, 2), 'rel': rel,
+                           'infl': rel * lam * float(dev.std())})
 df['off_blend'] = _off_adj
 # standalone set-piece score (not in the rating)
 df['DeadBall90'] = df['DeadBall'] / df['mins_played'] * 90
@@ -374,7 +394,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'n_seasons']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.4'
+out['rating_version'] = 'v6.5'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
