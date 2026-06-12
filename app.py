@@ -1005,7 +1005,7 @@ ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'ACP Projection (abs)', 'Projection Band',
                            'Evidence Weight', 'Offensive Value %',
                            'Def Quality Grade %', 'Engine RAPM %',
-                           'Def Volume Grade %', 'Engine Duel-att %',
+                           'Def Volume Grade %', 'Off Duel Grade %',
                            'Engine Set Piece %']
 
 
@@ -1040,7 +1040,7 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         'Def Quality Grade %': e['qual_pct'] * 100.0,
         'Engine RAPM %': e['rapm_pct'] * 100.0,
         'Def Volume Grade %': e['defr_pct'] * 100.0,
-        'Engine Duel-att %': e['datt_pct'] * 100.0,
+        'Off Duel Grade %': e['datt_pct'] * 100.0,
         'Engine Set Piece %': e['setpiece_pct'] * 100.0,
         'Engine Value EUR': e['engine_value_eur'],
     })
@@ -9524,7 +9524,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         ("Def Quality Grade", 'qual_pct'),
                         ("RAPM", 'rapm_pct'),
                         ("Def Volume Grade", 'defr_pct'),
-                        ("Duel-att", 'datt_pct'),
+                        ("Off Duel Grade", 'datt_pct'),
                         ("Set piece", 'setpiece_pct')]):
                     _v = _e.get(_col)
                     with _comp_cols[_i]:
@@ -9552,7 +9552,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     ('Creating', 'raw_Creating90', 'passing', '{:.2f}'),
                     ('Linking', 'raw_Linking90', 'passing', '{:.2f}'),
                     ('Dribbling', 'raw_Dribbling90', 'dribbling', '{:.2f}'),
-                    ('Duel-att', '_datt_glicko', 'dribbling', '{:.0f}'),
+                    ('Off Duel Grade', '_datt_glicko', 'dribbling', '{:.0f}'),
                     ('Def Quality', 'raw_dwae90', 'defensive', '{:.2f}'),
                     ('Def Volume', 'raw_resp', 'defensive', '{:.2f}'),
                     ('RAPM', 'raw_rapm', 'team', '{:.2f}'),
@@ -9683,7 +9683,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                  f"Raw per-90 values vs {_e['role']} cohort "
                                  f"({_e['league']}, current season, 500+ mins) · "
                                  f"Def Quality raw = duel wins above expectation /90 · "
-                                 f"Duel-att raw = take-on/shield Glicko · "
+                                 f"Off Duel Grade raw = take-on/shield Glicko · "
                                  f"RAPM = on-pitch xGD/90 · "
                                  f"Engine {_eng_meta.get('rating_version', '')} · "
                                  f"Data via Wyscout · @lucaskimball · "
