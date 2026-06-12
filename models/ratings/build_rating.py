@@ -129,7 +129,8 @@ g = g.merge(ps.rename(columns={'Creating Value': 'Creating',
               on=['playerId', 'seasonId'], how='left')
 g[['Creating', 'Linking']] = g[['Creating', 'Linking']].fillna(0.0)
 d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
-                      columns=['playerId', 'seasonId', 'defr_adj', 'defr_dwae_p90'])
+                      columns=['playerId', 'seasonId', 'defr_adj', 'defr_dwae',
+                                'dwae_n'])
 r = pd.read_parquet(_DASH / 'models/roles/role_assignments_season.parquet',
                       columns=['playerId', 'seasonId', 'primary_role_name', 'side'])
 rapm = pd.read_parquet(_HERE / 'rapm_v3_coefficients.parquet')   # one coef/player
@@ -198,7 +199,15 @@ df['setpiece_pct'] = role_pct('DeadBall90')
 df['off_pct'] = role_pct('off_blend')   # re-uniform within role x league x season
 df['off_total_pct'] = role_pct('Total Offensive Value')   # kept for reference
 df['defr_pct'] = role_pct('defr_adj')
-df['dwae_pct'] = role_pct('defr_dwae_p90')
+# v6.2: DWAE count-shrunk before per-90 (Lucas audit): wins-above-
+# expectation is a raw count deviation — a 20-engagement fluke spiked
+# the per-90 with no damping. EB factor n/(n+80): half-shrink at the
+# 10th-pct player (59 engagements), light at the median (123).
+# Measured: dwae pctile YoY 0.229 -> 0.240.
+df['dwae_shrunk_p90'] = (df['defr_dwae'] * df['dwae_n']
+                           / (df['dwae_n'] + 80.0)
+                           / df['mins_played'] * 90.0)
+df['dwae_pct'] = role_pct('dwae_shrunk_p90')
 df['rapm_pct'] = role_pct('rapm_v3')
 # duel composites split by side: defensive ladders feed QUALITY (merged
 # with DWAE); take-on/shield are their own small axis
