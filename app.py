@@ -942,6 +942,39 @@ def _add_defr_percentiles(df):
 # the Opta source; per-metric for the empirical source).
 # ============================================================================
 @st.cache_data(ttl=3600)
+def load_player_engine():
+    """Unified ACP engine export (models/ratings/build_player_engine.py):
+    one row per rated player-season with rating + abs, axis percentiles,
+    role shares, projection + band + factor columns, duel ladders, team.
+
+    Returns (DataFrame, meta_dict). Empty DF + {} if files are missing so
+    the rest of the app works unchanged."""
+    base = os.path.dirname(__file__)
+    path = os.path.join(base, 'models', 'ratings', 'player_engine.parquet')
+    meta_path = os.path.join(base, 'models', 'ratings', 'player_engine_meta.json')
+    if not os.path.exists(path):
+        logger.info("player_engine.parquet not found — engine card disabled")
+        return pd.DataFrame(), {}
+    try:
+        df = pd.read_parquet(path)
+        df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+        df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        if PLAYER_ID_ALIASES:
+            df['playerId'] = df['playerId'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                if p is not None and not pd.isna(p) else p
+            ).astype('Int64')
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+        return df, meta
+    except Exception:
+        logger.exception("Failed to load player_engine.parquet")
+        return pd.DataFrame(), {}
+
+
+@st.cache_data(ttl=3600)
 def load_opta_ratings():
     """Load opta_ratings.parquet. Returns empty DF if missing."""
     path = os.path.join(os.path.dirname(__file__), 'opta_ratings.parquet')
@@ -7998,6 +8031,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     )
     st.session_state.current_page = analysis_type
 
+    # Engine freshness stamp — visible on every page (lesson from the
+    # April→June staleness: nobody could see the data was 2 months old)
+    try:
+        _, _eng_meta_sb = load_player_engine()
+        if _eng_meta_sb:
+            st.sidebar.caption(
+                f"⚙️ Engine {_eng_meta_sb.get('rating_version', '?')} · "
+                f"data through {_eng_meta_sb.get('data_through', '?')}")
+    except Exception:
+        pass
+
     if analysis_type == 'Match Analysis':
         # --- League & Season Selector ---
         selected_comp_ids = league_selector("match_analysis")
@@ -9316,6 +9360,121 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 help=_bio_cvi_help,
             )
 
+        st.divider()
+
+        # --- ACP Engine card: rating + projection + components ---------
+        try:
+            _eng_df, _eng_meta = load_player_engine()
+            _erows = _eng_df[_eng_df['playerId'] == int(selected_player_id)] if not _eng_df.empty else pd.DataFrame()
+            # active_season_ids can be None (All Seasons), an int, or a list
+            if isinstance(active_season_ids, (list, tuple, set)):
+                _e_sids = [int(s) for s in active_season_ids if s is not None]
+            elif active_season_ids is not None:
+                _e_sids = [int(active_season_ids)]
+            else:
+                _e_sids = None
+            if _erows.empty:
+                _escope = _erows
+            elif _e_sids:
+                _escope = _erows[_erows['seasonId'].isin(_e_sids)]
+            else:   # All Seasons → show the latest rated season
+                _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
+            _eng_stale = False
+            if _escope.empty and not _erows.empty:
+                # not rated in the selected scope — fall back to last rated season
+                _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
+                _eng_stale = True
+            st.subheader("ACP Engine — Rating & Projection")
+            if _escope.empty:
+                if str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK'):
+                    st.info("Goalkeepers are rated by the separate GK system "
+                            "(shot-stopping / handling) — the outfield engine "
+                            "does not cover them.")
+                else:
+                    st.info("Not rated by the engine for this scope "
+                            "(below the 500-minute season floor, or no "
+                            "role assignment yet).")
+            else:
+                _e = _escope.sort_values('mins_played').iloc[-1]
+                if _eng_stale:
+                    st.caption(f"⏳ Not rated in the selected season — showing "
+                               f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
+                _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+                _abs_note = (f"abs {_e['acp_rating_abs']:.0f}"
+                             if pd.notna(_e.get('acp_rating_abs'))
+                             and _e.get('league') == 'CAMP' else None)
+                _ec1.metric("ACP Rating", f"{_e['acp_rating']:.0f}", _abs_note,
+                            delta_color="off",
+                            help="Role-blended 5-axis rating, 50±17 scale, "
+                                 "within-league. 'abs' = Liga-3-equivalent "
+                                 "(descriptive league delta).")
+                if pd.notna(_e.get('projection')):
+                    _proj_note = (f"abs {_e['projection_abs']:.0f}"
+                                  if pd.notna(_e.get('projection_abs'))
+                                  and _e.get('league') == 'CAMP' else None)
+                    _ec2.metric("Projection (next season)",
+                                f"{_e['projection']:.0f} ± {_e['band_sd']:.0f}",
+                                _proj_note, delta_color="off",
+                                help="Career + evidence pull + role age curve. "
+                                     "Band = role-specific 1 SD of realized "
+                                     "error. 'abs' applies the stricter "
+                                     "recruit league delta.")
+                else:
+                    _ec2.metric("Projection", "—",
+                                help="No projection (age unknown or below floor).")
+                _ec3.metric("Career (as-of)",
+                            f"{_e['career_asof']:.0f}" if pd.notna(_e.get('career_asof')) else "—",
+                            help="Recency-weighted career rating through this season.")
+                _ec4.metric("Evidence",
+                            f"{_e['w_evidence']:.0%}" if pd.notna(_e.get('w_evidence')) else "—",
+                            help="Career evidence weight w = eff_mins/(eff_mins+K). "
+                                 "Low = projection leans on the pull terms.")
+
+                # badges
+                _badges = []
+                _shares = sorted(
+                    [(c[3:], float(_e[c])) for c in _escope.columns
+                     if c.startswith('sh_') and pd.notna(_e[c]) and float(_e[c]) > 0.15],
+                    key=lambda x: -x[1])
+                if _shares:
+                    _badges.append(" · ".join(f"**{n}** {s:.0%}" for n, s in _shares[:3]))
+                if pd.notna(_e.get('seasons_ago')) and int(_e['seasons_ago']) >= 1:
+                    _badges.append("🕐 last rated 24/25 — projection carries "
+                                   "extra age step + wider band")
+                if float(_e['mins_played']) < 500:
+                    _badges.append(f"⚠️ thin sample this league "
+                                   f"({int(_e['mins_played'])}′ — admitted via "
+                                   f"cross-competition season pooling)")
+                if len(_escope) > 1:
+                    _others = _escope[_escope.index != _e.name]
+                    for _, _o in _others.iterrows():
+                        _badges.append(f"also rated in {_o['league']} "
+                                       f"({int(_o['mins_played'])}′, rating "
+                                       f"{_o['acp_rating']:.0f})")
+                if _badges:
+                    st.markdown("  \n".join(_badges))
+
+                # component bars
+                _comp_cols = st.columns(6)
+                for _i, (_lbl, _col) in enumerate([
+                        ("Off", 'off_pct'), ("Qual", 'qual_pct'),
+                        ("RAPM", 'rapm_pct'), ("Resp", 'defr_pct'),
+                        ("Duel-att", 'datt_pct'), ("Set piece", 'setpiece_pct')]):
+                    _v = _e.get(_col)
+                    with _comp_cols[_i]:
+                        if pd.notna(_v):
+                            st.progress(min(max(float(_v), 0.0), 1.0))
+                            st.caption(f"{_lbl} · {float(_v)*100:.0f}")
+                        else:
+                            st.caption(f"{_lbl} · —")
+                st.caption(
+                    f"Engine {_eng_meta.get('rating_version', '?')} · "
+                    f"projection {_eng_meta.get('projection_version', '?')} · "
+                    f"data through {_eng_meta.get('data_through', '?')} · "
+                    f"percentiles within league × season × role cohort; "
+                    f"set piece shown separately (not in the rating)")
+        except Exception:
+            logger.exception("Engine card failed")
         st.divider()
 
         # --- Transfer Value Detail moved to just above Career Trajectory ---
