@@ -964,6 +964,29 @@ def load_player_engine():
                 lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
                 if p is not None and not pd.isna(p) else p
             ).astype('Int64')
+        # Engine projected value (EUR), computed ONCE here so the bio
+        # headline and the analysis tables can never drift: perf =
+        # percentile of projection_abs within the projection universe
+        # (abs scale — Camp recruit discount already applied, so NO
+        # extra Camp penalty) × career-NPV age multiplier, through the
+        # fee-calibrated CVI→EUR curve. No reliability ramp: the
+        # projection is already evidence-weighted internally.
+        _ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
+                     'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',
+                     'Wide Defender': 'FB', 'Central Defender': 'CB'}
+        _pool = df['projection_abs'].dropna()
+
+        def _eng_eur(r):
+            pa = r.get('projection_abs')
+            if pa is None or pd.isna(pa) or len(_pool) == 0:
+                return None
+            perf = float((_pool < float(pa)).mean()
+                          + 0.5 * (_pool == float(pa)).mean()) * 100.0
+            grp = _ROLE2CVI.get(r.get('role'))
+            am = _cvi_age_value_multiplier(r.get('age'), grp)
+            return cvi_to_projected_eur(perf * am, position_group=grp,
+                                          competition_id=None)
+        df['engine_value_eur'] = df.apply(_eng_eur, axis=1)
         meta = {}
         if os.path.exists(meta_path):
             with open(meta_path) as f:
@@ -1014,6 +1037,7 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         'Engine Resp %': e['defr_pct'] * 100.0,
         'Engine Duel-att %': e['datt_pct'] * 100.0,
         'Engine Set Piece %': e['setpiece_pct'] * 100.0,
+        'Engine Value EUR': e['engine_value_eur'],
     })
     df = player_stats_df
     had_index = df.index.name == 'playerId'
@@ -9333,30 +9357,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                           if _tv_projected_eur is not None and _tv_true_eur is not None
                           else None)
 
-        # Engine-informed projected value: perf = percentile of the ACP
-        # PROJECTION (abs — already recruit-discounted for Camp, so NO
-        # Camp penalty here) within the projection universe, × the
-        # career-NPV age multiplier, through the same fee-calibrated
-        # CVI→EUR curve. No extra reliability ramp: the projection is
-        # already evidence-weighted internally.
+        # Engine projected value — computed centrally in
+        # load_player_engine() (engine_value_eur); just look it up.
         _eng_proj_eur = None
         try:
             _eng_tv_df, _ = load_player_engine()
             if not _eng_tv_df.empty:
                 _p_rows = _eng_tv_df[(_eng_tv_df['playerId'] == int(selected_player_id))
-                                       ].dropna(subset=['projection_abs'])
+                                       ].dropna(subset=['engine_value_eur'])
                 if not _p_rows.empty:
                     _p_row = (_p_rows[_p_rows['seasonId'] == _p_rows['seasonId'].max()]
                                 .sort_values('mins_played').iloc[-1])
-                    _pool = _eng_tv_df['projection_abs'].dropna()
-                    _perf_eng = float((_pool < float(_p_row['projection_abs'])).mean()
-                                       + 0.5 * (_pool == float(_p_row['projection_abs'])).mean()) * 100.0
-                    _age_mult_eng = _cvi_age_value_multiplier(
-                        _p_row.get('age'), _cvi_position_group(current_pos))
-                    _eng_proj_eur = cvi_to_projected_eur(
-                        _perf_eng * _age_mult_eng,
-                        position_group=_cvi_position_group(current_pos),
-                        competition_id=None)
+                    _eng_proj_eur = float(_p_row['engine_value_eur'])
         except Exception:
             logger.exception("engine projected value failed")
 
@@ -9389,65 +9401,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
 
-            # Headline value figures — Projected value + Current CVI only.
-            # True value + Δ lived here historically; both are now hidden
-            # from the bio (still visible in Transfer Value Detail below
-            # if a reported_fee exists).
-            _current_cvi = None
-            _current_cvi_n_seasons = None
-            if _tv_career_current is not None:
-                _v = _tv_career_current.get('career_cvi')
-                if _v is not None and not pd.isna(_v):
-                    _current_cvi = float(_v)
-                _current_cvi_n_seasons = _tv_career_current.get('n_seasons_used')
-            # Fallback to selected-season CVI if career version unavailable
-            if _current_cvi is None and not _tv_cvi_block.empty:
-                _v = _tv_cvi_block.iloc[0].get('_CVI')
-                if _v is not None and not pd.isna(_v):
-                    _current_cvi = float(_v)
-            _bio_cvi_help = (
-                "Career-aggregated Composite Value Index, anchored to the "
-                "player's most recent season. Combines that season + up to "
-                f"{CVI_CAREER_MAX_LOOKBACK} prior seasons. Per-season weight = "
-                f"recency × minutes_played, where recency = "
-                f"{CVI_CAREER_DECAY}^seasons-back and the current season "
-                f"gets a {CVI_CAREER_CURRENT_BONUS}× bonus. Small-sample "
-                "seasons don't drag the avg down. Camp seasons translated "
-                "to Liga 3 equivalent. Full breakdown in Transfer Value Detail."
-            )
+            # Headline value — ENGINE projected value only. The legacy
+            # CVI headline + Current CVI metrics were removed (Lucas,
+            # 2026-06-12); CVI internals remain auditable in the
+            # Transfer Value Detail section below.
             bio_row3 = st.columns(3)
-            bio_row3[2].metric(
-                "Projected value (engine)",
+            bio_row3[0].metric(
+                "Projected value",
                 ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
                 help="ACP engine projection → EUR. Perf = percentile of "
                      "the next-season projection (abs scale — Camp "
                      "recruit discount already applied, so no extra Camp "
                      "penalty) × career-NPV age multiplier, through the "
-                     "same fee-calibrated CVI→EUR curve. No reliability "
-                     "ramp: the projection is already evidence-weighted.",
-            )
-            bio_row3[0].metric(
-                "Projected value",
-                ("—"
-                 if _tv_projected_eur is None
-                 else f"€{_tv_projected_eur:,.0f}"),
-                help="CVI → EUR. Base: 1.10 × CVI^2.70 × position "
-                     "multiplier × Camp penalty, capped at €500k. "
-                     "Position multipliers (literature-grounded — "
-                     "CIES/Müller/Franceschi): ST 1.30, AM/WG 1.25, "
-                     "CM 1.00, CB 0.90, FB 0.85, GK 0.70. Camp players "
-                     "get an additional 0.85× on top of CVI's league "
-                     "factor. Calibrated against the 27 reported "
-                     "transfer fees.",
-            )
-            bio_row3[1].metric(
-                "Current CVI",
-                ("—" if _current_cvi is None
-                 else f"{_current_cvi:.1f}"),
-                (f"{_current_cvi_n_seasons}-season aggregate"
-                  if _current_cvi_n_seasons and _current_cvi_n_seasons > 1
-                  else None),
-                help=_bio_cvi_help,
+                     "fee-calibrated CVI→EUR curve (capped €500k). No "
+                     "reliability ramp: the projection is already "
+                     "evidence-weighted.",
             )
 
         st.divider()
@@ -12110,12 +12078,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Show Projected value",
             value=False,
             key="player_analysis_show_cvi",
-            help="CVI → EUR mapping. Base: 1.10 × CVI^2.70 × position "
-                 "multiplier (ST 1.30, AM/WG 1.25, CM 1.00, CB 0.90, "
-                 "FB 0.85, GK 0.70) × Camp penalty 0.85 if Campeonato, "
-                 "capped at €500k. CVI itself blends performance × age "
-                 "× reliability × league. Calibrated against the 27 "
-                 "reported transfer fees.",
+            help="ACP engine projection → EUR: percentile of the "
+                 "next-season projection (abs scale, recruit-discounted "
+                 "for Camp) × career-NPV age multiplier (ST 1.30, AM/WG "
+                 "1.25, CM 1.00, CB 0.90, FB 0.85), through the "
+                 "fee-calibrated CVI→EUR curve, capped at €500k.",
         )
         sort_by_cvi = False
         if show_cvi:
@@ -12304,8 +12271,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 _sort_col = score_col
 
             # CVI overrides the sort if "Sort by CVI" is on.
-            if show_cvi and sort_by_cvi and '_CVI' in tdf.columns:
-                _sort_col = '_CVI'
+            if show_cvi and sort_by_cvi and 'Engine Value EUR' in tdf.columns:
+                _sort_col = 'Engine Value EUR'
 
             sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
 
@@ -12368,39 +12335,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # and full modes. EUR computed from CVI × position mult ×
             # Camp penalty, capped at €500k. In full mode also surface
             # the Trajectory flag (perf - same-age-position median).
-            if show_cvi and '_CVI' in sorted_tdf.columns:
-                _pos_for_eur = pd.Series(
-                    sorted_tdf['primaryPosition'].apply(_cvi_position_group).values
-                    if 'primaryPosition' in sorted_tdf.columns
-                    else [None] * len(sorted_tdf),
-                    index=display.index,
-                )
-                # Per-row competition lookup so Camp players get the
-                # extra Camp penalty in projected EUR.
-                _comp_per_row = pd.Series(
-                    sorted_tdf['playerId'].apply(
-                        _comp_lookup if callable(_comp_lookup) else lambda _p: None
-                    ).values,
-                    index=display.index,
-                )
-                _cvi_series = pd.Series(sorted_tdf['_CVI'].values, index=display.index)
-                pv_vals = [
-                    cvi_to_projected_eur(c, pos, comp)
-                    for c, pos, comp in zip(_cvi_series, _pos_for_eur, _comp_per_row)
-                ]
+            # Projected Value column — ENGINE value (legacy CVI→EUR
+            # removed per Lucas 2026-06-12). Computed centrally in
+            # load_player_engine(); merged in as 'Engine Value EUR'.
+            if show_cvi and 'Engine Value EUR' in sorted_tdf.columns:
+                pv_vals = pd.Series(sorted_tdf['Engine Value EUR'].values,
+                                     index=display.index)
                 pv_display = [
-                    (f"€{int(v):,}" if v is not None else '')
+                    (f"€{int(v):,}" if v is not None and pd.notna(v) else '')
                     for v in pv_vals
                 ]
                 _r_idx = display.columns.get_loc('Rating')
                 display.insert(_r_idx + 1, 'Projected Value', pv_display)
-                if not compact and '_CVI_trajectory' in sorted_tdf.columns:
-                    traj_vals = pd.Series(sorted_tdf['_CVI_trajectory'].values,
-                                           index=display.index).round(0)
-                    display.insert(_r_idx + 2, 'Traj vs age',
-                                    traj_vals.apply(
-                                        lambda v: (f"{int(v):+d}" if pd.notna(v) else '')
-                                    ))
 
             # Add Pos. Minutes
             if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
