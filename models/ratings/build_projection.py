@@ -134,19 +134,24 @@ def _bin_of(age):
 # decline after. Scaled to our 17-pt-SD rating (cumulative 26->31
 # ~0.3 SD decline). The projection FITS a coefficient on this curve, so
 # the SHAPE is industry consensus while our data sets the magnitude.
-# Per-role peaks from the literature (Dendir 2016: forwards ~25,
-# midfielders 25-27, defenders ~27; defenders also age flattest):
+# Per-role curves from the literature. Peaks: forwards ~25 (Dendir
+# 2016), FULLBACKS ~26 — NOT with CBs: wide defenders run on repeated
+# high-intensity actions and age like wingers (ESPN/macro-football
+# position curves), while CENTRE-BACKS peak ~27.5 and decline only
+# gently before ~31 (guile ages well) -> later peak AND flatter slope.
 ROLE_PEAK = {'Striker': 25.0, 'Wide Attacker': 25.0,
               'Advanced Midfielder': 26.0, 'Deep Midfielder': 26.0,
-              'Wide Defender': 27.0, 'Central Defender': 27.0}
+              'Wide Defender': 26.0, 'Central Defender': 27.5}
+ROLE_DECLINE = {'Central Defender': 0.25}      # default 0.35/yr per year
 
 
 def std_age_delta(age, role=None):
-    """Expected rating change (pts/yr) — consensus shape, role peak."""
+    """Expected rating change (pts/yr) — consensus shape, role params."""
     peak = ROLE_PEAK.get(role, 26.0)
+    slope = ROLE_DECLINE.get(role, 0.35)
     if age < peak:
         return min(2.0, 2.0 * (peak - age) / 7.0)
-    return max(-2.5, -0.35 * (age - peak))
+    return max(-2.5, -slope * (age - peak))
 
 # observed bin deltas printed for REFERENCE only (not used):
 _dp = []
@@ -308,8 +313,8 @@ elif SHIP == 'replacement':
 elif SHIP == 'full':
     _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
-        cur['career_asof'].values, cur['career_asof'].values * _wc,
-        cur['age_delta'].values]) @ _cf)
+        cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cf
+        + cur['age_delta'].values)
 else:
     cur['projection'] = cur['career_asof']
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
