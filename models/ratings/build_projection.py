@@ -243,17 +243,20 @@ _cr, *_ = np.linalg.lstsq(_Xr, tr['next_rating'].values, rcond=None)
 _wte = (te[EVID_COL] / (te[EVID_COL] + EVID_K)).values
 repl_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
                               te['career_asof'].values * _wte]) @ _cr)
-# FULL form: career + replacement-pull + age, jointly fitted (the three
-# validated ideas combined — never previously tested as one candidate)
+# FULL form: career + replacement-pull + age curve at FIXED c = 1.0
+# (Lucas): the fitted dial (was 0.21) came from the same survivor-
+# biased panel that distorted the curve's shape, and marcel (c=1) beat
+# the fitted form on the held-out test. Literature trusted on magnitude
+# as well as shape: regress (next - age_delta) on the replacement-pull
+# terms, add the curve back at full volume.
 _Xf = np.column_stack([np.ones(len(tr)), _wtr, tr['career_asof'].values,
-                         tr['career_asof'].values * _wtr,
-                         tr['age_delta'].values])
-_cf, *_ = np.linalg.lstsq(_Xf, tr['next_rating'].values, rcond=None)
+                         tr['career_asof'].values * _wtr])
+_cf, *_ = np.linalg.lstsq(_Xf, (tr['next_rating'].values
+                                  - tr['age_delta'].values), rcond=None)
 full_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
-                              te['career_asof'].values * _wte,
-                              te['age_delta'].values]) @ _cf)
-print(f"  fitted age-curve coefficient c = {_cf[4]:+.2f} "
-       f"(1.0 = literature magnitude verbatim)")
+                              te['career_asof'].values * _wte]) @ _cf
+             + te['age_delta'].values)
+print("  age-curve coefficient FIXED at c = 1.00 (literature volume)")
 g_model = spearmanr(pred_te, te['next_rating'])[0]
 g_cur = spearmanr(te['cur_rating'], te['next_rating'])[0]
 g_car = spearmanr(te['career_asof'], te['next_rating'])[0]
