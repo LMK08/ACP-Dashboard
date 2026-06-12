@@ -334,25 +334,43 @@ df['datt_pct'] = role_pct('datt_raw')
 # IS adjusted out) plus the opponent-quality term. Audited 2026-06-12:
 # within-role WOE YoY unchanged vs the height/situational version
 # (aerial 0.33-0.71, ground 0.23-0.44) and still beats pooled DWAE.
-# Opponent strengths are career-level shrunk win shares (K0=40) —
-# same career-scope convention as the duel ladders themselves.
+# Opponent strengths are AS-OF shrunk win shares (K0=40): cumulative
+# through the contest's season-year only — no future information
+# (v6.9.2, Lucas; same leak-free convention as career_asof / RAPM v4).
+# For the current season as-of == career, so live boards are unchanged;
+# only historical rows get honest. Verified: within-role WOE YoY
+# identical, current-season agreement r = 1.000.
 _ct = pd.read_parquet(_DASH / 'models/duels/contests.parquet',
                         columns=['ladder', 'seasonId', 'playerA', 'playerB',
                                   'scoreA', 'att_kind', 'zx', 'phase'])
 _ct['league'] = np.where(_ct['seasonId'].isin(CAMP), 'CAMP', 'L3')
+_ct['cyr'] = _ct['seasonId'].map(SEASON_YR)
+
+
+def _asof_strength(df_pw, K0=40.0):
+    """df_pw: columns p, cyr, w (one row per contest-side). Returns a
+    Series indexed by (p, cyr): shrunk win share through that year."""
+    s = (df_pw.groupby(['p', 'cyr'])['w'].agg(['sum', 'size'])
+            .reset_index().sort_values('cyr'))
+    s[['W', 'N']] = s.groupby('p')[['sum', 'size']].cumsum()
+    s['s_asof'] = (s['W'] + K0 / 2) / (s['N'] + K0)
+    return s.set_index(['p', 'cyr'])['s_asof']
+
+
 _a = _ct[_ct['ladder'] == 'aerial']
 _aw = pd.concat([
-    _a[['playerA']].assign(w=_a['scoreA']).rename(columns={'playerA': 'p'}),
-    _a[['playerB']].assign(w=1 - _a['scoreA']).rename(columns={'playerB': 'p'})])
-_s_aer = ((_aw.groupby('p')['w'].sum() + 20.0)
-           / (_aw.groupby('p')['w'].size() + 40.0))
+    _a[['playerA', 'cyr']].assign(w=_a['scoreA']).rename(columns={'playerA': 'p'}),
+    _a[['playerB', 'cyr']].assign(w=1 - _a['scoreA']).rename(columns={'playerB': 'p'})])
+_s_aer = _asof_strength(_aw)
 _g = _ct[_ct['ladder'] == 'ground'].copy()
-_gat = _g.groupby('playerB')['scoreA'].agg(['size', 'sum'])
-_s_att = ((_gat['size'] - _gat['sum'] + 20.0) / (_gat['size'] + 40.0))
+_s_att = _asof_strength(
+    _g[['playerB', 'cyr']].assign(w=1 - _g['scoreA']).rename(columns={'playerB': 'p'}))
 _g['bucket'] = (_g['att_kind'].astype(str) + '|' + _g['zx'].astype(str)
                  + '|' + _g['phase'].astype(str) + '|' + _g['league'])
 _g['mu_b'] = _g.groupby('bucket')['scoreA'].transform('mean')
-_g['s_opp'] = _g['playerB'].map(_s_att).fillna(float(_s_att.mean()))
+_g['s_opp'] = pd.Series(
+    _g.set_index(['playerB', 'cyr']).index.map(_s_att), index=_g.index)
+_g['s_opp'] = _g['s_opp'].fillna(float(_g['s_opp'].mean()))
 _g['phat'] = (_g['mu_b'] - (_g['s_opp'] - float(_g['s_opp'].mean()))
                ).clip(0.05, 0.95)
 _g['woe'] = _g['scoreA'] - _g['phat']
@@ -360,8 +378,12 @@ _grd = (_g.groupby(['playerA', 'seasonId'])['woe']
           .agg(woe_ground='sum', n_ground='size').reset_index()
           .rename(columns={'playerA': 'playerId'}))
 _a2 = _a.copy()
-_a2['pA'] = (1 - _a2['playerB'].map(_s_aer).fillna(0.5)).clip(0.08, 0.92)
-_a2['pB'] = (1 - _a2['playerA'].map(_s_aer).fillna(0.5)).clip(0.08, 0.92)
+_a2['_sB'] = pd.Series(
+    _a2.set_index(['playerB', 'cyr']).index.map(_s_aer), index=_a2.index)
+_a2['_sA'] = pd.Series(
+    _a2.set_index(['playerA', 'cyr']).index.map(_s_aer), index=_a2.index)
+_a2['pA'] = (1 - _a2['_sB'].fillna(0.5)).clip(0.08, 0.92)
+_a2['pB'] = (1 - _a2['_sA'].fillna(0.5)).clip(0.08, 0.92)
 _sA = (_a2[['playerA', 'seasonId']]
          .assign(woe=_a2['scoreA'] - _a2['pA']))
 _sB = (_a2[['playerB', 'seasonId']].rename(columns={'playerB': 'playerA'})
@@ -478,7 +500,7 @@ out_cols = out_cols + ['aerial_grade_pct', 'ground_grade_pct',
                          'woe_aerial_p90', 'woe_ground_p90']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.9.1'
+out['rating_version'] = 'v6.9.2'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
