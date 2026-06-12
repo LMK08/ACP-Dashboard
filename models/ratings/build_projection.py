@@ -83,14 +83,19 @@ print(f"  age coverage: {o['age'].notna().mean()*100:.0f}% of player-seasons")
 # leak-free career-as-of (recency-weighted mean THROUGH each season —
 # unlike acp_rating_career, which sees the whole future)
 o = o.sort_values(['playerId', 'yr'])
-_car = []
+_car, _eff = [], []
 for _pid, _gg in o.groupby('playerId', sort=False):
     num = den = 0.0
     for _, r in _gg.iterrows():
         num = num * 0.5 + r['mins_played'] * r['acp_rating']
         den = den * 0.5 + r['mins_played']
         _car.append(num / den)
+        _eff.append(den)
 o['career_asof'] = _car
+# evidence behind career_asof = the SAME recency-weighted minutes it
+# aggregates (Lucas fix: w was current-season mins only, under-trusting
+# veterans with thin current seasons but deep careers)
+o['eff_mins'] = _eff
 
 # ---- survivorship-corrected AGE CURVE (delta method) -----------------------
 # Lucas's concern, backed by the literature (Dendir 2016: soccer peak
@@ -126,8 +131,11 @@ for _pid, _gg in o.dropna(subset=['age']).groupby('playerId'):
             _dp.append((a['age'], b['acp_rating'] - a['acp_rating']))
     last = rr[-1]
     if last['yr'] < 2025:
-        up_leaver = (last['age'] < 25) and (last['acp_rating'] >= last['_role_med'])
-        if not up_leaver:
+        # v2 exit logic (Lucas: why are pre-prime deltas negative?):
+        # young exits leave for MANY destinations (Liga 2, abroad,
+        # other D4) — unknowable direction, so CENSOR all <25 exits.
+        # 25+ exits are predominantly decline -> impute 25th pct.
+        if last['age'] >= 25:
             _ex.append(last['age'])
 _DP = pd.DataFrame(_dp, columns=['age', 'delta'])
 _DP['ab'] = _DP['age'].map(_bin_of)
@@ -148,7 +156,7 @@ o['age_delta'] = o['age'].map(lambda a: AGE_CURVE[_bin_of(a)] if a == a else np.
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
-          'career_asof', 'n_seasons', 'mins_played', 'age_delta',
+          'career_asof', 'n_seasons', 'mins_played', 'eff_mins', 'age_delta',
           'p_drib_wide', 'p_npxg_st']
 o['p_drib_wide'] = np.where(o['role'].isin(WIDE), o['p_drib'], 0.5)
 o['p_npxg_st'] = np.where(o['role'] == 'Striker', o['p_npxg'], 0.5)
@@ -190,11 +198,11 @@ marcel_te = te['career_asof'] + te['age_delta']     # literature 'Marcel' form
 # players survive to a rated next season vs 37% of starters).
 # Continuous form: next ~ c0 + c1*w + c2*career + c3*career*w,
 # w = mins/(mins+900). Level pull toward replacement when w is small.
-_wtr = (tr['mins_played'] / (tr['mins_played'] + 900.0)).values
+_wtr = (tr['eff_mins'] / (tr['eff_mins'] + 1500.0)).values
 _Xr = np.column_stack([np.ones(len(tr)), _wtr, tr['career_asof'].values,
                          tr['career_asof'].values * _wtr])
 _cr, *_ = np.linalg.lstsq(_Xr, tr['next_rating'].values, rcond=None)
-_wte = (te['mins_played'] / (te['mins_played'] + 900.0)).values
+_wte = (te['eff_mins'] / (te['eff_mins'] + 1500.0)).values
 repl_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
                               te['career_asof'].values * _wte]) @ _cr)
 # FULL form: career + replacement-pull + age, jointly fitted (the three
@@ -259,11 +267,11 @@ if SHIP == 'ridge':
 elif SHIP == 'marcel':
     cur['projection'] = cur['career_asof'] + cur['age_delta']
 elif SHIP == 'replacement':
-    _wc = (cur['mins_played'] / (cur['mins_played'] + 900.0)).values
+    _wc = (cur['eff_mins'] / (cur['eff_mins'] + 1500.0)).values
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
         cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cr)
 elif SHIP == 'full':
-    _wc = (cur['mins_played'] / (cur['mins_played'] + 900.0)).values
+    _wc = (cur['eff_mins'] / (cur['eff_mins'] + 1500.0)).values
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
         cur['career_asof'].values, cur['career_asof'].values * _wc,
         cur['age_delta'].values]) @ _cf)
@@ -280,7 +288,7 @@ band = te2.groupby('role')['resid'].std().rename('band_sd')
 print(band.round(1).to_string())
 cur['band_sd'] = cur['role'].map(band).fillna(float(te2['resid'].std()))
 cur['proj_delta'] = cur['projection'] - cur['acp_rating']
-cur['w_evidence'] = cur['mins_played'] / (cur['mins_played'] + 900.0)
+cur['w_evidence'] = cur['eff_mins'] / (cur['eff_mins'] + 1500.0)
 out = cur[['playerId', 'seasonId', 'name', 'role', 'side', 'league', 'age',
              'mins_played', 'acp_rating', 'career_asof', 'age_delta',
              'w_evidence', 'projection', 'band_sd', 'proj_delta']].copy()
