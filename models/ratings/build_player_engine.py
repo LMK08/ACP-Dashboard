@@ -73,6 +73,29 @@ for trait in ['aerial', 'takeon', 'stopper', 'shield', 'press']:
     eng[f'duel_{trait}_rd'] = eng['playerId'].map(t['rd'])
     eng[f'duel_{trait}_n'] = eng['playerId'].map(t['n'])
 
+# TRUE minutes from the lineup-based dashboard source: covers the 57
+# permanently-eventless Camp matches the engine's event-derived minutes
+# miss (~116k player-minutes in Camp 25/26). Display-only — per-90
+# rates keep the event-based denominator their numerators come from.
+import pickle as _pickle
+_pm_path = _DASH / 'complete_player_minutes.pkl'
+if _pm_path.exists():
+    with open(_pm_path, 'rb') as _f:
+        _pm = _pickle.load(_f)
+    _rows = []
+    for _sid, _df in _pm.items():
+        if _df is None or len(_df) == 0:
+            continue
+        _t = _df.groupby('playerId')['totalMinutes'].sum().reset_index()
+        _t['seasonId'] = int(_sid)
+        _rows.append(_t)
+    _lm = pd.concat(_rows, ignore_index=True).rename(
+        columns={'totalMinutes': 'mins_lineup'})
+    eng = eng.merge(_lm, on=['playerId', 'seasonId'], how='left')
+    eng['mins_lineup'] = eng['mins_lineup'].fillna(eng['mins_played'])
+else:
+    eng['mins_lineup'] = eng['mins_played']
+
 print("[3/4] data-through stamp…", flush=True)
 # latest match date actually inside the engine = matches with lineup
 # intervals (the rating's minute source)

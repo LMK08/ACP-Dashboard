@@ -9634,8 +9634,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                  + (f" | {_team_lbl}" if _team_lbl else ''),
                                  fontsize=16, color='black', ha='left',
                                  weight='bold')
+                    _disp_mins = (_e['mins_lineup']
+                                   if pd.notna(_e.get('mins_lineup'))
+                                   else _e['mins_played'])
                     plt.figtext(0.04, 0.905,
-                                 f"{_e['role']} | {int(_e['mins_played'])} minutes"
+                                 f"{_e['role']} | {int(_disp_mins)} minutes"
                                  f" | ACP Index {_e['acp_rating']:.0f}"
                                  + (f" → projection {_e['projection']:.0f}"
                                     if pd.notna(_e.get('projection')) else '')
