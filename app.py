@@ -974,6 +974,58 @@ def load_player_engine():
         return pd.DataFrame(), {}
 
 
+ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
+                           'ACP Projection (abs)', 'Projection Band',
+                           'Evidence Weight', 'Engine Off %', 'Engine Qual %',
+                           'Engine RAPM %', 'Engine Resp %',
+                           'Engine Duel-att %', 'Engine Set Piece %']
+
+
+def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
+    """Merge ACP engine columns (rating / projection / axis percentiles)
+    into the stats DF on playerId. Scope-aware: keeps engine rows from
+    the active seasons; a winter mover keeps his latest-season row.
+    Engine metrics are levels/rates — never season-totaled."""
+    if player_stats_df is None or len(player_stats_df) == 0:
+        return player_stats_df
+    eng, _meta = load_player_engine()
+    if eng is None or eng.empty:
+        return player_stats_df
+    e = eng.copy()
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                   else [season_ids])]
+        e = e[e['seasonId'].isin(sids)]
+    if e.empty:
+        return player_stats_df
+    e = (e.sort_values(['playerId', 'seasonId', 'mins_played'])
+           .drop_duplicates('playerId', keep='last'))
+    out = pd.DataFrame({
+        'playerId': e['playerId'],
+        'ACP Rating': e['acp_rating'],
+        'ACP Rating (abs)': e['acp_rating_abs'],
+        'ACP Projection': e['projection'],
+        'ACP Projection (abs)': e['projection_abs'],
+        'Projection Band': e['band_sd'],
+        'Evidence Weight': e['w_evidence'],
+        'Engine Off %': e['off_pct'] * 100.0,
+        'Engine Qual %': e['qual_pct'] * 100.0,
+        'Engine RAPM %': e['rapm_pct'] * 100.0,
+        'Engine Resp %': e['defr_pct'] * 100.0,
+        'Engine Duel-att %': e['datt_pct'] * 100.0,
+        'Engine Set Piece %': e['setpiece_pct'] * 100.0,
+    })
+    df = player_stats_df
+    had_index = df.index.name == 'playerId'
+    if had_index:
+        df = df.reset_index()
+    df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+    df = df.merge(out, on='playerId', how='left')
+    if had_index:
+        df = df.set_index('playerId')
+    return df
+
+
 @st.cache_data(ttl=3600)
 def load_opta_ratings():
     """Load opta_ratings.parquet. Returns empty DF if missing."""
@@ -8953,6 +9005,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # Merge GPA Value columns (scoped to active season × competition)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 # --- NEW: Calculate percentiles ---
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
@@ -9280,6 +9333,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                           if _tv_projected_eur is not None and _tv_true_eur is not None
                           else None)
 
+        # Engine-informed projected value: perf = percentile of the ACP
+        # PROJECTION (abs — already recruit-discounted for Camp, so NO
+        # Camp penalty here) within the projection universe, × the
+        # career-NPV age multiplier, through the same fee-calibrated
+        # CVI→EUR curve. No extra reliability ramp: the projection is
+        # already evidence-weighted internally.
+        _eng_proj_eur = None
+        try:
+            _eng_tv_df, _ = load_player_engine()
+            if not _eng_tv_df.empty:
+                _p_rows = _eng_tv_df[(_eng_tv_df['playerId'] == int(selected_player_id))
+                                       ].dropna(subset=['projection_abs'])
+                if not _p_rows.empty:
+                    _p_row = (_p_rows[_p_rows['seasonId'] == _p_rows['seasonId'].max()]
+                                .sort_values('mins_played').iloc[-1])
+                    _pool = _eng_tv_df['projection_abs'].dropna()
+                    _perf_eng = float((_pool < float(_p_row['projection_abs'])).mean()
+                                       + 0.5 * (_pool == float(_p_row['projection_abs'])).mean()) * 100.0
+                    _age_mult_eng = _cvi_age_value_multiplier(
+                        _p_row.get('age'), _cvi_position_group(current_pos))
+                    _eng_proj_eur = cvi_to_projected_eur(
+                        _perf_eng * _age_mult_eng,
+                        position_group=_cvi_position_group(current_pos),
+                        competition_id=None)
+        except Exception:
+            logger.exception("engine projected value failed")
+
         col1_bio, col2_bio = st.columns([1, 3])
         with col1_bio:
             image_url = player_bio.get('imageDataURL', None)
@@ -9335,7 +9415,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "seasons don't drag the avg down. Camp seasons translated "
                 "to Liga 3 equivalent. Full breakdown in Transfer Value Detail."
             )
-            bio_row3 = st.columns(2)
+            bio_row3 = st.columns(3)
+            bio_row3[2].metric(
+                "Projected value (engine)",
+                ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
+                help="ACP engine projection → EUR. Perf = percentile of "
+                     "the next-season projection (abs scale — Camp "
+                     "recruit discount already applied, so no extra Camp "
+                     "penalty) × career-NPV age multiplier, through the "
+                     "same fee-calibrated CVI→EUR curve. No reliability "
+                     "ramp: the projection is already evidence-weighted.",
+            )
             bio_row3[0].metric(
                 "Projected value",
                 ("—"
@@ -10276,6 +10366,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # the same way 'goalsPrevented' / xG family already do.
             if 'goalsConceded' in total_stats.index and 'goalsConceded' not in rate_cols:
                 rate_cols.append('goalsConceded')
+            # engine metrics are levels, never season-totaled
+            for _ec in ENGINE_DISPLAY_METRICS:
+                if _ec in total_stats.index and _ec not in rate_cols:
+                    rate_cols.append(_ec)
             
             for col in total_stats.index:
                 if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
@@ -10302,6 +10396,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Defensive": DEFENSIVE_METRICS,
             "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
             "Dribbling": DRIBBLING_METRICS,
+            "ACP Engine": ENGINE_DISPLAY_METRICS,
             "Goalkeeping": GOALKEEPING_METRICS
         }
 
@@ -11306,6 +11401,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
@@ -11443,6 +11539,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
@@ -12223,7 +12320,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     key=lambda x: x[1], reverse=True
                 )
                 metric_cols = [m for m, _ in weighted_metrics if m in sorted_tdf.columns]
-                cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', score_col] + metric_cols
+                _eng_cols = [c for c in ('ACP Rating', 'ACP Projection (abs)')
+                             if c in sorted_tdf.columns]
+                cols = (['playerName', 'teamName', 'primaryPosition', 'totalMinutes',
+                          score_col] + _eng_cols + metric_cols)
 
             cols = [c for c in cols if c in sorted_tdf.columns]
             display = sorted_tdf[cols].copy()
@@ -13398,6 +13498,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
                 player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
+                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
                 player_stats_with_scores_df = calculate_player_percentiles_and_scores(
                     player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
                 )
