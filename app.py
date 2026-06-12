@@ -9446,7 +9446,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # not rated in the selected scope — fall back to last rated season
                 _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
                 _eng_stale = True
-            st.subheader("ACP Engine — Rating & Projection")
+            st.subheader("ACP Index")
             if _escope.empty:
                 if str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK'):
                     st.info("Goalkeepers are rated by the separate GK system "
@@ -9529,69 +9529,92 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             st.caption(f"{_lbl} · {float(_v)*100:.0f}")
                         else:
                             st.caption(f"{_lbl} · —")
-                # --- Engine radar: every rating + projection factor,
-                #     Off split into its five categories --------------
-                _rad_items = [
-                    ('Creating', _e.get('Creating_pct')),
-                    ('Linking', _e.get('Linking_pct')),
-                    ('Receiving', _e.get('Receiving_pct')),
-                    ('Dribbling', _e.get('Dribbling_pct')),
-                    ('Shooting', _e.get('Shooting_pct')),
-                    ('Qual', _e.get('qual_pct')),
-                    ('RAPM', _e.get('rapm_pct')),
-                    ('Resp', _e.get('defr_pct')),
-                    ('Duel-att', _e.get('datt_pct')),
-                    ('Set piece', _e.get('setpiece_pct')),
+                # --- ACP Index radar: traditional-radar styling -------
+                # (cream parchment, blue fill, category-colored labels,
+                # percentile rings). Off split into its five categories;
+                # grouped + color-coded by area like the classic radar.
+                _rad_groups = [
+                    ('Shooting', _e.get('Shooting_pct'), 'output'),
+                    ('Receiving', _e.get('Receiving_pct'), 'output'),
+                    ('Creating', _e.get('Creating_pct'), 'passing'),
+                    ('Linking', _e.get('Linking_pct'), 'passing'),
+                    ('Dribbling', _e.get('Dribbling_pct'), 'dribbling'),
+                    ('Duel-att', _e.get('datt_pct'), 'dribbling'),
+                    ('Qual', _e.get('qual_pct'), 'defensive'),
+                    ('Resp', _e.get('defr_pct'), 'defensive'),
+                    ('RAPM', _e.get('rapm_pct'), 'team'),
+                    ('Set piece', _e.get('setpiece_pct'), 'setpiece'),
                 ]
-                _rad = [(l, float(v)) for l, v in _rad_items
+                _RAD_COLORS = {'output': 'green', 'passing': 'orange',
+                                'defensive': 'red', 'dribbling': 'purple',
+                                'team': '#0077b6', 'setpiece': 'grey'}
+                _RAD_LEGEND = [('Output', 'green'),
+                                ('Passing / Creation', 'orange'),
+                                ('Ball Carrying', 'purple'),
+                                ('Defending', 'red'),
+                                ('Team Impact (RAPM)', '#0077b6'),
+                                ('Set Piece (not in rating)', 'grey')]
+                _rad = [(l, float(v) * 100.0, g) for l, v, g in _rad_groups
                         if v is not None and pd.notna(v)]
-                if pd.notna(_e.get('career_asof')):
-                    _carpool = _eng_df[_eng_df['seasonId'] == _e['seasonId']
-                                        ]['career_asof'].dropna()
-                    if len(_carpool) > 10:
-                        _rad.append(('Career', float(
-                            (_carpool < float(_e['career_asof'])).mean())))
-                if pd.notna(_e.get('w_evidence')):
-                    _rad.append(('Evidence', float(_e['w_evidence'])))
-                if pd.notna(_e.get('age_delta')):
-                    _rad.append(('Age outlook', float(
-                        np.clip((float(_e['age_delta']) + 2.5) / 4.5, 0.0, 1.0))))
                 if len(_rad) >= 5:
-                    with st.expander("Engine radar — every rating & projection factor",
-                                       expanded=True):
-                        _rl = [l for l, _ in _rad]
-                        _rv = [v for _, v in _rad]
-                        _ang = np.linspace(0, 2 * np.pi, len(_rv),
-                                            endpoint=False).tolist()
-                        _figr, _axr = plt.subplots(
-                            figsize=(5.5, 5.5), subplot_kw=dict(polar=True))
-                        _axr.plot(_ang + _ang[:1], _rv + _rv[:1],
-                                   color='#0077b6', linewidth=2)
-                        _axr.fill(_ang + _ang[:1], _rv + _rv[:1],
-                                   color='#0077b6', alpha=0.25)
-                        _axr.set_xticks(_ang)
-                        _axr.set_xticklabels(_rl, fontsize=8)
-                        _axr.set_yticks([0.25, 0.5, 0.75])
-                        _axr.set_yticklabels(['25', '50', '75'], fontsize=7)
-                        _axr.set_ylim(0, 1)
-                        _axr.set_title(
-                            f"{_e['name']} — engine factors", fontsize=10)
-                        _rc1, _rc2 = st.columns([2, 3])
-                        with _rc1:
-                            st.pyplot(_figr, use_container_width=True)
-                        plt.close(_figr)
-                        with _rc2:
-                            st.caption(
-                                "All axes are percentiles within the player's "
-                                "league × season × role cohort (role-share "
-                                "blended). The five offence categories replace "
-                                "the single Off axis. Career = percentile of "
-                                "the recency-weighted career rating among "
-                                "current players; Evidence = the projection's "
-                                "trust weight w; Age outlook = the role "
-                                "age-curve delta rescaled (50 ≈ flat year "
-                                "ahead). Set piece is shown for context — "
-                                "it is NOT in the rating.")
+                    from math import pi as _pi
+                    _n = len(_rad)
+                    _ang = [k / float(_n) * 2 * _pi for k in range(_n)]
+                    _vals = [v for _, v, _ in _rad]
+                    _figr = plt.figure(figsize=(10, 7.4))
+                    _figr.patch.set_facecolor((0.95, 0.92, 0.87))
+                    _axr = _figr.add_subplot(111, polar=True)
+                    _axr.set_facecolor((0.99, 0.98, 0.95))
+                    _figr.subplots_adjust(top=0.80, bottom=0.11,
+                                            left=0.02, right=0.70)
+                    _axr.set_theta_offset(_pi / 2)    # first axis at 12 o'clock
+                    _axr.set_theta_direction(-1)       # clockwise
+                    _axr.set_xticks(_ang)
+                    _axr.set_xticklabels([])
+                    _axr.plot(_ang + _ang[:1], _vals + _vals[:1],
+                               linewidth=2, linestyle='solid',
+                               color='#0077b6', zorder=3)
+                    _axr.fill(_ang + _ang[:1], _vals + _vals[:1],
+                               '#0077b6', alpha=0.25, zorder=2)
+                    _axr.set_rlabel_position(-180.0 / _n)   # rings in a slice gap
+                    _axr.set_yticks([25, 50, 75, 100])
+                    _axr.set_yticklabels(["25%", "50%", "75%", "100%"],
+                                           color="grey", size=7)
+                    _axr.set_ylim(0, 100)
+                    for _k, (_lbl, _v, _g) in enumerate(_rad):
+                        _r_chip = _v + 9 if _v <= 86 else _v - 11
+                        _axr.text(_ang[_k], _r_chip, f"{_v:.0f}", size=8,
+                                   ha='center', va='center', color='#0077b6',
+                                   fontweight='bold', zorder=4)
+                        _axr.text(_ang[_k], 116, _lbl, size=9, ha='center',
+                                   va='center', color=_RAD_COLORS[_g],
+                                   fontweight='bold')
+                    _team_lbl = (str(_e.get('team'))
+                                  if pd.notna(_e.get('team')) else '')
+                    plt.figtext(0.05, 0.955,
+                                 f"{_e['name']}"
+                                 + (f" | {_team_lbl}" if _team_lbl else ''),
+                                 fontsize=15, color='black', ha='left',
+                                 weight='bold')
+                    plt.figtext(0.05, 0.91,
+                                 f"{_e['role']} | {int(_e['mins_played'])} minutes"
+                                 f" | ACP Index {_e['acp_rating']:.0f}"
+                                 + (f" → projection {_e['projection']:.0f}"
+                                    if pd.notna(_e.get('projection')) else ''),
+                                 fontsize=11, color='black', ha='left')
+                    _patches = [plt.Line2D([0], [0], color=c, lw=4)
+                                for _, c in _RAD_LEGEND]
+                    _figr.legend(_patches, [l for l, _ in _RAD_LEGEND],
+                                  loc='upper right', bbox_to_anchor=(0.99, 0.99),
+                                  frameon=False, fontsize=8)
+                    plt.figtext(0.74, 0.10,
+                                 "Cohort percentiles\n(league × season × role)\n"
+                                 f"Engine {_eng_meta.get('rating_version', '')}\n"
+                                 "Data via Wyscout\n@lucaskimball\n"
+                                 f"Date: {datetime.date.today()}",
+                                 ha='left', fontsize=8, color='black')
+                    st.pyplot(_figr, use_container_width=True)
+                    plt.close(_figr)
                 st.caption(
                     f"Engine {_eng_meta.get('rating_version', '?')} · "
                     f"projection {_eng_meta.get('projection_version', '?')} · "
@@ -10431,7 +10454,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             "Defensive": DEFENSIVE_METRICS,
             "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
             "Dribbling": DRIBBLING_METRICS,
-            "ACP Engine": ENGINE_DISPLAY_METRICS,
+            "ACP Index": ENGINE_DISPLAY_METRICS,
             "Goalkeeping": GOALKEEPING_METRICS
         }
 
@@ -12539,7 +12562,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "Dribbling": DRIBBLING_METRICS,
                 "Goalkeeping": GOALKEEPING_METRICS,
                 "Set Pieces": SET_PIECE_METRICS,
-                "ACP Engine": ENGINE_DISPLAY_METRICS,
+                "ACP Index": ENGINE_DISPLAY_METRICS,
                 # bespoke template ratings stay sortable here (Lucas) —
                 # they left the Overview headline but remain a metric
                 "Template Ratings": sorted(
