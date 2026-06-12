@@ -152,8 +152,16 @@ for t in TRAITS:
 df['role'] = df['primary_role_name'].fillna(df['position_group'])
 df['league'] = np.where(df['seasonId'].isin(CAMP), 'CAMP', 'L3')
 df['yr'] = df['seasonId'].map(SEASON_YR)
-df = df[(df['mins_played'] >= MIN_MINS) & (df['position_group'] != 'GK')
-          & df['role'].notna()].copy()
+# v6.4 (Lucas): eligibility pools minutes ACROSS competitions within a
+# season — a winter mover (e.g. 558' Camp + 391' L3) has a full season
+# of evidence and deserves a row in each league he played. Percentile
+# cohorts are still built from >=MIN_MINS rows only; sub-floor rows are
+# scored against those distributions, then minutes-shrunk as usual.
+MIN_MINS_ROW = 180
+_season_mins = df.groupby(['playerId', 'yr'])['mins_played'].transform('sum')
+df = df[(_season_mins >= MIN_MINS) & (df['mins_played'] >= MIN_MINS_ROW)
+          & (df['position_group'] != 'GK') & df['role'].notna()].copy()
+df['_cohort'] = df['mins_played'] >= MIN_MINS
 # v6.3 ROLE BLENDING (Lucas): median primary-role share is 0.70 — 63% of
 # player-seasons spend >20% of matches in another role. Percentiles are
 # share-weighted blends across the role cohorts actually occupied; axis
@@ -175,32 +183,42 @@ for nm in ROLE_UNIVERSE:
     df['sh_' + nm] = df['sh_' + nm] / _shsum
 print(f"  role blending: {int((~_fallback).sum()):,} share-based, "
        f"{int(_fallback.sum()):,} one-hot fallback")
-print(f"  {len(df):,} eligible player-seasons (>= {MIN_MINS} min, outfield)")
+print(f"  {len(df):,} eligible player-seasons (outfield; "
+       f"{int((~df['_cohort']).sum())} sub-{MIN_MINS}' rows admitted by season pooling)")
 
 
 def role_pct(col):
-    """v6.3 share-weighted blended percentile: per (league, season, role)
-    cohort a weighted ECDF (weights = role shares); final pct = share-
-    weighted mean of cohort pcts. NaN inputs -> neutral 0.5."""
+    """v6.4 share-weighted blended percentile: per (league, season, role)
+    a weighted ECDF (weights = role shares) built from COHORT rows
+    (>= MIN_MINS) only; every valid row — including sub-floor rows
+    admitted by season pooling — is scored against it by midpoint
+    interpolation. Ties share a midpoint pct. NaN inputs -> 0.5."""
     vals = df[col].to_numpy(float)
     out = np.zeros(len(df))
     wtot = np.zeros(len(df))
+    coh = df['_cohort'].to_numpy(bool)
     for _, gidx in df.groupby(['league', 'seasonId']).groups.items():
         pos = df.index.get_indexer(np.asarray(list(gidx)))
         v = vals[pos]
         valid = ~np.isnan(v)
         for rn in ROLE_UNIVERSE:
             w = df['sh_' + rn].to_numpy(float)[pos]
-            m = valid & (w > 1e-9)
-            if m.sum() < 3:
+            ms = valid & (w > 1e-9)            # scored: every valid row
+            mc = ms & coh[pos]                  # cohort: full rows only
+            if mc.sum() < 3:
                 continue
-            mi = np.flatnonzero(m)
-            order = np.argsort(v[mi], kind='stable')
-            wv = w[mi][order]
-            cw = np.cumsum(wv)
-            pct = (cw - wv / 2.0) / cw[-1]
-            out[pos[mi[order]]] += wv * pct
-            wtot[pos[mi[order]]] += wv
+            ci = np.flatnonzero(mc)
+            order = np.argsort(v[ci], kind='stable')
+            cv = v[ci][order]
+            cum = np.cumsum(w[ci][order])
+            si = np.flatnonzero(ms)
+            lo = np.searchsorted(cv, v[si], side='left')
+            hi = np.searchsorted(cv, v[si], side='right')
+            wlo = np.where(lo > 0, cum[lo - 1], 0.0)
+            whi = np.where(hi > 0, cum[hi - 1], 0.0)
+            pct = (wlo + (whi - wlo) / 2.0) / cum[-1]
+            out[pos[si]] += w[si] * pct
+            wtot[pos[si]] += w[si]
     res = np.where(wtot > 0, out / np.where(wtot > 0, wtot, 1), 0.5)
     res = np.where(np.isnan(vals), 0.5, res)
     return pd.Series(res, index=df.index)
@@ -223,7 +241,7 @@ _lam_log = []
 for role, sub in df.groupby('role'):
     for c in GPA_CATS:
         P = []
-        for pid, gg in sub.sort_values('yr').groupby('playerId'):
+        for pid, gg in sub[sub['_cohort']].sort_values('yr').groupby('playerId'):
             rr = gg[[c + '_pct', 'yr']].to_dict('records')
             for a, b in zip(rr, rr[1:]):
                 if b['yr'] - a['yr'] == 1:
@@ -231,8 +249,9 @@ for role, sub in df.groupby('role'):
         P = pd.DataFrame(P)
         lam = _pr(P[0], P[1])[0] if len(P) >= 30 else 0.15
         lam = float(np.clip(lam, 0.05, 1.0))
-        dev = (sub[c + '90']
-                 - sub.groupby(['league', 'seasonId'])[c + '90'].transform('mean'))
+        _cm = (sub[c + '90'].where(sub['_cohort'])
+                 .groupby([sub['league'], sub['seasonId']]).transform('mean'))
+        dev = (sub[c + '90'] - _cm).fillna(0.0)
         _off_adj.loc[sub.index] += lam * dev
         _lam_log.append({'role': role, 'cat': c.replace(' Value', ''),
                            'lam': round(lam, 2),
@@ -323,8 +342,11 @@ raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 Z_REPL = -0.4
 # blended percentiles are role-fair by construction -> pool z within
 # league x season
-zraw = (raw - raw.groupby([df['league'], df['seasonId']]).transform('mean')) \
-         / raw.groupby([df['league'], df['seasonId']]).transform('std')
+# moments from cohort (>=MIN_MINS) rows only — sub-floor rows are scored
+# on the same scale without shifting it
+_rc = raw.where(df['_cohort'])
+zraw = (raw - _rc.groupby([df['league'], df['seasonId']]).transform('mean')) \
+         / _rc.groupby([df['league'], df['seasonId']]).transform('std')
 _ab = 2500.0 / (2500.0 + SHRINK_K)
 shrink = np.minimum((df['mins_played'] / (df['mins_played'] + SHRINK_K)) / _ab, 1.0)
 zsh = Z_REPL + (zraw - Z_REPL) * shrink
@@ -352,7 +374,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'n_seasons']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.3'
+out['rating_version'] = 'v6.4'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 

@@ -61,7 +61,8 @@ dl = []
 for pid, g in o.dropna(subset=['age']).sort_values('yr').groupby('playerId'):
     rr = g.to_dict('records')
     for a, b in zip(rr, rr[1:]):
-        if b['yr'] - a['yr'] == 1 and a['league'] == b['league']:
+        if (b['yr'] - a['yr'] == 1 and a['league'] == b['league']
+                and a['mins_played'] >= 500 and b['mins_played'] >= 500):
             dl.append((bin_of(a['age']), b['acp_rating'] - a['acp_rating']))
 DL = pd.DataFrame(dl, columns=['ab', 'd'])
 AGE_D = {b: (DL[DL['ab'] == b]['d'].sum() + PRIOR[b] * 60)
@@ -74,13 +75,17 @@ print("=== A1: MOVERS (vs STAYER shrinkage model — RTM-corrected) ===")
 # mover against what an identical STAYER would do: fit on within-league
 # pairs  next_dev = r * cur_dev + c[age_bin], dev = rating minus the
 # league-season mean of rated players; mover residual = actual - that.
-o['_lgmean'] = o.groupby(['league', 'seasonId'])['acp_rating'].transform('mean')
+# mean over the historic >=500' cohort (v6.4 admits sub-floor rows)
+o['_lgmean'] = (o['acp_rating'].where(o['mins_played'] >= 500)
+                  .groupby([o['league'], o['seasonId']]).transform('mean'))
 o['_dev'] = o['acp_rating'] - o['_lgmean']
 stay, mv = [], []
 for pid, g in o.dropna(subset=['age']).sort_values('yr').groupby('playerId'):
     rr = g.to_dict('records')
     for a, b in zip(rr, rr[1:]):
-        if b['yr'] - a['yr'] != 1:
+        # estimators pinned to the historic >=500' regime
+        if (b['yr'] - a['yr'] != 1 or a['mins_played'] < 500
+                or b['mins_played'] < 500):
             continue
         row = {'cur_dev': a['_dev'], 'nxt_dev': b['_dev'],
                  'ab': bin_of(a['age']),

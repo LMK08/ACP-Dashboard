@@ -86,16 +86,26 @@ print(f"  age coverage: {o['age'].notna().mean()*100:.0f}% of player-seasons")
 # leak-free career-as-of (recency-weighted mean THROUGH each season —
 # unlike acp_rating_career, which sees the whole future)
 o = o.sort_values(['playerId', 'yr'])
+# v2 career loop: decay per SEASON STEP, not per row — same-year rows
+# (winter movers with a row in each league) pool at full weight, and a
+# missed season decays by the true year gap. Every row of a season
+# carries the season's full pooled evidence.
 _car, _e5, _e8, _e10 = [], [], [], []
 for _pid, _gg in o.groupby('playerId', sort=False):
     num = den = d8 = d10 = 0.0
-    for _, r in _gg.iterrows():
-        num = num * 0.5 + r['mins_played'] * r['acp_rating']
-        den = den * 0.5 + r['mins_played']
-        d8 = d8 * 0.8 + r['mins_played']
-        d10 = d10 + r['mins_played']
-        _car.append(num / den)
-        _e5.append(den); _e8.append(d8); _e10.append(d10)
+    prev_yr = None
+    for _yr, _gy in _gg.groupby('yr', sort=True):
+        gap = 1 if prev_yr is None else int(_yr - prev_yr)
+        num *= 0.5 ** gap; den *= 0.5 ** gap; d8 *= 0.8 ** gap
+        _m = float(_gy['mins_played'].sum())
+        num += float((_gy['mins_played'] * _gy['acp_rating']).sum())
+        den += _m
+        d8 += _m
+        d10 += _m
+        _car.extend([num / den] * len(_gy))
+        _e5.extend([den] * len(_gy)); _e8.extend([d8] * len(_gy))
+        _e10.extend([d10] * len(_gy))
+        prev_yr = _yr
 o['career_asof'] = _car
 # evidence-of-identity decays SLOWER than form (Lucas): three decay
 # variants; the projection picks one by train CV below
@@ -194,7 +204,10 @@ rows = []
 for pid, gg in o.sort_values('yr').groupby('playerId'):
     rr = gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
-        if b['yr'] - a['yr'] == 1 and a['role'] == b['role']:
+        # panel pinned to the historic >=500' regime — sub-floor rows
+        # (v6.4 season pooling) are projected but train nothing
+        if (b['yr'] - a['yr'] == 1 and a['role'] == b['role']
+                and a['mins_played'] >= 500 and b['mins_played'] >= 500):
             rows.append({**{f: a[f] for f in FEATS},
                            'cur_rating': a['acp_rating'], 'role': a['role'],
                            'start_yr': a['yr'], 'next_rating': b['acp_rating']})
@@ -315,6 +328,22 @@ print("[5/5] project all current-season players…", flush=True)
 final = Ridge(alpha=ALPHA).fit(
     (P[FEATS] - mu) / sd, P['next_rating'])    # refit on ALL pairs for production
 cur = o[(o['seasonId'].isin({191782, 191779})) & o[FEATS].notna().all(axis=1)].copy()
+cur['seasons_ago'] = 0
+# Lapsed players (Lucas): last rated 24/25 with no 25/26 row still get
+# a projection off that season — age curve applied over BOTH gap steps,
+# fast-decay evidence decayed one extra idle year, band widened sqrt(2).
+_lap = o[(o['yr'] == 2024) & o[FEATS].notna().all(axis=1)
+           & ~o['playerId'].isin(set(cur['playerId']))].copy()
+_lap = _lap.sort_values('mins_played').drop_duplicates('playerId', keep='last')
+_lap['age_delta'] = (_lap.apply(_blended_age_delta, axis=1)
+                       + _lap.assign(age=_lap['age'] + 1.0)
+                             .apply(_blended_age_delta, axis=1))
+_lap['eff_mins'] = _lap['eff_mins'] * 0.5
+_lap['eff8'] = _lap['eff8'] * 0.8
+_lap['age'] = _lap['age'] + 1.0      # display on the 25/26 age convention
+_lap['seasons_ago'] = 1
+cur = pd.concat([cur, _lap], ignore_index=True)
+print(f"  +{len(_lap)} lapsed players projected off 24/25 (seasons_ago=1)")
 if SHIP == 'ridge':
     cur['projection'] = final.predict((cur[FEATS] - mu) / sd)
 elif SHIP == 'marcel':
@@ -340,12 +369,14 @@ te2['resid'] = te2['next_rating'] - te2['__ship_pred']
 band = te2.groupby('role')['resid'].std().rename('band_sd')
 print(band.round(1).to_string())
 cur['band_sd'] = cur['role'].map(band).fillna(float(te2['resid'].std()))
+cur['band_sd'] = cur['band_sd'] * np.sqrt(1.0 + cur['seasons_ago'])
 cur['proj_delta'] = cur['projection'] - cur['acp_rating']
 cur['w_evidence'] = cur[EVID_COL] / (cur[EVID_COL] + EVID_K)
 out = cur[['playerId', 'seasonId', 'name', 'role', 'side', 'league', 'age',
              'mins_played', 'acp_rating', 'career_asof', 'age_delta',
-             'w_evidence', 'projection', 'band_sd', 'proj_delta']].copy()
-out['projection_version'] = 'v1-' + SHIP
+             'w_evidence', 'projection', 'band_sd', 'proj_delta',
+             'seasons_ago']].copy()
+out['projection_version'] = 'v2-' + SHIP
 out.to_parquet(_HERE / 'acp_projection.parquet')
 print(f"  acp_projection.parquet ({len(out):,} current players)")
 print("\n  top 8 projections (25/26 -> 26/27):")
