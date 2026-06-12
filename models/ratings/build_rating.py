@@ -321,7 +321,60 @@ df['ddef_pct'] = duel_composite(['aerial', 'stopper', 'press'])
 # heaviest defensive axis could never say "elite").
 df['datt_raw'] = duel_composite(['takeon', 'shield'])
 df['datt_pct'] = role_pct('datt_raw')
-df['qual_raw'] = (df['dwae_pct'] + df['ddef_pct']) / 2.0
+
+# v6.9 TYPE-MATCHED Def Quality (Lucas): pair the fresh wins-above-
+# expectation signal with the opponent-adjusted ladder PER CONTEST TYPE
+# — Aerial Grade (aerial WOE + aerial Glicko) and Ground Grade (ground
+# WOE + stopper/press Glicko) — then blend by engagement counts.
+# Audited 2026-06-12: per-type WOE YoY beats pooled DWAE in 10/12
+# role-type cells (aerial 0.35-0.70, ground 0.20-0.48 vs pooled
+# 0.18-0.44). Static bucket expectation (kind x zone x phase for
+# ground; height-diff bins for aerial), EB shrink n/(n+60).
+_ct = pd.read_parquet(_DASH / 'models/duels/contests.parquet',
+                        columns=['ladder', 'seasonId', 'playerA', 'playerB',
+                                  'scoreA', 'att_kind', 'zx', 'phase',
+                                  'heightA', 'heightB'])
+_ct['league'] = np.where(_ct['seasonId'].isin(CAMP), 'CAMP', 'L3')
+_g = _ct[_ct['ladder'] == 'ground'].copy()
+_g['bucket'] = (_g['att_kind'].astype(str) + '|' + _g['zx'].astype(str)
+                 + '|' + _g['phase'].astype(str) + '|' + _g['league'])
+_g['woe'] = _g['scoreA'] - _g.groupby('bucket')['scoreA'].transform('mean')
+_grd = (_g.groupby(['playerA', 'seasonId'])['woe']
+          .agg(woe_ground='sum', n_ground='size').reset_index()
+          .rename(columns={'playerA': 'playerId'}))
+_a = _ct[_ct['ladder'] == 'aerial'].copy()
+_a['hd'] = (pd.to_numeric(_a['heightA'], errors='coerce')
+             - pd.to_numeric(_a['heightB'], errors='coerce'))
+_a['bucket'] = (pd.cut(_a['hd'], [-99, -8, -3, 3, 8, 99]).astype(str)
+                  + '|' + _a['league'])
+_a['phat'] = _a.groupby('bucket')['scoreA'].transform('mean')
+_sA = _a[['playerA', 'seasonId']].assign(woe=_a['scoreA'] - _a['phat'])
+_sB = (_a[['playerB', 'seasonId']].rename(columns={'playerB': 'playerA'})
+         .assign(woe=(1 - _a['scoreA'].values) - (1 - _a['phat'].values)))
+_aer = (pd.concat([_sA, _sB]).groupby(['playerA', 'seasonId'])['woe']
+          .agg(woe_aerial='sum', n_aerial='size').reset_index()
+          .rename(columns={'playerA': 'playerId'}))
+df = df.merge(_grd, on=['playerId', 'seasonId'], how='left')
+df = df.merge(_aer, on=['playerId', 'seasonId'], how='left')
+for _t in ('aerial', 'ground'):
+    _nn = df[f'n_{_t}'].fillna(0.0)
+    df[f'woe_{_t}_p90'] = (df[f'woe_{_t}'].fillna(0.0) * _nn / (_nn + 60.0)
+                            / df['mins_played'] * 90.0)
+df['aer_woe_pct'] = role_pct('woe_aerial_p90')
+df['grd_woe_pct'] = role_pct('woe_ground_p90')
+df['aerial_grade_raw'] = (df['aer_woe_pct'] + duel_composite(['aerial'])) / 2.0
+df['aerial_grade_pct'] = role_pct('aerial_grade_raw')
+df['ground_grade_raw'] = (df['grd_woe_pct']
+                            + duel_composite(['stopper', 'press'])) / 2.0
+df['ground_grade_pct'] = role_pct('ground_grade_raw')
+_n_a = df['n_aerial'].fillna(0.0)
+_n_g = df['n_ground'].fillna(0.0)
+_den_t = (_n_a + _n_g)
+df['qual_raw'] = np.where(
+    _den_t > 0,
+    (df['aerial_grade_pct'] * _n_a + df['ground_grade_pct'] * _n_g)
+    / _den_t.replace(0, 1),
+    0.5)
 df['qual_pct'] = role_pct('qual_raw')
 df['duel_pct'] = df['ddef_pct']    # kept for backward compat in exports
 
@@ -405,9 +458,12 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
 # per-category offence percentiles (engine radar surfaces Off split
 # into its five categories)
 out_cols = out_cols + [c + '_pct' for c in GPA_CATS]
+# v6.9 type-matched defensive sub-grades + their raw WOE halves
+out_cols = out_cols + ['aerial_grade_pct', 'ground_grade_pct',
+                         'woe_aerial_p90', 'woe_ground_p90']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.8'
+out['rating_version'] = 'v6.9'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 

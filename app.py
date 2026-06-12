@@ -9546,6 +9546,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     (_eng_rad_df['duel_takeon'].fillna(0.0) * _nt
                      + _eng_rad_df['duel_shield'].fillna(0.0) * _ns)
                     / (_nt + _ns).replace(0.0, np.nan))
+                if 'aerial_grade_pct' in _eng_rad_df.columns:
+                    _eng_rad_df['_aer_grade100'] = _eng_rad_df['aerial_grade_pct'] * 100.0
+                    _eng_rad_df['_grd_grade100'] = _eng_rad_df['ground_grade_pct'] * 100.0
                 _RAD_AXES = [
                     ('Shooting', 'raw_Shooting90', 'output', '{:.2f}'),
                     ('Receiving', 'raw_Receiving90', 'output', '{:.2f}'),
@@ -9553,7 +9556,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     ('Linking', 'raw_Linking90', 'passing', '{:.2f}'),
                     ('Dribbling', 'raw_Dribbling90', 'dribbling', '{:.2f}'),
                     ('Off Duel Grade', '_datt_glicko', 'dribbling', '{:.0f}'),
-                    ('Def Quality', 'raw_dwae90', 'defensive', '{:.2f}'),
+                    ('Aerial Grade', '_aer_grade100', 'defensive', '{:.0f}'),
+                    ('Ground Def Grade', '_grd_grade100', 'defensive', '{:.0f}'),
                     ('Def Volume', 'raw_resp', 'defensive', '{:.2f}'),
                     ('RAPM', 'raw_rapm', 'team', '{:.2f}'),
                 ]
@@ -9682,7 +9686,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     plt.figtext(0.04, 0.035,
                                  f"Raw per-90 values vs {_e['role']} cohort "
                                  f"({_e['league']}, current season, 500+ mins) · "
-                                 f"Def Quality raw = duel wins above expectation /90 · "
+                                 f"Aerial/Ground Def Grade = wins-above-expectation "
+                                 f"+ opponent-adjusted duel ladder, 0-100 in cohort · "
                                  f"Off Duel Grade raw = take-on/shield Glicko · "
                                  f"RAPM = on-pitch xGD/90 · "
                                  f"Engine {_eng_meta.get('rating_version', '')} · "
