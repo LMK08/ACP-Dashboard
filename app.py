@@ -975,6 +975,9 @@ def load_player_engine():
                      'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',
                      'Wide Defender': 'FB', 'Central Defender': 'CB'}
         _pool = df['projection_abs'].dropna()
+        # global price temper (Lucas 2026-06-12): the engine values read
+        # a touch rich for this market — scale the whole curve down 20%
+        _ENGINE_VALUE_TEMPER = 0.8
 
         def _eng_eur(r):
             pa = r.get('projection_abs')
@@ -984,8 +987,9 @@ def load_player_engine():
                           + 0.5 * (_pool == float(pa)).mean()) * 100.0
             grp = _ROLE2CVI.get(r.get('role'))
             am = _cvi_age_value_multiplier(r.get('age'), grp)
-            return cvi_to_projected_eur(perf * am, position_group=grp,
-                                          competition_id=None)
+            v = cvi_to_projected_eur(perf * am, position_group=grp,
+                                       competition_id=None)
+            return None if v is None else v * _ENGINE_VALUE_TEMPER
         df['engine_value_eur'] = df.apply(_eng_eur, axis=1)
         meta = {}
         if os.path.exists(meta_path):
@@ -9525,6 +9529,69 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             st.caption(f"{_lbl} · {float(_v)*100:.0f}")
                         else:
                             st.caption(f"{_lbl} · —")
+                # --- Engine radar: every rating + projection factor,
+                #     Off split into its five categories --------------
+                _rad_items = [
+                    ('Creating', _e.get('Creating_pct')),
+                    ('Linking', _e.get('Linking_pct')),
+                    ('Receiving', _e.get('Receiving_pct')),
+                    ('Dribbling', _e.get('Dribbling_pct')),
+                    ('Shooting', _e.get('Shooting_pct')),
+                    ('Qual', _e.get('qual_pct')),
+                    ('RAPM', _e.get('rapm_pct')),
+                    ('Resp', _e.get('defr_pct')),
+                    ('Duel-att', _e.get('datt_pct')),
+                    ('Set piece', _e.get('setpiece_pct')),
+                ]
+                _rad = [(l, float(v)) for l, v in _rad_items
+                        if v is not None and pd.notna(v)]
+                if pd.notna(_e.get('career_asof')):
+                    _carpool = _eng_df[_eng_df['seasonId'] == _e['seasonId']
+                                        ]['career_asof'].dropna()
+                    if len(_carpool) > 10:
+                        _rad.append(('Career', float(
+                            (_carpool < float(_e['career_asof'])).mean())))
+                if pd.notna(_e.get('w_evidence')):
+                    _rad.append(('Evidence', float(_e['w_evidence'])))
+                if pd.notna(_e.get('age_delta')):
+                    _rad.append(('Age outlook', float(
+                        np.clip((float(_e['age_delta']) + 2.5) / 4.5, 0.0, 1.0))))
+                if len(_rad) >= 5:
+                    with st.expander("Engine radar — every rating & projection factor",
+                                       expanded=True):
+                        _rl = [l for l, _ in _rad]
+                        _rv = [v for _, v in _rad]
+                        _ang = np.linspace(0, 2 * np.pi, len(_rv),
+                                            endpoint=False).tolist()
+                        _figr, _axr = plt.subplots(
+                            figsize=(5.5, 5.5), subplot_kw=dict(polar=True))
+                        _axr.plot(_ang + _ang[:1], _rv + _rv[:1],
+                                   color='#0077b6', linewidth=2)
+                        _axr.fill(_ang + _ang[:1], _rv + _rv[:1],
+                                   color='#0077b6', alpha=0.25)
+                        _axr.set_xticks(_ang)
+                        _axr.set_xticklabels(_rl, fontsize=8)
+                        _axr.set_yticks([0.25, 0.5, 0.75])
+                        _axr.set_yticklabels(['25', '50', '75'], fontsize=7)
+                        _axr.set_ylim(0, 1)
+                        _axr.set_title(
+                            f"{_e['name']} — engine factors", fontsize=10)
+                        _rc1, _rc2 = st.columns([2, 3])
+                        with _rc1:
+                            st.pyplot(_figr, use_container_width=True)
+                        plt.close(_figr)
+                        with _rc2:
+                            st.caption(
+                                "All axes are percentiles within the player's "
+                                "league × season × role cohort (role-share "
+                                "blended). The five offence categories replace "
+                                "the single Off axis. Career = percentile of "
+                                "the recency-weighted career rating among "
+                                "current players; Evidence = the projection's "
+                                "trust weight w; Age outlook = the role "
+                                "age-curve delta rescaled (50 ≈ flat year "
+                                "ahead). Set piece is shown for context — "
+                                "it is NOT in the rating.")
                 st.caption(
                     f"Engine {_eng_meta.get('rating_version', '?')} · "
                     f"projection {_eng_meta.get('projection_version', '?')} · "
@@ -12019,55 +12086,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # offered on Individual Metric (per user — they only make sense
         # for overall profile ratings, not per-metric leaderboards).
         st.sidebar.markdown("---")
-        st.sidebar.caption("**Rating adjustments** (Overview / per-template only)")
-        age_adjusted = st.sidebar.checkbox(
-            "Compare vs same-age peers",
-            value=False,
-            key="player_analysis_age_adjusted",
-            help="Re-rank players by their percentile within their own age "
-                 "cohort (±1 yr for ages 20-32, ±2 yr for ≤19 and ≥33). "
-                 "Useful for finding young over-performers and "
-                 "age-appropriate veterans. Applies to the Rating column.",
-        )
+        # Same-age-peers + cross-tier toggles REMOVED (Lucas 2026-06-12):
+        # the engine's age curve handles age context in the projection,
+        # and the abs columns handle cross-league translation. Their
+        # code paths below stay dormant (flags pinned off).
+        age_adjusted = False
 
         # Cross-tier translation — Opta strength multiplier only. The
         # empirical-median variant is per-metric, so it doesn't apply
         # to a composite Role_Score.
-        cross_tier_modes = ['Off']
+        cross_tier_mode = 'Off'
         _trans_src_comp = _trans_tgt_comp = None
-        if selected_comp_ids and len(selected_comp_ids) == 1:
-            _src = int(selected_comp_ids[0])
-            if _src in (43324, 702):
-                _trans_src_comp = _src
-                _trans_tgt_comp = 702 if _src == 43324 else 43324
-                cross_tier_modes = ['Off', 'Opta strength']
-        cross_tier_mode = st.sidebar.radio(
-            "Translate to other tier:",
-            cross_tier_modes,
-            key="player_analysis_cross_tier",
-            horizontal=False,
-            help="Project the Rating column into the OTHER league using "
-                 "the Opta league-strength multiplier (e.g. Camp → Liga 3 "
-                 "≈ ×0.91). Available when exactly one of Liga 3 or "
-                 "Campeonato is selected.",
-        ) if len(cross_tier_modes) > 1 else 'Off'
-
-        # Pre-compute the cross-tier multiplier + caption so we don't
-        # recompute per-template.
         _rating_multiplier = None
         _rating_caption = None
-        if cross_tier_mode == 'Opta strength' and _trans_src_comp and _trans_tgt_comp:
-            _rating_multiplier = opta_translation_multiplier(_trans_src_comp, _trans_tgt_comp)
-            if _rating_multiplier is not None:
-                _src_name = COMPETITIONS.get(_trans_src_comp, {}).get('name', str(_trans_src_comp))
-                _tgt_name = COMPETITIONS.get(_trans_tgt_comp, {}).get('name', str(_trans_tgt_comp))
-                _src_strength = opta_league_strength(_trans_src_comp)
-                _tgt_strength = opta_league_strength(_trans_tgt_comp)
-                _rating_caption = (
-                    f"Cross-tier translation: {_src_name} avg "
-                    f"{_src_strength:.2f} → {_tgt_name} avg "
-                    f"{_tgt_strength:.2f} = ratings × {_rating_multiplier:.3f}"
-                )
 
         # --- CVI (Composite Value Index) toggle -----------------------
         # When ON, a CVI column is appended to the right of the Rating
@@ -12270,15 +12301,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 _sort_col = score_col
 
-            # CVI overrides the sort if "Sort by CVI" is on.
+            # Overview defaults to ACP PROJECTION order (Lucas) —
+            # bespoke template score still drives the per-template views
+            # and remains sortable via Individual Metric mode. GK
+            # templates (no engine coverage) keep the score sort.
+            if (compact and 'ACP Projection (abs)' in tdf.columns
+                    and tdf['ACP Projection (abs)'].notna().any()):
+                _sort_col = 'ACP Projection (abs)'
+
+            # Projected-value sort override.
             if show_cvi and sort_by_cvi and 'Engine Value EUR' in tdf.columns:
                 _sort_col = 'Engine Value EUR'
 
             sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
 
             if compact:
-                # Overview mode: Rank, Player, Team, Position, Minutes, Age, Rating
-                cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', score_col]
+                # Overview mode (Lucas): ACP Projection first, then ACP
+                # Rating, REPLACING the bespoke template score. GK
+                # templates fall back to the bespoke score.
+                _eng_over = [c for c in ('ACP Projection (abs)', 'ACP Rating')
+                             if c in sorted_tdf.columns
+                             and sorted_tdf[c].notna().any()]
+                if _eng_over:
+                    cols = ['playerName', 'teamName', 'primaryPosition',
+                            'totalMinutes'] + _eng_over
+                else:
+                    cols = ['playerName', 'teamName', 'primaryPosition',
+                            'totalMinutes', score_col]
             else:
                 # Template-specific mode: include all weighted metrics (weight > 0) sorted by weight desc
                 template_weights = WEIGHTS.get(template_name, {})
@@ -12294,14 +12343,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             cols = [c for c in cols if c in sorted_tdf.columns]
             display = sorted_tdf[cols].copy()
-            display = display.rename(columns={
+            _ren = {
                 'playerName': 'Player',
                 'teamName': 'Team',
                 'primaryPosition': 'Position',
                 'totalMinutes': 'Minutes',
                 score_col: 'Rating'
-            })
-            display['Rating'] = display['Rating'].round(1)
+            }
+            if compact and 'ACP Rating' in cols:
+                # engine columns take the headline names in Overview
+                _ren.update({'ACP Projection (abs)': 'Projection',
+                              'ACP Rating': 'Rating'})
+            display = display.rename(columns=_ren)
+            if 'Rating' in display.columns:
+                display['Rating'] = pd.to_numeric(display['Rating'], errors='coerce').round(1)
+            if 'Projection' in display.columns:
+                display['Projection'] = pd.to_numeric(display['Projection'], errors='coerce').round(1)
             display['Minutes'] = display['Minutes'].astype(int)
 
             # Cross-tier translation: multiply Rating by the league-
@@ -12389,7 +12446,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Collect per-template data as lists aligned by rank.
             # When Projected Value is on, append it as a 5th sub-column
             # per template (already EUR-formatted by _build_template_table).
-            _sub_cols = ['Player', 'Team', 'Min', 'Rating']
+            _sub_cols = ['Player', 'Team', 'Min', 'Proj', 'Rating']
             if show_cvi:
                 _sub_cols.append('Proj. Value')
             template_columns = {}
@@ -12400,11 +12457,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     if display_df is not None and not display_df.empty:
                         rows = []
                         for _, row in display_df.iterrows():
+                            _proj_v = row.get('Projection')
+                            _rat_v = row.get('Rating')
                             tup = [
                                 row.get('Player', ''),
                                 row.get('Team', ''),
                                 int(row.get('Minutes', 0)),
-                                round(float(row.get('Rating', 0)), 1),
+                                (round(float(_proj_v), 1)
+                                 if _proj_v is not None and pd.notna(_proj_v) else ''),
+                                (round(float(_rat_v), 1)
+                                 if _rat_v is not None and pd.notna(_rat_v) else ''),
                             ]
                             if show_cvi:
                                 _pv = row.get('Projected Value', '')
@@ -12477,6 +12539,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 "Dribbling": DRIBBLING_METRICS,
                 "Goalkeeping": GOALKEEPING_METRICS,
                 "Set Pieces": SET_PIECE_METRICS,
+                "ACP Engine": ENGINE_DISPLAY_METRICS,
+                # bespoke template ratings stay sortable here (Lucas) —
+                # they left the Overview headline but remain a metric
+                "Template Ratings": sorted(
+                    [c for c in filtered_df.columns if c.endswith('_Score')]),
             }
 
             selected_category = st.sidebar.selectbox(
@@ -12722,16 +12789,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             def _build_panel_for_group(group_name, source_df, metric_key):
                 """Return (values, names, teams) for the panel at this
-                position group. metric_key ∈ {'action_v', 'best_fit'}."""
+                position group. metric_key ∈ {'action_v', 'best_fit',
+                'acp_rating', 'acp_proj'}."""
                 grp_pop = source_df[
                     source_df['primaryPosition'].map(_pos_to_group_full)
                     == group_name
                 ]
                 if grp_pop.empty:
                     return np.array([]), [], []
-                if metric_key == 'action_v':
-                    col = next((c for c in ('Total Value', 'total_v_per_90')
-                                  if c in grp_pop.columns), None)
+                if metric_key in ('action_v', 'acp_rating', 'acp_proj'):
+                    if metric_key == 'action_v':
+                        col = next((c for c in ('Total Value', 'total_v_per_90')
+                                      if c in grp_pop.columns), None)
+                    elif metric_key == 'acp_rating':
+                        col = 'ACP Rating' if 'ACP Rating' in grp_pop.columns else None
+                    else:
+                        col = ('ACP Projection (abs)'
+                               if 'ACP Projection (abs)' in grp_pop.columns else None)
                     if col is None:
                         return np.array([]), [], []
                     sub = grp_pop[grp_pop[col].notna()]
@@ -12758,11 +12832,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.subheader("Distribution by Position Group")
                 _viz_metric = st.radio(
                     "Distribution metric:",
-                    ["Action V/90", "Best-fit Rating"],
+                    ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],
                     horizontal=True,
                     key="player_analysis_viz_metric_overview",
                 )
-                _metric_key = 'action_v' if _viz_metric == 'Action V/90' else 'best_fit'
+                _metric_key = {'Action V/90': 'action_v',
+                                'Best-fit Rating': 'best_fit',
+                                'ACP Rating': 'acp_rating',
+                                'ACP Projection': 'acp_proj'}[_viz_metric]
 
                 _groups = ['Goalkeepers', 'Center Backs', 'Full Backs',
                             'Central Midfielders',
@@ -12833,7 +12910,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.subheader(f"{_template} distribution across seasons")
                     _viz_metric = st.radio(
                         "Distribution metric:",
-                        ["Action V/90", "Best-fit Rating"],
+                        ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],
                         horizontal=True,
                         key="player_analysis_viz_metric_template",
                     )
@@ -12884,6 +12961,34 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 vals = _sub[_val_col].astype(float).values
                                 names = _sub.get('name', pd.Series([''] * len(_sub))).astype(str).tolist()
                                 # GPA doesn't carry teamName — leave blank
+                                teams = [''] * len(_sub)
+                            elif _viz_metric in ('ACP Rating', 'ACP Projection'):
+                                # Engine path: per-season engine values,
+                                # position-filtered via the GPA table
+                                # (engine rows don't carry raw position
+                                # codes). Projections exist only for the
+                                # current + lapsed seasons, so older
+                                # panels skip naturally (<5 rows).
+                                _eng_all, _ = load_player_engine()
+                                _gpa_all = (load_gpa_values()
+                                             if 'load_gpa_values' in globals() else None)
+                                if _eng_all.empty or _gpa_all is None or _gpa_all.empty:
+                                    continue
+                                _ecol = ('acp_rating' if _viz_metric == 'ACP Rating'
+                                          else 'projection_abs')
+                                _sub = _gpa_all[
+                                    (_gpa_all['seasonId'] == _sid)
+                                    & (_gpa_all.get('mins_played', 0)
+                                       >= min_minutes_filter)
+                                    & (_gpa_all.get('position', '').astype(str)
+                                       .isin(_eligible_positions))
+                                ][['playerId', 'name']].merge(
+                                    _eng_all[_eng_all['seasonId'] == _sid][
+                                        ['playerId', _ecol]],
+                                    on='playerId', how='inner')
+                                _sub = _sub[_sub[_ecol].notna()]
+                                vals = _sub[_ecol].astype(float).values
+                                names = _sub['name'].astype(str).tolist()
                                 teams = [''] * len(_sub)
                             else:
                                 # Best-fit (this template's specific Role_Score)

@@ -402,6 +402,9 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'position_group', 'mins_played', 'off_pct', 'defr_pct',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
+# per-category offence percentiles (engine radar surfaces Off split
+# into its five categories)
+out_cols = out_cols + [c + '_pct' for c in GPA_CATS]
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
 out['rating_version'] = 'v6.8'
