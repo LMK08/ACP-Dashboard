@@ -3118,6 +3118,7 @@ def compute_career_cvi(player_id, anchor_season_id, *,
                  & (rows['_season_year'] >= anchor_year - max_lookback)]
     if rows.empty:
         return None
+    rows = rows.copy()   # slice of perf_table — write on a copy
     rows['_seasons_back'] = anchor_year - rows['_season_year']
     rows['_decay'] = decay ** rows['_seasons_back']
     # v2.8 — current season (seasons_back==0) gets an explicit recency bonus
@@ -9746,8 +9747,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
             # Filter out None/Nan
             raw_positions = [x for x in raw_positions if x and str(x) != 'nan']
-            
-        except:
+
+        except Exception:
+            logger.exception("position extraction failed")
             raw_positions = []
             
         # Ensure we at least have the primary position from the bio
@@ -13040,7 +13042,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     # chronologically by parsed start year.
                     def _season_start_year(label):
                         try: return int(str(label).split('/')[0])
-                        except: return None
+                        except (ValueError, AttributeError, IndexError): return None
                     _season_panels = []
                     _all_sids = sorted(
                         [int(s) for s in SEASON_ID_MAP.keys()],
@@ -13924,3 +13926,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
+
+# Free every matplotlib figure created during this rerun. st.pyplot has
+# already rasterized them to PNG; without this, the 41 figure call sites
+# accumulate across reruns and leak memory on the HF Space.
+plt.close('all')

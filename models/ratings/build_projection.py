@@ -413,6 +413,7 @@ elif SHIP == 'full2':
         + cur['age_delta'].values)
 else:
     cur['projection'] = cur['career_asof']
+te = te.copy()   # slice of P — write on a copy (silences SettingWithCopyWarning)
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
                        else marcel_te if SHIP == 'marcel'
                        else repl_te if SHIP == 'replacement'
