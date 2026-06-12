@@ -134,14 +134,19 @@ def _bin_of(age):
 # decline after. Scaled to our 17-pt-SD rating (cumulative 26->31
 # ~0.3 SD decline). The projection FITS a coefficient on this curve, so
 # the SHAPE is industry consensus while our data sets the magnitude.
-PEAK_AGE = 26.0
+# Per-role peaks from the literature (Dendir 2016: forwards ~25,
+# midfielders 25-27, defenders ~27; defenders also age flattest):
+ROLE_PEAK = {'Striker': 25.0, 'Wide Attacker': 25.0,
+              'Advanced Midfielder': 26.0, 'Deep Midfielder': 26.0,
+              'Wide Defender': 27.0, 'Central Defender': 27.0}
 
 
-def std_age_delta(age):
-    """Expected rating change (pts/yr) at a given age — consensus shape."""
-    if age < PEAK_AGE:
-        return min(2.0, 2.0 * (PEAK_AGE - age) / 7.0)   # +2.0/yr at 19, ->0 at 26
-    return max(-2.5, -0.35 * (age - PEAK_AGE))            # -0.35/yr per year past 26
+def std_age_delta(age, role=None):
+    """Expected rating change (pts/yr) — consensus shape, role peak."""
+    peak = ROLE_PEAK.get(role, 26.0)
+    if age < peak:
+        return min(2.0, 2.0 * (peak - age) / 7.0)
+    return max(-2.5, -0.35 * (age - peak))
 
 # observed bin deltas printed for REFERENCE only (not used):
 _dp = []
@@ -156,9 +161,11 @@ print("  age curve = INDUSTRY STANDARD (peak 26); observed bins shown for refere
 for b in range(len(AGE_BINS)):
     obs = _DP[_DP['ab'] == b]['delta']
     mid = (AGE_BINS[b][0] + min(AGE_BINS[b][1], 36)) / 2
-    print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} std {std_age_delta(mid):+.2f}/yr"
+    print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} std(mid-role) {std_age_delta(mid):+.2f}/yr"
            f"   (our panel observed {obs.mean() if len(obs) else float('nan'):+.2f}, n={len(obs)} — survivor-biased)")
-o['age_delta'] = o['age'].map(lambda a: std_age_delta(a) if a == a else np.nan)
+o['age_delta'] = o.apply(
+    lambda r: std_age_delta(r['age'], r['role']) if r['age'] == r['age'] else np.nan,
+    axis=1)
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
@@ -240,6 +247,8 @@ _cf, *_ = np.linalg.lstsq(_Xf, tr['next_rating'].values, rcond=None)
 full_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
                               te['career_asof'].values * _wte,
                               te['age_delta'].values]) @ _cf)
+print(f"  fitted age-curve coefficient c = {_cf[4]:+.2f} "
+       f"(1.0 = literature magnitude verbatim)")
 g_model = spearmanr(pred_te, te['next_rating'])[0]
 g_cur = spearmanr(te['cur_rating'], te['next_rating'])[0]
 g_car = spearmanr(te['career_asof'], te['next_rating'])[0]
