@@ -90,27 +90,30 @@ o = o.sort_values(['playerId', 'yr'])
 # (winter movers with a row in each league) pool at full weight, and a
 # missed season decays by the true year gap. Every row of a season
 # carries the season's full pooled evidence.
-_car, _e5, _e8, _e10 = [], [], [], []
+_car, _e5, _e8, _e9, _e10 = [], [], [], [], []
 for _pid, _gg in o.groupby('playerId', sort=False):
-    num = den = d8 = d10 = 0.0
+    num = den = d8 = d9 = d10 = 0.0
     prev_yr = None
     for _yr, _gy in _gg.groupby('yr', sort=True):
         gap = 1 if prev_yr is None else int(_yr - prev_yr)
         num *= 0.5 ** gap; den *= 0.5 ** gap; d8 *= 0.8 ** gap
+        d9 *= 0.9 ** gap
         _m = float(_gy['mins_played'].sum())
         num += float((_gy['mins_played'] * _gy['acp_rating']).sum())
         den += _m
         d8 += _m
+        d9 += _m
         d10 += _m
         _car.extend([num / den] * len(_gy))
         _e5.extend([den] * len(_gy)); _e8.extend([d8] * len(_gy))
-        _e10.extend([d10] * len(_gy))
+        _e9.extend([d9] * len(_gy)); _e10.extend([d10] * len(_gy))
         prev_yr = _yr
 o['career_asof'] = _car
 # evidence-of-identity decays SLOWER than form (Lucas): three decay
 # variants; the projection picks one by train CV below
 o['eff_mins'] = _e5
 o['eff8'] = _e8
+o['eff9'] = _e9
 o['eff10'] = _e10
 # pooled within-season minutes (winter movers carry two rows/season) —
 # the "playing time is information" signal for the full2 level pull
@@ -198,7 +201,7 @@ o['age_delta'] = o.apply(_blended_age_delta, axis=1)
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
           'career_asof', 'n_seasons', 'mins_played', 'eff_mins', 'eff8',
-          'eff10', 'age_delta', 'p_drib_wide', 'p_npxg_st']
+          'eff9', 'eff10', 'age_delta', 'p_drib_wide', 'p_npxg_st']
 o['p_drib_wide'] = np.where(o['role'].isin(WIDE), o['p_drib'], 0.5)
 o['p_npxg_st'] = np.where(o['role'] == 'Striker', o['p_npxg'], 0.5)
 
@@ -247,7 +250,8 @@ marcel_te = te['career_asof'] + te['age_delta']     # literature 'Marcel' form
 from sklearn.model_selection import KFold
 _best_w = None
 for _ec, _K in [('eff_mins', 900), ('eff_mins', 1500), ('eff8', 1500),
-                  ('eff8', 2500), ('eff10', 1500), ('eff10', 2500)]:
+                  ('eff8', 2500), ('eff9', 900), ('eff9', 1500),
+                  ('eff9', 2500), ('eff10', 1500), ('eff10', 2500)]:
     _w = (tr[_ec] / (tr[_ec] + _K)).values
     _X = np.column_stack([np.ones(len(tr)), _w, tr['career_asof'].values,
                             tr['career_asof'].values * _w,
@@ -261,8 +265,18 @@ for _ec, _K in [('eff_mins', 900), ('eff_mins', 1500), ('eff8', 1500),
     _m = float(np.mean(_maes))
     if _best_w is None or _m < _best_w[2]:
         _best_w = (_ec, _K, _m)
-EVID_COL, EVID_K, _ = _best_w
-print(f"  evidence config (train CV): {EVID_COL}, K={EVID_K}")
+print(f"  evidence grid (train CV, reference): best {_best_w[0]}/{_best_w[1]} "
+       f"MAE {_best_w[2]:.3f}")
+# PINNED (Lucas, 2026-06-12): the grid is FLAT — spread ~0.03 MAE against
+# fold noise ±1.3, and projections move <0.6 pts across every config —
+# so accuracy cannot choose. Principle does: eff9 (0.9/yr decay) makes
+# an idle year cost evidence (fixes the eff10 no-decay wart), and
+# K=1500 trusts the career record EARLIER (w=0.5 at 1,500 eff-mins vs
+# 2,500). "Identity decays slower than form (0.5), but it does decay."
+# Grid stays printed every build; revisit at the 26/27 refit.
+EVID_COL, EVID_K = 'eff9', 1500.0
+print(f"  evidence config PINNED: {EVID_COL}, K={EVID_K:.0f} "
+       f"(principle on a flat grid — trust the record more, earlier)")
 _wtr = (tr[EVID_COL] / (tr[EVID_COL] + EVID_K)).values
 _Xr = np.column_stack([np.ones(len(tr)), _wtr, tr['career_asof'].values,
                          tr['career_asof'].values * _wtr])
@@ -373,6 +387,7 @@ _lap['age_delta'] = (_lap.apply(_blended_age_delta, axis=1)
                              .apply(_blended_age_delta, axis=1))
 _lap['eff_mins'] = _lap['eff_mins'] * 0.5
 _lap['eff8'] = _lap['eff8'] * 0.8
+_lap['eff9'] = _lap['eff9'] * 0.9
 _lap['age'] = _lap['age'] + 1.0      # display on the 25/26 age convention
 _lap['seasons_ago'] = 1
 cur = pd.concat([cur, _lap], ignore_index=True)
@@ -416,7 +431,7 @@ out = cur[['playerId', 'seasonId', 'name', 'role', 'side', 'league', 'age',
              'mins_played', 'acp_rating', 'career_asof', 'age_delta',
              'w_evidence', 'projection', 'band_sd', 'proj_delta',
              'seasons_ago']].copy()
-out['projection_version'] = 'v2-' + SHIP
+out['projection_version'] = 'v2.1-' + SHIP
 out.to_parquet(_HERE / 'acp_projection.parquet')
 print(f"  acp_projection.parquet ({len(out):,} current players)")
 print("\n  top 8 projections (25/26 -> 26/27):")
