@@ -171,9 +171,16 @@ for b in range(len(AGE_BINS)):
     mid = (AGE_BINS[b][0] + min(AGE_BINS[b][1], 36)) / 2
     print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} std(mid-role) {std_age_delta(mid):+.2f}/yr"
            f"   (our panel observed {obs.mean() if len(obs) else float('nan'):+.2f}, n={len(obs)} — survivor-biased)")
-o['age_delta'] = o.apply(
-    lambda r: std_age_delta(r['age'], r['role']) if r['age'] == r['age'] else np.nan,
-    axis=1)
+# v6.3: age curve blended by role shares (exported by the rating)
+_shcols = [c for c in o.columns if c.startswith('sh_')]
+def _blended_age_delta(r):
+    if r['age'] != r['age']:
+        return np.nan
+    tot = sum(r[c] for c in _shcols)
+    if tot < 0.5:
+        return std_age_delta(r['age'], r['role'])
+    return sum(r[c] * std_age_delta(r['age'], c[3:]) for c in _shcols) / tot
+o['age_delta'] = o.apply(_blended_age_delta, axis=1)
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',

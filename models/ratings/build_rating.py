@@ -132,7 +132,10 @@ d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
                       columns=['playerId', 'seasonId', 'defr_adj', 'defr_dwae',
                                 'dwae_n'])
 r = pd.read_parquet(_DASH / 'models/roles/role_assignments_season.parquet',
-                      columns=['playerId', 'seasonId', 'primary_role_name', 'side'])
+                      columns=['playerId', 'seasonId', 'primary_role_name', 'side',
+                                'primary_role'] + [f'role_share_{k}' for k in range(6)])
+_idn = r.dropna(subset=['primary_role', 'primary_role_name']).drop_duplicates('primary_role')
+ROLE_ID2NAME = dict(zip(_idn['primary_role'].astype(int), _idn['primary_role_name']))
 rapm = pd.read_parquet(_HERE / 'rapm_v3_coefficients.parquet')   # one coef/player
 duels = pd.read_parquet(_DASH / 'models/duels/duel_ratings.parquet')
 duels = duels[(duels['playerId'] > 0) & (duels['n'] >= 30)]
@@ -151,14 +154,56 @@ df['league'] = np.where(df['seasonId'].isin(CAMP), 'CAMP', 'L3')
 df['yr'] = df['seasonId'].map(SEASON_YR)
 df = df[(df['mins_played'] >= MIN_MINS) & (df['position_group'] != 'GK')
           & df['role'].notna()].copy()
+# v6.3 ROLE BLENDING (Lucas): median primary-role share is 0.70 — 63% of
+# player-seasons spend >20% of matches in another role. Percentiles are
+# share-weighted blends across the role cohorts actually occupied; axis
+# weights and the age curve blend the same way.
+ROLE_NAMES = [ROLE_ID2NAME[k] for k in range(6)]
+for k in range(6):
+    df['sh_' + ROLE_ID2NAME[k]] = df[f'role_share_{k}'].fillna(0.0)
+_shsum = sum(df['sh_' + nm] for nm in ROLE_NAMES)
+_fallback = _shsum < 0.5
+ROLE_UNIVERSE = list(ROLE_NAMES)
+for lbl in df.loc[_fallback, 'role'].dropna().unique():
+    col = 'sh_' + str(lbl)
+    if col not in df.columns:
+        df[col] = 0.0
+        ROLE_UNIVERSE.append(str(lbl))
+    df.loc[_fallback & (df['role'] == lbl), col] = 1.0
+_shsum = sum(df['sh_' + nm] for nm in ROLE_UNIVERSE).replace(0, 1)
+for nm in ROLE_UNIVERSE:
+    df['sh_' + nm] = df['sh_' + nm] / _shsum
+print(f"  role blending: {int((~_fallback).sum()):,} share-based, "
+       f"{int(_fallback.sum()):,} one-hot fallback")
 print(f"  {len(df):,} eligible player-seasons (>= {MIN_MINS} min, outfield)")
 
 
 def role_pct(col):
-    """Percentile within (role x league x season); NaN inputs -> 0.5
-    (neutral) so a missing component doesn't punish or reward."""
-    s = df.groupby(['role', 'league', 'seasonId'])[col].rank(pct=True)
-    return s.fillna(0.5)
+    """v6.3 share-weighted blended percentile: per (league, season, role)
+    cohort a weighted ECDF (weights = role shares); final pct = share-
+    weighted mean of cohort pcts. NaN inputs -> neutral 0.5."""
+    vals = df[col].to_numpy(float)
+    out = np.zeros(len(df))
+    wtot = np.zeros(len(df))
+    for _, gidx in df.groupby(['league', 'seasonId']).groups.items():
+        pos = df.index.get_indexer(np.asarray(list(gidx)))
+        v = vals[pos]
+        valid = ~np.isnan(v)
+        for rn in ROLE_UNIVERSE:
+            w = df['sh_' + rn].to_numpy(float)[pos]
+            m = valid & (w > 1e-9)
+            if m.sum() < 3:
+                continue
+            mi = np.flatnonzero(m)
+            order = np.argsort(v[mi], kind='stable')
+            wv = w[mi][order]
+            cw = np.cumsum(wv)
+            pct = (cw - wv / 2.0) / cw[-1]
+            out[pos[mi[order]]] += wv * pct
+            wtot[pos[mi[order]]] += wv
+    res = np.where(wtot > 0, out / np.where(wtot > 0, wtot, 1), 0.5)
+    res = np.where(np.isnan(vals), 0.5, res)
+    return pd.Series(res, index=df.index)
 
 
 # --- v4 offence: category blend ------------------------------------------
@@ -214,7 +259,7 @@ df['rapm_pct'] = role_pct('rapm_v3')
 def duel_composite(traits):
     num = 0.0; den = 0.0
     for t in traits:
-        pct_t = df.groupby(['role', 'league', 'seasonId'])[f'duel_{t}'].rank(pct=True)
+        pct_t = role_pct(f'duel_{t}').where(df[f'duel_{t}'].notna())
         w_t = df[f'dueln_{t}'].fillna(0.0) * pct_t.notna()
         num = num + pct_t.fillna(0.5) * w_t
         den = den + w_t
@@ -261,8 +306,12 @@ df['off_pct'] = 0.5 + (df['off_pct'] - 0.5) * _s_off
 print("[2/4] role-weighted blend + minutes shrink…", flush=True)
 AXES = {'off': 'off_pct', 'resp': 'defr_pct', 'qual': 'qual_pct',
          'datt': 'datt_pct', 'rapm': 'rapm_pct'}
-W = pd.DataFrame([ROLE_WEIGHTS.get(ro, DEFAULT_W) for ro in df['role']],
-                   index=df.index)
+_AX = ['off', 'resp', 'qual', 'datt', 'rapm']
+W = pd.DataFrame(0.0, index=df.index, columns=_AX)
+for rn in ROLE_UNIVERSE:
+    wts = ROLE_WEIGHTS.get(rn, DEFAULT_W)
+    for a in _AX:
+        W[a] += df['sh_' + rn] * wts[a]
 raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 # shrink the player-vs-role deviation toward 0.5 by minutes reliability
 # v6.0 (futi adoptions #1 + #3): blend -> z-score within role x league
@@ -272,8 +321,10 @@ raw = sum(W[a] * df[col] for a, col in AXES.items())        # 0-1
 # them), full-season anchor kept (2,500 min = no shrink). Display on
 # futi's variance-preserving scale: 50 + 17*z, clipped [1, 99].
 Z_REPL = -0.4
-zraw = (raw - raw.groupby([df['role'], df['league'], df['seasonId']])
-                  .transform('mean'))          / raw.groupby([df['role'], df['league'], df['seasonId']])               .transform('std')
+# blended percentiles are role-fair by construction -> pool z within
+# league x season
+zraw = (raw - raw.groupby([df['league'], df['seasonId']]).transform('mean')) \
+         / raw.groupby([df['league'], df['seasonId']]).transform('std')
 _ab = 2500.0 / (2500.0 + SHRINK_K)
 shrink = np.minimum((df['mins_played'] / (df['mins_played'] + SHRINK_K)) / _ab, 1.0)
 zsh = Z_REPL + (zraw - Z_REPL) * shrink
@@ -299,8 +350,9 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'position_group', 'mins_played', 'off_pct', 'defr_pct',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
+out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.1'
+out['rating_version'] = 'v6.3'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
