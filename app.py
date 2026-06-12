@@ -1199,7 +1199,7 @@ def compute_empirical_translation_factors(
         from_seasons = get_season_player_minutes(
             _player_minutes_data, season_ids, comp_ids=[comp_id]
         )
-        events = filter_by_league(get_season_events(_raw_events_df, season_ids), [comp_id])
+        events = get_filtered_events(_raw_events_df, season_ids, [comp_id])
         if from_seasons.empty or events.empty:
             return pd.DataFrame()
         return calculate_all_player_stats(events, from_seasons, season_id=None,
@@ -1382,6 +1382,36 @@ def get_season_events(raw_events_df, season_id):
     if isinstance(season_id, list):
         return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
+
+def get_filtered_events(events_df, season_ids, comp_ids):
+    """Filter events by season_id(s) AND competition IDs in a single pass.
+
+    Equivalent to filter_by_league(get_season_events(events_df, season_ids), comp_ids)
+    but builds one boolean mask. season_ids None = all seasons;
+    comp_ids None (or covering all competitions) = all leagues.
+    """
+    mask = None
+    if season_ids is not None:
+        if isinstance(season_ids, list):
+            mask = events_df['seasonId'].isin(season_ids)
+        else:
+            mask = events_df['seasonId'] == season_ids
+    if comp_ids is not None and len(comp_ids) != len(COMPETITIONS):
+        if 'competitionId' in events_df.columns:
+            comp_mask = events_df['competitionId'].isin(comp_ids)
+        elif 'seasonId' in events_df.columns:
+            valid_seasons = set()
+            for cid in comp_ids:
+                if cid in COMPETITIONS:
+                    valid_seasons.update(COMPETITIONS[cid]["seasons"].keys())
+            comp_mask = events_df['seasonId'].isin(valid_seasons)
+        else:
+            comp_mask = None
+        if comp_mask is not None:
+            mask = comp_mask if mask is None else (mask & comp_mask)
+    if mask is None:
+        return events_df
+    return events_df[mask]
 
 def get_season_matches(matches_summary_df, season_id):
     """Filter matches by season_id(s), or return all if None."""
@@ -5081,6 +5111,34 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     return result
 
 
+def load_and_score_player_stats(events_df, minutes_df, season_id, active_season_ids, comp_ids):
+    """Run the full player-stats pipeline: base stats, GPA/DefR/engine value
+    merges, then percentiles + template scores.
+
+    Returns (player_stats_df, player_stats_with_scores_df).
+    """
+    player_stats_df = calculate_all_player_stats(events_df, minutes_df, season_id=season_id)
+    player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, comp_ids)
+    player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, comp_ids)
+    player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, comp_ids)
+    player_stats_with_scores_df = calculate_player_percentiles_and_scores(
+        player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=season_id
+    )
+    return player_stats_df, player_stats_with_scores_df
+
+
+def auto_column_config(df):
+    """NumberColumn formats: floats %.2f, ints %d. Display-only polish."""
+    import pandas.api.types as ptypes
+    cfg = {}
+    for c in df.columns:
+        if ptypes.is_float_dtype(df[c]):
+            cfg[c] = st.column_config.NumberColumn(format="%.2f")
+        elif ptypes.is_integer_dtype(df[c]):
+            cfg[c] = st.column_config.NumberColumn(format="%d")
+    return cfg
+
+
 def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None, season_label=None, radar_mode='percentile', population_data=None):
     """Helper function to create the base radar chart.
     radar_mode: 'percentile' (default) or 'raw' (raw per-90 values, mean ± 2σ scale).
@@ -8292,12 +8350,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             with col1_table:
                 st.markdown(f"**{selected_match_info['homeTeamName']}**")
                 home_shots_table = get_shot_table(match_events_df, selected_match_info['homeTeamName'])
-                st.dataframe(home_shots_table)
+                st.dataframe(home_shots_table, column_config=auto_column_config(home_shots_table))
 
             with col2_table:
                 st.markdown(f"**{selected_match_info['awayTeamName']}**")
                 away_shots_table = get_shot_table(match_events_df, selected_match_info['awayTeamName'])
-                st.dataframe(away_shots_table)
+                st.dataframe(away_shots_table, column_config=auto_column_config(away_shots_table))
             # --- END NEW SECTION ---
             
             # --- xG Flowchart ---
@@ -8316,7 +8374,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict) and match_data['team_stats']:
                 for stat_category, df in match_data['team_stats'].items():
                     st.markdown(f"**{stat_category}**")
-                    if isinstance(df, pd.DataFrame): st.dataframe(df)
+                    if isinstance(df, pd.DataFrame): st.dataframe(df, column_config=auto_column_config(df))
                     else: st.warning(f"Data for '{stat_category}' is not a DataFrame.")
             else: st.warning("Team stats data not found.")
 
@@ -8476,7 +8534,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             selected_comp_ids,
             active_season_ids,
         )
-        team_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        team_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
         team_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
         # Apply stage filter — narrows the working set to the chosen stage's matches.
         team_events_df, team_matches_df = filter_by_stage(
@@ -8691,7 +8749,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     on_select="rerun",
                     selection_mode="single-row",
                     key="team_roster_table",
-                    hide_index=True
+                    hide_index=True,
+                    column_config=auto_column_config(roster_df)
                 )
 
                 # Handle row selection for navigation to Player Profile
@@ -8810,7 +8869,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_comp_ids = league_selector("league_analysis")
         selected_season_id = season_selector("league_analysis", comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        league_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        league_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
         league_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
 
         # --- 1. ALL DATA CALCS ---
@@ -8956,7 +9015,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             combined_strength_frames = []
             for sname in scatter_seasons:
                 sid = season_name_to_id_scatter[sname]
-                s_events = filter_by_league(get_season_events(raw_events_df, sid), selected_comp_ids)
+                s_events = get_filtered_events(raw_events_df, sid, selected_comp_ids)
                 s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
                 s_df = calculate_team_strength(s_events, s_matches, season_id=sid).copy()
                 if not s_df.empty:
@@ -9036,7 +9095,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
         profile_season_changed = (selected_season_id != st.session_state.player_profile_last_season)
         st.session_state.player_profile_last_season = selected_season_id
-        profile_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        profile_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
         profile_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
         profile_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
@@ -9045,14 +9104,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         try:
             with st.spinner("Calculating player statistics (this may take a moment on first load)..."):
-                player_stats_df = calculate_all_player_stats(profile_events_df, profile_player_minutes_df, season_id=selected_season_id)
-                # Merge GPA Value columns (scoped to active season × competition)
-                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                # --- NEW: Calculate percentiles ---
-                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
+                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
+                    profile_events_df, profile_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
                 )
         except Exception as e:
             st.error(f"An error occurred calculating overall player stats: {e}")
@@ -10285,7 +10338,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
             if 'Action V/90' in _display_career.columns:
                 _display_career['Action V/90'] = _display_career['Action V/90'].round(3)
-            st.dataframe(_display_career, use_container_width=True, hide_index=True)
+            st.dataframe(_display_career, use_container_width=True, hide_index=True, column_config=auto_column_config(_display_career))
 
             # ---- 5) Per-season strip plots with player highlighted ----
             _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
@@ -11092,7 +11145,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _src_view['value_eur'] = _src_view['value_eur'].apply(
                         lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
                     )
-                    st.dataframe(_src_view, use_container_width=True, hide_index=True)
+                    st.dataframe(_src_view, use_container_width=True, hide_index=True, column_config=auto_column_config(_src_view))
                     if len(_tv_valuations_rows) > len(_src_view):
                         with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
                             _hist_view = _tv_valuations_rows[
@@ -11102,7 +11155,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
                             )
                             st.dataframe(_hist_view, use_container_width=True,
-                                          hide_index=True)
+                                          hide_index=True,
+                                          column_config=auto_column_config(_hist_view))
 
                 # ---- Manual valuation entry ----
                 # Add a hand-entered figure from club / agent conversations.
@@ -11364,7 +11418,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     'SCA': 'Creating Action'
                 }).sort_values(by='#', ascending=False) # Show newest first (highest number)
                 
-                st.dataframe(table_display, use_container_width=True, height=500, hide_index=True)
+                st.dataframe(table_display, use_container_width=True, height=500, hide_index=True, column_config=auto_column_config(table_display))
 
             # --- NEW: SUMMARY TABLES ---
             st.markdown("---")
@@ -11379,7 +11433,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 ).sort_values(by='Total_xG', ascending=False)
                 body_summary['xG/Shot'] = (body_summary['Total_xG'] / body_summary['Shots']).round(2)
                 body_summary['Total_xG'] = body_summary['Total_xG'].round(2)
-                st.dataframe(body_summary, use_container_width=True)
+                st.dataframe(body_summary, use_container_width=True, column_config=auto_column_config(body_summary))
                 
             with col_sum2:
                 st.markdown("**Stats by Creating Action**")
@@ -11390,7 +11444,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 ).sort_values(by='Total_xG', ascending=False)
                 sca_summary['xG/Shot'] = (sca_summary['Total_xG'] / sca_summary['Shots']).round(2)
                 sca_summary['Total_xG'] = sca_summary['Total_xG'].round(2)
-                st.dataframe(sca_summary, use_container_width=True)
+                st.dataframe(sca_summary, use_container_width=True, column_config=auto_column_config(sca_summary))
 
         else:
             st.info("No shots recorded for this player.")
@@ -11550,18 +11604,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_comp_ids = league_selector("player_comparison")
         selected_season_id = season_selector("player_comparison", include_all_seasons=True, comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        comp_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        comp_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
         comp_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- 1. Load Data ---
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(comp_events_df, comp_player_minutes_df, season_id=selected_season_id)
-                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
+                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
+                    comp_events_df, comp_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -11688,18 +11738,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_comp_ids = league_selector("player_analysis")
         selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        analysis_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        analysis_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
         analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- 1. Load Data ---
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(analysis_events_df, analysis_player_minutes_df, season_id=selected_season_id)
-                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
+                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
+                    analysis_events_df, analysis_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -12211,8 +12257,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.sidebar.markdown("---")
         # Same-age-peers + cross-tier toggles REMOVED (Lucas 2026-06-12):
         # the engine's age curve handles age context in the projection,
-        # and the abs columns handle cross-league translation. Their
-        # code paths below stay dormant (flags pinned off).
+        # and the abs columns handle cross-league translation. Flags stay
+        # pinned off; their dormant downstream code paths were deleted.
         age_adjusted = False
 
         # Cross-tier translation — Opta strength multiplier only. The
@@ -12252,7 +12298,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # AND by CVI's age-value lookup.
         _has_age = (not analysis_player_details_df.empty
                      and 'birthDate' in analysis_player_details_df.columns)
-        if (age_adjusted or show_cvi) and _has_age:
+        if show_cvi and _has_age:
             _filtered_age = filtered_df['playerId'].map(
                 lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
                 if pid in analysis_player_details_df.index else None
@@ -12355,49 +12401,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 show_cvi = False
                 sort_by_cvi = False
 
-        def _age_band_pair(age):
-            """(low, high) inclusive age range. ±1 yr for ages 20-32,
-            ±2 yr for ≤19 and ≥33."""
-            if age is None or pd.isna(age):
-                return None
-            a = int(age)
-            if a <= 19 or a >= 33:
-                return a - 2, a + 2
-            return a - 1, a + 1
-
-        def _apply_age_adjustment(tdf, score_col):
-            """Return tdf with an extra '_AdjRating' column = same-age-band
-            percentile of score_col, plus '_CohortSize'. Cohort auto-widens
-            +1 yr per side until ≥15 players."""
-            if '_age' not in tdf.columns:
-                return tdf
-            pcts, sizes = [], []
-            for _, row in tdf.iterrows():
-                band = _age_band_pair(row.get('_age'))
-                if band is None or pd.isna(row.get(score_col)):
-                    pcts.append(None); sizes.append(None)
-                    continue
-                lo, hi = band
-                cohort = pd.DataFrame()
-                for widen in range(0, 6):
-                    _lo, _hi = lo - widen, hi + widen
-                    cohort = tdf[
-                        (tdf['_age'] >= _lo)
-                        & (tdf['_age'] <= _hi)
-                        & tdf[score_col].notna()
-                    ]
-                    if len(cohort) >= 15:
-                        break
-                if cohort.empty:
-                    pcts.append(None); sizes.append(0)
-                    continue
-                val = row[score_col]
-                rank = (cohort[score_col] >= val).sum()
-                pct = 100.0 * (1.0 - (rank - 1) / max(len(cohort), 1))
-                pcts.append(round(pct, 1))
-                sizes.append(len(cohort))
-            return tdf.assign(_AdjRating=pcts, _CohortSize=sizes)
-
         # --- Helper: build a display table for a given template ---
         def _build_template_table(template_name, source_df, n_players, compact=False):
             """Build a display DataFrame for a template. Returns (display_df, player_ids) or (None, [])."""
@@ -12414,15 +12417,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if tdf.empty:
                 return None, []
 
-            # Apply age adjustment to Rating BEFORE sorting + slicing.
-            # The peer cohort is the position-eligible pool (tdf), not
-            # the full filtered df — that way a 19-year-old CB is
-            # compared to other 19yo CBs, not 19yo wingers.
-            if age_adjusted and '_age' in tdf.columns:
-                tdf = _apply_age_adjustment(tdf, score_col)
-                _sort_col = '_AdjRating'
-            else:
-                _sort_col = score_col
+            _sort_col = score_col
 
             # Overview defaults to ACP PROJECTION order (Lucas) —
             # bespoke template score still drives the per-template views
@@ -12483,33 +12478,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if 'Projection' in display.columns:
                 display['Projection'] = pd.to_numeric(display['Projection'], errors='coerce').round(1)
             display['Minutes'] = display['Minutes'].astype(int)
-
-            # Cross-tier translation: multiply Rating by the league-
-            # strength factor and surface the translated value. In
-            # compact mode REPLACE the Rating column (overview is
-            # already wide); in full mode INSERT alongside.
-            if _rating_multiplier is not None:
-                _tgt_label = COMPETITIONS.get(_trans_tgt_comp, {}).get('name', '→')
-                _tgt_short = 'Liga 3' if _trans_tgt_comp == 43324 else 'Camp'
-                translated = (display['Rating'] * _rating_multiplier).round(1)
-                if compact:
-                    display['Rating'] = translated
-                else:
-                    _r_idx = display.columns.get_loc('Rating')
-                    display.insert(_r_idx + 1, f"→ {_tgt_short}", translated)
-
-            # Age-adjusted: replace Rating with same-age percentile in
-            # compact mode (overview is too wide for a second column);
-            # in full mode show both side-by-side with cohort size.
-            if age_adjusted and '_AdjRating' in sorted_tdf.columns:
-                adj = pd.Series(sorted_tdf['_AdjRating'].values, index=display.index)
-                cohort = pd.Series(sorted_tdf['_CohortSize'].values, index=display.index).astype('Int64')
-                if compact:
-                    display['Rating'] = adj.round(1)
-                else:
-                    _r_idx = display.columns.get_loc('Rating')
-                    display.insert(_r_idx + 1, 'Same-age %ile', adj.round(1))
-                    display.insert(_r_idx + 2, 'Cohort n', cohort)
 
             # Projected value: insert next to Rating in both compact
             # and full modes. EUR computed from CVI × position mult ×
@@ -12624,14 +12592,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 overview_df.index.name = 'Rank'
 
                 st.subheader("Player Overview")
-                if age_adjusted:
-                    st.caption(
-                        "🟦 Rating column = same-age peer percentile "
-                        "(±1 yr for ages 20-32, ±2 yr otherwise; "
-                        "cohort auto-widens until ≥15)."
-                    )
-                if _rating_caption:
-                    st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
                         "🟩 Projected Value = CVI → EUR mapping "
@@ -12782,14 +12742,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             display_df, player_ids = _build_template_table(selected_template, filtered_df, num_players, compact=False)
 
             if display_df is not None and not display_df.empty:
-                if age_adjusted:
-                    st.caption(
-                        "🟦 'Same-age %ile' column = player's percentile vs same-position "
-                        "same-age cohort. ±1 yr for ages 20-32, ±2 yr otherwise; "
-                        "cohort auto-widens until ≥15."
-                    )
-                if _rating_caption:
-                    st.caption(f"🟧 {_rating_caption}")
                 if show_cvi:
                     st.caption(
                         "🟩 CVI = composite scout-facing value · 'Traj vs age' = "
@@ -12819,7 +12771,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     with st.expander("Template Weights", expanded=False):
                         weight_df = pd.DataFrame(weighted_items, columns=['Metric', 'Weight'])
                         weight_df['Weight'] = weight_df['Weight'].apply(lambda w: f"{w:.1f}")
-                        st.dataframe(weight_df, use_container_width=True, hide_index=True)
+                        st.dataframe(weight_df, use_container_width=True, hide_index=True, column_config=auto_column_config(weight_df))
             else:
                 st.warning(f"No players found for {selected_template} template with current filters.")
 
@@ -13335,7 +13287,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 rating_rows = []
                 for season_name in rating_seasons:
                     sid = season_name_to_id[season_name]
-                    s_events = filter_by_league(get_season_events(raw_events_df, sid), selected_comp_ids)
+                    s_events = get_filtered_events(raw_events_df, sid, selected_comp_ids)
                     s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
                     ts_df = calculate_team_strength(s_events, s_matches, season_id=sid)
                     if ts_df.empty:
@@ -13374,7 +13326,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         ratings_combined['Overall'] = 50.0
                     ratings_combined = ratings_combined.sort_values('Overall', ascending=False).reset_index(drop=True)
                     ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
-                    st.dataframe(ratings_combined, use_container_width=True, hide_index=True)
+                    st.dataframe(ratings_combined, use_container_width=True, hide_index=True, column_config=auto_column_config(ratings_combined))
                 else:
                     st.info("No team strength data available for selected seasons.")
 
@@ -13645,7 +13597,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     away_label: [f"{away_feats['ppg']:.2f}", f"{away_feats['gpg']:.2f}", f"{away_feats['xgpg']:.2f}", f"{away_feats['xgapg']:.2f}", f"{away_feats['win_rate']:.1%}", f"{away_feats['form']:.2f}", f"{away_feats['cs_rate']:.1%}"]
                 }
                 comparison_df = pd.DataFrame(comparison_data)
-                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True, column_config=auto_column_config(comparison_df))
 
                 # Show matches played
                 home_matches = home_cum['matches']
@@ -13661,7 +13613,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         selected_comp_ids = league_selector("shadow_team")
         selected_season_id = season_selector("shadow_team", include_all_seasons=True, comp_ids=selected_comp_ids)
         active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        shadow_events_df = filter_by_league(get_season_events(raw_events_df, active_season_ids), selected_comp_ids)
+        shadow_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
         shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
         # --- Load Data ---
@@ -13669,12 +13621,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         try:
             with st.spinner("Loading player statistics..."):
-                player_stats_df = calculate_all_player_stats(shadow_events_df, shadow_player_minutes_df, season_id=selected_season_id)
-                player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, selected_comp_ids)
-                player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-                    player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=selected_season_id
+                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
+                    shadow_events_df, shadow_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
                 )
         except Exception as e:
             st.error(f"An error occurred calculating player stats: {e}")
@@ -13865,7 +13813,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     role_scores = get_player_role_scores(player_row, slot)
                     if role_scores:
                         scores_df = pd.DataFrame(list(role_scores.items()), columns=['Role', 'Score'])
-                        st.dataframe(scores_df, use_container_width=True, hide_index=True)
+                        st.dataframe(scores_df, use_container_width=True, hide_index=True, column_config=auto_column_config(scores_df))
                     else:
                         st.caption("No role scores available for this slot.")
 
