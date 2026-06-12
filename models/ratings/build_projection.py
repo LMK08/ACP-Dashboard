@@ -83,19 +83,22 @@ print(f"  age coverage: {o['age'].notna().mean()*100:.0f}% of player-seasons")
 # leak-free career-as-of (recency-weighted mean THROUGH each season —
 # unlike acp_rating_career, which sees the whole future)
 o = o.sort_values(['playerId', 'yr'])
-_car, _eff = [], []
+_car, _e5, _e8, _e10 = [], [], [], []
 for _pid, _gg in o.groupby('playerId', sort=False):
-    num = den = 0.0
+    num = den = d8 = d10 = 0.0
     for _, r in _gg.iterrows():
         num = num * 0.5 + r['mins_played'] * r['acp_rating']
         den = den * 0.5 + r['mins_played']
+        d8 = d8 * 0.8 + r['mins_played']
+        d10 = d10 + r['mins_played']
         _car.append(num / den)
-        _eff.append(den)
+        _e5.append(den); _e8.append(d8); _e10.append(d10)
 o['career_asof'] = _car
-# evidence behind career_asof = the SAME recency-weighted minutes it
-# aggregates (Lucas fix: w was current-season mins only, under-trusting
-# veterans with thin current seasons but deep careers)
-o['eff_mins'] = _eff
+# evidence-of-identity decays SLOWER than form (Lucas): three decay
+# variants; the projection picks one by train CV below
+o['eff_mins'] = _e5
+o['eff8'] = _e8
+o['eff10'] = _e10
 
 # ---- survivorship-corrected AGE CURVE (delta method) -----------------------
 # Lucas's concern, backed by the literature (Dendir 2016: soccer peak
@@ -122,42 +125,34 @@ def _bin_of(age):
 # drop out (genuine decline). Impute decline only for the latter:
 # exits aged <25 with a final rating above their role-league median
 # are excluded from the correction.
-o['_role_med'] = o.groupby(['role', 'league', 'seasonId'])['acp_rating'].transform('median')
-_dp, _ex = [], []
+# v3 age curve (Lucas): GROWTH CURVE from observed performance only —
+# NO exit imputation (we flip-flopped its sign twice; it injects more
+# assumption than it removes). Pure within-player deltas + literature
+# prior. Honest caveat: survivors-only, so old-bin declines are
+# understated; the prior is the only counterweight.
+_dp = []
 for _pid, _gg in o.dropna(subset=['age']).groupby('playerId'):
     rr = _gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
         if b['yr'] - a['yr'] == 1:
             _dp.append((a['age'], b['acp_rating'] - a['acp_rating']))
-    last = rr[-1]
-    if last['yr'] < 2025:
-        # v2 exit logic (Lucas: why are pre-prime deltas negative?):
-        # young exits leave for MANY destinations (Liga 2, abroad,
-        # other D4) — unknowable direction, so CENSOR all <25 exits.
-        # 25+ exits are predominantly decline -> impute 25th pct.
-        if last['age'] >= 25:
-            _ex.append(last['age'])
 _DP = pd.DataFrame(_dp, columns=['age', 'delta'])
 _DP['ab'] = _DP['age'].map(_bin_of)
-_EXB = pd.Series([_bin_of(a) for a in _ex])
 AGE_CURVE = {}
-print("  age curve (delta method, exit-corrected, prior-shrunk):")
+print("  age curve (observed deltas + prior, NO exit imputation):")
 for b in range(len(AGE_BINS)):
     obs = _DP[_DP['ab'] == b]['delta']
-    n_obs, n_ex = len(obs), int((_EXB == b).sum())
-    imput = obs.quantile(0.25) if n_obs >= 10 else PRIOR_DELTA[b]
-    raw = (obs.sum() + n_ex * imput) / max(n_obs + n_ex, 1)
-    AGE_CURVE[b] = ((raw * (n_obs + n_ex) + PRIOR_DELTA[b] * K_PRIOR)
-                      / (n_obs + n_ex + K_PRIOR))
-    print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} n={n_obs:>3}"
-           f" (+{n_ex:>3} exits)  obs {obs.mean() if n_obs else float('nan'):+.2f}"
-           f" -> corrected {raw:+.2f} -> final {AGE_CURVE[b]:+.2f}")
+    n_obs = len(obs)
+    AGE_CURVE[b] = ((obs.sum() + PRIOR_DELTA[b] * K_PRIOR)
+                      / (n_obs + K_PRIOR))
+    print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} n={n_obs:>3}  "
+           f"obs {obs.mean() if n_obs else float('nan'):+.2f} -> final {AGE_CURVE[b]:+.2f}")
 o['age_delta'] = o['age'].map(lambda a: AGE_CURVE[_bin_of(a)] if a == a else np.nan)
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
-          'career_asof', 'n_seasons', 'mins_played', 'eff_mins', 'age_delta',
-          'p_drib_wide', 'p_npxg_st']
+          'career_asof', 'n_seasons', 'mins_played', 'eff_mins', 'eff8',
+          'eff10', 'age_delta', 'p_drib_wide', 'p_npxg_st']
 o['p_drib_wide'] = np.where(o['role'].isin(WIDE), o['p_drib'], 0.5)
 o['p_npxg_st'] = np.where(o['role'] == 'Striker', o['p_npxg'], 0.5)
 
@@ -198,11 +193,31 @@ marcel_te = te['career_asof'] + te['age_delta']     # literature 'Marcel' form
 # players survive to a rated next season vs 37% of starters).
 # Continuous form: next ~ c0 + c1*w + c2*career + c3*career*w,
 # w = mins/(mins+900). Level pull toward replacement when w is small.
-_wtr = (tr['eff_mins'] / (tr['eff_mins'] + 1500.0)).values
+# grid-select evidence decay + K on TRAIN CV (test untouched)
+from sklearn.model_selection import KFold
+_best_w = None
+for _ec, _K in [('eff_mins', 900), ('eff_mins', 1500), ('eff8', 1500),
+                  ('eff8', 2500), ('eff10', 1500), ('eff10', 2500)]:
+    _w = (tr[_ec] / (tr[_ec] + _K)).values
+    _X = np.column_stack([np.ones(len(tr)), _w, tr['career_asof'].values,
+                            tr['career_asof'].values * _w,
+                            tr['age_delta'].values])
+    _maes = []
+    for _itr, _iva in KFold(5, shuffle=True, random_state=0).split(_X):
+        _c, *_ = np.linalg.lstsq(_X[_itr], tr['next_rating'].values[_itr],
+                                   rcond=None)
+        _maes.append(np.abs(_X[_iva] @ _c
+                              - tr['next_rating'].values[_iva]).mean())
+    _m = float(np.mean(_maes))
+    if _best_w is None or _m < _best_w[2]:
+        _best_w = (_ec, _K, _m)
+EVID_COL, EVID_K, _ = _best_w
+print(f"  evidence config (train CV): {EVID_COL}, K={EVID_K}")
+_wtr = (tr[EVID_COL] / (tr[EVID_COL] + EVID_K)).values
 _Xr = np.column_stack([np.ones(len(tr)), _wtr, tr['career_asof'].values,
                          tr['career_asof'].values * _wtr])
 _cr, *_ = np.linalg.lstsq(_Xr, tr['next_rating'].values, rcond=None)
-_wte = (te['eff_mins'] / (te['eff_mins'] + 1500.0)).values
+_wte = (te[EVID_COL] / (te[EVID_COL] + EVID_K)).values
 repl_te = (np.column_stack([np.ones(len(te)), _wte, te['career_asof'].values,
                               te['career_asof'].values * _wte]) @ _cr)
 # FULL form: career + replacement-pull + age, jointly fitted (the three
@@ -267,11 +282,11 @@ if SHIP == 'ridge':
 elif SHIP == 'marcel':
     cur['projection'] = cur['career_asof'] + cur['age_delta']
 elif SHIP == 'replacement':
-    _wc = (cur['eff_mins'] / (cur['eff_mins'] + 1500.0)).values
+    _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
         cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cr)
 elif SHIP == 'full':
-    _wc = (cur['eff_mins'] / (cur['eff_mins'] + 1500.0)).values
+    _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
     cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
         cur['career_asof'].values, cur['career_asof'].values * _wc,
         cur['age_delta'].values]) @ _cf)
@@ -288,7 +303,7 @@ band = te2.groupby('role')['resid'].std().rename('band_sd')
 print(band.round(1).to_string())
 cur['band_sd'] = cur['role'].map(band).fillna(float(te2['resid'].std()))
 cur['proj_delta'] = cur['projection'] - cur['acp_rating']
-cur['w_evidence'] = cur['eff_mins'] / (cur['eff_mins'] + 1500.0)
+cur['w_evidence'] = cur[EVID_COL] / (cur[EVID_COL] + EVID_K)
 out = cur[['playerId', 'seasonId', 'name', 'role', 'side', 'league', 'age',
              'mins_played', 'acp_rating', 'career_asof', 'age_delta',
              'w_evidence', 'projection', 'band_sd', 'proj_delta']].copy()

@@ -291,7 +291,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'dwae_pct', 'qual_pct', 'datt_pct', 'duel_pct', 'rapm_pct', 'setpiece_pct', 'acp_rating', 'acp_rating_career',
               'n_seasons']
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.0'
+out['rating_version'] = 'v6.1'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
