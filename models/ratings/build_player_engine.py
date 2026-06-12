@@ -32,9 +32,39 @@ proj_cols = ['playerId', 'seasonId', 'age', 'career_asof', 'age_delta',
 # lapsed rows join onto their LAST rated season's rating row.
 eng = r.merge(p[proj_cols], on=['playerId', 'seasonId'], how='left')
 
-print("[2/4] teams + duel ladders…", flush=True)
+print("[2/4] teams + duel ladders + raw axis values…", flush=True)
 pt = pd.read_parquet(_HERE / 'player_teams.parquet')
 eng = eng.merge(pt, on=['playerId', 'seasonId'], how='left')
+
+# raw per-axis values for the mean±2σ radar: category value/90, DefR
+# volume (defr_adj), DWAE/90 (count-shrunk, same as the rating), RAPM
+g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
+                      columns=['playerId', 'seasonId', 'mins_played',
+                                'Shooting', 'Receiving', 'Dribbling'])
+g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
+g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
+ps = pd.read_parquet(_HERE / 'pass_split.parquet')
+g = g.merge(ps.rename(columns={'Creating Value': 'Creating',
+                                  'Linking Value': 'Linking'}),
+              on=['playerId', 'seasonId'], how='left')
+g[['Creating', 'Linking']] = g[['Creating', 'Linking']].fillna(0.0)
+for c in ['Shooting', 'Creating', 'Linking', 'Receiving', 'Dribbling']:
+    g[f'raw_{c}90'] = g[c] / g['mins_played'] * 90.0
+eng = eng.merge(g[['playerId', 'seasonId']
+                   + [f'raw_{c}90' for c in
+                      ['Shooting', 'Creating', 'Linking', 'Receiving', 'Dribbling']]],
+                  on=['playerId', 'seasonId'], how='left')
+d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
+                      columns=['playerId', 'seasonId', 'defr_adj',
+                                'defr_dwae', 'dwae_n'])
+d = d.rename(columns={'defr_adj': 'raw_resp'})
+d['raw_dwae90'] = (d['defr_dwae'] * d['dwae_n'] / (d['dwae_n'] + 80.0))
+eng = eng.merge(d[['playerId', 'seasonId', 'raw_resp', 'raw_dwae90', 'dwae_n']],
+                  on=['playerId', 'seasonId'], how='left')
+eng['raw_dwae90'] = eng['raw_dwae90'] / eng['mins_played'] * 90.0
+r4 = pd.read_parquet(_HERE / 'rapm_v4_per_season.parquet')
+eng = eng.merge(r4.rename(columns={'rapm_v4': 'raw_rapm'}),
+                  on=['playerId', 'seasonId'], how='left')
 duels = pd.read_parquet(_DASH / 'models/duels/duel_ratings.parquet')
 duels = duels[duels['playerId'] > 0]
 for trait in ['aerial', 'takeon', 'stopper', 'shield', 'press']:

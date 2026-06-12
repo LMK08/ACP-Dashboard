@@ -1003,9 +1003,10 @@ def load_player_engine():
 
 ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'ACP Projection (abs)', 'Projection Band',
-                           'Evidence Weight', 'Engine Off %', 'Engine Qual %',
-                           'Engine RAPM %', 'Engine Resp %',
-                           'Engine Duel-att %', 'Engine Set Piece %']
+                           'Evidence Weight', 'Offensive Value %',
+                           'Def Quality Grade %', 'Engine RAPM %',
+                           'Def Volume Grade %', 'Engine Duel-att %',
+                           'Engine Set Piece %']
 
 
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
@@ -1035,10 +1036,10 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         'ACP Projection (abs)': e['projection_abs'],
         'Projection Band': e['band_sd'],
         'Evidence Weight': e['w_evidence'],
-        'Engine Off %': e['off_pct'] * 100.0,
-        'Engine Qual %': e['qual_pct'] * 100.0,
+        'Offensive Value %': e['off_pct'] * 100.0,
+        'Def Quality Grade %': e['qual_pct'] * 100.0,
         'Engine RAPM %': e['rapm_pct'] * 100.0,
-        'Engine Resp %': e['defr_pct'] * 100.0,
+        'Def Volume Grade %': e['defr_pct'] * 100.0,
         'Engine Duel-att %': e['datt_pct'] * 100.0,
         'Engine Set Piece %': e['setpiece_pct'] * 100.0,
         'Engine Value EUR': e['engine_value_eur'],
@@ -9519,9 +9520,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # component bars
                 _comp_cols = st.columns(6)
                 for _i, (_lbl, _col) in enumerate([
-                        ("Off", 'off_pct'), ("Qual", 'qual_pct'),
-                        ("RAPM", 'rapm_pct'), ("Resp", 'defr_pct'),
-                        ("Duel-att", 'datt_pct'), ("Set piece", 'setpiece_pct')]):
+                        ("Offensive Value", 'off_pct'),
+                        ("Def Quality Grade", 'qual_pct'),
+                        ("RAPM", 'rapm_pct'),
+                        ("Def Volume Grade", 'defr_pct'),
+                        ("Duel-att", 'datt_pct'),
+                        ("Set piece", 'setpiece_pct')]):
                     _v = _e.get(_col)
                     with _comp_cols[_i]:
                         if pd.notna(_v):
@@ -9529,44 +9533,70 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             st.caption(f"{_lbl} · {float(_v)*100:.0f}")
                         else:
                             st.caption(f"{_lbl} · —")
-                # --- ACP Index radar: traditional-radar styling -------
-                # (cream parchment, blue fill, category-colored labels,
-                # percentile rings). Off split into its five categories;
-                # grouped + color-coded by area like the classic radar.
-                _rad_groups = [
-                    ('Shooting', _e.get('Shooting_pct'), 'output'),
-                    ('Receiving', _e.get('Receiving_pct'), 'output'),
-                    ('Creating', _e.get('Creating_pct'), 'passing'),
-                    ('Linking', _e.get('Linking_pct'), 'passing'),
-                    ('Dribbling', _e.get('Dribbling_pct'), 'dribbling'),
-                    ('Duel-att', _e.get('datt_pct'), 'dribbling'),
-                    ('Qual', _e.get('qual_pct'), 'defensive'),
-                    ('Resp', _e.get('defr_pct'), 'defensive'),
-                    ('RAPM', _e.get('rapm_pct'), 'team'),
-                    ('Set piece', _e.get('setpiece_pct'), 'setpiece'),
+                # --- ACP Index radar: RAW per-90 values on a mean ± 2σ
+                # scale vs the player's league × season × role cohort,
+                # with per-axis cohort distributions on the right —
+                # mirrors the traditional radar's raw mode + KDE panels.
+                # Set piece removed (Lucas); Duel-att raw = n-weighted
+                # take-on/shield Glicko; Def Quality raw = DWAE/90.
+                _eng_rad_df = _eng_df.copy()
+                _nt = _eng_rad_df['duel_takeon_n'].fillna(0.0)
+                _ns = _eng_rad_df['duel_shield_n'].fillna(0.0)
+                _eng_rad_df['_datt_glicko'] = (
+                    (_eng_rad_df['duel_takeon'].fillna(0.0) * _nt
+                     + _eng_rad_df['duel_shield'].fillna(0.0) * _ns)
+                    / (_nt + _ns).replace(0.0, np.nan))
+                _RAD_AXES = [
+                    ('Shooting', 'raw_Shooting90', 'output', '{:.2f}'),
+                    ('Receiving', 'raw_Receiving90', 'output', '{:.2f}'),
+                    ('Creating', 'raw_Creating90', 'passing', '{:.2f}'),
+                    ('Linking', 'raw_Linking90', 'passing', '{:.2f}'),
+                    ('Dribbling', 'raw_Dribbling90', 'dribbling', '{:.2f}'),
+                    ('Duel-att', '_datt_glicko', 'dribbling', '{:.0f}'),
+                    ('Def Quality', 'raw_dwae90', 'defensive', '{:.2f}'),
+                    ('Def Volume', 'raw_resp', 'defensive', '{:.2f}'),
+                    ('RAPM', 'raw_rapm', 'team', '{:.2f}'),
                 ]
                 _RAD_COLORS = {'output': 'green', 'passing': 'orange',
                                 'defensive': 'red', 'dribbling': 'purple',
-                                'team': '#0077b6', 'setpiece': 'grey'}
+                                'team': '#0077b6'}
                 _RAD_LEGEND = [('Output', 'green'),
                                 ('Passing / Creation', 'orange'),
                                 ('Ball Carrying', 'purple'),
                                 ('Defending', 'red'),
-                                ('Team Impact (RAPM)', '#0077b6'),
-                                ('Set Piece (not in rating)', 'grey')]
-                _rad = [(l, float(v) * 100.0, g) for l, v, g in _rad_groups
-                        if v is not None and pd.notna(v)]
+                                ('Team Impact (RAPM)', '#0077b6')]
+                _coh = _eng_rad_df[
+                    (_eng_rad_df['league'] == _e['league'])
+                    & (_eng_rad_df['seasonId'] == _e['seasonId'])
+                    & (_eng_rad_df['role'] == _e['role'])
+                    & (_eng_rad_df['mins_played'] >= 500)]
+                _pe = _eng_rad_df.loc[_e.name]
+                _rad = []
+                for _lbl, _col, _g, _f in _RAD_AXES:
+                    if _col not in _eng_rad_df.columns:
+                        continue
+                    _pv = _pe.get(_col)
+                    _pop = _coh[_col].dropna()
+                    if _pv is None or pd.isna(_pv) or len(_pop) < 5:
+                        continue
+                    _mu = float(_pop.mean())
+                    _sd = float(_pop.std()) or 1.0
+                    _mapped = float(np.clip(
+                        50.0 + (float(_pv) - _mu) / _sd * 25.0, 0.0, 100.0))
+                    _rad.append((_lbl, _mapped, _g, float(_pv), _mu, _sd,
+                                  _f, _pop))
                 if len(_rad) >= 5:
                     from math import pi as _pi
                     _n = len(_rad)
                     _ang = [k / float(_n) * 2 * _pi for k in range(_n)]
-                    _vals = [v for _, v, _ in _rad]
-                    _figr = plt.figure(figsize=(10, 7.4))
+                    _vals = [m for _, m, _g, _pv, _mu, _sd, _f, _pop in _rad]
+                    _figr = plt.figure(figsize=(20, 10))
                     _figr.patch.set_facecolor((0.95, 0.92, 0.87))
-                    _axr = _figr.add_subplot(111, polar=True)
+                    _gsr = GridSpec(1, 2, width_ratios=[2.5, 1.2],
+                                     figure=_figr)
+                    _axr = plt.subplot(_gsr[0], polar=True)
                     _axr.set_facecolor((0.99, 0.98, 0.95))
-                    _figr.subplots_adjust(top=0.80, bottom=0.11,
-                                            left=0.02, right=0.70)
+                    _figr.subplots_adjust(top=0.80, bottom=0.08, left=0.03)
                     _axr.set_theta_offset(_pi / 2)    # first axis at 12 o'clock
                     _axr.set_theta_direction(-1)       # clockwise
                     _axr.set_xticks(_ang)
@@ -9576,43 +9606,89 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                color='#0077b6', zorder=3)
                     _axr.fill(_ang + _ang[:1], _vals + _vals[:1],
                                '#0077b6', alpha=0.25, zorder=2)
-                    _axr.set_rlabel_position(-180.0 / _n)   # rings in a slice gap
+                    _axr.set_rlabel_position(-180.0 / _n)
                     _axr.set_yticks([25, 50, 75, 100])
-                    _axr.set_yticklabels(["25%", "50%", "75%", "100%"],
+                    _axr.set_yticklabels(["", "", "", ""],
                                            color="grey", size=7)
                     _axr.set_ylim(0, 100)
-                    for _k, (_lbl, _v, _g) in enumerate(_rad):
-                        _r_chip = _v + 9 if _v <= 86 else _v - 11
-                        _axr.text(_ang[_k], _r_chip, f"{_v:.0f}", size=8,
-                                   ha='center', va='center', color='#0077b6',
-                                   fontweight='bold', zorder=4)
-                        _axr.text(_ang[_k], 116, _lbl, size=9, ha='center',
-                                   va='center', color=_RAD_COLORS[_g],
-                                   fontweight='bold')
+                    # per-spoke gridline labels show RAW cohort values at
+                    # -1σ / mean / +1σ / +2σ (traditional raw mode)
+                    for _k, (_lbl, _m, _g, _pv, _mu, _sd, _f, _pop) in enumerate(_rad):
+                        for _lvl, _sig in zip([25, 50, 75, 100],
+                                                [-1, 0, 1, 2]):
+                            _axr.text(_ang[_k], _lvl + 3,
+                                       _f.format(_mu + _sig * _sd),
+                                       size=7, ha='center', va='bottom',
+                                       color='black')
+                        _axr.text(_ang[_k], 116, _lbl, size=10,
+                                   ha='center', va='center',
+                                   color=_RAD_COLORS[_g], fontweight='bold')
                     _team_lbl = (str(_e.get('team'))
                                   if pd.notna(_e.get('team')) else '')
-                    plt.figtext(0.05, 0.955,
+                    plt.figtext(0.04, 0.95,
                                  f"{_e['name']}"
                                  + (f" | {_team_lbl}" if _team_lbl else ''),
-                                 fontsize=15, color='black', ha='left',
+                                 fontsize=16, color='black', ha='left',
                                  weight='bold')
-                    plt.figtext(0.05, 0.91,
+                    plt.figtext(0.04, 0.905,
                                  f"{_e['role']} | {int(_e['mins_played'])} minutes"
                                  f" | ACP Index {_e['acp_rating']:.0f}"
                                  + (f" → projection {_e['projection']:.0f}"
-                                    if pd.notna(_e.get('projection')) else ''),
-                                 fontsize=11, color='black', ha='left')
+                                    if pd.notna(_e.get('projection')) else '')
+                                 + " | Raw per 90 vs role cohort (mean ± 2σ)",
+                                 fontsize=12, color='black', ha='left')
                     _patches = [plt.Line2D([0], [0], color=c, lw=4)
                                 for _, c in _RAD_LEGEND]
                     _figr.legend(_patches, [l for l, _ in _RAD_LEGEND],
-                                  loc='upper right', bbox_to_anchor=(0.99, 0.99),
-                                  frameon=False, fontsize=8)
-                    plt.figtext(0.74, 0.10,
-                                 "Cohort percentiles\n(league × season × role)\n"
-                                 f"Engine {_eng_meta.get('rating_version', '')}\n"
-                                 "Data via Wyscout\n@lucaskimball\n"
-                                 f"Date: {datetime.date.today()}",
-                                 ha='left', fontsize=8, color='black')
+                                  loc='upper right',
+                                  bbox_to_anchor=(0.60, 0.99),
+                                  frameon=False, fontsize=9)
+                    # --- cohort distribution panels (right side) -------
+                    _gsd = GridSpec(_n, 1, left=0.66, right=0.92,
+                                     top=0.86, bottom=0.07, hspace=0.7,
+                                     figure=_figr)
+                    for _k, (_lbl, _m, _g, _pv, _mu, _sd, _f, _pop) in enumerate(_rad):
+                        _axd = plt.subplot(_gsd[_k])
+                        _axd.set_facecolor((0.99, 0.98, 0.95))
+                        if len(_pop) > 1:
+                            sns.kdeplot(_pop, ax=_axd, fill=True,
+                                         color=_RAD_COLORS[_g], cut=0)
+                        _pct = scipy.stats.percentileofscore(
+                            _pop, _pv, kind='strict')
+                        _lo = float(min(_pop.min(), _pv))
+                        _hi = float(max(_pop.max(), _pv))
+                        if _lo == _hi:
+                            _lo, _hi = _lo - 0.1, _hi + 0.1
+                        _axd.set_xlim(_lo, _hi)
+                        _axd.set_xticks([_lo, _hi])
+                        _axd.set_xticklabels([_f.format(_lo), _f.format(_hi)],
+                                               fontsize=8)
+                        _axd.axvline(_pv, color='blue', linestyle='--')
+                        _sfx = get_percentile_suffix(int(_pct))
+                        _axd.text(1.04, 0.5,
+                                   f"%-tile: {int(_pct)}{_sfx}\n"
+                                   f"value: {_f.format(_pv)}",
+                                   transform=_axd.transAxes, fontsize=8,
+                                   va='center')
+                        _axd.set_yticks([])
+                        _axd.set_ylabel('')
+                        _axd.set_xlabel('')
+                        _lgd = _axd.get_legend()
+                        if _lgd is not None:
+                            _lgd.remove()
+                        _axd.text(-0.04, 0.5, _lbl, transform=_axd.transAxes,
+                                   fontsize=9, fontweight='bold',
+                                   va='center', ha='right')
+                    plt.figtext(0.04, 0.035,
+                                 f"Raw per-90 values vs {_e['role']} cohort "
+                                 f"({_e['league']}, current season, 500+ mins) · "
+                                 f"Def Quality raw = duel wins above expectation /90 · "
+                                 f"Duel-att raw = take-on/shield Glicko · "
+                                 f"RAPM = on-pitch xGD/90 · "
+                                 f"Engine {_eng_meta.get('rating_version', '')} · "
+                                 f"Data via Wyscout · @lucaskimball · "
+                                 f"{datetime.date.today()}",
+                                 ha='left', fontsize=9, color='black')
                     st.pyplot(_figr, use_container_width=True)
                     plt.close(_figr)
                 st.caption(
