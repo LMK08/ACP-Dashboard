@@ -326,31 +326,46 @@ df['datt_pct'] = role_pct('datt_raw')
 # expectation signal with the opponent-adjusted ladder PER CONTEST TYPE
 # — Aerial Grade (aerial WOE + aerial Glicko) and Ground Grade (ground
 # WOE + stopper/press Glicko) — then blend by engagement counts.
-# Audited 2026-06-12: per-type WOE YoY beats pooled DWAE in 10/12
-# role-type cells (aerial 0.35-0.70, ground 0.20-0.48 vs pooled
-# 0.18-0.44). Static bucket expectation (kind x zone x phase for
-# ground; height-diff bins for aerial), EB shrink n/(n+60).
+# Expectation = OPPONENT QUALITY, never physical attributes (Lucas —
+# same locked principle that removed height from the aerial ladder):
+# p_hat = what an AVERAGE player does vs THIS opponent, so beating an
+# excellent aerial player earns more than beating a poor one. Ground
+# keeps the situational bucket (kind x zone x phase = context, which
+# IS adjusted out) plus the opponent-quality term. Audited 2026-06-12:
+# within-role WOE YoY unchanged vs the height/situational version
+# (aerial 0.33-0.71, ground 0.23-0.44) and still beats pooled DWAE.
+# Opponent strengths are career-level shrunk win shares (K0=40) —
+# same career-scope convention as the duel ladders themselves.
 _ct = pd.read_parquet(_DASH / 'models/duels/contests.parquet',
                         columns=['ladder', 'seasonId', 'playerA', 'playerB',
-                                  'scoreA', 'att_kind', 'zx', 'phase',
-                                  'heightA', 'heightB'])
+                                  'scoreA', 'att_kind', 'zx', 'phase'])
 _ct['league'] = np.where(_ct['seasonId'].isin(CAMP), 'CAMP', 'L3')
+_a = _ct[_ct['ladder'] == 'aerial']
+_aw = pd.concat([
+    _a[['playerA']].assign(w=_a['scoreA']).rename(columns={'playerA': 'p'}),
+    _a[['playerB']].assign(w=1 - _a['scoreA']).rename(columns={'playerB': 'p'})])
+_s_aer = ((_aw.groupby('p')['w'].sum() + 20.0)
+           / (_aw.groupby('p')['w'].size() + 40.0))
 _g = _ct[_ct['ladder'] == 'ground'].copy()
+_gat = _g.groupby('playerB')['scoreA'].agg(['size', 'sum'])
+_s_att = ((_gat['size'] - _gat['sum'] + 20.0) / (_gat['size'] + 40.0))
 _g['bucket'] = (_g['att_kind'].astype(str) + '|' + _g['zx'].astype(str)
                  + '|' + _g['phase'].astype(str) + '|' + _g['league'])
-_g['woe'] = _g['scoreA'] - _g.groupby('bucket')['scoreA'].transform('mean')
+_g['mu_b'] = _g.groupby('bucket')['scoreA'].transform('mean')
+_g['s_opp'] = _g['playerB'].map(_s_att).fillna(float(_s_att.mean()))
+_g['phat'] = (_g['mu_b'] - (_g['s_opp'] - float(_g['s_opp'].mean()))
+               ).clip(0.05, 0.95)
+_g['woe'] = _g['scoreA'] - _g['phat']
 _grd = (_g.groupby(['playerA', 'seasonId'])['woe']
           .agg(woe_ground='sum', n_ground='size').reset_index()
           .rename(columns={'playerA': 'playerId'}))
-_a = _ct[_ct['ladder'] == 'aerial'].copy()
-_a['hd'] = (pd.to_numeric(_a['heightA'], errors='coerce')
-             - pd.to_numeric(_a['heightB'], errors='coerce'))
-_a['bucket'] = (pd.cut(_a['hd'], [-99, -8, -3, 3, 8, 99]).astype(str)
-                  + '|' + _a['league'])
-_a['phat'] = _a.groupby('bucket')['scoreA'].transform('mean')
-_sA = _a[['playerA', 'seasonId']].assign(woe=_a['scoreA'] - _a['phat'])
-_sB = (_a[['playerB', 'seasonId']].rename(columns={'playerB': 'playerA'})
-         .assign(woe=(1 - _a['scoreA'].values) - (1 - _a['phat'].values)))
+_a2 = _a.copy()
+_a2['pA'] = (1 - _a2['playerB'].map(_s_aer).fillna(0.5)).clip(0.08, 0.92)
+_a2['pB'] = (1 - _a2['playerA'].map(_s_aer).fillna(0.5)).clip(0.08, 0.92)
+_sA = (_a2[['playerA', 'seasonId']]
+         .assign(woe=_a2['scoreA'] - _a2['pA']))
+_sB = (_a2[['playerB', 'seasonId']].rename(columns={'playerB': 'playerA'})
+         .assign(woe=(1 - _a2['scoreA'].values) - _a2['pB'].values))
 _aer = (pd.concat([_sA, _sB]).groupby(['playerA', 'seasonId'])['woe']
           .agg(woe_aerial='sum', n_aerial='size').reset_index()
           .rename(columns={'playerA': 'playerId'}))
@@ -463,7 +478,7 @@ out_cols = out_cols + ['aerial_grade_pct', 'ground_grade_pct',
                          'woe_aerial_p90', 'woe_ground_p90']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.9'
+out['rating_version'] = 'v6.9.1'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
