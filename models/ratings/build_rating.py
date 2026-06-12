@@ -96,12 +96,15 @@ DEFAULT_W = {'off': 0.525, 'resp': 0.075, 'qual': 0.25, 'datt': 0.05, 'rapm': 0.
 # 39%). Relevance re-anchors influence to role needs while the lambda
 # reliability shrink keeps damping the noisy categories — influence is
 # now relevance x reliability x variance. Multipliers kept modest
-# (0.6-1.5) so reliability still dominates.
+# (0.5-1.5) so reliability still dominates.
+# v6.7 (Lucas): WA Receiving 1.0->1.25 (winger receiving-position craft,
+# lambda 0.17 = real signal); DM Shooting 0.75->0.5 (long shots are not
+# what the role is for — its high lambda kept influence at 32%).
 ROLE_CAT_RELEVANCE = {
     'Striker':             {'Shooting': 1.5,  'Receiving': 1.25, 'Creating': 1.0,  'Dribbling': 0.85, 'Linking': 0.7},
-    'Wide Attacker':       {'Shooting': 1.15, 'Receiving': 1.0,  'Creating': 1.25, 'Dribbling': 1.1,  'Linking': 0.7},
+    'Wide Attacker':       {'Shooting': 1.15, 'Receiving': 1.25, 'Creating': 1.25, 'Dribbling': 1.1,  'Linking': 0.7},
     'Advanced Midfielder': {'Shooting': 1.05, 'Receiving': 1.0,  'Creating': 1.3,  'Dribbling': 0.9,  'Linking': 0.9},
-    'Deep Midfielder':     {'Shooting': 0.75, 'Receiving': 1.0,  'Creating': 1.05, 'Dribbling': 0.85, 'Linking': 1.4},
+    'Deep Midfielder':     {'Shooting': 0.5,  'Receiving': 1.0,  'Creating': 1.05, 'Dribbling': 0.85, 'Linking': 1.4},
     'Wide Defender':       {'Shooting': 0.6,  'Receiving': 0.9,  'Creating': 1.25, 'Dribbling': 1.0,  'Linking': 1.2},
     'Central Defender':    {'Shooting': 0.6,  'Receiving': 1.0,  'Creating': 0.9,  'Dribbling': 0.8,  'Linking': 1.5},
 }
@@ -396,7 +399,7 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
               'n_seasons']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.6'
+out['rating_version'] = 'v6.7'
 out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
