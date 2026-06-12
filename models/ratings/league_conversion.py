@@ -44,7 +44,7 @@ with open(_DASH / 'player_details.pkl', 'rb') as f:
 det['birthDate'] = pd.to_datetime(det['birthDate'], errors='coerce')
 bd = (det.dropna(subset=['birthDate']).drop_duplicates('playerId')
          .set_index('playerId')['birthDate'])
-o['age'] = o['yr'] + 0.5 - (o['playerId'].map(bd).dt.year
+o['age'] = o['yr'] + 1.0 - (o['playerId'].map(bd).dt.year
                               + o['playerId'].map(bd).dt.dayofyear / 365)
 AGE_BINS = [(15, 20.5), (20.5, 23.5), (23.5, 26.5), (26.5, 29.5), (29.5, 42)]
 PRIOR = {0: 1.2, 1: 0.6, 2: 0.0, 3: -0.6, 4: -1.4}

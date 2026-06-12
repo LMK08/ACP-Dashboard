@@ -77,7 +77,10 @@ det['birthDate'] = pd.to_datetime(det['birthDate'], errors='coerce')
 bd = (det.dropna(subset=['birthDate']).drop_duplicates('playerId')
          .set_index('playerId')['birthDate'])
 o['birth'] = o['playerId'].map(bd)
-o['age'] = o['yr'] + 0.5 - (o['birth'].dt.year + o['birth'].dt.dayofyear / 365)
+# age at SEASON MIDPOINT (Jan 1 of the spanning winter) — the
+# standard convention (Lucas caught season-START ages reading ~1yr
+# young vs players' current age)
+o['age'] = o['yr'] + 1.0 - (o['birth'].dt.year + o['birth'].dt.dayofyear / 365)
 print(f"  age coverage: {o['age'].notna().mean()*100:.0f}% of player-seasons")
 
 # leak-free career-as-of (recency-weighted mean THROUGH each season —
