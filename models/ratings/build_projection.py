@@ -125,11 +125,25 @@ def _bin_of(age):
 # drop out (genuine decline). Impute decline only for the latter:
 # exits aged <25 with a final rating above their role-league median
 # are excluded from the correction.
-# v3 age curve (Lucas): GROWTH CURVE from observed performance only —
-# NO exit imputation (we flip-flopped its sign twice; it injects more
-# assumption than it removes). Pure within-player deltas + literature
-# prior. Honest caveat: survivors-only, so old-bin declines are
-# understated; the prior is the only counterweight.
+# v4 age curve (Lucas): INDUSTRY-STANDARD shape, not trained on our
+# panel. Our 24-26 bin measured -1.9/yr — a survivorship composition
+# artifact (half of 24-26 player-seasons exit; the best get sold UP to
+# Liga 2+, leaving plateauers), not football aging. Literature
+# consensus (Dendir 2016 peak 25-27; delta-method studies peak ~26;
+# ASA aging curves): improvement tapering to a peak at 26, accelerating
+# decline after. Scaled to our 17-pt-SD rating (cumulative 26->31
+# ~0.3 SD decline). The projection FITS a coefficient on this curve, so
+# the SHAPE is industry consensus while our data sets the magnitude.
+PEAK_AGE = 26.0
+
+
+def std_age_delta(age):
+    """Expected rating change (pts/yr) at a given age — consensus shape."""
+    if age < PEAK_AGE:
+        return min(2.0, 2.0 * (PEAK_AGE - age) / 7.0)   # +2.0/yr at 19, ->0 at 26
+    return max(-2.5, -0.35 * (age - PEAK_AGE))            # -0.35/yr per year past 26
+
+# observed bin deltas printed for REFERENCE only (not used):
 _dp = []
 for _pid, _gg in o.dropna(subset=['age']).groupby('playerId'):
     rr = _gg.to_dict('records')
@@ -138,16 +152,13 @@ for _pid, _gg in o.dropna(subset=['age']).groupby('playerId'):
             _dp.append((a['age'], b['acp_rating'] - a['acp_rating']))
 _DP = pd.DataFrame(_dp, columns=['age', 'delta'])
 _DP['ab'] = _DP['age'].map(_bin_of)
-AGE_CURVE = {}
-print("  age curve (observed deltas + prior, NO exit imputation):")
+print("  age curve = INDUSTRY STANDARD (peak 26); observed bins shown for reference:")
 for b in range(len(AGE_BINS)):
     obs = _DP[_DP['ab'] == b]['delta']
-    n_obs = len(obs)
-    AGE_CURVE[b] = ((obs.sum() + PRIOR_DELTA[b] * K_PRIOR)
-                      / (n_obs + K_PRIOR))
-    print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} n={n_obs:>3}  "
-           f"obs {obs.mean() if n_obs else float('nan'):+.2f} -> final {AGE_CURVE[b]:+.2f}")
-o['age_delta'] = o['age'].map(lambda a: AGE_CURVE[_bin_of(a)] if a == a else np.nan)
+    mid = (AGE_BINS[b][0] + min(AGE_BINS[b][1], 36)) / 2
+    print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} std {std_age_delta(mid):+.2f}/yr"
+           f"   (our panel observed {obs.mean() if len(obs) else float('nan'):+.2f}, n={len(obs)} — survivor-biased)")
+o['age_delta'] = o['age'].map(lambda a: std_age_delta(a) if a == a else np.nan)
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
