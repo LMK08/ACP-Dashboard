@@ -9777,1825 +9777,1836 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             logger.exception("Engine card failed")
         st.divider()
 
-        # --- Transfer Value Detail moved to just above Career Trajectory ---
+        _tab_radar, _tab_stats, _tab_value, _tab_shots, _tab_log = st.tabs(["Player Radar", "Stats", "Value", "Shots & Duels", "Match Log"])
 
-       # --- 5. NEW: DISPLAY PLAYER RADAR ---
-        st.subheader("Player Radar")
+        with _tab_radar:
+            # --- Transfer Value Detail moved to just above Career Trajectory ---
 
-        # Gate: 300-minute minimum for radar charts
-        _MIN_RADAR_MINUTES = 300
-        _show_radar = total_minutes >= _MIN_RADAR_MINUTES
-        if not _show_radar:
-            st.info(f"⚠️ **Insufficient sample size** — {player_per_90_stats.get('playerName', 'This player')} has only played **{int(total_minutes)} minutes** this season.")
+           # --- 5. NEW: DISPLAY PLAYER RADAR ---
+            st.subheader("Player Radar")
 
-        # 1. Detect Raw Positions (What did they actually play?)
-        try:
-            player_events = profile_events_df[profile_events_df['player.id'] == player_id]
-            if 'player.position' in player_events.columns:
-                raw_positions = player_events['player.position'].unique()
-            elif 'position_name' in player_events.columns:
-                raw_positions = player_events['position_name'].unique()
-            else:
+            # Gate: 300-minute minimum for radar charts
+            _MIN_RADAR_MINUTES = 300
+            _show_radar = total_minutes >= _MIN_RADAR_MINUTES
+            if not _show_radar:
+                st.info(f"⚠️ **Insufficient sample size** — {player_per_90_stats.get('playerName', 'This player')} has only played **{int(total_minutes)} minutes** this season.")
+
+            # 1. Detect Raw Positions (What did they actually play?)
+            try:
+                player_events = profile_events_df[profile_events_df['player.id'] == player_id]
+                if 'player.position' in player_events.columns:
+                    raw_positions = player_events['player.position'].unique()
+                elif 'position_name' in player_events.columns:
+                    raw_positions = player_events['position_name'].unique()
+                else:
+                    raw_positions = []
+            
+                # Filter out None/Nan
+                raw_positions = [x for x in raw_positions if x and str(x) != 'nan']
+
+            except Exception:
+                logger.exception("position extraction failed")
                 raw_positions = []
             
-            # Filter out None/Nan
-            raw_positions = [x for x in raw_positions if x and str(x) != 'nan']
-
-        except Exception:
-            logger.exception("position extraction failed")
-            raw_positions = []
+            # Ensure we at least have the primary position from the bio
+            if current_pos and current_pos not in raw_positions:
+                raw_positions.append(current_pos)
             
-        # Ensure we at least have the primary position from the bio
-        if current_pos and current_pos not in raw_positions:
-            raw_positions.append(current_pos)
-            
-        # Sort for the dropdown
-        raw_positions = sorted([str(p) for p in raw_positions])
+            # Sort for the dropdown
+            raw_positions = sorted([str(p) for p in raw_positions])
 
-        # 2. Position Selector (Simple Raw Codes)
-        col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
-        with col_rad_sel1:
-            st.markdown("##### Show Radar For:")
-        with col_rad_sel2:
-            selected_raw_pos = st.selectbox(
-                "Select Position:",
-                raw_positions,
-                label_visibility="collapsed",
-                key="radar_pos_selector"
+            # 2. Position Selector (Simple Raw Codes)
+            col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
+            with col_rad_sel1:
+                st.markdown("##### Show Radar For:")
+            with col_rad_sel2:
+                selected_raw_pos = st.selectbox(
+                    "Select Position:",
+                    raw_positions,
+                    label_visibility="collapsed",
+                    key="radar_pos_selector"
+                )
+
+            # --- Show Only Position toggle ---
+            # When active, recompute stats using only events at the selected position
+            profile_pos_filter = st.checkbox(
+                "Show Only Position",
+                key="profile_pos_played_filter",
+                help=f"When checked, the radar uses only events where the player played as **{selected_raw_pos}** (selected above), instead of all events."
             )
-
-        # --- Show Only Position toggle ---
-        # When active, recompute stats using only events at the selected position
-        profile_pos_filter = st.checkbox(
-            "Show Only Position",
-            key="profile_pos_played_filter",
-            help=f"When checked, the radar uses only events where the player played as **{selected_raw_pos}** (selected above), instead of all events."
-        )
-        radar_stats_df = player_stats_with_scores_df
-        radar_player_data_row = player_data_row
-        if profile_pos_filter and 'player.position' in profile_events_df.columns:
-            pos_filtered_events = profile_events_df[
-                profile_events_df['player.position'] == selected_raw_pos
-            ]
-            if not pos_filtered_events.empty:
-                # Build position-adjusted minutes: replace totalMinutes with minutes at this position
-                all_pos_minutes = get_all_players_minutes_by_position(profile_events_df)
-                pos_minutes = all_pos_minutes[all_pos_minutes['Position'] == selected_raw_pos][['playerId', 'Minutes']]
-                pos_player_minutes_df = profile_player_minutes_df.copy()
-                pos_player_minutes_df = pos_player_minutes_df.merge(pos_minutes, on='playerId', how='inner')
-                pos_player_minutes_df['totalMinutes'] = pos_player_minutes_df['Minutes']
-                pos_player_minutes_df = pos_player_minutes_df.drop(columns=['Minutes'])
-
-                # Use a distinct season_id so the cache differentiates from unfiltered stats
-                pos_cache_key = f"{selected_season_id}_pos_{selected_raw_pos}"
-                pos_filtered_stats = calculate_all_player_stats(
-                    pos_filtered_events, pos_player_minutes_df, season_id=pos_cache_key
-                )
-                # Merge GPA Value columns (same season × competition scope as profile)
-                pos_filtered_stats = merge_gpa_values_into_stats(pos_filtered_stats, active_season_ids, selected_comp_ids)
-                pos_filtered_scores = calculate_player_percentiles_and_scores(
-                    pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=pos_cache_key
-                )
-                if not pos_filtered_scores.empty:
-                    radar_stats_df = pos_filtered_scores
-                    pos_player_row = pos_filtered_scores[pos_filtered_scores['playerId'] == player_id]
-                    if not pos_player_row.empty:
-                        radar_player_data_row = pos_player_row
-
-        # Ensure the radar population carries DefR columns (the percentile
-        # function is disk-cached and may drop them) — used by the radar
-        # population, the DefR-mode toggle, and Overall Season Stats coloring.
-        radar_stats_df = merge_defr_values_into_stats(
-            radar_stats_df, active_season_ids, selected_comp_ids)
-
-        # 3. Find the "Best Fit" Template for this Raw Position
-        # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
-        
-        # Find all roles that include this raw position
-        eligible_roles = []
-        for role, valid_codes in POSITION_GROUPS.items():
-            if selected_raw_pos in valid_codes:
-                eligible_roles.append(role)
-        
-        if not eligible_roles:
-            st.warning(f"No radar templates defined for position '{selected_raw_pos}'.")
-        else:
-            # Calculate Scores to find the best fit
-            best_role = None
-            best_score = -1
-            
-            # We calculate a simple score (sum of percentiles) for each eligible role
-            for role in eligible_roles:
-                # Get metrics and weights
-                role_weights = WEIGHTS.get(role, {})
-                if not role_weights: continue
-                
-                # Define Population for this role (for percentile calculation)
-                role_codes = POSITION_GROUPS[role]
-                population = radar_stats_df[
-                    radar_stats_df['primaryPosition'].isin(role_codes)
+            radar_stats_df = player_stats_with_scores_df
+            radar_player_data_row = player_data_row
+            if profile_pos_filter and 'player.position' in profile_events_df.columns:
+                pos_filtered_events = profile_events_df[
+                    profile_events_df['player.position'] == selected_raw_pos
                 ]
-                if len(population) < 5: population = radar_stats_df # Fallback
+                if not pos_filtered_events.empty:
+                    # Build position-adjusted minutes: replace totalMinutes with minutes at this position
+                    all_pos_minutes = get_all_players_minutes_by_position(profile_events_df)
+                    pos_minutes = all_pos_minutes[all_pos_minutes['Position'] == selected_raw_pos][['playerId', 'Minutes']]
+                    pos_player_minutes_df = profile_player_minutes_df.copy()
+                    pos_player_minutes_df = pos_player_minutes_df.merge(pos_minutes, on='playerId', how='inner')
+                    pos_player_minutes_df['totalMinutes'] = pos_player_minutes_df['Minutes']
+                    pos_player_minutes_df = pos_player_minutes_df.drop(columns=['Minutes'])
 
-                # Calculate Score
-                role_score = 0
-                total_weight = 0
-
-                for metric, weight in role_weights.items():
-                    if metric in radar_player_data_row.columns and metric in population.columns:
-                        val = radar_player_data_row[metric].values[0]
-                        pop_vals = population[metric].fillna(0)
-                        
-                        # Percentile
-                        pct = (pop_vals < val).mean()
-                        if metric in INVERT_METRICS: pct = 1.0 - pct
-                        
-                        role_score += (pct * weight)
-                        total_weight += weight
-                
-                final_score = (role_score / total_weight) if total_weight > 0 else 0
-                
-                if final_score > best_score:
-                    best_score = final_score
-                    best_role = role
-            
-            # Handle case where no score could be calculated
-            if best_role is None: best_role = eligible_roles[0]
-
-            # 4. Generate Chart for the Winner
-            st.caption(f"Best Template Match: **{best_role}**")
-            _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
-            _use_defr = st.toggle(
-                "Defensive metrics → DefR",
-                value=False, key=f"defr_mode_{player_id}",
-                help="Swap each defensive axis (tackles, interceptions, recoveries, "
-                     "clearances, aerials) to its Defensive Responsibility value — "
-                     "actions above/below what the player's role is expected to make.")
-
-            # Prepare data for plotting
-            metrics_to_plot = list(WEIGHTS[best_role].keys())
-            metrics_to_plot = [m for m in metrics_to_plot
-                               if m in radar_player_data_row.columns
-                               and m not in RADAR_HIDDEN_METRICS]
-
-            # Get Population for distribution
-            final_population = radar_stats_df[
-                radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
-            ]
-            if len(final_population) < 5: final_population = radar_stats_df
-
-            # --- DefR mode: swap each defensive axis to its DefR value ---
-            if _use_defr:
-                final_population = merge_defr_values_into_stats(
-                    final_population, active_season_ids, selected_comp_ids)
-                radar_player_data_row = merge_defr_values_into_stats(
-                    radar_player_data_row, active_season_ids, selected_comp_ids)
-                _mapped, _seen = [], set()
-                for _m in metrics_to_plot:
-                    _mm = DEFR_RADAR_MAP.get(_m, _m)
-                    if _mm in radar_player_data_row.columns and _mm not in _seen:
-                        _mapped.append(_mm); _seen.add(_mm)
-                if _mapped:
-                    metrics_to_plot = _mapped
-                # Percentile for each DefR axis vs same-position peers
-                for _m in metrics_to_plot:
-                    if _m in DEFR_DISPLAY_METRICS \
-                            and _m in radar_player_data_row.columns \
-                            and _m in final_population.columns:
-                        _pv = final_population[_m].dropna()
-                        if not _pv.empty:
-                            _val = radar_player_data_row[_m].values[0]
-                            radar_player_data_row[_m + '_percentile'] = (
-                                scipy.stats.percentileofscore(_pv, _val, kind='weak') / 100.0)
-                if _mapped:
-                    st.caption("🛡️ Defensive axes show **DefR** (actions above/below role expectation).")
-
-            # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
-            # This ensures that if the user selects a raw position that maps to multiple templates
-            # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated
-            # based on the new comparison group.
-            radar_player_data_row = radar_player_data_row.copy()
-
-            for role in eligible_roles:
-                # 1. Get Population for this specific role
-                role_population = radar_stats_df[
-                    radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[role])
-                ]
-                if len(role_population) < 5: role_population = radar_stats_df
-
-                # 2. Get metrics and weights for this role
-                role_weights = WEIGHTS.get(role, {})
-                new_total_score = 0
-                total_weight = 0
-
-                # 3. Recalculate percentiles for all metrics used in this role
-                for metric, weight in role_weights.items():
-                    if metric not in role_population.columns:
-                        continue
-                    # Get population values for this metric
-                    pop_values = role_population[metric].dropna()
-
-                    if metric in radar_player_data_row.columns:
-                        player_val = radar_player_data_row[metric].values[0]
-                        
-                        if not pop_values.empty:
-                            # Calculate percentile (0-100)
-                            pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
-                            
-                            # Handle Inverted Metrics
-                            if metric in INVERT_METRICS:
-                                pct_score = 100.0 - pct_score
-                            
-                            # Update the row's percentile column (0-1) used for plotting
-                            # Note: This overwrites the column. If multiple roles use the same metric,
-                            # the last one wins. This is generally acceptable as they are usually 
-                            # compared against similar populations if they share a raw position.
-                            # Ideally, we'd plot based on the 'best_role' metrics specifically.
-                            radar_player_data_row[metric + '_percentile'] = pct_score / 100.0
-
-                            # Add to weighted score
-                            new_total_score += ((pct_score / 100.0) * weight)
-                            total_weight += weight
-
-                # 4. Update the Role Score column
-                if total_weight > 0:
-                    final_new_score = (new_total_score / total_weight) * 100
-                    radar_player_data_row[role + '_Score'] = final_new_score
-
-            # --- NEW: Update Position Label for Chart ---
-            # This ensures the chart displays "CF" if we selected "CF", even if their bio says "RW"
-            radar_player_data_row['primaryPosition'] = selected_raw_pos
-            # -----------------------------------------------------------------------
-
-            # Plot
-            _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-            _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
-            fig_radar = create_radar_with_distributions(
-                radar_player_data_row,
-                metrics_to_plot,
-                best_role,
-                eligible_roles,
-                all_position_data=final_population,
-                full_df_for_ranking=radar_stats_df,
-                season_label=_radar_season_label,
-                radar_mode=_radar_mode
-            )
-            st.pyplot(fig_radar, use_container_width=True)
-
-        # Career radar section disabled to reduce memory usage
-        # TODO: Re-enable when Streamlit Cloud resources are upgraded
-
-        # --- Minutes by Position + Outlier Stats side-by-side ---
-        _col_mins, _col_outliers = st.columns([1, 2])
-
-        with _col_mins:
-            minutes_by_pos = get_player_minutes_by_position(profile_events_df, player_id, player_match_log_df)
-            if not minutes_by_pos.empty and len(minutes_by_pos) > 1:
-                st.caption("Minutes by Position")
-                st.dataframe(
-                    minutes_by_pos,
-                    column_config={
-                        "Position": st.column_config.TextColumn("Position"),
-                        "Minutes": st.column_config.NumberColumn("Minutes", format="%d"),
-                        "Percentage": st.column_config.ProgressColumn(
-                            "% of Minutes",
-                            min_value=0,
-                            max_value=100,
-                            format="%.1f%%",
-                        ),
-                    },
-                    hide_index=True,
-                    use_container_width=False,
-                )
-
-        with _col_outliers:
-            # Compute outlier stats: metrics beyond 2σ / 3σ from positional mean
-            try:
-                # Use the best role's position group as the population
-                _outlier_pop = radar_stats_df[
-                    radar_stats_df['primaryPosition'].isin(POSITION_GROUPS.get(best_role, [selected_raw_pos]))
-                ].copy() if 'best_role' in dir() and best_role else radar_stats_df.copy()
-                if 'totalMinutes' in _outlier_pop.columns:
-                    _outlier_pop = _outlier_pop[pd.to_numeric(_outlier_pop['totalMinutes'], errors='coerce').fillna(0) >= 500]
-
-                # Gather all numeric per-90 metrics (exclude info/intermediate columns)
-                _skip_cols = {'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition',
-                              'tertiaryPosition', 'playerId', 'player.id', 'Defensive Area', 'Expected xT at Center',
-                              'competitionId', 'competitionId_per_90'}
-                _skip_suffixes = ('_percentile', '_Score', '_TotalScore', '_Rank')
-                _all_metrics = [c for c in radar_player_data_row.columns
-                                if pd.api.types.is_numeric_dtype(radar_player_data_row[c])
-                                and c not in _skip_cols
-                                and not c.endswith(_skip_suffixes)]
-
-                _outliers_2s = []  # (metric, value, z_score, direction)
-                _outliers_3s = []
-                for _m in _all_metrics:
-                    if _m not in _outlier_pop.columns:
-                        continue
-                    _pop_vals = pd.to_numeric(_outlier_pop[_m], errors='coerce').dropna()
-                    if len(_pop_vals) < 5:
-                        continue
-                    _mean = _pop_vals.mean()
-                    _std = _pop_vals.std()
-                    if _std == 0:
-                        continue
-                    _player_val = float(radar_player_data_row[_m].values[0])
-                    _z = (_player_val - _mean) / _std
-                    # For inverted metrics, negative z is "good" (below average = better)
-                    if _m in INVERT_METRICS:
-                        _direction = "⬇️" if _z < 0 else "⬆️"
-                    else:
-                        _direction = "⬆️" if _z > 0 else "⬇️"
-                    if abs(_z) >= 3:
-                        _outliers_3s.append((_m, _player_val, _z, _direction))
-                    elif abs(_z) >= 2:
-                        _outliers_2s.append((_m, _player_val, _z, _direction))
-
-                # Sort by absolute z-score descending
-                _outliers_3s.sort(key=lambda x: abs(x[2]), reverse=True)
-                _outliers_2s.sort(key=lambda x: abs(x[2]), reverse=True)
-
-                if _outliers_3s or _outliers_2s:
-                    st.caption("Statistical Outliers (vs. positional avg)")
-                    if _outliers_3s:
-                        st.markdown("**🔴 Super-outliers (> 3σ)**")
-                        for _m, _v, _z, _d in _outliers_3s:
-                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
-                    if _outliers_2s:
-                        st.markdown("**🟡 Outliers (> 2σ)**")
-                        for _m, _v, _z, _d in _outliers_2s:
-                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
-                else:
-                    st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
-            except Exception as e:
-                print(f"Warning: Could not compute outlier stats: {e}")
-
-
-        # --- 5b. Career Trajectory ----------------------------------------
-        # Per-season summary of the player's appearances + per-season
-        # strip plots of the chosen metric (Action V/90 or Best-fit
-        # Rating) showing the full league-wide distribution with the
-        # selected player highlighted. Lives just above Overall Season
-        # Stats so the trajectory context flows into the per-season
-        # breakdown right below it.
-        st.subheader("Career Trajectory")
-
-        from plotly.subplots import make_subplots as _make_subplots
-
-        def _season_start_year(season_label: str) -> int | None:
-            """Parse a season label like '2025/26' or '2025/2026' and
-            return the start year. Used to sort seasons chronologically
-            because raw seasonIds aren't comparable across competitions
-            (e.g. Camp 23/24 seasonId 190230 sorts AFTER Liga 3 24/25
-            seasonId 190090 by numeric value)."""
-            try:
-                return int(str(season_label).split('/')[0])
-            except (ValueError, AttributeError, IndexError):
-                return None
-
-        def _age_at_season_label(birth, season_label) -> float | None:
-            """Age at midpoint of the season (start year + 0.5)."""
-            if not birth or pd.isna(birth):
-                return None
-            try:
-                from datetime import datetime
-                bd = pd.to_datetime(birth, errors='coerce')
-                if pd.isna(bd):
-                    return None
-                start_year = _season_start_year(season_label)
-                if start_year is None:
-                    return None
-                mid_season = datetime(start_year, 12, 31)
-                return round((mid_season - bd.to_pydatetime()).days / 365.25, 1)
-            except Exception:
-                return None
-
-        # ---- 1) Walk player_minutes_data to build per-season rows ----
-        career_rows = []
-        birth = player_bio.get('birthDate') if isinstance(player_bio, pd.Series) else None
-        for _sid, _pm_df in player_minutes_data.items():
-            if not isinstance(_pm_df, pd.DataFrame) or _pm_df.empty:
-                continue
-            if 'playerId' not in _pm_df.columns:
-                continue
-            sub = _pm_df[_pm_df['playerId'] == player_id]
-            if sub.empty:
-                continue
-            for _, row in sub.iterrows():
-                _comp_id = competition_for_season(_sid)
-                _season_label = SEASON_ID_MAP.get(_sid, str(_sid))
-                _comp_name = (COMPETITIONS.get(_comp_id, {}).get('name')
-                               if _comp_id else 'Other')
-                career_rows.append({
-                    'Season': _season_label,
-                    '_seasonId': _sid,
-                    '_startYear': _season_start_year(_season_label) or 0,
-                    'Competition': _comp_name or 'Other',
-                    '_compId': _comp_id,
-                    'Team': row.get('teamName', 'N/A'),
-                    'Position': row.get('primaryPosition', 'N/A'),
-                    'Minutes': int(row.get('totalMinutes', 0) or 0),
-                    'Age': _age_at_season_label(birth, _season_label),
-                })
-
-        if not career_rows:
-            st.caption("No multi-season history available for this player.")
-        else:
-            # Chronological sort: by parsed start year, then by competition
-            # id as a stable tiebreaker (so Liga 3 23/24 + Camp 23/24
-            # land next to each other deterministically).
-            career_df = (pd.DataFrame(career_rows)
-                          .sort_values(['_startYear', '_compId', '_seasonId']))
-
-            # ---- 2) Merge in GPA Total Value per season for the player ----
-            _gpa_full = None
-            try:
-                _gpa_full = load_gpa_values()
-                if _gpa_full is not None and not _gpa_full.empty \
-                        and 'playerId' in _gpa_full.columns:
-                    _gpa_player = _gpa_full[_gpa_full['playerId'] == player_id].copy()
-                    if not _gpa_player.empty:
-                        _val_col = next((c for c in ('Total Value', 'total_v_per_90')
-                                          if c in _gpa_player.columns), None)
-                        if _val_col:
-                            career_df = career_df.merge(
-                                _gpa_player[['seasonId', _val_col]]
-                                    .rename(columns={'seasonId': '_seasonId',
-                                                      _val_col: 'Action V/90'})
-                                    .drop_duplicates('_seasonId'),
-                                on='_seasonId', how='left'
-                            )
-            except Exception:
-                pass
-
-            # ---- 3) Per-season best-fit rating + per-season population ----
-            # For each season the player has data in, also collect the
-            # FULL league-wide distribution of the metric so we can plot
-            # a violin per season with the player highlighted.
-            _role_rating_by_season: dict[int, float] = {}
-            _role_name_by_season:   dict[int, str]   = {}
-            _rating_population: dict[int, np.ndarray] = {}  # sid -> array of all players' best-fit scores
-
-            def _best_fit_score(row, _weights, _groups):
-                pos = row.get('primaryPosition')
-                if pd.isna(pos):
-                    return None
-                eligible = [r for r in _weights if pos in _groups.get(r, [])]
-                vals = [row.get(f"{r}_Score") for r in eligible
-                         if f"{r}_Score" in row.index]
-                vals = [float(v) for v in vals if v is not None and not pd.isna(v)]
-                return max(vals) if vals else None
-
-            def _position_group_of(pos):
-                """Map a Wyscout primaryPosition to its top-level position
-                group (GK/CB/FB/CM/AM/WG/ST). Best-fit Rating is a
-                position-specific composite, so the per-season violin
-                should compare against same-position peers only — not
-                fullbacks vs centerbacks vs forwards."""
-                if pos is None or pd.isna(pos):
-                    return None
-                p = str(pos)
-                if p == 'GK': return 'GK'
-                if p in ('CB', 'LCB', 'RCB', 'LCB3', 'RCB3'): return 'CB'
-                if p in ('LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'): return 'FB'
-                if p in ('CMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3',
-                          'DMF', 'LDMF', 'RDMF'): return 'CM'
-                if p in ('AMF', 'LAMF', 'RAMF', 'LMF', 'RMF'): return 'AM'
-                if p in ('LW', 'RW', 'LWF', 'RWF'): return 'WG'
-                if p in ('CF', 'SS'): return 'ST'
-                return None
-
-            try:
-                for _sid in career_df['_seasonId'].unique():
-                    _events_sid = get_season_events(raw_events_df, [_sid])
-                    _minutes_sid = player_minutes_data.get(_sid)
-                    if _events_sid.empty or _minutes_sid is None or _minutes_sid.empty:
-                        continue
-                    _stats_sid = calculate_all_player_stats(
-                        _events_sid, _minutes_sid, season_id=_sid
+                    # Use a distinct season_id so the cache differentiates from unfiltered stats
+                    pos_cache_key = f"{selected_season_id}_pos_{selected_raw_pos}"
+                    pos_filtered_stats = calculate_all_player_stats(
+                        pos_filtered_events, pos_player_minutes_df, season_id=pos_cache_key
                     )
-                    if _stats_sid.empty:
-                        continue
-                    _scores_sid = calculate_player_percentiles_and_scores(
-                        _stats_sid, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
-                        min_minutes=500, season_id=_sid
+                    # Merge GPA Value columns (same season × competition scope as profile)
+                    pos_filtered_stats = merge_gpa_values_into_stats(pos_filtered_stats, active_season_ids, selected_comp_ids)
+                    pos_filtered_scores = calculate_player_percentiles_and_scores(
+                        pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=pos_cache_key
                     )
-                    if _scores_sid.empty:
-                        continue
-                    # Per-player best-fit role score (vectorized via apply).
-                    _scores_sid = _scores_sid.copy()
-                    _scores_sid['_best_fit'] = _scores_sid.apply(
-                        _best_fit_score, axis=1,
-                        args=(WEIGHTS, POSITION_GROUPS),
-                    )
-                    # The selected player's row — needed up-front so we
-                    # can filter the population to same-position peers.
-                    _player_rows = _scores_sid[_scores_sid['playerId'] == player_id]
-                    if _player_rows.empty:
-                        continue
-                    _player_row = _player_rows.iloc[0]
-                    _pos = _player_row.get('primaryPosition')
-                    _player_pos_group = _position_group_of(_pos)
+                    if not pos_filtered_scores.empty:
+                        radar_stats_df = pos_filtered_scores
+                        pos_player_row = pos_filtered_scores[pos_filtered_scores['playerId'] == player_id]
+                        if not pos_player_row.empty:
+                            radar_player_data_row = pos_player_row
 
-                    # Population for violin = ≥500-min players in the
-                    # SAME position group as the selected player this
-                    # season. Best-fit Rating is position-specific so
-                    # comparing a CB to wingers isn't meaningful.
-                    if 'totalMinutes' in _scores_sid.columns:
-                        _qualified = _scores_sid[
-                            (_scores_sid['totalMinutes'].fillna(0) >= 500)
-                            & _scores_sid['_best_fit'].notna()
-                        ]
-                    else:
-                        _qualified = _scores_sid[_scores_sid['_best_fit'].notna()]
-                    if _player_pos_group and 'primaryPosition' in _qualified.columns:
-                        _qualified = _qualified[
-                            _qualified['primaryPosition'].map(_position_group_of)
-                            == _player_pos_group
-                        ]
-                    _pop = _qualified['_best_fit'].values
-                    if len(_pop) > 0:
-                        _rating_population[int(_sid)] = _pop
-                    _eligible = [r for r in WEIGHTS
-                                  if _pos in POSITION_GROUPS.get(r, [])]
-                    _scored = [(r, float(_player_row.get(f"{r}_Score", 0) or 0))
-                                for r in _eligible
-                                if f"{r}_Score" in _player_row.index]
-                    if not _scored:
-                        continue
-                    _best_role, _best_score = max(_scored, key=lambda t: t[1])
-                    _role_rating_by_season[int(_sid)] = round(_best_score, 1)
-                    _role_name_by_season[int(_sid)] = _best_role
-            except Exception as _exc:
-                logger.warning(f"Could not compute per-season role ratings: {_exc}")
+            # Ensure the radar population carries DefR columns (the percentile
+            # function is disk-cached and may drop them) — used by the radar
+            # population, the DefR-mode toggle, and Overall Season Stats coloring.
+            radar_stats_df = merge_defr_values_into_stats(
+                radar_stats_df, active_season_ids, selected_comp_ids)
 
-            if _role_rating_by_season:
-                career_df['Best-fit Rating'] = career_df['_seasonId'].map(_role_rating_by_season)
-                career_df['Best-fit Role']   = career_df['_seasonId'].map(_role_name_by_season)
-
-            # ---- 4) Display per-season table ----
-            _display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
-            if 'Action V/90' in _display_career.columns:
-                _display_career['Action V/90'] = _display_career['Action V/90'].round(3)
-            st.dataframe(_display_career, use_container_width=True, hide_index=True, column_config=auto_column_config(_display_career))
-
-            # ---- 5) Per-season strip plots with player highlighted ----
-            _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
-                                    if m in career_df.columns
-                                    and career_df[m].notna().any()]
-            if not _chart_y_candidates:
-                st.caption(
-                    "No Action V/90 or Best-fit Rating data available across "
-                    "this player's seasons — chart suppressed."
-                )
+            # 3. Find the "Best Fit" Template for this Raw Position
+            # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
+        
+            # Find all roles that include this raw position
+            eligible_roles = []
+            for role, valid_codes in POSITION_GROUPS.items():
+                if selected_raw_pos in valid_codes:
+                    eligible_roles.append(role)
+        
+            if not eligible_roles:
+                st.warning(f"No radar templates defined for position '{selected_raw_pos}'.")
             else:
-                chart_y = st.radio(
-                    "Trajectory metric:",
-                    _chart_y_candidates,
-                    horizontal=True,
-                    key=f"_traj_metric_{player_id}",
+                # Calculate Scores to find the best fit
+                best_role = None
+                best_score = -1
+            
+                # We calculate a simple score (sum of percentiles) for each eligible role
+                for role in eligible_roles:
+                    # Get metrics and weights
+                    role_weights = WEIGHTS.get(role, {})
+                    if not role_weights: continue
+                
+                    # Define Population for this role (for percentile calculation)
+                    role_codes = POSITION_GROUPS[role]
+                    population = radar_stats_df[
+                        radar_stats_df['primaryPosition'].isin(role_codes)
+                    ]
+                    if len(population) < 5: population = radar_stats_df # Fallback
+
+                    # Calculate Score
+                    role_score = 0
+                    total_weight = 0
+
+                    for metric, weight in role_weights.items():
+                        if metric in radar_player_data_row.columns and metric in population.columns:
+                            val = radar_player_data_row[metric].values[0]
+                            pop_vals = population[metric].fillna(0)
+                        
+                            # Percentile
+                            pct = (pop_vals < val).mean()
+                            if metric in INVERT_METRICS: pct = 1.0 - pct
+                        
+                            role_score += (pct * weight)
+                            total_weight += weight
+                
+                    final_score = (role_score / total_weight) if total_weight > 0 else 0
+                
+                    if final_score > best_score:
+                        best_score = final_score
+                        best_role = role
+            
+                # Handle case where no score could be calculated
+                if best_role is None: best_role = eligible_roles[0]
+
+                # 4. Generate Chart for the Winner
+                st.caption(f"Best Template Match: **{best_role}**")
+                _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
+                _use_defr = st.toggle(
+                    "Defensive metrics → DefR",
+                    value=False, key=f"defr_mode_{player_id}",
+                    help="Swap each defensive axis (tackles, interceptions, recoveries, "
+                         "clearances, aerials) to its Defensive Responsibility value — "
+                         "actions above/below what the player's role is expected to make.")
+
+                # Prepare data for plotting
+                metrics_to_plot = list(WEIGHTS[best_role].keys())
+                metrics_to_plot = [m for m in metrics_to_plot
+                                   if m in radar_player_data_row.columns
+                                   and m not in RADAR_HIDDEN_METRICS]
+
+                # Get Population for distribution
+                final_population = radar_stats_df[
+                    radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
+                ]
+                if len(final_population) < 5: final_population = radar_stats_df
+
+                # --- DefR mode: swap each defensive axis to its DefR value ---
+                if _use_defr:
+                    final_population = merge_defr_values_into_stats(
+                        final_population, active_season_ids, selected_comp_ids)
+                    radar_player_data_row = merge_defr_values_into_stats(
+                        radar_player_data_row, active_season_ids, selected_comp_ids)
+                    _mapped, _seen = [], set()
+                    for _m in metrics_to_plot:
+                        _mm = DEFR_RADAR_MAP.get(_m, _m)
+                        if _mm in radar_player_data_row.columns and _mm not in _seen:
+                            _mapped.append(_mm); _seen.add(_mm)
+                    if _mapped:
+                        metrics_to_plot = _mapped
+                    # Percentile for each DefR axis vs same-position peers
+                    for _m in metrics_to_plot:
+                        if _m in DEFR_DISPLAY_METRICS \
+                                and _m in radar_player_data_row.columns \
+                                and _m in final_population.columns:
+                            _pv = final_population[_m].dropna()
+                            if not _pv.empty:
+                                _val = radar_player_data_row[_m].values[0]
+                                radar_player_data_row[_m + '_percentile'] = (
+                                    scipy.stats.percentileofscore(_pv, _val, kind='weak') / 100.0)
+                    if _mapped:
+                        st.caption("🛡️ Defensive axes show **DefR** (actions above/below role expectation).")
+
+                # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
+                # This ensures that if the user selects a raw position that maps to multiple templates
+                # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated
+                # based on the new comparison group.
+                radar_player_data_row = radar_player_data_row.copy()
+
+                for role in eligible_roles:
+                    # 1. Get Population for this specific role
+                    role_population = radar_stats_df[
+                        radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[role])
+                    ]
+                    if len(role_population) < 5: role_population = radar_stats_df
+
+                    # 2. Get metrics and weights for this role
+                    role_weights = WEIGHTS.get(role, {})
+                    new_total_score = 0
+                    total_weight = 0
+
+                    # 3. Recalculate percentiles for all metrics used in this role
+                    for metric, weight in role_weights.items():
+                        if metric not in role_population.columns:
+                            continue
+                        # Get population values for this metric
+                        pop_values = role_population[metric].dropna()
+
+                        if metric in radar_player_data_row.columns:
+                            player_val = radar_player_data_row[metric].values[0]
+                        
+                            if not pop_values.empty:
+                                # Calculate percentile (0-100)
+                                pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
+                            
+                                # Handle Inverted Metrics
+                                if metric in INVERT_METRICS:
+                                    pct_score = 100.0 - pct_score
+                            
+                                # Update the row's percentile column (0-1) used for plotting
+                                # Note: This overwrites the column. If multiple roles use the same metric,
+                                # the last one wins. This is generally acceptable as they are usually 
+                                # compared against similar populations if they share a raw position.
+                                # Ideally, we'd plot based on the 'best_role' metrics specifically.
+                                radar_player_data_row[metric + '_percentile'] = pct_score / 100.0
+
+                                # Add to weighted score
+                                new_total_score += ((pct_score / 100.0) * weight)
+                                total_weight += weight
+
+                    # 4. Update the Role Score column
+                    if total_weight > 0:
+                        final_new_score = (new_total_score / total_weight) * 100
+                        radar_player_data_row[role + '_Score'] = final_new_score
+
+                # --- NEW: Update Position Label for Chart ---
+                # This ensures the chart displays "CF" if we selected "CF", even if their bio says "RW"
+                radar_player_data_row['primaryPosition'] = selected_raw_pos
+                # -----------------------------------------------------------------------
+
+                # Plot
+                _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+                _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
+                fig_radar = create_radar_with_distributions(
+                    radar_player_data_row,
+                    metrics_to_plot,
+                    best_role,
+                    eligible_roles,
+                    all_position_data=final_population,
+                    full_df_for_ranking=radar_stats_df,
+                    season_label=_radar_season_label,
+                    radar_mode=_radar_mode
                 )
-                # Build (season, label, population, player_value) list in
-                # chronological order. Skip seasons where the player has
-                # no value for the chosen metric — the violin without a
-                # highlighted dot is just visual noise.
-                _panels = []
-                _seen_sids = set()
-                for _, _row in career_df.iterrows():
-                    _sid = int(_row['_seasonId'])
-                    if _sid in _seen_sids:
-                        continue  # de-dupe rows where player had multi teams
-                    _seen_sids.add(_sid)
-                    _pv = _row.get(chart_y)
-                    if pd.isna(_pv):
-                        continue
-                    if chart_y == 'Action V/90' and _gpa_full is not None:
-                        _val_col = next((c for c in ('Total Value', 'total_v_per_90')
-                                          if c in _gpa_full.columns), None)
-                        if _val_col:
-                            # Filter to ≥500-min sample so the population
-                            # represents proper regular-rotation players.
-                            _gpa_season = _gpa_full.loc[
-                                (_gpa_full['seasonId'] == _sid)
-                                & (_gpa_full.get('mins_played', 0) >= 500)
-                            ]
-                            # Filter to same position group as the
-                            # selected player in this season. Prefer
-                            # GPA's own position_group column (source-
-                            # of-truth for this dataset); fall back to
-                            # deriving from the `position` column via
-                            # _position_group_of if missing.
-                            _player_pg = None
-                            _gpa_player_row = _gpa_full[
-                                (_gpa_full['playerId'] == player_id)
-                                & (_gpa_full['seasonId'] == _sid)
-                            ]
-                            if not _gpa_player_row.empty:
-                                if 'position_group' in _gpa_player_row.columns:
-                                    _v = _gpa_player_row['position_group'].iloc[0]
-                                    if pd.notna(_v):
-                                        _player_pg = str(_v)
-                                if _player_pg is None and 'position' in _gpa_player_row.columns:
-                                    _player_pg = _position_group_of(
-                                        _gpa_player_row['position'].iloc[0]
-                                    )
-                            if _player_pg:
-                                if 'position_group' in _gpa_season.columns:
-                                    _gpa_season = _gpa_season[
-                                        _gpa_season['position_group'] == _player_pg
-                                    ]
-                                elif 'position' in _gpa_season.columns:
-                                    _gpa_season = _gpa_season[
-                                        _gpa_season['position'].map(_position_group_of)
-                                        == _player_pg
-                                    ]
-                            _pop = _gpa_season[_val_col].dropna().values
+                st.pyplot(fig_radar, use_container_width=True)
+
+            # Career radar section disabled to reduce memory usage
+            # TODO: Re-enable when Streamlit Cloud resources are upgraded
+
+            # --- Minutes by Position + Outlier Stats side-by-side ---
+            _col_mins, _col_outliers = st.columns([1, 2])
+
+            with _col_mins:
+                minutes_by_pos = get_player_minutes_by_position(profile_events_df, player_id, player_match_log_df)
+                if not minutes_by_pos.empty and len(minutes_by_pos) > 1:
+                    st.caption("Minutes by Position")
+                    st.dataframe(
+                        minutes_by_pos,
+                        column_config={
+                            "Position": st.column_config.TextColumn("Position"),
+                            "Minutes": st.column_config.NumberColumn("Minutes", format="%d"),
+                            "Percentage": st.column_config.ProgressColumn(
+                                "% of Minutes",
+                                min_value=0,
+                                max_value=100,
+                                format="%.1f%%",
+                            ),
+                        },
+                        hide_index=True,
+                        use_container_width=False,
+                    )
+
+            with _col_outliers:
+                # Compute outlier stats: metrics beyond 2σ / 3σ from positional mean
+                try:
+                    # Use the best role's position group as the population
+                    _outlier_pop = radar_stats_df[
+                        radar_stats_df['primaryPosition'].isin(POSITION_GROUPS.get(best_role, [selected_raw_pos]))
+                    ].copy() if 'best_role' in dir() and best_role else radar_stats_df.copy()
+                    if 'totalMinutes' in _outlier_pop.columns:
+                        _outlier_pop = _outlier_pop[pd.to_numeric(_outlier_pop['totalMinutes'], errors='coerce').fillna(0) >= 500]
+
+                    # Gather all numeric per-90 metrics (exclude info/intermediate columns)
+                    _skip_cols = {'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition',
+                                  'tertiaryPosition', 'playerId', 'player.id', 'Defensive Area', 'Expected xT at Center',
+                                  'competitionId', 'competitionId_per_90'}
+                    _skip_suffixes = ('_percentile', '_Score', '_TotalScore', '_Rank')
+                    _all_metrics = [c for c in radar_player_data_row.columns
+                                    if pd.api.types.is_numeric_dtype(radar_player_data_row[c])
+                                    and c not in _skip_cols
+                                    and not c.endswith(_skip_suffixes)]
+
+                    _outliers_2s = []  # (metric, value, z_score, direction)
+                    _outliers_3s = []
+                    for _m in _all_metrics:
+                        if _m not in _outlier_pop.columns:
+                            continue
+                        _pop_vals = pd.to_numeric(_outlier_pop[_m], errors='coerce').dropna()
+                        if len(_pop_vals) < 5:
+                            continue
+                        _mean = _pop_vals.mean()
+                        _std = _pop_vals.std()
+                        if _std == 0:
+                            continue
+                        _player_val = float(radar_player_data_row[_m].values[0])
+                        _z = (_player_val - _mean) / _std
+                        # For inverted metrics, negative z is "good" (below average = better)
+                        if _m in INVERT_METRICS:
+                            _direction = "⬇️" if _z < 0 else "⬆️"
                         else:
-                            _pop = np.array([])
+                            _direction = "⬆️" if _z > 0 else "⬇️"
+                        if abs(_z) >= 3:
+                            _outliers_3s.append((_m, _player_val, _z, _direction))
+                        elif abs(_z) >= 2:
+                            _outliers_2s.append((_m, _player_val, _z, _direction))
+
+                    # Sort by absolute z-score descending
+                    _outliers_3s.sort(key=lambda x: abs(x[2]), reverse=True)
+                    _outliers_2s.sort(key=lambda x: abs(x[2]), reverse=True)
+
+                    if _outliers_3s or _outliers_2s:
+                        st.caption("Statistical Outliers (vs. positional avg)")
+                        if _outliers_3s:
+                            st.markdown("**🔴 Super-outliers (> 3σ)**")
+                            for _m, _v, _z, _d in _outliers_3s:
+                                st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
+                        if _outliers_2s:
+                            st.markdown("**🟡 Outliers (> 2σ)**")
+                            for _m, _v, _z, _d in _outliers_2s:
+                                st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
                     else:
-                        _pop = _rating_population.get(_sid, np.array([]))
-                    if len(_pop) < 5:
-                        continue
-                    _age_str = (f" · age {_row['Age']:.0f}"
-                                 if pd.notna(_row.get('Age')) else "")
-                    _comp_short = ('L3' if _row.get('_compId') == 43324
-                                    else 'CP' if _row.get('_compId') == 702
-                                    else (_row.get('Competition') or '')[:6])
-                    _panels.append({
-                        'sid': _sid,
-                        'label': f"{_row['Season']}<br>{_comp_short}{_age_str}",
-                        'population': _pop,
-                        'player_value': float(_pv),
-                        'team': _row.get('Team', ''),
+                        st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
+                except Exception as e:
+                    print(f"Warning: Could not compute outlier stats: {e}")
+
+
+
+        with _tab_stats:
+            # --- 5b. Career Trajectory ----------------------------------------
+            # Per-season summary of the player's appearances + per-season
+            # strip plots of the chosen metric (Action V/90 or Best-fit
+            # Rating) showing the full league-wide distribution with the
+            # selected player highlighted. Lives just above Overall Season
+            # Stats so the trajectory context flows into the per-season
+            # breakdown right below it.
+            st.subheader("Career Trajectory")
+
+            from plotly.subplots import make_subplots as _make_subplots
+
+            def _season_start_year(season_label: str) -> int | None:
+                """Parse a season label like '2025/26' or '2025/2026' and
+                return the start year. Used to sort seasons chronologically
+                because raw seasonIds aren't comparable across competitions
+                (e.g. Camp 23/24 seasonId 190230 sorts AFTER Liga 3 24/25
+                seasonId 190090 by numeric value)."""
+                try:
+                    return int(str(season_label).split('/')[0])
+                except (ValueError, AttributeError, IndexError):
+                    return None
+
+            def _age_at_season_label(birth, season_label) -> float | None:
+                """Age at midpoint of the season (start year + 0.5)."""
+                if not birth or pd.isna(birth):
+                    return None
+                try:
+                    from datetime import datetime
+                    bd = pd.to_datetime(birth, errors='coerce')
+                    if pd.isna(bd):
+                        return None
+                    start_year = _season_start_year(season_label)
+                    if start_year is None:
+                        return None
+                    mid_season = datetime(start_year, 12, 31)
+                    return round((mid_season - bd.to_pydatetime()).days / 365.25, 1)
+                except Exception:
+                    return None
+
+            # ---- 1) Walk player_minutes_data to build per-season rows ----
+            career_rows = []
+            birth = player_bio.get('birthDate') if isinstance(player_bio, pd.Series) else None
+            for _sid, _pm_df in player_minutes_data.items():
+                if not isinstance(_pm_df, pd.DataFrame) or _pm_df.empty:
+                    continue
+                if 'playerId' not in _pm_df.columns:
+                    continue
+                sub = _pm_df[_pm_df['playerId'] == player_id]
+                if sub.empty:
+                    continue
+                for _, row in sub.iterrows():
+                    _comp_id = competition_for_season(_sid)
+                    _season_label = SEASON_ID_MAP.get(_sid, str(_sid))
+                    _comp_name = (COMPETITIONS.get(_comp_id, {}).get('name')
+                                   if _comp_id else 'Other')
+                    career_rows.append({
+                        'Season': _season_label,
+                        '_seasonId': _sid,
+                        '_startYear': _season_start_year(_season_label) or 0,
+                        'Competition': _comp_name or 'Other',
+                        '_compId': _comp_id,
+                        'Team': row.get('teamName', 'N/A'),
+                        'Position': row.get('primaryPosition', 'N/A'),
+                        'Minutes': int(row.get('totalMinutes', 0) or 0),
+                        'Age': _age_at_season_label(birth, _season_label),
                     })
 
-                if not _panels:
+            if not career_rows:
+                st.caption("No multi-season history available for this player.")
+            else:
+                # Chronological sort: by parsed start year, then by competition
+                # id as a stable tiebreaker (so Liga 3 23/24 + Camp 23/24
+                # land next to each other deterministically).
+                career_df = (pd.DataFrame(career_rows)
+                              .sort_values(['_startYear', '_compId', '_seasonId']))
+
+                # ---- 2) Merge in GPA Total Value per season for the player ----
+                _gpa_full = None
+                try:
+                    _gpa_full = load_gpa_values()
+                    if _gpa_full is not None and not _gpa_full.empty \
+                            and 'playerId' in _gpa_full.columns:
+                        _gpa_player = _gpa_full[_gpa_full['playerId'] == player_id].copy()
+                        if not _gpa_player.empty:
+                            _val_col = next((c for c in ('Total Value', 'total_v_per_90')
+                                              if c in _gpa_player.columns), None)
+                            if _val_col:
+                                career_df = career_df.merge(
+                                    _gpa_player[['seasonId', _val_col]]
+                                        .rename(columns={'seasonId': '_seasonId',
+                                                          _val_col: 'Action V/90'})
+                                        .drop_duplicates('_seasonId'),
+                                    on='_seasonId', how='left'
+                                )
+                except Exception:
+                    pass
+
+                # ---- 3) Per-season best-fit rating + per-season population ----
+                # For each season the player has data in, also collect the
+                # FULL league-wide distribution of the metric so we can plot
+                # a violin per season with the player highlighted.
+                _role_rating_by_season: dict[int, float] = {}
+                _role_name_by_season:   dict[int, str]   = {}
+                _rating_population: dict[int, np.ndarray] = {}  # sid -> array of all players' best-fit scores
+
+                def _best_fit_score(row, _weights, _groups):
+                    pos = row.get('primaryPosition')
+                    if pd.isna(pos):
+                        return None
+                    eligible = [r for r in _weights if pos in _groups.get(r, [])]
+                    vals = [row.get(f"{r}_Score") for r in eligible
+                             if f"{r}_Score" in row.index]
+                    vals = [float(v) for v in vals if v is not None and not pd.isna(v)]
+                    return max(vals) if vals else None
+
+                def _position_group_of(pos):
+                    """Map a Wyscout primaryPosition to its top-level position
+                    group (GK/CB/FB/CM/AM/WG/ST). Best-fit Rating is a
+                    position-specific composite, so the per-season violin
+                    should compare against same-position peers only — not
+                    fullbacks vs centerbacks vs forwards."""
+                    if pos is None or pd.isna(pos):
+                        return None
+                    p = str(pos)
+                    if p == 'GK': return 'GK'
+                    if p in ('CB', 'LCB', 'RCB', 'LCB3', 'RCB3'): return 'CB'
+                    if p in ('LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'): return 'FB'
+                    if p in ('CMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3',
+                              'DMF', 'LDMF', 'RDMF'): return 'CM'
+                    if p in ('AMF', 'LAMF', 'RAMF', 'LMF', 'RMF'): return 'AM'
+                    if p in ('LW', 'RW', 'LWF', 'RWF'): return 'WG'
+                    if p in ('CF', 'SS'): return 'ST'
+                    return None
+
+                try:
+                    for _sid in career_df['_seasonId'].unique():
+                        _events_sid = get_season_events(raw_events_df, [_sid])
+                        _minutes_sid = player_minutes_data.get(_sid)
+                        if _events_sid.empty or _minutes_sid is None or _minutes_sid.empty:
+                            continue
+                        _stats_sid = calculate_all_player_stats(
+                            _events_sid, _minutes_sid, season_id=_sid
+                        )
+                        if _stats_sid.empty:
+                            continue
+                        _scores_sid = calculate_player_percentiles_and_scores(
+                            _stats_sid, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
+                            min_minutes=500, season_id=_sid
+                        )
+                        if _scores_sid.empty:
+                            continue
+                        # Per-player best-fit role score (vectorized via apply).
+                        _scores_sid = _scores_sid.copy()
+                        _scores_sid['_best_fit'] = _scores_sid.apply(
+                            _best_fit_score, axis=1,
+                            args=(WEIGHTS, POSITION_GROUPS),
+                        )
+                        # The selected player's row — needed up-front so we
+                        # can filter the population to same-position peers.
+                        _player_rows = _scores_sid[_scores_sid['playerId'] == player_id]
+                        if _player_rows.empty:
+                            continue
+                        _player_row = _player_rows.iloc[0]
+                        _pos = _player_row.get('primaryPosition')
+                        _player_pos_group = _position_group_of(_pos)
+
+                        # Population for violin = ≥500-min players in the
+                        # SAME position group as the selected player this
+                        # season. Best-fit Rating is position-specific so
+                        # comparing a CB to wingers isn't meaningful.
+                        if 'totalMinutes' in _scores_sid.columns:
+                            _qualified = _scores_sid[
+                                (_scores_sid['totalMinutes'].fillna(0) >= 500)
+                                & _scores_sid['_best_fit'].notna()
+                            ]
+                        else:
+                            _qualified = _scores_sid[_scores_sid['_best_fit'].notna()]
+                        if _player_pos_group and 'primaryPosition' in _qualified.columns:
+                            _qualified = _qualified[
+                                _qualified['primaryPosition'].map(_position_group_of)
+                                == _player_pos_group
+                            ]
+                        _pop = _qualified['_best_fit'].values
+                        if len(_pop) > 0:
+                            _rating_population[int(_sid)] = _pop
+                        _eligible = [r for r in WEIGHTS
+                                      if _pos in POSITION_GROUPS.get(r, [])]
+                        _scored = [(r, float(_player_row.get(f"{r}_Score", 0) or 0))
+                                    for r in _eligible
+                                    if f"{r}_Score" in _player_row.index]
+                        if not _scored:
+                            continue
+                        _best_role, _best_score = max(_scored, key=lambda t: t[1])
+                        _role_rating_by_season[int(_sid)] = round(_best_score, 1)
+                        _role_name_by_season[int(_sid)] = _best_role
+                except Exception as _exc:
+                    logger.warning(f"Could not compute per-season role ratings: {_exc}")
+
+                if _role_rating_by_season:
+                    career_df['Best-fit Rating'] = career_df['_seasonId'].map(_role_rating_by_season)
+                    career_df['Best-fit Role']   = career_df['_seasonId'].map(_role_name_by_season)
+
+                # ---- 4) Display per-season table ----
+                _display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
+                if 'Action V/90' in _display_career.columns:
+                    _display_career['Action V/90'] = _display_career['Action V/90'].round(3)
+                st.dataframe(_display_career, use_container_width=True, hide_index=True, column_config=auto_column_config(_display_career))
+
+                # ---- 5) Per-season strip plots with player highlighted ----
+                _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
+                                        if m in career_df.columns
+                                        and career_df[m].notna().any()]
+                if not _chart_y_candidates:
                     st.caption(
-                        f"No seasons have both a {chart_y} value for this "
-                        f"player AND a comparable population to plot."
+                        "No Action V/90 or Best-fit Rating data available across "
+                        "this player's seasons — chart suppressed."
                     )
                 else:
-                    # One subplot per season, shared y-axis so the player's
-                    # trajectory is easy to follow across seasons.
-                    _fig = _make_subplots(
-                        rows=1, cols=len(_panels),
-                        shared_yaxes=True,
-                        subplot_titles=[p['label'] for p in _panels],
-                        horizontal_spacing=0.01,
+                    chart_y = st.radio(
+                        "Trajectory metric:",
+                        _chart_y_candidates,
+                        horizontal=True,
+                        key=f"_traj_metric_{player_id}",
                     )
-                    # Common y-range — driven by the ≥500-min POPULATION
-                    # only (per user request). If the highlighted player
-                    # is outside that range we extend slightly so the gold
-                    # dot is still visible, but the scale is anchored to
-                    # the regular-rotation population.
-                    _pop_concat = np.concatenate([p['population'] for p in _panels])
-                    _y_lo = float(np.nanmin(_pop_concat))
-                    _y_hi = float(np.nanmax(_pop_concat))
-                    _y_pad = 0.05 * (_y_hi - _y_lo if _y_hi > _y_lo else 1.0)
-                    # Allow the highlighted dot to bleed up to 1 pad
-                    # outside the population range without rescaling the
-                    # whole panel.
-                    _player_vals = [p['player_value'] for p in _panels]
-                    _y_lo = min(_y_lo, float(np.nanmin(_player_vals)) - _y_pad)
-                    _y_hi = max(_y_hi, float(np.nanmax(_player_vals)) + _y_pad)
-                    # Width scaling: seasons with more ≥500-min players get
-                    # visibly wider violins so the user can tell apart a
-                    # 200-player Liga 3 season from a 600-player Camp
-                    # season. Use a power < 1 so small samples don't
-                    # collapse to slivers.
-                    _max_n = max(len(p['population']) for p in _panels) or 1
-                    for _i, _p in enumerate(_panels, start=1):
-                        _n = len(_p['population'])
-                        _scaled_w = 0.85 * (_n / _max_n) ** 0.5
-                        # 1) Violin: density shape, no built-in points (we
-                        # render our own colored dots in the next trace).
-                        # Explicit x=0 anchor — without this, plotly
-                        # picks categorical mode and the highlight dot's
-                        # numeric x positioning silently breaks.
-                        _fig.add_trace(go.Violin(
-                            x=np.zeros(len(_p['population'])),
-                            y=_p['population'],
-                            points=False,
-                            box_visible=False,
-                            meanline_visible=False,
-                            side='both',
-                            width=_scaled_w,
-                            line_color='rgba(80,80,80,0.55)',
-                            fillcolor='rgba(140,140,140,0.18)',
-                            showlegend=False,
-                            hoverinfo='skip',
-                            name='',
-                        ), row=1, col=_i)
-
-                        # 2) Colored dots: deterministic jitter so the
-                        # layout doesn't shift on rerun (seeded by sid),
-                        # bounded so dots stay inside the violin.
-                        _rng = np.random.default_rng(seed=int(_p['sid']) & 0xFFFFFFFF)
-                        _half = max(0.05, _scaled_w / 2 - 0.04)
-                        _jitter = _rng.uniform(-_half, _half, size=_n)
-                        _fig.add_trace(go.Scatter(
-                            x=_jitter,
-                            y=_p['population'],
-                            mode='markers',
-                            marker=dict(
-                                size=5,
-                                color=_p['population'],
-                                colorscale='RdYlGn',
-                                cmin=_y_lo, cmax=_y_hi,
-                                opacity=0.6,
-                                line=dict(width=0),
-                                showscale=False,
-                            ),
-                            showlegend=False,
-                            hoverinfo='y',
-                            name='',
-                        ), row=1, col=_i)
-
-                        # 3) Highlight: the selected player's point on top.
-                        # Bumped to a larger diamond with a thicker dark
-                        # ring so it stays unmistakable against the
-                        # dense violin shape.
-                        _fig.add_trace(go.Scatter(
-                            y=[_p['player_value']],
-                            x=[0.0],
-                            mode='markers',
-                            marker=dict(
-                                size=18,
-                                color='#FFC400',
-                                line=dict(color='black', width=2),
-                                symbol='diamond',
-                            ),
-                            showlegend=False,
-                            hovertemplate=(
-                                f"<b>{selected_player_name}</b><br>"
-                                f"Team: {_p['team']}<br>"
-                                f"{chart_y}: %{{y:.2f}}<extra></extra>"
-                            ),
-                            name='',
-                        ), row=1, col=_i)
-                        # Force the x-axis to linear — adding go.Violin
-                        # without an explicit x array flips Plotly into
-                        # categorical-axis mode, which silently clobbers
-                        # the numeric x positions we use for jitter and
-                        # the highlight dot (so they collapse onto a
-                        # single phantom category and the gold dot got
-                        # buried under the colored cloud).
-                        _fig.update_xaxes(
-                            type='linear',
-                            showticklabels=False, zeroline=False,
-                            range=[-0.5, 0.5], row=1, col=_i,
-                        )
-                    _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
-                    _fig.update_layout(
-                        title=f"{chart_y} by season (gold dot = {selected_player_name})",
-                        height=420,
-                        margin=dict(t=70, b=30, l=40, r=20),
-                        showlegend=False,
-                    )
-                    # Make subplot titles smaller so they fit when there
-                    # are 5+ panels.
-                    for _ann in _fig['layout']['annotations']:
-                        _ann['font'] = dict(size=10)
-                    st.plotly_chart(_fig, use_container_width=True)
-
-        st.divider()
-
-        # --- 6. STATS TOGGLE ---
-        st.subheader("Overall Season Stats")
-        show_totals = st.toggle("Show Season Totals", value=False)
-        stats_to_display = pd.Series(dtype='object')
-        
-        per_90_stats = player_per_90_stats.copy()
-        
-        if show_totals:
-            st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
-            total_stats = per_90_stats.copy()
-            rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col.lower() or 'index' in col or 'Percentage' in col]
-            # goalsConceded is conceptually a defensive rate (goals against per 90)
-            # rather than a count — it stays per-90 even in season-totals mode,
-            # the same way 'goalsPrevented' / xG family already do.
-            if 'goalsConceded' in total_stats.index and 'goalsConceded' not in rate_cols:
-                rate_cols.append('goalsConceded')
-            # engine metrics are levels, never season-totaled
-            for _ec in ENGINE_DISPLAY_METRICS:
-                if _ec in total_stats.index and _ec not in rate_cols:
-                    rate_cols.append(_ec)
-            
-            for col in total_stats.index:
-                if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
-                    total_val = (total_stats[col] * total_minutes) / 90
-                    if col in ['xG', 'xA', 'xT', 'xTOP', 'xTSP', 'npxG', 'xAOP', 'xASP', 'psxG_faced', 'goalsPrevented']:
-                         total_stats[col] = total_val
-                    else:
-                         total_stats[col] = np.round(total_val)
-            
-            for col in rate_cols:
-                if col in per_90_stats.index:
-                    total_stats[col] = per_90_stats[col]
-            
-            stats_to_display = total_stats
-            
-        else: # Show Per 90
-            st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
-            stats_to_display = per_90_stats
-
-        # --- 7. Display Stats (Using all global groups) ---
-        stat_groups = {
-            "Output": OUTPUT_METRICS,
-            "Passing": PASSING_METRICS,
-            "Defensive": DEFENSIVE_METRICS,
-            "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
-            "Dribbling": DRIBBLING_METRICS,
-            "ACP Index": ENGINE_DISPLAY_METRICS,
-            "Goalkeeping": GOALKEEPING_METRICS
-        }
-
-        player_is_gk = (per_90_stats.get('primaryPosition', 'N/A') == 'GK')
-
-        # ── Build positional-peer population for percentile comparisons ──
-        # Union of all raw positions that share at least one role template
-        # with the player's primary position; filter to 500+ minutes.
-        _primary_pos = player_per_90_stats.get('primaryPosition', None)
-        _peer_pop = pd.DataFrame()
-        if _primary_pos and _primary_pos not in ('N/A', 'Unknown', None, ''):
-            _peer_positions = set()
-            for _role, _positions in POSITION_GROUPS.items():
-                if _primary_pos in _positions:
-                    _peer_positions.update(_positions)
-            if not _peer_positions:
-                _peer_positions = {_primary_pos}
-            _peer_pop = radar_stats_df[radar_stats_df['primaryPosition'].isin(_peer_positions)]
-            if 'totalMinutes' in _peer_pop.columns:
-                _peer_pop = _peer_pop[
-                    pd.to_numeric(_peer_pop['totalMinutes'], errors='coerce').fillna(0) >= 500
-                ]
-
-        def _percentile_for(metric_name, p90_value):
-            """Percentile of this player's per-90 value against same-position peers (≥500 min)."""
-            if _peer_pop.empty or metric_name not in _peer_pop.columns:
-                return None
-            if pd.isna(p90_value):
-                return None
-            pop_vals = pd.to_numeric(_peer_pop[metric_name], errors='coerce').dropna()
-            if len(pop_vals) < 5 or pop_vals.std() == 0:
-                return None
-            pct = scipy.stats.percentileofscore(pop_vals, p90_value, kind='weak')
-            if metric_name in INVERT_METRICS:
-                pct = 100.0 - pct
-            return float(pct)
-
-        def _percentile_color(p):
-            """Red (0) → yellow (50) → green (100) HSL gradient."""
-            if p is None or pd.isna(p):
-                return ''
-            p_clamped = max(0.0, min(100.0, float(p)))
-            hue = (p_clamped / 100.0) * 120.0   # 0=red, 60=yellow, 120=green
-            return f'background-color: hsl({hue:.0f}, 65%, 72%); color: black;'
-
-        for group_name, group_metrics in stat_groups.items():
-
-            if player_is_gk and group_name != 'Goalkeeping':
-                continue
-            if not player_is_gk and group_name == 'Goalkeeping':
-                continue
-
-            if player_is_gk and group_name == 'Goalkeeping':
-                group_metrics = GOALKEEPING_METRICS + ['GK Passes successful %', 'GK Long passes successful %']
-
-            metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
-
-            if metrics_to_show:
-                default_expanded = (group_name == 'Output')
-                with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
-
-                    stats_subset_series = stats_to_display[metrics_to_show]
-                    stats_subset_series = stats_subset_series[stats_subset_series != 0]
-
-                    if stats_subset_series.empty:
-                        st.text("No data for this category.")
-                        continue
-
-                    def _fmt_stat(metric_name, x):
-                        if not isinstance(x, (int, float)):
-                            return str(x)
-                        if metric_name in THOUSANDTHS_METRICS:
-                            return f"{x:.3f}"
-                        if np.round(x) == x and '%' not in str(x):
-                            return f"{x:.0f}"
-                        return f"{x:.2f}"
-
-                    # Build display DataFrame: Value (formatted str) + Percentile (numeric)
-                    _rows = []
-                    for _metric in stats_subset_series.index:
-                        _disp_val = stats_subset_series[_metric]
-                        _p90_val = per_90_stats.get(_metric, np.nan)
-                        _pct = _percentile_for(_metric, _p90_val)
-                        _rows.append({
-                            'Metric': _metric,
-                            'Value': _fmt_stat(_metric, _disp_val),
-                            'Percentile': _pct,
+                    # Build (season, label, population, player_value) list in
+                    # chronological order. Skip seasons where the player has
+                    # no value for the chosen metric — the violin without a
+                    # highlighted dot is just visual noise.
+                    _panels = []
+                    _seen_sids = set()
+                    for _, _row in career_df.iterrows():
+                        _sid = int(_row['_seasonId'])
+                        if _sid in _seen_sids:
+                            continue  # de-dupe rows where player had multi teams
+                        _seen_sids.add(_sid)
+                        _pv = _row.get(chart_y)
+                        if pd.isna(_pv):
+                            continue
+                        if chart_y == 'Action V/90' and _gpa_full is not None:
+                            _val_col = next((c for c in ('Total Value', 'total_v_per_90')
+                                              if c in _gpa_full.columns), None)
+                            if _val_col:
+                                # Filter to ≥500-min sample so the population
+                                # represents proper regular-rotation players.
+                                _gpa_season = _gpa_full.loc[
+                                    (_gpa_full['seasonId'] == _sid)
+                                    & (_gpa_full.get('mins_played', 0) >= 500)
+                                ]
+                                # Filter to same position group as the
+                                # selected player in this season. Prefer
+                                # GPA's own position_group column (source-
+                                # of-truth for this dataset); fall back to
+                                # deriving from the `position` column via
+                                # _position_group_of if missing.
+                                _player_pg = None
+                                _gpa_player_row = _gpa_full[
+                                    (_gpa_full['playerId'] == player_id)
+                                    & (_gpa_full['seasonId'] == _sid)
+                                ]
+                                if not _gpa_player_row.empty:
+                                    if 'position_group' in _gpa_player_row.columns:
+                                        _v = _gpa_player_row['position_group'].iloc[0]
+                                        if pd.notna(_v):
+                                            _player_pg = str(_v)
+                                    if _player_pg is None and 'position' in _gpa_player_row.columns:
+                                        _player_pg = _position_group_of(
+                                            _gpa_player_row['position'].iloc[0]
+                                        )
+                                if _player_pg:
+                                    if 'position_group' in _gpa_season.columns:
+                                        _gpa_season = _gpa_season[
+                                            _gpa_season['position_group'] == _player_pg
+                                        ]
+                                    elif 'position' in _gpa_season.columns:
+                                        _gpa_season = _gpa_season[
+                                            _gpa_season['position'].map(_position_group_of)
+                                            == _player_pg
+                                        ]
+                                _pop = _gpa_season[_val_col].dropna().values
+                            else:
+                                _pop = np.array([])
+                        else:
+                            _pop = _rating_population.get(_sid, np.array([]))
+                        if len(_pop) < 5:
+                            continue
+                        _age_str = (f" · age {_row['Age']:.0f}"
+                                     if pd.notna(_row.get('Age')) else "")
+                        _comp_short = ('L3' if _row.get('_compId') == 43324
+                                        else 'CP' if _row.get('_compId') == 702
+                                        else (_row.get('Competition') or '')[:6])
+                        _panels.append({
+                            'sid': _sid,
+                            'label': f"{_row['Season']}<br>{_comp_short}{_age_str}",
+                            'population': _pop,
+                            'player_value': float(_pv),
+                            'team': _row.get('Team', ''),
                         })
-                    stats_subset = pd.DataFrame(_rows).set_index('Metric')
 
-                    _styled = (
-                        stats_subset.style
-                        .applymap(_percentile_color, subset=['Percentile'])
-                        .format({'Percentile': lambda v: f"{int(round(v))}" if pd.notna(v) else '—'})
-                    )
-                    st.dataframe(_styled, use_container_width=True)
-        
-        st.divider()
-        
-        # --- Transfer Value Detail ----------------------------------------
-        # Headline Projected value + Current CVI live in the bio row at
-        # top. This section is the deep dive — collapsed by default into
-        # three expanders so the page stays clean: CVI breakdown,
-        # Reported fees & manual entries, and the Market Context features
-        # block. Positioned just above the tactical pitch visualizations
-        # so scouting context flows into them.
-        st.subheader("Transfer Value Detail")
-        try:
-            with st.expander("Composite Value Index (CVI) breakdown",
-                              expanded=False):
-                if not _tv_cvi_block.empty:
-                    _cvi_row = _tv_cvi_block.iloc[0]
-                    _cvi_v = _cvi_row.get('_CVI')
-                    _cvi_perf = _cvi_row.get('_CVI_perf')
-                    _cvi_perf_shr = _cvi_row.get('_CVI_perf_shrunk')
-                    _cvi_age_m = _cvi_row.get('_CVI_age')
-                    _cvi_reliab = _cvi_row.get('_CVI_reliab')
-                    _cvi_reliab_ceil = _cvi_row.get('_CVI_reliab_ceiling')
-                    _cvi_reliab_sf = _cvi_row.get('_CVI_reliab_sample_factor')
-                    _cvi_reliab_mtc = _cvi_row.get('_CVI_reliab_mins_to_ceiling')
-                    _cvi_league = _cvi_row.get('_CVI_league')
-                    _cvi_traj = _cvi_row.get('_CVI_trajectory')
-                    if pd.notna(_cvi_v):
-                        st.metric("CVI", f"{_cvi_v:.1f}")
-                    else:
-                        st.metric("CVI", "—")
-                    # Build the "Raw → Shrunk (toward X)" string so the
-                    # user can see where the anchor came from — the
-                    # player's own career mean (when we have data) or
-                    # generic replacement (40) for debutants.
-                    _cvi_eff_prior = _cvi_row.get('_CVI_effective_prior')
-                    _cvi_prior_perf = _cvi_row.get('_CVI_prior_perf')
-                    _cvi_prior_str = _cvi_row.get('_CVI_prior_strength')
-                    _cvi_prior_mins = _cvi_row.get('_CVI_prior_mins_eff')
-                    if pd.notna(_cvi_perf) and pd.notna(_cvi_perf_shr):
-                        if (_cvi_prior_perf is not None
-                                and pd.notna(_cvi_prior_perf)
-                                and _cvi_prior_str is not None
-                                and pd.notna(_cvi_prior_str)
-                                and _cvi_prior_str > 0.05):
-                            _prior_lbl = (
-                                f"toward {_cvi_eff_prior:.0f}  "
-                                f"(your-career {_cvi_prior_perf:.0f}, "
-                                f"{int(_cvi_prior_str*100)}% strength)"
-                            )
-                        else:
-                            _prior_lbl = (
-                                f"toward {CVI_REPLACEMENT_PERF:.0f}  "
-                                f"(no prior data — replacement default)"
-                            )
-                        _perf_str = (f"{_cvi_perf:.1f}  →  "
-                                      f"{_cvi_perf_shr:.1f}  "
-                                      f"{_prior_lbl}")
-                    elif pd.notna(_cvi_perf):
-                        _perf_str = f"{_cvi_perf:.1f}"
-                    else:
-                        _perf_str = "—"
-                    # Reliability shrinkage-weight display — show how
-                    # much weight the player's own data gets vs the
-                    # replacement-level prior.
-                    if (pd.notna(_cvi_reliab) and pd.notna(_cvi_reliab_ceil)
-                            and pd.notna(_cvi_reliab_sf)):
-                        _own_pct = _cvi_reliab * 100
-                        _prior_pct = (1 - _cvi_reliab) * 100
-                        _reliab_str = (f"{_own_pct:.0f}% own / "
-                                        f"{_prior_pct:.0f}% prior  "
-                                        f"(ceil {_cvi_reliab_ceil:.2f}"
-                                        f" × sample {_cvi_reliab_sf:.2f})")
-                    elif pd.notna(_cvi_reliab):
-                        _reliab_str = f"{_cvi_reliab*100:.0f}% own data"
-                    else:
-                        _reliab_str = "—"
-                    _comp_df = pd.DataFrame([
-                        {'Component': 'Perf (raw → shrunk)',
-                         'Value': _perf_str},
-                        {'Component': 'Shrinkage weighting',
-                         'Value': _reliab_str},
-                        {'Component': '× Age-value multiplier',
-                         'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
-                        {'Component': '× League multiplier',
-                         'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
-                        {'Component': 'Trajectory vs age peer',
-                         'Value': (f"{_cvi_traj:+.1f}"
-                                    if _cvi_traj is not None and pd.notna(_cvi_traj)
-                                    else "—")},
-                    ])
-                    st.dataframe(_comp_df, use_container_width=True, hide_index=True)
-                    # Footnote — explain the shrinkage in plain English
-                    if pd.notna(_cvi_reliab_mtc) and pd.notna(_cvi_reliab_ceil):
-                        if (_cvi_prior_perf is not None
-                                and pd.notna(_cvi_prior_perf)
-                                and _cvi_prior_str is not None
-                                and pd.notna(_cvi_prior_str)
-                                and _cvi_prior_str > 0.05):
-                            _prior_note = (
-                                f"Prior built from this player's "
-                                f"**{int(_cvi_prior_mins):,} effective prior "
-                                f"minutes** (decay-weighted career, strictly "
-                                f"before {SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}). "
-                                f"With {int(_cvi_prior_str*100)}% prior "
-                                f"strength + {(1-_cvi_prior_str)*100:.0f}% "
-                                f"replacement-default, the shrinkage target "
-                                f"is **{_cvi_eff_prior:.1f}** — not the "
-                                f"generic 40. "
-                            )
-                        else:
-                            _prior_note = (
-                                f"No prior-season data for this player → "
-                                f"falls back to generic replacement-level "
-                                f"(**{CVI_REPLACEMENT_PERF:.0f}**, "
-                                f"~40th-percentile player at this position). "
-                            )
+                    if not _panels:
                         st.caption(
-                            f"**Empirical-Bayes shrinkage (CVI v2.0).** "
-                            f"{_prior_note}"
-                            f"Position ceiling **{_cvi_reliab_ceil:.2f}** "
-                            f"(asymptotic max trust), reached at "
-                            f"**~{int(_cvi_reliab_mtc):,} min**. Grounded in "
-                            f"within-position YoY r from the GPA explainer "
-                            f"(Part VI). CMs stabilize faster than CBs; "
-                            f"GK V-metrics need ~2 seasons."
+                            f"No seasons have both a {chart_y} value for this "
+                            f"player AND a comparable population to plot."
                         )
-                    st.caption("📌 CVI uses placeholder parameters — to be "
-                                "calibrated against scraped market values.")
+                    else:
+                        # One subplot per season, shared y-axis so the player's
+                        # trajectory is easy to follow across seasons.
+                        _fig = _make_subplots(
+                            rows=1, cols=len(_panels),
+                            shared_yaxes=True,
+                            subplot_titles=[p['label'] for p in _panels],
+                            horizontal_spacing=0.01,
+                        )
+                        # Common y-range — driven by the ≥500-min POPULATION
+                        # only (per user request). If the highlighted player
+                        # is outside that range we extend slightly so the gold
+                        # dot is still visible, but the scale is anchored to
+                        # the regular-rotation population.
+                        _pop_concat = np.concatenate([p['population'] for p in _panels])
+                        _y_lo = float(np.nanmin(_pop_concat))
+                        _y_hi = float(np.nanmax(_pop_concat))
+                        _y_pad = 0.05 * (_y_hi - _y_lo if _y_hi > _y_lo else 1.0)
+                        # Allow the highlighted dot to bleed up to 1 pad
+                        # outside the population range without rescaling the
+                        # whole panel.
+                        _player_vals = [p['player_value'] for p in _panels]
+                        _y_lo = min(_y_lo, float(np.nanmin(_player_vals)) - _y_pad)
+                        _y_hi = max(_y_hi, float(np.nanmax(_player_vals)) + _y_pad)
+                        # Width scaling: seasons with more ≥500-min players get
+                        # visibly wider violins so the user can tell apart a
+                        # 200-player Liga 3 season from a 600-player Camp
+                        # season. Use a power < 1 so small samples don't
+                        # collapse to slivers.
+                        _max_n = max(len(p['population']) for p in _panels) or 1
+                        for _i, _p in enumerate(_panels, start=1):
+                            _n = len(_p['population'])
+                            _scaled_w = 0.85 * (_n / _max_n) ** 0.5
+                            # 1) Violin: density shape, no built-in points (we
+                            # render our own colored dots in the next trace).
+                            # Explicit x=0 anchor — without this, plotly
+                            # picks categorical mode and the highlight dot's
+                            # numeric x positioning silently breaks.
+                            _fig.add_trace(go.Violin(
+                                x=np.zeros(len(_p['population'])),
+                                y=_p['population'],
+                                points=False,
+                                box_visible=False,
+                                meanline_visible=False,
+                                side='both',
+                                width=_scaled_w,
+                                line_color='rgba(80,80,80,0.55)',
+                                fillcolor='rgba(140,140,140,0.18)',
+                                showlegend=False,
+                                hoverinfo='skip',
+                                name='',
+                            ), row=1, col=_i)
 
-                    # ---- Full CVI formula debug panel ----
-                    # Every intermediate value, every coefficient, every
-                    # decision the model made. Useful for explaining CVI
-                    # rankings to coaches / scouts ('why is X rated lower
-                    # than Y?') and for debugging weird outputs.
-                    with st.expander("🔬 Full CVI formula breakdown (debug)",
-                                       expanded=False):
-                        try:
-                            # Position group + eligible roles
-                            _dbg_pos = (_tv_single.iloc[0].get('primaryPosition')
-                                          if _tv_single is not None
-                                          and not _tv_single.empty else None)
-                            _dbg_grp = _cvi_position_group(_dbg_pos)
-                            _dbg_eligible = ([r for r in WEIGHTS
-                                                if _dbg_pos in POSITION_GROUPS.get(r, [])]
-                                              if _dbg_pos else [])
+                            # 2) Colored dots: deterministic jitter so the
+                            # layout doesn't shift on rerun (seeded by sid),
+                            # bounded so dots stay inside the violin.
+                            _rng = np.random.default_rng(seed=int(_p['sid']) & 0xFFFFFFFF)
+                            _half = max(0.05, _scaled_w / 2 - 0.04)
+                            _jitter = _rng.uniform(-_half, _half, size=_n)
+                            _fig.add_trace(go.Scatter(
+                                x=_jitter,
+                                y=_p['population'],
+                                mode='markers',
+                                marker=dict(
+                                    size=5,
+                                    color=_p['population'],
+                                    colorscale='RdYlGn',
+                                    cmin=_y_lo, cmax=_y_hi,
+                                    opacity=0.6,
+                                    line=dict(width=0),
+                                    showscale=False,
+                                ),
+                                showlegend=False,
+                                hoverinfo='y',
+                                name='',
+                            ), row=1, col=_i)
 
-                            st.markdown("**1️⃣ Position resolution**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;Wyscout primaryPosition: `{_dbg_pos}`  \n"
-                                f"&nbsp;&nbsp;CVI position group: `{_dbg_grp}`  \n"
-                                f"&nbsp;&nbsp;Eligible role templates: `{', '.join(_dbg_eligible) or '—'}`"
+                            # 3) Highlight: the selected player's point on top.
+                            # Bumped to a larger diamond with a thicker dark
+                            # ring so it stays unmistakable against the
+                            # dense violin shape.
+                            _fig.add_trace(go.Scatter(
+                                y=[_p['player_value']],
+                                x=[0.0],
+                                mode='markers',
+                                marker=dict(
+                                    size=18,
+                                    color='#FFC400',
+                                    line=dict(color='black', width=2),
+                                    symbol='diamond',
+                                ),
+                                showlegend=False,
+                                hovertemplate=(
+                                    f"<b>{selected_player_name}</b><br>"
+                                    f"Team: {_p['team']}<br>"
+                                    f"{chart_y}: %{{y:.2f}}<extra></extra>"
+                                ),
+                                name='',
+                            ), row=1, col=_i)
+                            # Force the x-axis to linear — adding go.Violin
+                            # without an explicit x array flips Plotly into
+                            # categorical-axis mode, which silently clobbers
+                            # the numeric x positions we use for jitter and
+                            # the highlight dot (so they collapse onto a
+                            # single phantom category and the gold dot got
+                            # buried under the colored cloud).
+                            _fig.update_xaxes(
+                                type='linear',
+                                showticklabels=False, zeroline=False,
+                                range=[-0.5, 0.5], row=1, col=_i,
                             )
+                        _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
+                        _fig.update_layout(
+                            title=f"{chart_y} by season (gold dot = {selected_player_name})",
+                            height=420,
+                            margin=dict(t=70, b=30, l=40, r=20),
+                            showlegend=False,
+                        )
+                        # Make subplot titles smaller so they fit when there
+                        # are 5+ panels.
+                        for _ann in _fig['layout']['annotations']:
+                            _ann['font'] = dict(size=10)
+                        st.plotly_chart(_fig, use_container_width=True)
 
-                            # All role scores for this player
-                            st.markdown("**2️⃣ Role_Score per eligible role** "
-                                         "(higher = better fit)")
-                            if _tv_single is not None and not _tv_single.empty:
-                                _dbg_row = _tv_single.iloc[0]
-                                _role_data = []
-                                for r in _dbg_eligible:
-                                    v = _dbg_row.get(f"{r}_Score")
-                                    if v is not None and not pd.isna(v):
-                                        _role_data.append({'Role': r,
-                                                            'Score': f"{float(v):.1f}"})
-                                if _role_data:
-                                    _rd_df = pd.DataFrame(_role_data)
-                                    st.dataframe(_rd_df, use_container_width=True,
-                                                  hide_index=True)
-                                    _vals = [float(d['Score']) for d in _role_data]
-                                    _max_role = max(_vals)
-                                    _mean_role = sum(_vals) / len(_vals)
-                                    _alpha = CVI_ROLE_VERSATILITY_ALPHA
-                                    _blend = (_alpha * _max_role
-                                              + (1 - _alpha) * _mean_role)
-                                    st.markdown(
-                                        f"&nbsp;&nbsp;max(role)  = **{_max_role:.1f}**  \n"
-                                        f"&nbsp;&nbsp;mean(role) = **{_mean_role:.1f}**  \n"
-                                        f"&nbsp;&nbsp;blended ({_alpha:.0%} max + "
-                                        f"{1-_alpha:.0%} mean) = **{_blend:.1f}**"
-                                    )
+            st.divider()
 
-                            # Action V percentile
-                            st.markdown("**3️⃣ Action V percentile** "
-                                         "(within position group)")
-                            _dbg_tv = (_tv_single.iloc[0].get('Total Value')
-                                         if _tv_single is not None
-                                         and 'Total Value' in _tv_single.columns
-                                         and not _tv_single.empty else None)
-                            st.markdown(
-                                f"&nbsp;&nbsp;Total Value /90: "
-                                f"`{_dbg_tv if _dbg_tv is None else f'{float(_dbg_tv):.4f}'}`"
-                                f"  \n"
-                                f"&nbsp;&nbsp;Position-group percentile (Action V): "
-                                f"**{'—' if not pd.notna(_cvi_perf) else 'see PerfQuality below'}**"
-                            )
+            # --- 6. STATS TOGGLE ---
+            st.subheader("Overall Season Stats")
+            show_totals = st.toggle("Show Season Totals", value=False)
+            stats_to_display = pd.Series(dtype='object')
+        
+            per_90_stats = player_per_90_stats.copy()
+        
+            if show_totals:
+                st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
+                total_stats = per_90_stats.copy()
+                rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col.lower() or 'index' in col or 'Percentage' in col]
+                # goalsConceded is conceptually a defensive rate (goals against per 90)
+                # rather than a count — it stays per-90 even in season-totals mode,
+                # the same way 'goalsPrevented' / xG family already do.
+                if 'goalsConceded' in total_stats.index and 'goalsConceded' not in rate_cols:
+                    rate_cols.append('goalsConceded')
+                # engine metrics are levels, never season-totaled
+                for _ec in ENGINE_DISPLAY_METRICS:
+                    if _ec in total_stats.index and _ec not in rate_cols:
+                        rate_cols.append(_ec)
+            
+                for col in total_stats.index:
+                    if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
+                        total_val = (total_stats[col] * total_minutes) / 90
+                        if col in ['xG', 'xA', 'xT', 'xTOP', 'xTSP', 'npxG', 'xAOP', 'xASP', 'psxG_faced', 'goalsPrevented']:
+                             total_stats[col] = total_val
+                        else:
+                             total_stats[col] = np.round(total_val)
+            
+                for col in rate_cols:
+                    if col in per_90_stats.index:
+                        total_stats[col] = per_90_stats[col]
+            
+                stats_to_display = total_stats
+            
+            else: # Show Per 90
+                st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
+                stats_to_display = per_90_stats
 
-                            # Performance Quality calculation
-                            st.markdown("**4️⃣ Performance Quality blend**")
-                            if _dbg_grp in CVI_PERF_WEIGHTS:
-                                _w_role, _w_av = CVI_PERF_WEIGHTS[_dbg_grp]
-                                st.markdown(
-                                    f"&nbsp;&nbsp;Position weights: "
-                                    f"role = **{_w_role:.0%}**, "
-                                    f"Action V = **{_w_av:.0%}**  \n"
-                                    f"&nbsp;&nbsp;Raw PerformanceQuality = "
-                                    f"**{_cvi_perf:.1f}** (combined)"
-                                )
+            # --- 7. Display Stats (Using all global groups) ---
+            stat_groups = {
+                "Output": OUTPUT_METRICS,
+                "Passing": PASSING_METRICS,
+                "Defensive": DEFENSIVE_METRICS,
+                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
+                "Dribbling": DRIBBLING_METRICS,
+                "ACP Index": ENGINE_DISPLAY_METRICS,
+                "Goalkeeping": GOALKEEPING_METRICS
+            }
 
-                            # Reliability
-                            st.markdown("**5️⃣ Reliability (position-aware)**")
-                            _dbg_mins = (_tv_single.iloc[0].get('totalMinutes')
-                                          if _tv_single is not None
-                                          and not _tv_single.empty else None)
-                            st.markdown(
-                                f"&nbsp;&nbsp;Minutes this season: **{int(_dbg_mins or 0):,}**  \n"
-                                f"&nbsp;&nbsp;Position ceiling: "
-                                f"**{_cvi_reliab_ceil:.2f}** "
-                                f"(asymptotic max trust for this position group)  \n"
-                                f"&nbsp;&nbsp;Sample factor: "
-                                f"**{_cvi_reliab_sf:.2f}** "
-                                f"(1 − exp(−3 × mins / "
-                                f"{int(_cvi_reliab_mtc or 0):,}))  \n"
-                                f"&nbsp;&nbsp;= Reliability weight: **{_cvi_reliab:.3f}**"
-                            )
+            player_is_gk = (per_90_stats.get('primaryPosition', 'N/A') == 'GK')
 
-                            # Empirical-Bayes prior
-                            st.markdown("**6️⃣ Empirical-Bayes prior**")
+            # ── Build positional-peer population for percentile comparisons ──
+            # Union of all raw positions that share at least one role template
+            # with the player's primary position; filter to 500+ minutes.
+            _primary_pos = player_per_90_stats.get('primaryPosition', None)
+            _peer_pop = pd.DataFrame()
+            if _primary_pos and _primary_pos not in ('N/A', 'Unknown', None, ''):
+                _peer_positions = set()
+                for _role, _positions in POSITION_GROUPS.items():
+                    if _primary_pos in _positions:
+                        _peer_positions.update(_positions)
+                if not _peer_positions:
+                    _peer_positions = {_primary_pos}
+                _peer_pop = radar_stats_df[radar_stats_df['primaryPosition'].isin(_peer_positions)]
+                if 'totalMinutes' in _peer_pop.columns:
+                    _peer_pop = _peer_pop[
+                        pd.to_numeric(_peer_pop['totalMinutes'], errors='coerce').fillna(0) >= 500
+                    ]
+
+            def _percentile_for(metric_name, p90_value):
+                """Percentile of this player's per-90 value against same-position peers (≥500 min)."""
+                if _peer_pop.empty or metric_name not in _peer_pop.columns:
+                    return None
+                if pd.isna(p90_value):
+                    return None
+                pop_vals = pd.to_numeric(_peer_pop[metric_name], errors='coerce').dropna()
+                if len(pop_vals) < 5 or pop_vals.std() == 0:
+                    return None
+                pct = scipy.stats.percentileofscore(pop_vals, p90_value, kind='weak')
+                if metric_name in INVERT_METRICS:
+                    pct = 100.0 - pct
+                return float(pct)
+
+            def _percentile_color(p):
+                """Red (0) → yellow (50) → green (100) HSL gradient."""
+                if p is None or pd.isna(p):
+                    return ''
+                p_clamped = max(0.0, min(100.0, float(p)))
+                hue = (p_clamped / 100.0) * 120.0   # 0=red, 60=yellow, 120=green
+                return f'background-color: hsl({hue:.0f}, 65%, 72%); color: black;'
+
+            for group_name, group_metrics in stat_groups.items():
+
+                if player_is_gk and group_name != 'Goalkeeping':
+                    continue
+                if not player_is_gk and group_name == 'Goalkeeping':
+                    continue
+
+                if player_is_gk and group_name == 'Goalkeeping':
+                    group_metrics = GOALKEEPING_METRICS + ['GK Passes successful %', 'GK Long passes successful %']
+
+                metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
+
+                if metrics_to_show:
+                    default_expanded = (group_name == 'Output')
+                    with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
+
+                        stats_subset_series = stats_to_display[metrics_to_show]
+                        stats_subset_series = stats_subset_series[stats_subset_series != 0]
+
+                        if stats_subset_series.empty:
+                            st.text("No data for this category.")
+                            continue
+
+                        def _fmt_stat(metric_name, x):
+                            if not isinstance(x, (int, float)):
+                                return str(x)
+                            if metric_name in THOUSANDTHS_METRICS:
+                                return f"{x:.3f}"
+                            if np.round(x) == x and '%' not in str(x):
+                                return f"{x:.0f}"
+                            return f"{x:.2f}"
+
+                        # Build display DataFrame: Value (formatted str) + Percentile (numeric)
+                        _rows = []
+                        for _metric in stats_subset_series.index:
+                            _disp_val = stats_subset_series[_metric]
+                            _p90_val = per_90_stats.get(_metric, np.nan)
+                            _pct = _percentile_for(_metric, _p90_val)
+                            _rows.append({
+                                'Metric': _metric,
+                                'Value': _fmt_stat(_metric, _disp_val),
+                                'Percentile': _pct,
+                            })
+                        stats_subset = pd.DataFrame(_rows).set_index('Metric')
+
+                        _styled = (
+                            stats_subset.style
+                            .applymap(_percentile_color, subset=['Percentile'])
+                            .format({'Percentile': lambda v: f"{int(round(v))}" if pd.notna(v) else '—'})
+                        )
+                        st.dataframe(_styled, use_container_width=True)
+        
+
+        with _tab_value:
+            st.divider()
+        
+            # --- Transfer Value Detail ----------------------------------------
+            # Headline Projected value + Current CVI live in the bio row at
+            # top. This section is the deep dive — collapsed by default into
+            # three expanders so the page stays clean: CVI breakdown,
+            # Reported fees & manual entries, and the Market Context features
+            # block. Positioned just above the tactical pitch visualizations
+            # so scouting context flows into them.
+            st.subheader("Transfer Value Detail")
+            try:
+                with st.expander("Composite Value Index (CVI) breakdown",
+                                  expanded=False):
+                    if not _tv_cvi_block.empty:
+                        _cvi_row = _tv_cvi_block.iloc[0]
+                        _cvi_v = _cvi_row.get('_CVI')
+                        _cvi_perf = _cvi_row.get('_CVI_perf')
+                        _cvi_perf_shr = _cvi_row.get('_CVI_perf_shrunk')
+                        _cvi_age_m = _cvi_row.get('_CVI_age')
+                        _cvi_reliab = _cvi_row.get('_CVI_reliab')
+                        _cvi_reliab_ceil = _cvi_row.get('_CVI_reliab_ceiling')
+                        _cvi_reliab_sf = _cvi_row.get('_CVI_reliab_sample_factor')
+                        _cvi_reliab_mtc = _cvi_row.get('_CVI_reliab_mins_to_ceiling')
+                        _cvi_league = _cvi_row.get('_CVI_league')
+                        _cvi_traj = _cvi_row.get('_CVI_trajectory')
+                        if pd.notna(_cvi_v):
+                            st.metric("CVI", f"{_cvi_v:.1f}")
+                        else:
+                            st.metric("CVI", "—")
+                        # Build the "Raw → Shrunk (toward X)" string so the
+                        # user can see where the anchor came from — the
+                        # player's own career mean (when we have data) or
+                        # generic replacement (40) for debutants.
+                        _cvi_eff_prior = _cvi_row.get('_CVI_effective_prior')
+                        _cvi_prior_perf = _cvi_row.get('_CVI_prior_perf')
+                        _cvi_prior_str = _cvi_row.get('_CVI_prior_strength')
+                        _cvi_prior_mins = _cvi_row.get('_CVI_prior_mins_eff')
+                        if pd.notna(_cvi_perf) and pd.notna(_cvi_perf_shr):
                             if (_cvi_prior_perf is not None
                                     and pd.notna(_cvi_prior_perf)
                                     and _cvi_prior_str is not None
+                                    and pd.notna(_cvi_prior_str)
                                     and _cvi_prior_str > 0.05):
-                                st.markdown(
-                                    f"&nbsp;&nbsp;Player's career prior (L3-eq): "
-                                    f"**{_cvi_prior_perf:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Decay-weighted prior minutes: "
-                                    f"**{int(_cvi_prior_mins or 0):,}**  \n"
-                                    f"&nbsp;&nbsp;Prior strength: "
-                                    f"**{_cvi_prior_str:.2f}** "
-                                    f"(min(prior_mins / 1500, 1.0))  \n"
-                                    f"&nbsp;&nbsp;Effective prior used = "
-                                    f"`{_cvi_prior_str:.2f} × {_cvi_prior_perf:.1f}` + "
-                                    f"`{1-_cvi_prior_str:.2f} × {CVI_REPLACEMENT_PERF:.0f}` = "
-                                    f"**{_cvi_eff_prior:.1f}**"
+                                _prior_lbl = (
+                                    f"toward {_cvi_eff_prior:.0f}  "
+                                    f"(your-career {_cvi_prior_perf:.0f}, "
+                                    f"{int(_cvi_prior_str*100)}% strength)"
                                 )
                             else:
-                                st.markdown(
-                                    f"&nbsp;&nbsp;No prior-season data → "
-                                    f"falls back to generic replacement "
-                                    f"**{CVI_REPLACEMENT_PERF:.0f}**"
+                                _prior_lbl = (
+                                    f"toward {CVI_REPLACEMENT_PERF:.0f}  "
+                                    f"(no prior data — replacement default)"
                                 )
-
-                            # Shrinkage step
-                            st.markdown("**7️⃣ Bayesian shrinkage**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;shrunk = "
-                                f"`{_cvi_reliab:.3f} × {_cvi_perf:.1f}` + "
-                                f"`{1-_cvi_reliab:.3f} × {_cvi_eff_prior:.1f}` = "
-                                f"**{_cvi_perf_shr:.1f}**"
-                            )
-
-                            # Age multiplier breakdown
-                            st.markdown("**8️⃣ Age multiplier "
-                                         "(NPV of remaining career)**")
-                            if _dbg_grp in CVI_AGE_VALUE_PARAMS and _tv_age is not None:
-                                _ap = CVI_AGE_VALUE_PARAMS[_dbg_grp]
-                                _years_to_peak = max(_ap['peak_age'] - _tv_age, 0)
-                                _years_to_decline = max(_ap['decline_start'] - _tv_age, 0)
-                                _years_to_end = max(_ap['career_end'] - _tv_age, 0)
-                                st.markdown(
-                                    f"&nbsp;&nbsp;Age: **{_tv_age:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Position trajectory: peak "
-                                    f"@ **{_ap['peak_age']}**, decline starts "
-                                    f"@ **{_ap['decline_start']}**, end "
-                                    f"@ **{_ap['career_end']}**  \n"
-                                    f"&nbsp;&nbsp;Years until peak: "
-                                    f"**{_years_to_peak:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Years until decline starts: "
-                                    f"**{_years_to_decline:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Years until career end: "
-                                    f"**{_years_to_end:.1f}**  \n"
-                                    f"&nbsp;&nbsp;Multiplier range for this "
-                                    f"position: `[{_ap['old_floor']:.2f}, "
-                                    f"{_ap['max_mult']:.2f}]`  \n"
-                                    f"&nbsp;&nbsp;= Age multiplier: "
-                                    f"**{_cvi_age_m:.3f}**"
+                            _perf_str = (f"{_cvi_perf:.1f}  →  "
+                                          f"{_cvi_perf_shr:.1f}  "
+                                          f"{_prior_lbl}")
+                        elif pd.notna(_cvi_perf):
+                            _perf_str = f"{_cvi_perf:.1f}"
+                        else:
+                            _perf_str = "—"
+                        # Reliability shrinkage-weight display — show how
+                        # much weight the player's own data gets vs the
+                        # replacement-level prior.
+                        if (pd.notna(_cvi_reliab) and pd.notna(_cvi_reliab_ceil)
+                                and pd.notna(_cvi_reliab_sf)):
+                            _own_pct = _cvi_reliab * 100
+                            _prior_pct = (1 - _cvi_reliab) * 100
+                            _reliab_str = (f"{_own_pct:.0f}% own / "
+                                            f"{_prior_pct:.0f}% prior  "
+                                            f"(ceil {_cvi_reliab_ceil:.2f}"
+                                            f" × sample {_cvi_reliab_sf:.2f})")
+                        elif pd.notna(_cvi_reliab):
+                            _reliab_str = f"{_cvi_reliab*100:.0f}% own data"
+                        else:
+                            _reliab_str = "—"
+                        _comp_df = pd.DataFrame([
+                            {'Component': 'Perf (raw → shrunk)',
+                             'Value': _perf_str},
+                            {'Component': 'Shrinkage weighting',
+                             'Value': _reliab_str},
+                            {'Component': '× Age-value multiplier',
+                             'Value': (f"{_cvi_age_m:.3f}" if pd.notna(_cvi_age_m) else "—")},
+                            {'Component': '× League multiplier',
+                             'Value': (f"{_cvi_league:.2f}" if pd.notna(_cvi_league) else "—")},
+                            {'Component': 'Trajectory vs age peer',
+                             'Value': (f"{_cvi_traj:+.1f}"
+                                        if _cvi_traj is not None and pd.notna(_cvi_traj)
+                                        else "—")},
+                        ])
+                        st.dataframe(_comp_df, use_container_width=True, hide_index=True)
+                        # Footnote — explain the shrinkage in plain English
+                        if pd.notna(_cvi_reliab_mtc) and pd.notna(_cvi_reliab_ceil):
+                            if (_cvi_prior_perf is not None
+                                    and pd.notna(_cvi_prior_perf)
+                                    and _cvi_prior_str is not None
+                                    and pd.notna(_cvi_prior_str)
+                                    and _cvi_prior_str > 0.05):
+                                _prior_note = (
+                                    f"Prior built from this player's "
+                                    f"**{int(_cvi_prior_mins):,} effective prior "
+                                    f"minutes** (decay-weighted career, strictly "
+                                    f"before {SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}). "
+                                    f"With {int(_cvi_prior_str*100)}% prior "
+                                    f"strength + {(1-_cvi_prior_str)*100:.0f}% "
+                                    f"replacement-default, the shrinkage target "
+                                    f"is **{_cvi_eff_prior:.1f}** — not the "
+                                    f"generic 40. "
                                 )
-
-                            # League
-                            st.markdown("**9️⃣ League multiplier**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;Competition: "
-                                f"`{('Camp' if _tv_comp_id==702 else 'L3' if _tv_comp_id==43324 else _tv_comp_id)}`  \n"
-                                f"&nbsp;&nbsp;Multiplier: **{_cvi_league:.2f}** "
-                                f"(Liga 3 = 1.00, Campeonato = 0.85)"
-                            )
-
-                            # Final
-                            st.markdown("**🏁 Final CVI**")
-                            st.markdown(
-                                f"&nbsp;&nbsp;CVI = "
-                                f"`shrunk_perf × age_mult × league_mult`  \n"
-                                f"&nbsp;&nbsp;&nbsp;&nbsp;= "
-                                f"`{_cvi_perf_shr:.1f} × {_cvi_age_m:.3f} × {_cvi_league:.2f}`  \n"
-                                f"&nbsp;&nbsp;&nbsp;&nbsp;= **{_cvi_v:.1f}**"
-                            )
-                        except Exception as _dbg_exc:
-                            st.caption(f"Debug panel error: "
-                                        f"{type(_dbg_exc).__name__}: {_dbg_exc}")
-                else:
-                    st.caption("CVI unavailable for this player-season.")
-
-                # ---- Season CVI (career-aggregated, anchored to selected) ----
-                # Pairs the per-season CVI above with a career view that
-                # includes the selected season + all prior seasons with
-                # 0.6 decay. Never peeks at seasons after the anchor.
-                if _tv_career_season is not None:
-                    st.caption("")  # spacer
-                    st.caption(f"**Season CVI** — career-aggregated, "
-                                f"anchored at "
-                                f"**{SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}**")
-                    _scvi = _tv_career_season.get('career_cvi')
-                    _scvi_n = _tv_career_season.get('n_seasons_used')
-                    _scvi_em = _tv_career_season.get('effective_mins')
-                    _scvi_perf_raw = _tv_career_season.get('career_perf_raw_l3')
-                    _scvi_perf_shr = _tv_career_season.get('career_perf_shrunk')
-                    _scvi_rel = _tv_career_season.get('reliability')
-                    _scvi_age = _tv_career_season.get('age_at_anchor')
-                    _scvi_age_m = _tv_career_season.get('age_multiplier')
-                    _scvi_lg = _tv_career_season.get('league_at_anchor')
-                    if _scvi is not None and not pd.isna(_scvi):
-                        st.metric(
-                            f"Season CVI ({_scvi_n}-season aggregate)",
-                            f"{_scvi:.1f}",
-                            (f"vs season-only CVI: "
-                              f"{(_scvi - (_tv_cvi_block.iloc[0].get('_CVI') or 0)):+.1f}"
-                              if not _tv_cvi_block.empty
-                              and _tv_cvi_block.iloc[0].get('_CVI') is not None
-                              and pd.notna(_tv_cvi_block.iloc[0].get('_CVI'))
-                              else None),
-                        )
-                    _scvi_comp_df = pd.DataFrame([
-                        {'Component': 'Career perf (L3-eq, decay-weighted)',
-                         'Value': (f"{_scvi_perf_raw:.1f}"
-                                    if _scvi_perf_raw is not None
-                                    and not pd.isna(_scvi_perf_raw)
-                                    else "—")},
-                        {'Component': 'Career perf (shrunk → 40 prior)',
-                         'Value': (f"{_scvi_perf_shr:.1f}"
-                                    if _scvi_perf_shr is not None
-                                    and not pd.isna(_scvi_perf_shr)
-                                    else "—")},
-                        {'Component': 'Effective minutes (decay-weighted)',
-                         'Value': (f"{int(_scvi_em):,}"
-                                    if _scvi_em is not None
-                                    and not pd.isna(_scvi_em)
-                                    else "—")},
-                        {'Component': 'Reliability (own data weight)',
-                         'Value': (f"{_scvi_rel:.3f}"
-                                    if _scvi_rel is not None
-                                    and not pd.isna(_scvi_rel)
-                                    else "—")},
-                        {'Component': 'Age at anchor',
-                         'Value': (f"{_scvi_age:.1f}"
-                                    if _scvi_age is not None
-                                    and not pd.isna(_scvi_age)
-                                    else "—")},
-                        {'Component': '× Age-value multiplier',
-                         'Value': (f"{_scvi_age_m:.3f}"
-                                    if _scvi_age_m is not None
-                                    and not pd.isna(_scvi_age_m)
-                                    else "—")},
-                        {'Component': '× League multiplier (at anchor)',
-                         'Value': (f"{_scvi_lg:.2f}"
-                                    if _scvi_lg is not None
-                                    and not pd.isna(_scvi_lg)
-                                    else "—")},
-                    ])
-                    st.dataframe(_scvi_comp_df, use_container_width=True,
-                                  hide_index=True)
-                    # Per-season breakdown so the user can audit every
-                    # season's contribution
-                    _brk = _tv_career_season.get('breakdown', []) or []
-                    if _brk:
-                        with st.expander("Per-season breakdown (decay, "
-                                          "league translation, weight)"):
-                            _brk_rows = []
-                            _total_w = sum(r.get('weight', 0) or 0 for r in _brk)
-                            for r in _brk:
-                                _sid = int(r.get('seasonId'))
-                                _cid = r.get('competitionId')
-                                _lbl = SEASON_ID_MAP.get(_sid, str(_sid))
-                                _comp_name = ('Camp' if _cid == 702
-                                                else 'L3' if _cid == 43324
-                                                else (str(_cid)
-                                                       if _cid is not None
-                                                       else '—'))
-                                _w = r.get('weight', 0) or 0
-                                _share = (_w / _total_w * 100
-                                            if _total_w > 0 else 0)
-                                _brk_rows.append({
-                                    'Season': _lbl,
-                                    'League': _comp_name,
-                                    'Mins': f"{int(r.get('mins_played', 0) or 0):,}",
-                                    'Perf %ile': f"{(r.get('perf_pct') or 0):.0f}",
-                                    'Decay': f"{(r.get('decay_factor') or 0):.2f}",
-                                    'League factor': f"{(r.get('league_factor') or 0):.2f}",
-                                    'Weight share': f"{_share:.0f}%",
-                                })
-                            st.dataframe(pd.DataFrame(_brk_rows),
-                                          use_container_width=True,
-                                          hide_index=True)
+                            else:
+                                _prior_note = (
+                                    f"No prior-season data for this player → "
+                                    f"falls back to generic replacement-level "
+                                    f"(**{CVI_REPLACEMENT_PERF:.0f}**, "
+                                    f"~40th-percentile player at this position). "
+                                )
                             st.caption(
-                                f"Aggregation: each season's perf is "
-                                f"multiplied by its league factor "
-                                f"(Camp×0.85 → Liga 3 equivalent), then "
-                                f"weighted by `decay × minutes` with "
-                                f"decay = {CVI_CAREER_DECAY}^seasons-back. "
-                                f"Effective minutes drive the shrinkage "
-                                f"weight, so a 3-season player gets a "
-                                f"larger 'own data' share than a 1-season "
-                                f"player at the same age."
+                                f"**Empirical-Bayes shrinkage (CVI v2.0).** "
+                                f"{_prior_note}"
+                                f"Position ceiling **{_cvi_reliab_ceil:.2f}** "
+                                f"(asymptotic max trust), reached at "
+                                f"**~{int(_cvi_reliab_mtc):,} min**. Grounded in "
+                                f"within-position YoY r from the GPA explainer "
+                                f"(Part VI). CMs stabilize faster than CBs; "
+                                f"GK V-metrics need ~2 seasons."
                             )
-                elif selected_season_id is not None:
-                    st.caption("")
-                    st.caption("Season CVI unavailable — no GPA data "
-                                "found for this player on or before the "
-                                "selected season.")
+                        st.caption("📌 CVI uses placeholder parameters — to be "
+                                    "calibrated against scraped market values.")
 
-            with st.expander("Reported transfer fees & manual entries",
-                              expanded=False):
-                st.caption("**Market value sources**")
-                if _tv_valuations_rows.empty:
-                    st.caption("No data yet. Populates from reported transfer "
-                                "fees + manual entries.")
-                else:
-                    _src_view = (_tv_valuations_rows
-                                  .groupby('source', as_index=False)
-                                  .first()[['source', 'value_eur', 'as_of_date']])
-                    _src_view['value_eur'] = _src_view['value_eur'].apply(
-                        lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                    )
-                    st.dataframe(_src_view, use_container_width=True, hide_index=True, column_config=auto_column_config(_src_view))
-                    if len(_tv_valuations_rows) > len(_src_view):
-                        with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
-                            _hist_view = _tv_valuations_rows[
-                                ['source', 'value_eur', 'as_of_date', 'notes']
-                            ].copy()
-                            _hist_view['value_eur'] = _hist_view['value_eur'].apply(
-                                lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                            )
-                            st.dataframe(_hist_view, use_container_width=True,
-                                          hide_index=True,
-                                          column_config=auto_column_config(_hist_view))
+                        # ---- Full CVI formula debug panel ----
+                        # Every intermediate value, every coefficient, every
+                        # decision the model made. Useful for explaining CVI
+                        # rankings to coaches / scouts ('why is X rated lower
+                        # than Y?') and for debugging weird outputs.
+                        with st.expander("🔬 Full CVI formula breakdown (debug)",
+                                           expanded=False):
+                            try:
+                                # Position group + eligible roles
+                                _dbg_pos = (_tv_single.iloc[0].get('primaryPosition')
+                                              if _tv_single is not None
+                                              and not _tv_single.empty else None)
+                                _dbg_grp = _cvi_position_group(_dbg_pos)
+                                _dbg_eligible = ([r for r in WEIGHTS
+                                                    if _dbg_pos in POSITION_GROUPS.get(r, [])]
+                                                  if _dbg_pos else [])
 
-                # ---- Manual valuation entry ----
-                # Add a hand-entered figure from club / agent conversations.
-                # Highest-authority source (weight 4.0 in the loader's blend).
-                with st.expander("➕ Add manual valuation", expanded=False):
-                    with st.form(f"manual_val_{player_id}_{selected_season_id}",
-                                  clear_on_submit=True):
-                        _mv_col_a, _mv_col_b = st.columns(2)
-                        _mv_eur = _mv_col_a.number_input(
-                            "Value (EUR)", min_value=0, step=10_000,
-                            value=0, help="Hand-entered figure from club "
-                                          "or agent conversation. €0 = skip.",
-                        )
-                        from datetime import date as _date_cls
-                        _mv_date = _mv_col_b.date_input(
-                            "As-of date", value=_date_cls.today(),
-                            help="When this valuation was given to you.",
-                        )
-                        _mv_notes = st.text_input(
-                            "Notes (optional)",
-                            placeholder="e.g. 'agent quote', 'club asking price', "
-                                        "'rejected bid from X'",
-                        )
-                        _mv_submitted = st.form_submit_button("Save",
-                                                                type="primary")
-                        if _mv_submitted:
-                            if _mv_eur <= 0:
-                                st.warning("Value must be > €0 — skipping.")
-                            else:
-                                try:
-                                    import csv
-                                    _man_path = (Path(__file__).resolve().parent
-                                                  / 'valuations'
-                                                  / 'manual_entries.csv')
-                                    _man_path.parent.mkdir(exist_ok=True)
-                                    _new_file = not _man_path.exists()
-                                    with open(_man_path, 'a', newline='') as _f:
-                                        _w = csv.writer(_f)
-                                        if _new_file:
-                                            _w.writerow(['playerId', 'value_eur',
-                                                          'as_of_date', 'season_id',
-                                                          'source_url', 'notes'])
-                                        _w.writerow([
-                                            int(player_id), int(_mv_eur),
-                                            _mv_date.isoformat(),
-                                            (int(selected_season_id)
-                                             if selected_season_id else ''),
-                                            '',
-                                            (f"{_mv_notes} | added via dashboard"
-                                             if _mv_notes else "added via dashboard"),
-                                        ])
-                                    st.success(
-                                        f"Saved: €{_mv_eur:,} as of {_mv_date} "
-                                        f"for {selected_player_name}. "
-                                        f"Refresh the page to see it in the True value."
+                                st.markdown("**1️⃣ Position resolution**")
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Wyscout primaryPosition: `{_dbg_pos}`  \n"
+                                    f"&nbsp;&nbsp;CVI position group: `{_dbg_grp}`  \n"
+                                    f"&nbsp;&nbsp;Eligible role templates: `{', '.join(_dbg_eligible) or '—'}`"
+                                )
+
+                                # All role scores for this player
+                                st.markdown("**2️⃣ Role_Score per eligible role** "
+                                             "(higher = better fit)")
+                                if _tv_single is not None and not _tv_single.empty:
+                                    _dbg_row = _tv_single.iloc[0]
+                                    _role_data = []
+                                    for r in _dbg_eligible:
+                                        v = _dbg_row.get(f"{r}_Score")
+                                        if v is not None and not pd.isna(v):
+                                            _role_data.append({'Role': r,
+                                                                'Score': f"{float(v):.1f}"})
+                                    if _role_data:
+                                        _rd_df = pd.DataFrame(_role_data)
+                                        st.dataframe(_rd_df, use_container_width=True,
+                                                      hide_index=True)
+                                        _vals = [float(d['Score']) for d in _role_data]
+                                        _max_role = max(_vals)
+                                        _mean_role = sum(_vals) / len(_vals)
+                                        _alpha = CVI_ROLE_VERSATILITY_ALPHA
+                                        _blend = (_alpha * _max_role
+                                                  + (1 - _alpha) * _mean_role)
+                                        st.markdown(
+                                            f"&nbsp;&nbsp;max(role)  = **{_max_role:.1f}**  \n"
+                                            f"&nbsp;&nbsp;mean(role) = **{_mean_role:.1f}**  \n"
+                                            f"&nbsp;&nbsp;blended ({_alpha:.0%} max + "
+                                            f"{1-_alpha:.0%} mean) = **{_blend:.1f}**"
+                                        )
+
+                                # Action V percentile
+                                st.markdown("**3️⃣ Action V percentile** "
+                                             "(within position group)")
+                                _dbg_tv = (_tv_single.iloc[0].get('Total Value')
+                                             if _tv_single is not None
+                                             and 'Total Value' in _tv_single.columns
+                                             and not _tv_single.empty else None)
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Total Value /90: "
+                                    f"`{_dbg_tv if _dbg_tv is None else f'{float(_dbg_tv):.4f}'}`"
+                                    f"  \n"
+                                    f"&nbsp;&nbsp;Position-group percentile (Action V): "
+                                    f"**{'—' if not pd.notna(_cvi_perf) else 'see PerfQuality below'}**"
+                                )
+
+                                # Performance Quality calculation
+                                st.markdown("**4️⃣ Performance Quality blend**")
+                                if _dbg_grp in CVI_PERF_WEIGHTS:
+                                    _w_role, _w_av = CVI_PERF_WEIGHTS[_dbg_grp]
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;Position weights: "
+                                        f"role = **{_w_role:.0%}**, "
+                                        f"Action V = **{_w_av:.0%}**  \n"
+                                        f"&nbsp;&nbsp;Raw PerformanceQuality = "
+                                        f"**{_cvi_perf:.1f}** (combined)"
                                     )
-                                except Exception as _save_exc:
-                                    st.error(f"Could not save: "
-                                              f"{type(_save_exc).__name__}: {_save_exc}")
 
-            # ---- Market Context features ----
-            st.markdown("##### Market Context")
-            try:
-                _tv_team = (str(_tv_player_row.get('teamName'))
-                             if _tv_player_row is not None
-                             and pd.notna(_tv_player_row.get('teamName'))
-                             else None)
-                _opta_fn = (make_opta_team_strength_lookup()
-                             if 'make_opta_team_strength_lookup' in globals()
-                             else (lambda _t: None))
-                _mc = compute_market_features(
-                    player_id=player_id,
-                    season_id=selected_season_id,
-                    raw_events_df=raw_events_df,
-                    matches_summary_df=matches_summary_df,
-                    player_details_df=player_details_df,
-                    player_minutes_data=player_minutes_data,
-                    team_name=_tv_team,
-                    opta_team_lookup=_opta_fn,
-                )
-                _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
-                def _fmt_resid(v, n_dec=1):
-                    if v is None or pd.isna(v): return "—"
-                    return f"{v:+.{n_dec}f}"
+                                # Reliability
+                                st.markdown("**5️⃣ Reliability (position-aware)**")
+                                _dbg_mins = (_tv_single.iloc[0].get('totalMinutes')
+                                              if _tv_single is not None
+                                              and not _tv_single.empty else None)
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Minutes this season: **{int(_dbg_mins or 0):,}**  \n"
+                                    f"&nbsp;&nbsp;Position ceiling: "
+                                    f"**{_cvi_reliab_ceil:.2f}** "
+                                    f"(asymptotic max trust for this position group)  \n"
+                                    f"&nbsp;&nbsp;Sample factor: "
+                                    f"**{_cvi_reliab_sf:.2f}** "
+                                    f"(1 − exp(−3 × mins / "
+                                    f"{int(_cvi_reliab_mtc or 0):,}))  \n"
+                                    f"&nbsp;&nbsp;= Reliability weight: **{_cvi_reliab:.3f}**"
+                                )
 
-                _mc_c1.metric("xG O/U (season)",
-                                _fmt_resid(_mc['xg_residual_season']),
-                                help="Goals minus xG, non-penalty, this season. "
-                                     "Positive = outperforming xG (clinical "
-                                     "finishing or variance); negative = "
-                                     "underperforming.")
-                _mc_c1.metric("xG O/U (career)",
-                                _fmt_resid(_mc['xg_residual_career']),
-                                help="Cumulative across all seasons in our "
-                                     "data. More stable than single-season "
-                                     "residuals.")
-                _mc_c2.metric("xA O/U (season)",
-                                _fmt_resid(_mc['ass_residual_season']),
-                                help="Assists minus xA proxy (sum of xG of "
-                                     "shots the player set up).")
-                _mc_c2.metric("xA O/U (career)",
-                                _fmt_resid(_mc['ass_residual_career']))
+                                # Empirical-Bayes prior
+                                st.markdown("**6️⃣ Empirical-Bayes prior**")
+                                if (_cvi_prior_perf is not None
+                                        and pd.notna(_cvi_prior_perf)
+                                        and _cvi_prior_str is not None
+                                        and _cvi_prior_str > 0.05):
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;Player's career prior (L3-eq): "
+                                        f"**{_cvi_prior_perf:.1f}**  \n"
+                                        f"&nbsp;&nbsp;Decay-weighted prior minutes: "
+                                        f"**{int(_cvi_prior_mins or 0):,}**  \n"
+                                        f"&nbsp;&nbsp;Prior strength: "
+                                        f"**{_cvi_prior_str:.2f}** "
+                                        f"(min(prior_mins / 1500, 1.0))  \n"
+                                        f"&nbsp;&nbsp;Effective prior used = "
+                                        f"`{_cvi_prior_str:.2f} × {_cvi_prior_perf:.1f}` + "
+                                        f"`{1-_cvi_prior_str:.2f} × {CVI_REPLACEMENT_PERF:.0f}` = "
+                                        f"**{_cvi_eff_prior:.1f}**"
+                                    )
+                                else:
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;No prior-season data → "
+                                        f"falls back to generic replacement "
+                                        f"**{CVI_REPLACEMENT_PERF:.0f}**"
+                                    )
 
-                _nat_p = _mc.get('passport_nationality') or '—'
-                _nat_b = _mc.get('birth_nationality') or '—'
-                _mc_c3.metric("Nationality (passport)", _nat_p)
-                if _nat_b != _nat_p:
-                    _mc_c3.metric("Birthplace", _nat_b)
+                                # Shrinkage step
+                                st.markdown("**7️⃣ Bayesian shrinkage**")
+                                st.markdown(
+                                    f"&nbsp;&nbsp;shrunk = "
+                                    f"`{_cvi_reliab:.3f} × {_cvi_perf:.1f}` + "
+                                    f"`{1-_cvi_reliab:.3f} × {_cvi_eff_prior:.1f}` = "
+                                    f"**{_cvi_perf_shr:.1f}**"
+                                )
 
-                _team_opta = _mc.get('team_opta_rating')
-                _team_ppm = _mc.get('team_ppm_season')
-                _team_pos = _mc.get('team_league_position')
-                _mc_c4.metric(
-                    "Team Opta",
-                    f"{_team_opta:.1f}" if _team_opta is not None else "—",
-                    help="Current team's Opta Power Ranking — proxy for "
-                         "scouting visibility and tier-internal team strength.",
-                )
-                _mc_c4.metric(
-                    "Team this season",
-                    (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
-                    + (f" · {_team_pos}." if _team_pos is not None else ""),
-                    help="Points per match + league position from parsed scores. "
-                         "Successful-team players typically carry a market premium.",
-                )
+                                # Age multiplier breakdown
+                                st.markdown("**8️⃣ Age multiplier "
+                                             "(NPV of remaining career)**")
+                                if _dbg_grp in CVI_AGE_VALUE_PARAMS and _tv_age is not None:
+                                    _ap = CVI_AGE_VALUE_PARAMS[_dbg_grp]
+                                    _years_to_peak = max(_ap['peak_age'] - _tv_age, 0)
+                                    _years_to_decline = max(_ap['decline_start'] - _tv_age, 0)
+                                    _years_to_end = max(_ap['career_end'] - _tv_age, 0)
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;Age: **{_tv_age:.1f}**  \n"
+                                        f"&nbsp;&nbsp;Position trajectory: peak "
+                                        f"@ **{_ap['peak_age']}**, decline starts "
+                                        f"@ **{_ap['decline_start']}**, end "
+                                        f"@ **{_ap['career_end']}**  \n"
+                                        f"&nbsp;&nbsp;Years until peak: "
+                                        f"**{_years_to_peak:.1f}**  \n"
+                                        f"&nbsp;&nbsp;Years until decline starts: "
+                                        f"**{_years_to_decline:.1f}**  \n"
+                                        f"&nbsp;&nbsp;Years until career end: "
+                                        f"**{_years_to_end:.1f}**  \n"
+                                        f"&nbsp;&nbsp;Multiplier range for this "
+                                        f"position: `[{_ap['old_floor']:.2f}, "
+                                        f"{_ap['max_mult']:.2f}]`  \n"
+                                        f"&nbsp;&nbsp;= Age multiplier: "
+                                        f"**{_cvi_age_m:.3f}**"
+                                    )
 
-                _ver = _mc.get('positions_played_career')
-                _sea = _mc.get('seasons_played')
-                if _ver is not None or _sea is not None:
-                    _bits = []
-                    if _ver is not None:
-                        _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
-                    if _sea is not None:
-                        _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
-                    st.caption("· ".join(_bits))
-                st.caption(
-                    "📌 These features feed the v2 EUR regression "
-                    "(currently pending). They don't change CVI itself."
-                )
-            except Exception as _mc_exc:
-                st.caption(f"Market Context error: "
-                            f"{type(_mc_exc).__name__}: {_mc_exc}")
-        except Exception as _tv_exc:
-            st.caption(f"Transfer Value Detail error: "
-                        f"{type(_tv_exc).__name__}: {_tv_exc}")
+                                # League
+                                st.markdown("**9️⃣ League multiplier**")
+                                st.markdown(
+                                    f"&nbsp;&nbsp;Competition: "
+                                    f"`{('Camp' if _tv_comp_id==702 else 'L3' if _tv_comp_id==43324 else _tv_comp_id)}`  \n"
+                                    f"&nbsp;&nbsp;Multiplier: **{_cvi_league:.2f}** "
+                                    f"(Liga 3 = 1.00, Campeonato = 0.85)"
+                                )
 
-        st.divider()
+                                # Final
+                                st.markdown("**🏁 Final CVI**")
+                                st.markdown(
+                                    f"&nbsp;&nbsp;CVI = "
+                                    f"`shrunk_perf × age_mult × league_mult`  \n"
+                                    f"&nbsp;&nbsp;&nbsp;&nbsp;= "
+                                    f"`{_cvi_perf_shr:.1f} × {_cvi_age_m:.3f} × {_cvi_league:.2f}`  \n"
+                                    f"&nbsp;&nbsp;&nbsp;&nbsp;= **{_cvi_v:.1f}**"
+                                )
+                            except Exception as _dbg_exc:
+                                st.caption(f"Debug panel error: "
+                                            f"{type(_dbg_exc).__name__}: {_dbg_exc}")
+                    else:
+                        st.caption("CVI unavailable for this player-season.")
 
-        # --- 7. SHOT ANALYSIS (UPDATED) ---
-        st.subheader("Shot Analysis")
+                    # ---- Season CVI (career-aggregated, anchored to selected) ----
+                    # Pairs the per-season CVI above with a career view that
+                    # includes the selected season + all prior seasons with
+                    # 0.6 decay. Never peeks at seasons after the anchor.
+                    if _tv_career_season is not None:
+                        st.caption("")  # spacer
+                        st.caption(f"**Season CVI** — career-aggregated, "
+                                    f"anchored at "
+                                    f"**{SEASON_ID_MAP.get(int(selected_season_id), selected_season_id)}**")
+                        _scvi = _tv_career_season.get('career_cvi')
+                        _scvi_n = _tv_career_season.get('n_seasons_used')
+                        _scvi_em = _tv_career_season.get('effective_mins')
+                        _scvi_perf_raw = _tv_career_season.get('career_perf_raw_l3')
+                        _scvi_perf_shr = _tv_career_season.get('career_perf_shrunk')
+                        _scvi_rel = _tv_career_season.get('reliability')
+                        _scvi_age = _tv_career_season.get('age_at_anchor')
+                        _scvi_age_m = _tv_career_season.get('age_multiplier')
+                        _scvi_lg = _tv_career_season.get('league_at_anchor')
+                        if _scvi is not None and not pd.isna(_scvi):
+                            st.metric(
+                                f"Season CVI ({_scvi_n}-season aggregate)",
+                                f"{_scvi:.1f}",
+                                (f"vs season-only CVI: "
+                                  f"{(_scvi - (_tv_cvi_block.iloc[0].get('_CVI') or 0)):+.1f}"
+                                  if not _tv_cvi_block.empty
+                                  and _tv_cvi_block.iloc[0].get('_CVI') is not None
+                                  and pd.notna(_tv_cvi_block.iloc[0].get('_CVI'))
+                                  else None),
+                            )
+                        _scvi_comp_df = pd.DataFrame([
+                            {'Component': 'Career perf (L3-eq, decay-weighted)',
+                             'Value': (f"{_scvi_perf_raw:.1f}"
+                                        if _scvi_perf_raw is not None
+                                        and not pd.isna(_scvi_perf_raw)
+                                        else "—")},
+                            {'Component': 'Career perf (shrunk → 40 prior)',
+                             'Value': (f"{_scvi_perf_shr:.1f}"
+                                        if _scvi_perf_shr is not None
+                                        and not pd.isna(_scvi_perf_shr)
+                                        else "—")},
+                            {'Component': 'Effective minutes (decay-weighted)',
+                             'Value': (f"{int(_scvi_em):,}"
+                                        if _scvi_em is not None
+                                        and not pd.isna(_scvi_em)
+                                        else "—")},
+                            {'Component': 'Reliability (own data weight)',
+                             'Value': (f"{_scvi_rel:.3f}"
+                                        if _scvi_rel is not None
+                                        and not pd.isna(_scvi_rel)
+                                        else "—")},
+                            {'Component': 'Age at anchor',
+                             'Value': (f"{_scvi_age:.1f}"
+                                        if _scvi_age is not None
+                                        and not pd.isna(_scvi_age)
+                                        else "—")},
+                            {'Component': '× Age-value multiplier',
+                             'Value': (f"{_scvi_age_m:.3f}"
+                                        if _scvi_age_m is not None
+                                        and not pd.isna(_scvi_age_m)
+                                        else "—")},
+                            {'Component': '× League multiplier (at anchor)',
+                             'Value': (f"{_scvi_lg:.2f}"
+                                        if _scvi_lg is not None
+                                        and not pd.isna(_scvi_lg)
+                                        else "—")},
+                        ])
+                        st.dataframe(_scvi_comp_df, use_container_width=True,
+                                      hide_index=True)
+                        # Per-season breakdown so the user can audit every
+                        # season's contribution
+                        _brk = _tv_career_season.get('breakdown', []) or []
+                        if _brk:
+                            with st.expander("Per-season breakdown (decay, "
+                                              "league translation, weight)"):
+                                _brk_rows = []
+                                _total_w = sum(r.get('weight', 0) or 0 for r in _brk)
+                                for r in _brk:
+                                    _sid = int(r.get('seasonId'))
+                                    _cid = r.get('competitionId')
+                                    _lbl = SEASON_ID_MAP.get(_sid, str(_sid))
+                                    _comp_name = ('Camp' if _cid == 702
+                                                    else 'L3' if _cid == 43324
+                                                    else (str(_cid)
+                                                           if _cid is not None
+                                                           else '—'))
+                                    _w = r.get('weight', 0) or 0
+                                    _share = (_w / _total_w * 100
+                                                if _total_w > 0 else 0)
+                                    _brk_rows.append({
+                                        'Season': _lbl,
+                                        'League': _comp_name,
+                                        'Mins': f"{int(r.get('mins_played', 0) or 0):,}",
+                                        'Perf %ile': f"{(r.get('perf_pct') or 0):.0f}",
+                                        'Decay': f"{(r.get('decay_factor') or 0):.2f}",
+                                        'League factor': f"{(r.get('league_factor') or 0):.2f}",
+                                        'Weight share': f"{_share:.0f}%",
+                                    })
+                                st.dataframe(pd.DataFrame(_brk_rows),
+                                              use_container_width=True,
+                                              hide_index=True)
+                                st.caption(
+                                    f"Aggregation: each season's perf is "
+                                    f"multiplied by its league factor "
+                                    f"(Camp×0.85 → Liga 3 equivalent), then "
+                                    f"weighted by `decay × minutes` with "
+                                    f"decay = {CVI_CAREER_DECAY}^seasons-back. "
+                                    f"Effective minutes drive the shrinkage "
+                                    f"weight, so a 3-season player gets a "
+                                    f"larger 'own data' share than a 1-season "
+                                    f"player at the same age."
+                                )
+                    elif selected_season_id is not None:
+                        st.caption("")
+                        st.caption("Season CVI unavailable — no GPA data "
+                                    "found for this player on or before the "
+                                    "selected season.")
+
+                with st.expander("Reported transfer fees & manual entries",
+                                  expanded=False):
+                    st.caption("**Market value sources**")
+                    if _tv_valuations_rows.empty:
+                        st.caption("No data yet. Populates from reported transfer "
+                                    "fees + manual entries.")
+                    else:
+                        _src_view = (_tv_valuations_rows
+                                      .groupby('source', as_index=False)
+                                      .first()[['source', 'value_eur', 'as_of_date']])
+                        _src_view['value_eur'] = _src_view['value_eur'].apply(
+                            lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                        )
+                        st.dataframe(_src_view, use_container_width=True, hide_index=True, column_config=auto_column_config(_src_view))
+                        if len(_tv_valuations_rows) > len(_src_view):
+                            with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
+                                _hist_view = _tv_valuations_rows[
+                                    ['source', 'value_eur', 'as_of_date', 'notes']
+                                ].copy()
+                                _hist_view['value_eur'] = _hist_view['value_eur'].apply(
+                                    lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
+                                )
+                                st.dataframe(_hist_view, use_container_width=True,
+                                              hide_index=True,
+                                              column_config=auto_column_config(_hist_view))
+
+                    # ---- Manual valuation entry ----
+                    # Add a hand-entered figure from club / agent conversations.
+                    # Highest-authority source (weight 4.0 in the loader's blend).
+                    with st.expander("➕ Add manual valuation", expanded=False):
+                        with st.form(f"manual_val_{player_id}_{selected_season_id}",
+                                      clear_on_submit=True):
+                            _mv_col_a, _mv_col_b = st.columns(2)
+                            _mv_eur = _mv_col_a.number_input(
+                                "Value (EUR)", min_value=0, step=10_000,
+                                value=0, help="Hand-entered figure from club "
+                                              "or agent conversation. €0 = skip.",
+                            )
+                            from datetime import date as _date_cls
+                            _mv_date = _mv_col_b.date_input(
+                                "As-of date", value=_date_cls.today(),
+                                help="When this valuation was given to you.",
+                            )
+                            _mv_notes = st.text_input(
+                                "Notes (optional)",
+                                placeholder="e.g. 'agent quote', 'club asking price', "
+                                            "'rejected bid from X'",
+                            )
+                            _mv_submitted = st.form_submit_button("Save",
+                                                                    type="primary")
+                            if _mv_submitted:
+                                if _mv_eur <= 0:
+                                    st.warning("Value must be > €0 — skipping.")
+                                else:
+                                    try:
+                                        import csv
+                                        _man_path = (Path(__file__).resolve().parent
+                                                      / 'valuations'
+                                                      / 'manual_entries.csv')
+                                        _man_path.parent.mkdir(exist_ok=True)
+                                        _new_file = not _man_path.exists()
+                                        with open(_man_path, 'a', newline='') as _f:
+                                            _w = csv.writer(_f)
+                                            if _new_file:
+                                                _w.writerow(['playerId', 'value_eur',
+                                                              'as_of_date', 'season_id',
+                                                              'source_url', 'notes'])
+                                            _w.writerow([
+                                                int(player_id), int(_mv_eur),
+                                                _mv_date.isoformat(),
+                                                (int(selected_season_id)
+                                                 if selected_season_id else ''),
+                                                '',
+                                                (f"{_mv_notes} | added via dashboard"
+                                                 if _mv_notes else "added via dashboard"),
+                                            ])
+                                        st.success(
+                                            f"Saved: €{_mv_eur:,} as of {_mv_date} "
+                                            f"for {selected_player_name}. "
+                                            f"Refresh the page to see it in the True value."
+                                        )
+                                    except Exception as _save_exc:
+                                        st.error(f"Could not save: "
+                                                  f"{type(_save_exc).__name__}: {_save_exc}")
+
+                # ---- Market Context features ----
+                st.markdown("##### Market Context")
+                try:
+                    _tv_team = (str(_tv_player_row.get('teamName'))
+                                 if _tv_player_row is not None
+                                 and pd.notna(_tv_player_row.get('teamName'))
+                                 else None)
+                    _opta_fn = (make_opta_team_strength_lookup()
+                                 if 'make_opta_team_strength_lookup' in globals()
+                                 else (lambda _t: None))
+                    _mc = compute_market_features(
+                        player_id=player_id,
+                        season_id=selected_season_id,
+                        raw_events_df=raw_events_df,
+                        matches_summary_df=matches_summary_df,
+                        player_details_df=player_details_df,
+                        player_minutes_data=player_minutes_data,
+                        team_name=_tv_team,
+                        opta_team_lookup=_opta_fn,
+                    )
+                    _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
+                    def _fmt_resid(v, n_dec=1):
+                        if v is None or pd.isna(v): return "—"
+                        return f"{v:+.{n_dec}f}"
+
+                    _mc_c1.metric("xG O/U (season)",
+                                    _fmt_resid(_mc['xg_residual_season']),
+                                    help="Goals minus xG, non-penalty, this season. "
+                                         "Positive = outperforming xG (clinical "
+                                         "finishing or variance); negative = "
+                                         "underperforming.")
+                    _mc_c1.metric("xG O/U (career)",
+                                    _fmt_resid(_mc['xg_residual_career']),
+                                    help="Cumulative across all seasons in our "
+                                         "data. More stable than single-season "
+                                         "residuals.")
+                    _mc_c2.metric("xA O/U (season)",
+                                    _fmt_resid(_mc['ass_residual_season']),
+                                    help="Assists minus xA proxy (sum of xG of "
+                                         "shots the player set up).")
+                    _mc_c2.metric("xA O/U (career)",
+                                    _fmt_resid(_mc['ass_residual_career']))
+
+                    _nat_p = _mc.get('passport_nationality') or '—'
+                    _nat_b = _mc.get('birth_nationality') or '—'
+                    _mc_c3.metric("Nationality (passport)", _nat_p)
+                    if _nat_b != _nat_p:
+                        _mc_c3.metric("Birthplace", _nat_b)
+
+                    _team_opta = _mc.get('team_opta_rating')
+                    _team_ppm = _mc.get('team_ppm_season')
+                    _team_pos = _mc.get('team_league_position')
+                    _mc_c4.metric(
+                        "Team Opta",
+                        f"{_team_opta:.1f}" if _team_opta is not None else "—",
+                        help="Current team's Opta Power Ranking — proxy for "
+                             "scouting visibility and tier-internal team strength.",
+                    )
+                    _mc_c4.metric(
+                        "Team this season",
+                        (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
+                        + (f" · {_team_pos}." if _team_pos is not None else ""),
+                        help="Points per match + league position from parsed scores. "
+                             "Successful-team players typically carry a market premium.",
+                    )
+
+                    _ver = _mc.get('positions_played_career')
+                    _sea = _mc.get('seasons_played')
+                    if _ver is not None or _sea is not None:
+                        _bits = []
+                        if _ver is not None:
+                            _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
+                        if _sea is not None:
+                            _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
+                        st.caption("· ".join(_bits))
+                    st.caption(
+                        "📌 These features feed the v2 EUR regression "
+                        "(currently pending). They don't change CVI itself."
+                    )
+                except Exception as _mc_exc:
+                    st.caption(f"Market Context error: "
+                                f"{type(_mc_exc).__name__}: {_mc_exc}")
+            except Exception as _tv_exc:
+                st.caption(f"Transfer Value Detail error: "
+                            f"{type(_tv_exc).__name__}: {_tv_exc}")
+
+
+        with _tab_shots:
+            st.divider()
+
+            # --- 7. SHOT ANALYSIS (UPDATED) ---
+            st.subheader("Shot Analysis")
         
-        # 1. Get all player events
-        player_events_all = profile_events_df[profile_events_df['player.name'] == selected_player_name].copy()
+            # 1. Get all player events
+            player_events_all = profile_events_df[profile_events_df['player.name'] == selected_player_name].copy()
         
-        # 2. Filter for shots (non-penalty) for the map/analysis
-        shot_log = player_events_all[
-            (player_events_all['type.primary'] == 'shot') &
-            (player_events_all['type.primary'] != 'penalty')
-        ].copy()
-        
-        if not shot_log.empty:
-            # --- DATA PROCESSING START ---
-            
-            # Sort chronologically for numbering (oldest first)
-            if 'dateutc' in shot_log.columns:
-                shot_log = shot_log.sort_values(by=['dateutc', 'minute', 'second'], ascending=True)
-            else:
-                shot_log = shot_log.sort_values(by=['matchId', 'minute', 'second'], ascending=True)
-                
-            # Assign Shot Numbers (1 to N)
-            shot_log.reset_index(drop=True, inplace=True)
-            shot_log['Shot Number'] = shot_log.index + 1
-            
-            # Basic formatting
-            shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
-            shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
-            shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
-            shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
-                                 np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
-
-            # Body Part Extraction
-            if 'shot.bodyPart.name' in shot_log.columns:
-                shot_log['Body Part'] = shot_log['shot.bodyPart.name']
-            elif 'shot.bodyPart' in shot_log.columns:
-                shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
-                    lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
-                )
-                shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
-            else:
-                shot_log['Body Part'] = 'Unknown'
-
-            # Phase of Play
-            def get_phase(possession_types):
-                if not isinstance(possession_types, (list, np.ndarray)): return "Open Play"
-                if 'counter_attack' in possession_types: return "Counter Attack"
-                if 'corner' in possession_types or 'free_kick' in possession_types or 'penalty' in possession_types: return "Set Piece"
-                if 'positional_attack' in possession_types: return "Positional Attack"
-                return "Open Play"
-            
-            if 'possession.types' in shot_log.columns:
-                shot_log['Phase'] = shot_log['possession.types'].apply(get_phase)
-            else:
-                shot_log['Phase'] = "Unknown"
-
-            # Shot Creating Action (SCA)
-            relevant_match_ids = shot_log['matchId'].unique()
-            context_events = profile_events_df[
-                (profile_events_df['matchId'].isin(relevant_match_ids)) &
-                (profile_events_df['team.name'] == shot_log.iloc[0]['team.name'])
+            # 2. Filter for shots (non-penalty) for the map/analysis
+            shot_log = player_events_all[
+                (player_events_all['type.primary'] == 'shot') &
+                (player_events_all['type.primary'] != 'penalty')
             ].copy()
+        
+            if not shot_log.empty:
+                # --- DATA PROCESSING START ---
             
-            shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
-            
-            sca_merge = pd.merge(
-                shot_log[['id', 'matchId', 'possession.id', 'prev_event_idx']],
-                context_events[['matchId', 'possession.id', 'possession.eventIndex', 'type.primary', 'type.secondary']],
-                left_on=['matchId', 'possession.id', 'prev_event_idx'],
-                right_on=['matchId', 'possession.id', 'possession.eventIndex'],
-                how='left',
-                suffixes=('', '_prev')
-            )
-            
-            def label_sca(row):
-                if pd.isna(row['type.primary']): return "Recovery/None"
-                sec_types = row['type.secondary'] if isinstance(row['type.secondary'], (list, np.ndarray)) else []
-                if 'cross' in sec_types: return "Cross"
-                if 'through_pass' in sec_types: return "Through Pass"
-                if 'deep_completion' in sec_types: return "Deep Completion"
-                prim = row['type.primary']
-                if prim == 'pass': return "Pass"
-                if prim == 'duel': return "Dribble/Duel"
-                if prim == 'acceleration' or prim == 'touch': return "Carry"
-                if prim == 'clearance': return "Clearance"
-                if prim == 'interception': return "Interception"
-                return prim.replace('_', ' ').title()
-
-            sca_merge['SCA'] = sca_merge.apply(label_sca, axis=1)
-            shot_log = shot_log.merge(sca_merge[['id', 'SCA']], on='id', how='left')
-            
-            # --- DATA PROCESSING END ---
-
-            # --- VISUALIZATION ---
-            col_shot_map, col_shot_table = st.columns([1, 1.4])
-            
-            with col_shot_map:
-                st.markdown("**Season Shot Map**")
-                # Pass the fully processed shot_log which has 'Shot Number'
-                fig_player_shots = create_player_shotmap(shot_log, selected_player_name)
-                st.pyplot(fig_player_shots, use_container_width=True)
-                plt.close(fig_player_shots)
-                
-            with col_shot_table:
-                st.markdown("**Shot Log**")
-                
-                # Prepare display table
-                display_cols = ['Shot Number', 'Date', 'Opponent', 'Result', 'xG', 'Body Part', 'SCA']
-                table_display = shot_log[display_cols].rename(columns={
-                    'Shot Number': '#',
-                    'SCA': 'Creating Action'
-                }).sort_values(by='#', ascending=False) # Show newest first (highest number)
-                
-                st.dataframe(table_display, use_container_width=True, height=500, hide_index=True, column_config=auto_column_config(table_display))
-
-            # --- NEW: SUMMARY TABLES ---
-            st.markdown("---")
-            col_sum1, col_sum2 = st.columns(2)
-            
-            with col_sum1:
-                st.markdown("**Stats by Body Part**")
-                body_summary = shot_log.groupby('Body Part').agg(
-                    Shots=('id', 'count'),
-                    Goals=('shot.isGoal', 'sum'),
-                    Total_xG=('xG', 'sum')
-                ).sort_values(by='Total_xG', ascending=False)
-                body_summary['xG/Shot'] = (body_summary['Total_xG'] / body_summary['Shots']).round(2)
-                body_summary['Total_xG'] = body_summary['Total_xG'].round(2)
-                st.dataframe(body_summary, use_container_width=True, column_config=auto_column_config(body_summary))
-                
-            with col_sum2:
-                st.markdown("**Stats by Creating Action**")
-                sca_summary = shot_log.groupby('SCA').agg(
-                    Shots=('id', 'count'),
-                    Goals=('shot.isGoal', 'sum'),
-                    Total_xG=('xG', 'sum')
-                ).sort_values(by='Total_xG', ascending=False)
-                sca_summary['xG/Shot'] = (sca_summary['Total_xG'] / sca_summary['Shots']).round(2)
-                sca_summary['Total_xG'] = sca_summary['Total_xG'].round(2)
-                st.dataframe(sca_summary, use_container_width=True, column_config=auto_column_config(sca_summary))
-
-        else:
-            st.info("No shots recorded for this player.")
-
-        st.divider()
-
-        # --- 7b. Shot Assists & Dribbles in Final Third ---
-        st.subheader("Shot Assists & Dribbles in Final Third")
-        try:
-            fig_sa_player = pv.plot_shot_assists_and_dribbles(
-                profile_events_df, current_team,
-                player_name=selected_player_name,
-            )
-            st.pyplot(fig_sa_player, use_container_width=True)
-            plt.close(fig_sa_player)
-        except Exception as e:
-            st.caption(f"Could not render shot assists & dribbles: {e}")
-
-        st.divider()
-
-        # --- 7c. Defensive Action Heatmap ---
-        st.subheader("Defensive Action Heatmap")
-        try:
-            # Resolve positional peer group for defensive heatmap
-            _DEFENSIVE_PEER_GROUPS = {
-                'GK': ['GK'],
-                'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
-                'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
-                'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3'],
-                'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW', 'LWF', 'RWF'],
-                'ST': ['CF', 'SS'],
-            }
-            _heatmap_pos_codes = [current_pos]
-            _heatmap_peer_label = current_pos
-            for _grp_name, _grp_codes in _DEFENSIVE_PEER_GROUPS.items():
-                if current_pos in _grp_codes:
-                    _heatmap_pos_codes = _grp_codes
-                    _heatmap_peer_label = _grp_name
-                    break
-
-            # Compute peer density stack (cached)
-            _events_hash = hashlib.md5(
-                f"{len(profile_events_df)}_{tuple(sorted(_heatmap_pos_codes))}".encode()
-            ).hexdigest()
-
-            _peer_stack = _compute_peer_density_stack(
-                _events_hash, profile_events_df,
-                tuple(sorted(_heatmap_pos_codes)),
-                _player_minutes_df=profile_player_minutes_df,
-                include_recoveries=True,
-            )
-
-            fig_def_heatmap = pv.plot_defensive_action_heatmap(
-                profile_events_df, player_id, selected_player_name,
-                position_codes=_heatmap_pos_codes,
-                player_minutes_df=profile_player_minutes_df,
-                peer_density_stack=_peer_stack,
-                include_recoveries=True,
-            )
-            st.pyplot(fig_def_heatmap, use_container_width=True)
-            plt.close(fig_def_heatmap)
-            st.caption(f"Colour intensity normalised across **{_heatmap_peer_label}** peers.")
-        except Exception as e:
-            st.caption(f"Could not render defensive action heatmap: {e}")
-
-        st.divider()
-
-        # --- 7a. Throw-In Analysis ---
-        st.subheader("Throw-In Analysis")
-
-        try:
-            player_throwin_df = profile_events_df[
-                (profile_events_df['player.id'] == player_id) &
-                (profile_events_df['type.primary'] == 'throw_in')
-            ].copy()
-
-            if not player_throwin_df.empty and 'pass.length' in player_throwin_df.columns:
-                total_throwins = len(player_throwin_df)
-
-                # Avg of top 10 longest throw-ins (overall distance)
-                top_10_all = player_throwin_df.nlargest(min(10, total_throwins), 'pass.length')
-                avg_top10_length = top_10_all['pass.length'].mean()
-
-                # Throw-ins into the attacking penalty box (end x >= 84, 20 <= end y <= 80)
-                into_box = player_throwin_df[
-                    (player_throwin_df['pass.endLocation.x'] >= 84) &
-                    (player_throwin_df['pass.endLocation.y'] >= 20) &
-                    (player_throwin_df['pass.endLocation.y'] <= 80)
-                ]
-                if not into_box.empty:
-                    top_10_box = into_box.nlargest(min(10, len(into_box)), 'pass.length')
-                    avg_top10_into_box = top_10_box['pass.length'].mean()
+                # Sort chronologically for numbering (oldest first)
+                if 'dateutc' in shot_log.columns:
+                    shot_log = shot_log.sort_values(by=['dateutc', 'minute', 'second'], ascending=True)
                 else:
-                    avg_top10_into_box = 0.0
+                    shot_log = shot_log.sort_values(by=['matchId', 'minute', 'second'], ascending=True)
+                
+                # Assign Shot Numbers (1 to N)
+                shot_log.reset_index(drop=True, inplace=True)
+                shot_log['Shot Number'] = shot_log.index + 1
+            
+                # Basic formatting
+                shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
+                shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
+                shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
+                shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
+                                     np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
 
-                # Throw-ins into box where next action is an aerial duel
-                avg_top10_into_box_aerial = 0.0
-                if not into_box.empty:
-                    sorted_match_events = profile_events_df.sort_values(by=['matchId', 'minute', 'second']).reset_index(drop=True)
-                    aerial_box_throws = []
-                    for _, ti_row in into_box.iterrows():
-                        m_id = ti_row.get('matchId')
-                        if m_id is None:
-                            continue
-                        m_events = sorted_match_events[sorted_match_events['matchId'] == m_id]
-                        pos_mask = (m_events['minute'] == ti_row['minute']) & (m_events['second'] == ti_row['second']) & (m_events['type.primary'] == 'throw_in')
-                        positions = m_events[pos_mask].index
-                        if len(positions) == 0:
-                            continue
-                        next_pos = positions[0] + 1
-                        if next_pos in m_events.index:
-                            next_sec = m_events.loc[next_pos].get('type.secondary', '')
-                            if isinstance(next_sec, (list, set)):
-                                is_aerial = 'aerial_duel' in next_sec
-                            else:
-                                is_aerial = 'aerial_duel' in str(next_sec)
-                            if is_aerial:
-                                aerial_box_throws.append(ti_row)
-                    if aerial_box_throws:
-                        aerial_df = pd.DataFrame(aerial_box_throws)
-                        top_10_aerial = aerial_df.nlargest(min(10, len(aerial_df)), 'pass.length')
-                        avg_top10_into_box_aerial = top_10_aerial['pass.length'].mean()
+                # Body Part Extraction
+                if 'shot.bodyPart.name' in shot_log.columns:
+                    shot_log['Body Part'] = shot_log['shot.bodyPart.name']
+                elif 'shot.bodyPart' in shot_log.columns:
+                    shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
+                        lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
+                    )
+                    shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
+                else:
+                    shot_log['Body Part'] = 'Unknown'
 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Throw-Ins", int(total_throwins))
-                with col2:
-                    st.metric("Avg Max Distance", f"{avg_top10_length:.1f}m")
-                with col3:
-                    st.metric("Avg Max Into Box", f"{avg_top10_into_box:.1f}m")
-                with col4:
-                    st.metric("Avg Max Into Box → Aerial", f"{avg_top10_into_box_aerial:.1f}m")
+                # Phase of Play
+                def get_phase(possession_types):
+                    if not isinstance(possession_types, (list, np.ndarray)): return "Open Play"
+                    if 'counter_attack' in possession_types: return "Counter Attack"
+                    if 'corner' in possession_types or 'free_kick' in possession_types or 'penalty' in possession_types: return "Set Piece"
+                    if 'positional_attack' in possession_types: return "Positional Attack"
+                    return "Open Play"
+            
+                if 'possession.types' in shot_log.columns:
+                    shot_log['Phase'] = shot_log['possession.types'].apply(get_phase)
+                else:
+                    shot_log['Phase'] = "Unknown"
+
+                # Shot Creating Action (SCA)
+                relevant_match_ids = shot_log['matchId'].unique()
+                context_events = profile_events_df[
+                    (profile_events_df['matchId'].isin(relevant_match_ids)) &
+                    (profile_events_df['team.name'] == shot_log.iloc[0]['team.name'])
+                ].copy()
+            
+                shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
+            
+                sca_merge = pd.merge(
+                    shot_log[['id', 'matchId', 'possession.id', 'prev_event_idx']],
+                    context_events[['matchId', 'possession.id', 'possession.eventIndex', 'type.primary', 'type.secondary']],
+                    left_on=['matchId', 'possession.id', 'prev_event_idx'],
+                    right_on=['matchId', 'possession.id', 'possession.eventIndex'],
+                    how='left',
+                    suffixes=('', '_prev')
+                )
+            
+                def label_sca(row):
+                    if pd.isna(row['type.primary']): return "Recovery/None"
+                    sec_types = row['type.secondary'] if isinstance(row['type.secondary'], (list, np.ndarray)) else []
+                    if 'cross' in sec_types: return "Cross"
+                    if 'through_pass' in sec_types: return "Through Pass"
+                    if 'deep_completion' in sec_types: return "Deep Completion"
+                    prim = row['type.primary']
+                    if prim == 'pass': return "Pass"
+                    if prim == 'duel': return "Dribble/Duel"
+                    if prim == 'acceleration' or prim == 'touch': return "Carry"
+                    if prim == 'clearance': return "Clearance"
+                    if prim == 'interception': return "Interception"
+                    return prim.replace('_', ' ').title()
+
+                sca_merge['SCA'] = sca_merge.apply(label_sca, axis=1)
+                shot_log = shot_log.merge(sca_merge[['id', 'SCA']], on='id', how='left')
+            
+                # --- DATA PROCESSING END ---
+
+                # --- VISUALIZATION ---
+                col_shot_map, col_shot_table = st.columns([1, 1.4])
+            
+                with col_shot_map:
+                    st.markdown("**Season Shot Map**")
+                    # Pass the fully processed shot_log which has 'Shot Number'
+                    fig_player_shots = create_player_shotmap(shot_log, selected_player_name)
+                    st.pyplot(fig_player_shots, use_container_width=True)
+                    plt.close(fig_player_shots)
+                
+                with col_shot_table:
+                    st.markdown("**Shot Log**")
+                
+                    # Prepare display table
+                    display_cols = ['Shot Number', 'Date', 'Opponent', 'Result', 'xG', 'Body Part', 'SCA']
+                    table_display = shot_log[display_cols].rename(columns={
+                        'Shot Number': '#',
+                        'SCA': 'Creating Action'
+                    }).sort_values(by='#', ascending=False) # Show newest first (highest number)
+                
+                    st.dataframe(table_display, use_container_width=True, height=500, hide_index=True, column_config=auto_column_config(table_display))
+
+                # --- NEW: SUMMARY TABLES ---
+                st.markdown("---")
+                col_sum1, col_sum2 = st.columns(2)
+            
+                with col_sum1:
+                    st.markdown("**Stats by Body Part**")
+                    body_summary = shot_log.groupby('Body Part').agg(
+                        Shots=('id', 'count'),
+                        Goals=('shot.isGoal', 'sum'),
+                        Total_xG=('xG', 'sum')
+                    ).sort_values(by='Total_xG', ascending=False)
+                    body_summary['xG/Shot'] = (body_summary['Total_xG'] / body_summary['Shots']).round(2)
+                    body_summary['Total_xG'] = body_summary['Total_xG'].round(2)
+                    st.dataframe(body_summary, use_container_width=True, column_config=auto_column_config(body_summary))
+                
+                with col_sum2:
+                    st.markdown("**Stats by Creating Action**")
+                    sca_summary = shot_log.groupby('SCA').agg(
+                        Shots=('id', 'count'),
+                        Goals=('shot.isGoal', 'sum'),
+                        Total_xG=('xG', 'sum')
+                    ).sort_values(by='Total_xG', ascending=False)
+                    sca_summary['xG/Shot'] = (sca_summary['Total_xG'] / sca_summary['Shots']).round(2)
+                    sca_summary['Total_xG'] = sca_summary['Total_xG'].round(2)
+                    st.dataframe(sca_summary, use_container_width=True, column_config=auto_column_config(sca_summary))
+
             else:
-                st.info(f"{selected_player_name} has no throw-ins in the selected period.")
+                st.info("No shots recorded for this player.")
 
-        except Exception as e:
-            st.caption(f"Could not render throw-in analysis: {e}")
+            st.divider()
 
-        st.divider()
+            # --- 7b. Shot Assists & Dribbles in Final Third ---
+            st.subheader("Shot Assists & Dribbles in Final Third")
+            try:
+                fig_sa_player = pv.plot_shot_assists_and_dribbles(
+                    profile_events_df, current_team,
+                    player_name=selected_player_name,
+                )
+                st.pyplot(fig_sa_player, use_container_width=True)
+                plt.close(fig_sa_player)
+            except Exception as e:
+                st.caption(f"Could not render shot assists & dribbles: {e}")
 
-        # --- 8. Display Individual Match Stats (Unchanged) ---
-        st.subheader("Individual Match Log")
+            st.divider()
+
+            # --- 7c. Defensive Action Heatmap ---
+            st.subheader("Defensive Action Heatmap")
+            try:
+                # Resolve positional peer group for defensive heatmap
+                _DEFENSIVE_PEER_GROUPS = {
+                    'GK': ['GK'],
+                    'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
+                    'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
+                    'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3'],
+                    'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW', 'LWF', 'RWF'],
+                    'ST': ['CF', 'SS'],
+                }
+                _heatmap_pos_codes = [current_pos]
+                _heatmap_peer_label = current_pos
+                for _grp_name, _grp_codes in _DEFENSIVE_PEER_GROUPS.items():
+                    if current_pos in _grp_codes:
+                        _heatmap_pos_codes = _grp_codes
+                        _heatmap_peer_label = _grp_name
+                        break
+
+                # Compute peer density stack (cached)
+                _events_hash = hashlib.md5(
+                    f"{len(profile_events_df)}_{tuple(sorted(_heatmap_pos_codes))}".encode()
+                ).hexdigest()
+
+                _peer_stack = _compute_peer_density_stack(
+                    _events_hash, profile_events_df,
+                    tuple(sorted(_heatmap_pos_codes)),
+                    _player_minutes_df=profile_player_minutes_df,
+                    include_recoveries=True,
+                )
+
+                fig_def_heatmap = pv.plot_defensive_action_heatmap(
+                    profile_events_df, player_id, selected_player_name,
+                    position_codes=_heatmap_pos_codes,
+                    player_minutes_df=profile_player_minutes_df,
+                    peer_density_stack=_peer_stack,
+                    include_recoveries=True,
+                )
+                st.pyplot(fig_def_heatmap, use_container_width=True)
+                plt.close(fig_def_heatmap)
+                st.caption(f"Colour intensity normalised across **{_heatmap_peer_label}** peers.")
+            except Exception as e:
+                st.caption(f"Could not render defensive action heatmap: {e}")
+
+            st.divider()
+
+            # --- 7a. Throw-In Analysis ---
+            st.subheader("Throw-In Analysis")
+
+            try:
+                player_throwin_df = profile_events_df[
+                    (profile_events_df['player.id'] == player_id) &
+                    (profile_events_df['type.primary'] == 'throw_in')
+                ].copy()
+
+                if not player_throwin_df.empty and 'pass.length' in player_throwin_df.columns:
+                    total_throwins = len(player_throwin_df)
+
+                    # Avg of top 10 longest throw-ins (overall distance)
+                    top_10_all = player_throwin_df.nlargest(min(10, total_throwins), 'pass.length')
+                    avg_top10_length = top_10_all['pass.length'].mean()
+
+                    # Throw-ins into the attacking penalty box (end x >= 84, 20 <= end y <= 80)
+                    into_box = player_throwin_df[
+                        (player_throwin_df['pass.endLocation.x'] >= 84) &
+                        (player_throwin_df['pass.endLocation.y'] >= 20) &
+                        (player_throwin_df['pass.endLocation.y'] <= 80)
+                    ]
+                    if not into_box.empty:
+                        top_10_box = into_box.nlargest(min(10, len(into_box)), 'pass.length')
+                        avg_top10_into_box = top_10_box['pass.length'].mean()
+                    else:
+                        avg_top10_into_box = 0.0
+
+                    # Throw-ins into box where next action is an aerial duel
+                    avg_top10_into_box_aerial = 0.0
+                    if not into_box.empty:
+                        sorted_match_events = profile_events_df.sort_values(by=['matchId', 'minute', 'second']).reset_index(drop=True)
+                        aerial_box_throws = []
+                        for _, ti_row in into_box.iterrows():
+                            m_id = ti_row.get('matchId')
+                            if m_id is None:
+                                continue
+                            m_events = sorted_match_events[sorted_match_events['matchId'] == m_id]
+                            pos_mask = (m_events['minute'] == ti_row['minute']) & (m_events['second'] == ti_row['second']) & (m_events['type.primary'] == 'throw_in')
+                            positions = m_events[pos_mask].index
+                            if len(positions) == 0:
+                                continue
+                            next_pos = positions[0] + 1
+                            if next_pos in m_events.index:
+                                next_sec = m_events.loc[next_pos].get('type.secondary', '')
+                                if isinstance(next_sec, (list, set)):
+                                    is_aerial = 'aerial_duel' in next_sec
+                                else:
+                                    is_aerial = 'aerial_duel' in str(next_sec)
+                                if is_aerial:
+                                    aerial_box_throws.append(ti_row)
+                        if aerial_box_throws:
+                            aerial_df = pd.DataFrame(aerial_box_throws)
+                            top_10_aerial = aerial_df.nlargest(min(10, len(aerial_df)), 'pass.length')
+                            avg_top10_into_box_aerial = top_10_aerial['pass.length'].mean()
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total Throw-Ins", int(total_throwins))
+                    with col2:
+                        st.metric("Avg Max Distance", f"{avg_top10_length:.1f}m")
+                    with col3:
+                        st.metric("Avg Max Into Box", f"{avg_top10_into_box:.1f}m")
+                    with col4:
+                        st.metric("Avg Max Into Box → Aerial", f"{avg_top10_into_box_aerial:.1f}m")
+                else:
+                    st.info(f"{selected_player_name} has no throw-ins in the selected period.")
+
+            except Exception as e:
+                st.caption(f"Could not render throw-in analysis: {e}")
+
+
+        with _tab_log:
+            st.divider()
+
+            # --- 8. Display Individual Match Stats (Unchanged) ---
+            st.subheader("Individual Match Log")
         
-        if player_match_log_df.empty:
-            st.info("No individual match stats found for this player.")
-        else:
-            key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'xAOP', 'xASP', 'xTOP', 'xTSP', 'Actions / successful', 'Passes / accurate', 'Duels / won']
-            cols_to_show = [c for c in key_match_stats if c in player_match_log_df.columns]
-            st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
-            with st.expander("View Full Match Log (All Stats)"):
-                st.dataframe(player_match_log_df.set_index('Date'))
+            if player_match_log_df.empty:
+                st.info("No individual match stats found for this player.")
+            else:
+                key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'xAOP', 'xASP', 'xTOP', 'xTSP', 'Actions / successful', 'Passes / accurate', 'Duels / won']
+                cols_to_show = [c for c in key_match_stats if c in player_match_log_df.columns]
+                st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
+                with st.expander("View Full Match Log (All Stats)"):
+                    st.dataframe(player_match_log_df.set_index('Date'))
 
 # --- NEW: Player Comparison Section ---
     elif analysis_type == 'Player Comparison':
