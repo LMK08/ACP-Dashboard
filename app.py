@@ -9512,22 +9512,31 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
             bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
 
-            # Headline value — ENGINE projected value only. The legacy
-            # CVI headline + Current CVI metrics were removed (Lucas,
-            # 2026-06-12); CVI internals remain auditable in the
-            # Transfer Value Detail section below.
+            # Headline value — ENGINE projected value for outfielders;
+            # GOALKEEPERS keep the prior CVI→EUR value (Lucas) since the
+            # outfield engine does not cover keepers.
+            _is_gk = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
             bio_row3 = st.columns(3)
-            bio_row3[0].metric(
-                "Projected value",
-                ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
-                help="ACP engine projection → EUR. Perf = percentile of "
-                     "the next-season projection (abs scale — Camp "
-                     "recruit discount already applied, so no extra Camp "
-                     "penalty) × career-NPV age multiplier, through the "
-                     "fee-calibrated CVI→EUR curve (capped €500k). No "
-                     "reliability ramp: the projection is already "
-                     "evidence-weighted.",
-            )
+            if _is_gk:
+                bio_row3[0].metric(
+                    "Projected value",
+                    ("—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}"),
+                    help="Goalkeeper — legacy CVI→EUR value (the prior "
+                         "system, retained for keepers; the outfield ACP "
+                         "engine does not rate goalkeepers).",
+                )
+            else:
+                bio_row3[0].metric(
+                    "Projected value",
+                    ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
+                    help="ACP engine projection → EUR. Perf = percentile of "
+                         "the next-season projection (abs scale — Camp "
+                         "recruit discount already applied, so no extra Camp "
+                         "penalty) × career-NPV age multiplier, through the "
+                         "fee-calibrated CVI→EUR curve (capped €500k). No "
+                         "reliability ramp: the projection is already "
+                         "evidence-weighted.",
+                )
 
         st.divider()
 
@@ -9553,12 +9562,39 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # not rated in the selected scope — fall back to last rated season
                 _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
                 _eng_stale = True
-            st.subheader("ACP Index")
+            _is_gk_card = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
+            st.subheader("Goalkeeper Rating (legacy system)" if _is_gk_card
+                          else "ACP Index")
             if _escope.empty:
-                if str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK'):
-                    st.info("Goalkeepers are rated by the separate GK system "
-                            "(shot-stopping / handling) — the outfield engine "
-                            "does not cover them.")
+                if _is_gk_card:
+                    # Prior rating + value system, retained for keepers.
+                    _gk_templates = ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK']
+                    _gk_scored = []
+                    for _t in _gk_templates:
+                        _s = player_per_90_stats.get(f'{_t}_Score')
+                        if _s is not None and pd.notna(_s):
+                            _gk_scored.append((_t, float(_s)))
+                    if _gk_scored:
+                        _gk_best = max(_gk_scored, key=lambda x: x[1])
+                        _gkc = st.columns(3)
+                        _gkc[0].metric(
+                            "GK Rating (legacy)", f"{_gk_best[1]:.0f}",
+                            help="Best-fit goalkeeper template score — the "
+                                 "bespoke weighted-percentile system (the prior "
+                                 "rating engine), retained for keepers since the "
+                                 "outfield ACP engine does not cover them.")
+                        _gkc[1].metric("Best-fit template", _gk_best[0])
+                        _gkc[2].metric(
+                            "Projected value",
+                            "—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}",
+                            help="Legacy CVI→EUR value.")
+                        st.caption("Template scores — " + " · ".join(
+                            f"**{_t}** {_s:.0f}" for _t, _s in _gk_scored)
+                            + "  ·  full goalkeeping metrics in the Player "
+                              "Radar and Stats tabs below.")
+                    else:
+                        st.info("Goalkeeper — insufficient minutes for the "
+                                "legacy GK rating in this scope.")
                 else:
                     st.info("Not rated by the engine for this scope "
                             "(below the 500-minute season floor, or no "
