@@ -1383,17 +1383,29 @@ def get_season_events(raw_events_df, season_id):
         return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
 
-def get_filtered_events(events_df, season_ids, comp_ids):
-    """Filter events by season_id(s) AND competition IDs in a single pass.
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_filtered_events_cached(_events_df, season_key, comp_key):
+    """Cache wrapper: keyed on the hashable season/comp tuple, not the
+    125 MB frame. Returns a copy (cache_data), so safe to read freely."""
+    return _filter_events_impl(_events_df, season_key, comp_key)
 
-    Equivalent to filter_by_league(get_season_events(events_df, season_ids), comp_ids)
-    but builds one boolean mask. season_ids None = all seasons;
-    comp_ids None (or covering all competitions) = all leagues.
-    """
+
+def get_filtered_events(events_df, season_ids, comp_ids):
+    """Filter events by season_id(s) AND competition IDs in a single pass,
+    cached on the scope so repeat navigation doesn't re-scan the frame."""
+    season_key = (tuple(season_ids) if isinstance(season_ids, (list, tuple, set))
+                   else season_ids)
+    comp_key = tuple(comp_ids) if isinstance(comp_ids, (list, tuple, set)) else comp_ids
+    return _get_filtered_events_cached(events_df, season_key, comp_key)
+
+
+def _filter_events_impl(events_df, season_ids, comp_ids):
+    """Single-pass boolean-mask filter. season_ids None = all seasons;
+    comp_ids None (or covering all competitions) = all leagues."""
     mask = None
     if season_ids is not None:
-        if isinstance(season_ids, list):
-            mask = events_df['seasonId'].isin(season_ids)
+        if isinstance(season_ids, (list, tuple, set)):
+            mask = events_df['seasonId'].isin(list(season_ids))
         else:
             mask = events_df['seasonId'] == season_ids
     if comp_ids is not None and len(comp_ids) != len(COMPETITIONS):
@@ -1430,7 +1442,26 @@ def _season_ids_for_comps(comp_ids):
                 sids.update(COMPETITIONS[cid]["seasons"].keys())
     return sids
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_season_player_minutes_cached(_pmd, season_key, comp_key):
+    return _season_player_minutes_impl(
+        _pmd,
+        list(season_key) if isinstance(season_key, tuple) else season_key,
+        list(comp_key) if isinstance(comp_key, tuple) else comp_key)
+
+
 def get_season_player_minutes(player_minutes_data, season_id, comp_ids=None):
+    """Cached wrapper over the per-season minutes aggregation, keyed on the
+    scope (the {season: df} dict is session-constant)."""
+    if isinstance(player_minutes_data, pd.DataFrame):
+        return player_minutes_data
+    season_key = (tuple(season_id) if isinstance(season_id, (list, tuple, set))
+                   else season_id)
+    comp_key = tuple(comp_ids) if isinstance(comp_ids, (list, tuple, set)) else comp_ids
+    return _get_season_player_minutes_cached(player_minutes_data, season_key, comp_key)
+
+
+def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
     """Get player minutes for a season. Returns DataFrame.
     player_minutes_data is {season_id: DataFrame}.
     If season_id is None, combine all seasons (filtered by comp_ids if provided).
@@ -5111,12 +5142,19 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     return result
 
 
-def load_and_score_player_stats(events_df, minutes_df, season_id, active_season_ids, comp_ids):
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_season_ids, comp_ids):
     """Run the full player-stats pipeline: base stats, GPA/DefR/engine value
     merges, then percentiles + template scores.
 
-    Returns (player_stats_df, player_stats_with_scores_df).
+    Cached on (season_id, active_season_ids, comp_ids) — the frame args are
+    underscore-prefixed so Streamlit keys on the scope, not the 125 MB
+    events content. This is the hot path: switching PLAYER (same scope)
+    is now a pure cache hit, and revisiting a league/season hits cache
+    too. cache_data returns a fresh copy each call, so downstream mutation
+    is safe. Returns (player_stats_df, player_stats_with_scores_df).
     """
+    events_df, minutes_df = _events_df, _minutes_df
     player_stats_df = calculate_all_player_stats(events_df, minutes_df, season_id=season_id)
     player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, comp_ids)
