@@ -118,18 +118,19 @@ jobs:
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'github-actions-bot@users.noreply.github.com'
-          # commit the app-read engine outputs; the chain also regenerates
-          # build artifacts we don't track (role atlas PNG, role model
-          # joblib) — those remain unstaged, hence --autostash on the pull.
-          # NOTE: stats_cache/*.parquet is deliberately NOT committed — it's
-          # regenerated every run by Phase 3 and ships to HF via the deploy
-          # rsync (working-dir copy), so committing it would only bloat git
-          # history (~20MB/refresh) with no benefit.
+          # commit the app-read engine outputs + the precomputed stats
+          # caches. The caches are committed (not just rsync-shipped) so
+          # deploy_to_hf — which runs on every code push and only COPIES
+          # tracked files into the HF clone — also reliably ships/refreshes
+          # them. Without this, a code-push deploy between engine rebuilds
+          # could leave HF without the caches (the symptom Lucas hit). The
+          # ~20MB/refresh git cost is offset by the Tier-B binary cleanup.
           git add -f gpa_player_season_values.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
                      models/roles/*.png
+          git add -f stats_cache/ 2>/dev/null || true
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: automated engine rebuild (ratings/projections)"
             git pull --rebase --autostash origin main

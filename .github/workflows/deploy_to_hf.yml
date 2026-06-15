@@ -69,7 +69,10 @@ jobs:
           # - valuations: load_valuations.py + reported_fees.csv +
           #               manual_entries.csv + valuations.parquet +
           #               TM scrape outputs
-          for d in .streamlit models valuations; do
+          # stats_cache: committed precomputed player-stats parquets — ship
+          # them so the deployed app reads caches instead of recomputing from
+          # the 2.3M-row events frame on first load of each league/season.
+          for d in .streamlit models valuations stats_cache; do
             if [ -d "$d" ]; then
               cp -r "$d" ../hf-repo/
             fi
