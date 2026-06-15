@@ -4264,7 +4264,13 @@ def add_custom_dribble_success(events_df):
 @st.cache_data(ttl=86400)  # 24h — the old 1h expiry forced an hourly cold
 # recompute from the 2.3M-row events frame; harmless now (32GB RAM,
 # matplotlib leak fixed, ~8 small per-season frames cached at most).
-def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None, cache_version=STATS_CACHE_VERSION):
+def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None, cache_version=STATS_CACHE_VERSION, cache_scope=None):
+    # cache_scope: extra @st.cache_data key discriminator. season_id alone is
+    # AMBIGUOUS for All-Seasons (season_id=None) — both leagues pass None, so
+    # the in-memory cache collided (Campeonato All-Seasons returned Liga 3's
+    # result in 1.1s and never computed/wrote all_702). load_and_score passes
+    # the comp tuple here so each (None, league) scope is distinct. Not used
+    # in the body; the disk-cache key still derives from season_id + events.
     """
     A new, streamlined, and correct function to calculate all player stats
     for the player profile page (Per 90 and Totals).
@@ -5099,7 +5105,9 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     return career_stats
 
 @st.cache_data
-def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=500, season_id=None, cache_version=STATS_CACHE_VERSION):
+def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=500, season_id=None, cache_version=STATS_CACHE_VERSION, cache_scope=None):
+    # cache_scope: league discriminator for the All-Seasons (season_id=None)
+    # in-memory cache collision — see calculate_all_player_stats.
     """Calculates percentiles and scores for all players based on position.
     Players below min_minutes are kept but ranked against the min_minutes+ population
     (each low-minute player is temporarily added to the sample for their own percentile).
@@ -5203,12 +5211,15 @@ def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_seaso
     is safe. Returns (player_stats_df, player_stats_with_scores_df).
     """
     events_df, minutes_df = _events_df, _minutes_df
-    player_stats_df = calculate_all_player_stats(events_df, minutes_df, season_id=season_id)
+    # league discriminator so the All-Seasons (season_id=None) in-memory cache
+    # doesn't collide across leagues (Camp All-Seasons was getting L3's result)
+    _scope = tuple(comp_ids) if isinstance(comp_ids, (list, tuple, set)) else comp_ids
+    player_stats_df = calculate_all_player_stats(events_df, minutes_df, season_id=season_id, cache_scope=_scope)
     player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-        player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=season_id
+        player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=season_id, cache_scope=_scope
     )
     return player_stats_df, player_stats_with_scores_df
 
