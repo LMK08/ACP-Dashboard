@@ -9551,12 +9551,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 _e_sids = [int(active_season_ids)]
             else:
                 _e_sids = None
+            _career_view = False
             if _erows.empty:
                 _escope = _erows
             elif _e_sids:
                 _escope = _erows[_erows['seasonId'].isin(_e_sids)]
-            else:   # All Seasons → show the latest rated season
-                _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
+            else:   # All Seasons → CAREER view: aggregate every rated season
+                _escope = _erows
+                _career_view = len(_erows) > 1
             _eng_stale = False
             if _escope.empty and not _erows.empty:
                 # not rated in the selected scope — fall back to last rated season
@@ -9601,6 +9603,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             "role assignment yet).")
             else:
                 _e = _escope.sort_values('mins_played').iloc[-1]
+                if _career_view:
+                    # All-seasons CAREER view: representative row = highest-
+                    # minutes season (for role/league/shares); rating + every
+                    # percentile/grade aggregated minutes-weighted across all
+                    # the player's rated seasons.
+                    _e = _e.copy()
+                    _wts = pd.to_numeric(_escope['mins_played'], errors='coerce').fillna(0.0).to_numpy()
+                    _pct_cols = ['off_pct', 'qual_pct', 'rapm_pct', 'defr_pct',
+                                  'datt_pct', 'setpiece_pct', 'aerial_grade_pct',
+                                  'ground_grade_pct', 'Shooting_pct', 'Creating_pct',
+                                  'Linking_pct', 'Receiving_pct', 'Dribbling_pct',
+                                  'career_asof', 'w_evidence']
+                    for _c in _pct_cols:
+                        if _c in _escope.columns and _wts.sum() > 0:
+                            _v = pd.to_numeric(_escope[_c], errors='coerce').to_numpy()
+                            _m = ~np.isnan(_v)
+                            if _m.any():
+                                _e[_c] = float(np.average(_v[_m], weights=_wts[_m]))
+                    if pd.notna(_e.get('acp_rating_career')):
+                        _e['acp_rating'] = float(_e['acp_rating_career'])
+                    _e['mins_played'] = float(_wts.sum())
+                    # projection = the LATEST season's forward look; lineup
+                    # minutes = career total (for the radar header)
+                    _latest_row = _escope.sort_values('seasonId').iloc[-1]
+                    for _pc in ('projection', 'projection_abs', 'band_sd',
+                                 'proj_delta', 'seasons_ago', 'age'):
+                        if _pc in _latest_row:
+                            _e[_pc] = _latest_row[_pc]
+                    if 'mins_lineup' in _escope.columns:
+                        _e['mins_lineup'] = float(pd.to_numeric(
+                            _escope['mins_lineup'], errors='coerce').fillna(0.0).sum())
+                    st.caption(f"📚 Career view — minutes-weighted across "
+                               f"{len(_escope)} rated seasons "
+                               f"({int(_wts.sum())} total minutes). Select a "
+                               f"single season for that season's rating.")
                 if _eng_stale:
                     st.caption(f"⏳ Not rated in the selected season — showing "
                                f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
@@ -9711,12 +9748,29 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 ('Ball Carrying', 'purple'),
                                 ('Defending', 'red'),
                                 ('Team Impact (RAPM)', '#0077b6')]
-                _coh = _eng_rad_df[
-                    (_eng_rad_df['league'] == _e['league'])
-                    & (_eng_rad_df['seasonId'] == _e['seasonId'])
-                    & (_eng_rad_df['role'] == _e['role'])
-                    & (_eng_rad_df['mins_played'] >= 500)]
-                _pe = _eng_rad_df.loc[_e.name]
+                if _career_view:
+                    # cohort pooled across ALL seasons of this league+role;
+                    # player point = minutes-weighted career per-90
+                    _coh = _eng_rad_df[
+                        (_eng_rad_df['league'] == _e['league'])
+                        & (_eng_rad_df['role'] == _e['role'])
+                        & (_eng_rad_df['mins_played'] >= 500)]
+                    _pr = _eng_rad_df[_eng_rad_df['playerId'] == int(selected_player_id)]
+                    _pw = pd.to_numeric(_pr['mins_played'], errors='coerce').fillna(0.0).to_numpy()
+                    _pe = _pr.sort_values('mins_played').iloc[-1].copy()
+                    for _rc in [c for _, c, _g, _fm in _RAD_AXES]:
+                        if _rc in _pr.columns and _pw.sum() > 0:
+                            _rv = pd.to_numeric(_pr[_rc], errors='coerce').to_numpy()
+                            _rm = ~np.isnan(_rv)
+                            if _rm.any():
+                                _pe[_rc] = float(np.average(_rv[_rm], weights=_pw[_rm]))
+                else:
+                    _coh = _eng_rad_df[
+                        (_eng_rad_df['league'] == _e['league'])
+                        & (_eng_rad_df['seasonId'] == _e['seasonId'])
+                        & (_eng_rad_df['role'] == _e['role'])
+                        & (_eng_rad_df['mins_played'] >= 500)]
+                    _pe = _eng_rad_df.loc[_e.name]
                 _rad = []
                 for _lbl, _col, _g, _f in _RAD_AXES:
                     if _col not in _eng_rad_df.columns:
