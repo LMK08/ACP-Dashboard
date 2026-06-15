@@ -148,6 +148,11 @@ jobs:
           rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
                    --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
                    . "$DEPLOY_DIR/"
+          # HF's pre-receive hook rejects raw binary images; strip diagnostic
+          # plots + all images before the push (same as deploy_to_hf.yml — the
+          # app renders charts in-process and tolerates missing image files).
+          find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
+          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
           cd "$DEPLOY_DIR"
           git init -b main
           git lfs install
