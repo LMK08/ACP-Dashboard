@@ -112,13 +112,17 @@ jobs:
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'github-actions-bot@users.noreply.github.com'
+          # commit the app-read engine outputs; the chain also regenerates
+          # build artifacts we don't track (role atlas PNG, role model
+          # joblib) — those remain unstaged, hence --autostash on the pull.
           git add -f gpa_player_season_values.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
-                     models/roles/*.parquet
+                     models/roles/*.parquet models/roles/*.joblib \
+                     models/roles/*.png
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: automated engine rebuild (ratings/projections)"
-            git pull --rebase origin main
+            git pull --rebase --autostash origin main
             git push origin main
           else
             echo "No engine changes to commit."
