@@ -106,6 +106,10 @@ jobs:
           python models/ratings/league_conversion.py
           python models/ratings/build_player_engine.py
 
+      - name: Phase 3 — warm player-stats caches
+        working-directory: Match_Reports_API/Dashboard
+        run: python app.py --precompute || echo 'precompute nonfatal'
+
       - name: Commit refreshed engine parquets to GitHub
         if: ${{ github.event_name == 'workflow_run' || github.event.inputs.deploy == 'true' }}
         working-directory: Match_Reports_API/Dashboard
@@ -119,7 +123,8 @@ jobs:
                      models/ratings/*.parquet models/ratings/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
-                     models/roles/*.png
+                     models/roles/*.png \
+                     stats_cache/*.parquet
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: automated engine rebuild (ratings/projections)"
             git pull --rebase --autostash origin main

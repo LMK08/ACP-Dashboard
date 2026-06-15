@@ -1,5 +1,6 @@
 # app.py
 
+import sys
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8217,6 +8218,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         st.session_state.nav_to_profile = False
 
     ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team', 'Opposition Report')
+
+    if '--precompute' in sys.argv:
+        import time as _t
+        print('[precompute] warming per-season stats caches...', flush=True)
+        for _cid, _cfg in COMPETITIONS.items():
+            for _sid in _cfg['seasons'].keys():
+                _t0 = _t.time()
+                try:
+                    _ev = get_filtered_events(raw_events_df, _sid, [_cid])
+                    _mins = get_season_player_minutes(player_minutes_data, _sid, comp_ids=[_cid])
+                    if _ev is None or len(_ev) == 0 or _mins is None or len(_mins) == 0:
+                        print(f'[precompute] season {_sid}: no data, skipping', flush=True); continue
+                    load_and_score_player_stats(_ev, _mins, _sid, _sid, [_cid])
+                    print(f'[precompute] season {_sid}: cached in {_t.time()-_t0:.1f}s', flush=True)
+                except Exception as _e:
+                    print(f'[precompute] season {_sid} FAILED: {_e}', flush=True)
+        print('[precompute] done.', flush=True)
+        sys.exit(0)
 
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type",
