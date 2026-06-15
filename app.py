@@ -1409,10 +1409,14 @@ def get_season_events(raw_events_df, season_id):
         return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_resource(ttl=86400, show_spinner=False)
 def _get_filtered_events_cached(_events_df, season_key, comp_key):
-    """Cache wrapper: keyed on the hashable season/comp tuple, not the
-    125 MB frame. Returns a copy (cache_data), so safe to read freely."""
+    """Cache wrapper keyed on the hashable season/comp tuple. Uses
+    cache_RESOURCE (returns the SAME object, no copy) — a season's events
+    are ~657 MB, and cache_data was deserializing a full copy on EVERY
+    rerun (the dominant per-interaction cost). Downstream consumers only
+    read/slice/.copy() the frame (never mutate in place), so sharing one
+    read-only instance across reruns is safe."""
     return _filter_events_impl(_events_df, season_key, comp_key)
 
 
