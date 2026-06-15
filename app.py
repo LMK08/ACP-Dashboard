@@ -411,6 +411,31 @@ CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
 STATS_CACHE_VERSION = 'v13'  # Bump this when adding/removing stat columns to invalidate old caches
 
+
+def _stats_scope_key(season_id, frame):
+    """Cache-key suffix: the season_id itself, or for All-Seasons
+    (season_id is None) the league(s) present in the frame, so the
+    two single-league All-Seasons views don't collide on one file."""
+    if season_id is not None:
+        return str(season_id)
+    comps = []
+    if frame is not None and 'competitionId' in getattr(frame, 'columns', []):
+        comps = sorted(pd.to_numeric(frame['competitionId'], errors='coerce').dropna().astype(int).unique().tolist())
+    return 'all_' + '_'.join(str(c) for c in comps) if comps else 'all'
+
+
+def _parquet_safe(df):
+    """Return a copy where object-dtype columns are coerced to string so the
+    frame can always be serialized to parquet. The All-Seasons frame mixes
+    str positions with int 0 (from fillna) in columns like primaryPosition,
+    which pyarrow refuses to write; this normalizes them without touching the
+    in-memory frame the caller keeps using."""
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            out[col] = out[col].astype(str)
+    return out
+
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
@@ -1522,19 +1547,24 @@ def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
 
 def league_selector(section_key):
     """Render a league selector in the sidebar. Returns list of competition IDs."""
-    options = ["Liga 3", "Campeonato", "Both"]
+    options = ["Liga 3", "Campeonato"]
+    # Guard against a stale "Both" (or any other invalid) value lingering in
+    # session_state from a previous version of this selector, which would make
+    # selectbox raise because the value is no longer a valid option.
+    state_key = f"league_select_{section_key}"
+    if st.session_state.get(state_key) not in options:
+        st.session_state.pop(state_key, None)
     selected = st.sidebar.selectbox(
         "League",
         options,
         index=0,
-        key=f"league_select_{section_key}"
+        key=state_key
     )
-    if selected == "Both":
-        return list(COMPETITIONS.keys())
     for comp_id, comp_config in COMPETITIONS.items():
         if comp_config["name"] == selected:
             return [comp_id]
-    return list(COMPETITIONS.keys())
+    # Fallback: first competition (single-league list).
+    return [next(iter(COMPETITIONS.keys()))]
 
 
 def get_league_label(comp_ids):
@@ -4238,33 +4268,33 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     """
     # Disk cache: load pre-computed results if available
     _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
-    if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
-        if os.path.exists(cache_path):
-            cached = pd.read_parquet(cache_path)
-            if _REQUIRED_STAT_COLS.issubset(cached.columns):
-                # Sanity check: goalsConceded should always be per-90 (typical
-                # GK rate ≈ 0.5–1.5). If the cached value looks like a season
-                # total (≥ 5 means we've got tens of goals, almost certainly a
-                # raw count), invalidate the cache and recompute.
-                if 'goalsConceded' in cached.columns and 'totalMinutes' in cached.columns:
-                    _gk_rows = cached[cached['goalsConceded'] > 0]
-                    if not _gk_rows.empty and float(_gk_rows['goalsConceded'].max()) >= 5:
-                        print(f"Cache has goalsConceded as totals (max={_gk_rows['goalsConceded'].max():.1f}); invalidating and recomputing")
-                        os.remove(cache_path)
-                    else:
-                        print(f"Loading cached player stats for season {season_id}")
-                        if cached.index.name == 'playerId':
-                            cached = cached.reset_index()
-                        return cached
+    _scope_key = _stats_scope_key(season_id, _raw_events_df)
+    cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    if os.path.exists(cache_path):
+        cached = pd.read_parquet(cache_path)
+        if _REQUIRED_STAT_COLS.issubset(cached.columns):
+            # Sanity check: goalsConceded should always be per-90 (typical
+            # GK rate ≈ 0.5–1.5). If the cached value looks like a season
+            # total (≥ 5 means we've got tens of goals, almost certainly a
+            # raw count), invalidate the cache and recompute.
+            if 'goalsConceded' in cached.columns and 'totalMinutes' in cached.columns:
+                _gk_rows = cached[cached['goalsConceded'] > 0]
+                if not _gk_rows.empty and float(_gk_rows['goalsConceded'].max()) >= 5:
+                    print(f"Cache has goalsConceded as totals (max={_gk_rows['goalsConceded'].max():.1f}); invalidating and recomputing")
+                    os.remove(cache_path)
                 else:
-                    print(f"Loading cached player stats for season {season_id}")
+                    print(f"Loading cached player stats for scope {_scope_key}")
                     if cached.index.name == 'playerId':
                         cached = cached.reset_index()
                     return cached
             else:
-                print(f"Cache outdated (missing columns), recomputing stats for season {season_id}")
-                os.remove(cache_path)
+                print(f"Loading cached player stats for scope {_scope_key}")
+                if cached.index.name == 'playerId':
+                    cached = cached.reset_index()
+                return cached
+        else:
+            print(f"Cache outdated (missing columns), recomputing stats for scope {_scope_key}")
+            os.remove(cache_path)
 
     print("--- STARTING: New All-Player-Stats Calculation ---")
     
@@ -5009,6 +5039,18 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     print("--- FINISHED: New All-Player-Stats Calculation ---")
     result = base_df.fillna(0).reset_index()
 
+    # Stamp competitionId per player from the source events so that (a) the
+    # league-aware All-Seasons cache key in calculate_player_percentiles_and_scores
+    # resolves to the league rather than a shared 'all' file, and (b) downstream
+    # CVI tier logic can read it. Events carry competitionId; map player -> comp.
+    if 'competitionId' in events_df.columns and 'playerId' in result.columns:
+        _player_comp = (events_df.dropna(subset=['player.id'])
+                                 .groupby('player.id')['competitionId']
+                                 .agg(lambda s: pd.to_numeric(s, errors='coerce').dropna().iloc[0]
+                                      if pd.to_numeric(s, errors='coerce').dropna().size else np.nan))
+        result['competitionId'] = pd.to_numeric(
+            result['playerId'].map(_player_comp), errors='coerce')
+
     # DEBUG: Verify goalsConceded in final result for Diogo Figueiredo
     if 'goalsConceded' in result.columns and 'playerId' in result.columns:
         _dbg = result[result['playerId'] == 593057]
@@ -5016,14 +5058,13 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
             print(f"  DEBUG FINAL RESULT: Diogo Figueiredo goalsConceded={_dbg['goalsConceded'].values[0]:.4f}, totalMinutes={_dbg['totalMinutes'].values[0]}")
 
     # Save to disk cache for fast loading on restart
-    if season_id is not None:
-        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{season_id}.parquet')
-        try:
-            result.to_parquet(cache_path)
-            print(f"  Cached player stats to {cache_path}")
-        except Exception as e:
-            print(f"  Warning: Could not cache player stats: {e}")
+    os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    try:
+        _parquet_safe(result).to_parquet(cache_path)
+        print(f"  Cached player stats to {cache_path}")
+    except Exception as e:
+        print(f"  Warning: Could not cache player stats: {e}")
 
     return result
 
@@ -5061,18 +5102,18 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
     _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
-    if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
-        if os.path.exists(cache_path):
-            cached = pd.read_parquet(cache_path)
-            if _REQUIRED_PCT_COLS.issubset(cached.columns):
-                print(f"Loading cached player percentiles for season {season_id}")
-                if cached.index.name == 'playerId':
-                    cached = cached.reset_index()
-                return cached
-            else:
-                print(f"Percentiles cache outdated (missing columns), recomputing for season {season_id}")
-                os.remove(cache_path)
+    _scope_key = _stats_scope_key(season_id, _player_data_df)
+    cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    if os.path.exists(cache_path):
+        cached = pd.read_parquet(cache_path)
+        if _REQUIRED_PCT_COLS.issubset(cached.columns):
+            print(f"Loading cached player percentiles for scope {_scope_key}")
+            if cached.index.name == 'playerId':
+                cached = cached.reset_index()
+            return cached
+        else:
+            print(f"Percentiles cache outdated (missing columns), recomputing for scope {_scope_key}")
+            os.remove(cache_path)
 
     print("Calculating player percentiles and scores...")
     data = _player_data_df.copy()
@@ -5133,14 +5174,13 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     result = data.fillna(0)
 
     # Save to disk cache for fast loading on restart
-    if season_id is not None:
-        os.makedirs(STATS_CACHE_DIR, exist_ok=True)
-        cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{season_id}.parquet')
-        try:
-            result.to_parquet(cache_path)
-            print(f"  Cached player percentiles to {cache_path}")
-        except Exception as e:
-            print(f"  Warning: Could not cache percentiles: {e}")
+    os.makedirs(STATS_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    try:
+        _parquet_safe(result).to_parquet(cache_path)
+        print(f"  Cached player percentiles to {cache_path}")
+    except Exception as e:
+        print(f"  Warning: Could not cache percentiles: {e}")
 
     return result
 
@@ -8223,17 +8263,30 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         import time as _t
         print('[precompute] warming per-season stats caches...', flush=True)
         for _cid, _cfg in COMPETITIONS.items():
-            for _sid in _cfg['seasons'].keys():
+            # Each league's individual seasons PLUS its All-Seasons scope
+            # (_sid=None). The league-aware scope key keeps the two single-league
+            # All-Seasons caches from colliding on one 'None' file.
+            for _sid in (list(_cfg['seasons'].keys()) + [None]):
+                _label = 'ALL' if _sid is None else _sid
                 _t0 = _t.time()
                 try:
                     _ev = get_filtered_events(raw_events_df, _sid, [_cid])
                     _mins = get_season_player_minutes(player_minutes_data, _sid, comp_ids=[_cid])
                     if _ev is None or len(_ev) == 0 or _mins is None or len(_mins) == 0:
-                        print(f'[precompute] season {_sid}: no data, skipping', flush=True); continue
+                        print(f'[precompute] season {_label}: no data, skipping', flush=True); continue
                     load_and_score_player_stats(_ev, _mins, _sid, _sid, [_cid])
-                    print(f'[precompute] season {_sid}: cached in {_t.time()-_t0:.1f}s', flush=True)
+                    print(f'[precompute] season {_label}: cached in {_t.time()-_t0:.1f}s', flush=True)
+                    # Bonus: warm the team-strength disk cache for this scope.
+                    # team_strength is keyed by season_id only and disk-caches
+                    # solely for non-None seasons, so only warm per-season scopes
+                    # (the None scope would neither persist nor be league-keyed).
+                    if _sid is not None:
+                        try:
+                            calculate_team_strength(_ev, matches_summary_df, season_id=_sid)
+                        except Exception as _te:
+                            print(f'[precompute] team_strength {_label} FAILED: {_te}', flush=True)
                 except Exception as _e:
-                    print(f'[precompute] season {_sid} FAILED: {_e}', flush=True)
+                    print(f'[precompute] season {_label} FAILED: {_e}', flush=True)
         print('[precompute] done.', flush=True)
         sys.exit(0)
 
