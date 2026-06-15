@@ -1,0 +1,148 @@
+name: Engine Rebuild (ACP ratings/projections)
+
+# Rebuilds the ACP engine (rating v6.9.x, projection v2.1) from the
+# canonical raw_events.parquet (Option D). Runs AFTER the scheduled data
+# refresh so the engine never drifts behind the data. Reads the engine
+# pipeline code from the private GPA-Model-Engine repo (read-only deploy
+# key) and writes the engine output parquets back into this repo + HF.
+
+permissions:
+  contents: write
+
+on:
+  workflow_run:
+    workflows: ["Scheduled Data Update"]
+    types: [completed]
+  workflow_dispatch:        # manual run from the Actions tab
+    inputs:
+      deploy:
+        description: 'Commit + deploy results (false = validate only)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: hf-deploy          # share with deploy/refresh — never push HF simultaneously
+  cancel-in-progress: false
+
+jobs:
+  rebuild-engine:
+    # Only run if the upstream refresh succeeded (or when dispatched manually)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out dashboard repo (into sibling layout)
+        uses: actions/checkout@v4
+        with:
+          path: Match_Reports_API/Dashboard
+
+      - name: Check out GPA engine repo (read-only deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: LMK08/GPA-Model-Engine
+          ssh-key: ${{ secrets.GPA_DEPLOY_KEY }}
+          path: GPA Model Project v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: Match_Reports_API/Dashboard/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Match_Reports_API/Dashboard/requirements.txt
+          # explicit engine deps (in case the dashboard reqs omit them)
+          pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy
+
+      - name: Download canonical raw_events from HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          curl -L -f -o "Match_Reports_API/Dashboard/raw_events.parquet" \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            "https://huggingface.co/spaces/ACP-Analytics/ACP-Dashboard/resolve/main/raw_events.parquet"
+          echo "raw_events: $(du -h Match_Reports_API/Dashboard/raw_events.parquet | cut -f1)"
+
+      - name: Phase 0 — split canonical events into engine league files
+        working-directory: GPA Model Project v2
+        env:
+          RAW_EVENTS_PATH: ${{ github.workspace }}/Match_Reports_API/Dashboard/raw_events.parquet
+        run: python src/split_events_for_engine.py
+
+      - name: Phase 1 — GPA chain (normalize → action values → export)
+        working-directory: GPA Model Project v2
+        env:
+          DASHBOARD_DIR: ${{ github.workspace }}/Match_Reports_API/Dashboard
+        run: |
+          set -e
+          python src/normalize_events.py liga3
+          python src/normalize_events.py campeonato
+          python src/targets.py
+          python src/features.py
+          python src/xpass.py
+          python src/action_values.py
+          python src/gk_shotstopping.py || echo "gk_shotstopping nonzero (continuing)"
+          python src/gk_handling.py     || echo "gk_handling nonzero (continuing)"
+          python src/loso_player_ratings.py
+          python src/export_to_dashboard.py
+
+      - name: Phase 2 — dashboard chain (duels → rating → projection → engine export)
+        working-directory: Match_Reports_API/Dashboard
+        run: |
+          set -e
+          python models/duels/build_contests.py
+          python models/duels/glicko_ladders.py
+          python models/defr/compute_defr.py
+          python models/roles/build_role_features.py
+          python models/roles/cluster_roles.py
+          python models/ratings/build_intervals.py
+          python models/ratings/rapm_v4.py
+          python models/ratings/build_pass_split.py
+          python models/ratings/build_rating.py
+          python models/ratings/build_projection.py
+          python models/ratings/league_conversion.py
+          python models/ratings/build_player_engine.py
+
+      - name: Commit refreshed engine parquets to GitHub
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.deploy == 'true' }}
+        working-directory: Match_Reports_API/Dashboard
+        run: |
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'github-actions-bot@users.noreply.github.com'
+          git add -f gpa_player_season_values.parquet \
+                     models/ratings/*.parquet models/ratings/*.json \
+                     models/duels/*.parquet models/defr/*.parquet \
+                     models/roles/*.parquet
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "chore: automated engine rebuild (ratings/projections)"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No engine changes to commit."
+          fi
+
+      - name: Deploy to Hugging Face Space
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.deploy == 'true' }}
+        working-directory: Match_Reports_API/Dashboard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          DEPLOY_DIR=$(mktemp -d)
+          rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
+                   --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
+                   . "$DEPLOY_DIR/"
+          cd "$DEPLOY_DIR"
+          git init -b main
+          git lfs install
+          git lfs track "*.parquet"
+          git lfs track "*.pkl"
+          git add .gitattributes
+          git add -A
+          git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
+              commit -m "Engine rebuild deploy"
+          git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
+          git push hf main --force
+          echo "✅ Deployed engine rebuild to HF Space"
