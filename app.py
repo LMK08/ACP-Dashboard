@@ -9984,9 +9984,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             logger.exception("Engine card failed")
         st.divider()
 
-        _tab_radar, _tab_stats, _tab_value, _tab_shots, _tab_log = st.tabs(["Player Radar", "Stats", "Value", "Shots & Duels", "Match Log"])
+        # Hoisted so every lazy section can access it: the Stats section's
+        # positional-peer population (radar_stats_df at ~10840) was previously
+        # populated by the Player Radar tab body, which always ran under st.tabs.
+        # With lazy if/elif rendering only one section runs, so compute the base
+        # (player_stats_with_scores_df + DefR columns) up front. The Player Radar
+        # section may still override radar_stats_df locally via its "Show Only
+        # Position" filter for its own rendering.
+        radar_stats_df = merge_defr_values_into_stats(
+            player_stats_with_scores_df, active_season_ids, selected_comp_ids)
 
-        with _tab_radar:
+        _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Duels", "Match Log"]
+        _active_tab = st.radio("Profile section", _profile_sections,
+                                horizontal=True, label_visibility="collapsed",
+                                key="profile_active_tab")
+
+        if _active_tab == "Player Radar":
             # --- Transfer Value Detail moved to just above Career Trajectory ---
 
            # --- 5. NEW: DISPLAY PLAYER RADAR ---
@@ -10343,7 +10356,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
 
 
-        with _tab_stats:
+        elif _active_tab == "Stats":
             # --- 5b. Career Trajectory ----------------------------------------
             # Per-season summary of the player's appearances + per-season
             # strip plots of the chosen metric (Action V/90 or Best-fit
@@ -10918,7 +10931,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.dataframe(_styled, use_container_width=True)
         
 
-        with _tab_value:
+        elif _active_tab == "Value":
             st.divider()
         
             # --- Transfer Value Detail ----------------------------------------
@@ -11104,7 +11117,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             f"{type(_tv_exc).__name__}: {_tv_exc}")
 
 
-        with _tab_shots:
+        elif _active_tab == "Shots & Duels":
             st.divider()
 
             # --- 7. SHOT ANALYSIS (UPDATED) ---
@@ -11386,7 +11399,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.caption(f"Could not render throw-in analysis: {e}")
 
 
-        with _tab_log:
+        elif _active_tab == "Match Log":
             st.divider()
 
             # --- 8. Display Individual Match Stats (Unchanged) ---
