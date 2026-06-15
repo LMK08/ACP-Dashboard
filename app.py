@@ -413,7 +413,7 @@ STATS_CACHE_VERSION = 'v13'  # Bump this when adding/removing stat columns to in
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
-@st.cache_resource(ttl=3600)  # cache_resource avoids serializing large DataFrames
+@st.cache_resource(ttl=86400)  # cache_resource avoids serializing large DataFrames
 def load_data():
     """Load all pre-processed data files."""
     required_files = [
@@ -594,7 +594,7 @@ def _resolve_pid(pid):
     return PLAYER_ID_ALIASES.get(ipid, ipid)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_player_details():
     """Loads the player details (foot, height, etc.) from the pkl file."""
     try:
@@ -669,7 +669,7 @@ GPA_PER90_DISPLAY: dict[str, str] = {
 }
 GPA_PER90_COLS = [GPA_PER90_DISPLAY.get(c, f"{c}_per_90") for c in GPA_VALUE_CATEGORIES]
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_gpa_values():
     """Load per-(playerId, seasonId) GPA action-value categories.
 
@@ -781,7 +781,7 @@ DEFR_RADAR_MAP = {
 }
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_defr_values():
     """Load per-(playerId, seasonId) DefR metrics. Returns empty DF if the
     file is missing so the rest of the app is unaffected."""
@@ -941,7 +941,7 @@ def _add_defr_percentiles(df):
 # Both return a scalar multiplier (applied uniformly across all metrics for
 # the Opta source; per-metric for the empirical source).
 # ============================================================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_player_engine():
     """Unified ACP engine export (models/ratings/build_player_engine.py):
     one row per rated player-season with rating + abs, axis percentiles,
@@ -1069,7 +1069,7 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     return df
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_opta_ratings():
     """Load opta_ratings.parquet. Returns empty DF if missing."""
     path = os.path.join(os.path.dirname(__file__), 'opta_ratings.parquet')
@@ -1109,7 +1109,7 @@ def _opta_norm_key(s):
     return _re.sub(r'[^a-z0-9]+', '', str(s).lower().strip())
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def build_opta_team_strength_map() -> dict:
     """Return a dict: {normalized_name OR raw_name → currentRating}.
     Cached; the caller wraps it in a lookup function via
@@ -1171,7 +1171,7 @@ def opta_translation_multiplier(source_comp_id: int, target_comp_id: int) -> flo
     return tgt / src
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def compute_empirical_translation_factors(
     _raw_events_df, _player_minutes_data,
     source_comp_id: int, target_comp_id: int,
@@ -1383,7 +1383,7 @@ def get_season_events(raw_events_df, season_id):
         return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _get_filtered_events_cached(_events_df, season_key, comp_key):
     """Cache wrapper: keyed on the hashable season/comp tuple, not the
     125 MB frame. Returns a copy (cache_data), so safe to read freely."""
@@ -1442,7 +1442,7 @@ def _season_ids_for_comps(comp_ids):
                 sids.update(COMPETITIONS[cid]["seasons"].keys())
     return sids
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _get_season_player_minutes_cached(_pmd, season_key, comp_key):
     return _season_player_minutes_impl(
         _pmd,
@@ -1870,7 +1870,7 @@ def get_all_players_minutes_by_position(_events_df):
 
     return result
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None):
     """
     Goes through all match data and extracts the individual match stats
@@ -2172,7 +2172,7 @@ def _compute_peer_density_stack(events_hash, _events_df, position_codes,
     return stack
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_history_player_minutes():
     """Load historical player minutes from previous seasons."""
     if not os.path.exists('history_player_minutes.pkl'):
@@ -4226,7 +4226,9 @@ def add_custom_dribble_success(events_df):
     
     return df
 
-@st.cache_data(ttl=3600)  # Cache expires after 1 hour to prevent memory leaks
+@st.cache_data(ttl=86400)  # 24h — the old 1h expiry forced an hourly cold
+# recompute from the 2.3M-row events frame; harmless now (32GB RAM,
+# matplotlib leak fixed, ~8 small per-season frames cached at most).
 def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None, cache_version=STATS_CACHE_VERSION):
     """
     A new, streamlined, and correct function to calculate all player stats
@@ -5142,7 +5144,8 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     return result
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)  # 24h (was 1h — hourly expiry
+# forced cold recomputes from the events frame on a non-sleeping Space)
 def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_season_ids, comp_ids):
     """Run the full player-stats pipeline: base stats, GPA/DefR/engine value
     merges, then percentiles + template scores.
@@ -7192,7 +7195,7 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
             pass
     return result
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def calculate_set_piece_metrics(_events_df, season_id=None):
     """Calculate set piece xG and goals metrics for all teams.
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
@@ -7589,7 +7592,7 @@ _WYSCOUT_DIRECT_OVERLAY = {
 }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
                                   use_wyscout=True, cache_key=None):
     """Build per-team aggregate metrics across all 7 season-report dimensions.
