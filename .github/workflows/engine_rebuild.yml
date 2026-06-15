@@ -54,8 +54,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r Match_Reports_API/Dashboard/requirements.txt
-          # explicit engine deps (in case the dashboard reqs omit them)
-          pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy
+          # explicit engine deps (in case the dashboard reqs omit them).
+          # streamlit is NOT in requirements.txt (the HF Space SDK provides
+          # it) but Phase 3 runs `app.py --precompute`, which imports it.
+          pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy streamlit
 
       - name: Download canonical raw_events from HF
         env:
@@ -119,12 +121,15 @@ jobs:
           # commit the app-read engine outputs; the chain also regenerates
           # build artifacts we don't track (role atlas PNG, role model
           # joblib) — those remain unstaged, hence --autostash on the pull.
+          # NOTE: stats_cache/*.parquet is deliberately NOT committed — it's
+          # regenerated every run by Phase 3 and ships to HF via the deploy
+          # rsync (working-dir copy), so committing it would only bloat git
+          # history (~20MB/refresh) with no benefit.
           git add -f gpa_player_season_values.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
-                     models/roles/*.png \
-                     stats_cache/*.parquet
+                     models/roles/*.png
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: automated engine rebuild (ratings/projections)"
             git pull --rebase --autostash origin main
