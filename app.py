@@ -5224,6 +5224,68 @@ def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_seaso
     return player_stats_df, player_stats_with_scores_df
 
 
+@st.cache_resource(show_spinner=False)
+def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary_df):
+    """Warm every (league, season) scope's IN-MEMORY caches once per process.
+
+    After each deploy the Space restarts with empty in-memory caches. The disk
+    caches (player stats / percentiles / team-strength) survive, but the per-
+    scope events filter (`get_filtered_events`, cache_resource, NO disk backing),
+    the minutes aggregation, the engine merges and the `load_and_score_player_stats`
+    result do NOT — so the first visitor to each league/season eats a 20-50s cold
+    build on the request path. This spawns a daemon thread that runs the exact
+    page warm-path for every scope up front, off the request path, so interactive
+    league/season switches are instant from the first click.
+
+    Decorated with cache_resource so the thread is spawned exactly once per
+    process (singleton; the frame args are underscore-prefixed and unhashed).
+
+    Safe off the main ScriptRunContext: `load_and_score_player_stats` and its
+    callees populate global caches (the cache store is process-global, not
+    session-scoped) and perform no on-screen UI writes here. Because comp_ids is
+    always a single league, the (season_id, active_season_ids) pair warmed below
+    is byte-identical to what every page requests (active == selected for one
+    league), so these are direct cache-key hits, not approximations.
+    """
+    import threading, time as _time, logging as _logging
+
+    def _worker():
+        # The cached functions emit a benign "missing ScriptRunContext" warning
+        # when run off the main thread (the cache still populates correctly — only
+        # the no-op spinner trips the warning). Quiet just those loggers.
+        for _nm in ("streamlit.runtime.scriptrunner_utils.script_run_context",
+                    "streamlit.runtime.scriptrunner.script_run_context"):
+            try:
+                _logging.getLogger(_nm).setLevel(_logging.ERROR)
+            except Exception:
+                pass
+        _t0 = _time.time(); _n = 0
+        for _cid, _cfg in COMPETITIONS.items():
+            # single seasons first (cheaper, more scopes ready sooner), then the
+            # All-Seasons (None) scope — the heaviest cold build.
+            for _sid in (list(_cfg.get('seasons', {}).keys()) + [None]):
+                try:
+                    _ev = get_filtered_events(_raw_events_df, _sid, [_cid])
+                    _mins = get_season_player_minutes(_player_minutes_data, _sid, comp_ids=[_cid])
+                    if _ev is None or len(_ev) == 0 or _mins is None or len(_mins) == 0:
+                        continue
+                    load_and_score_player_stats(_ev, _mins, _sid, _sid, [_cid])
+                    if _sid is not None:
+                        try:
+                            calculate_team_strength(_ev, _matches_summary_df, season_id=_sid)
+                        except Exception:
+                            pass
+                    _n += 1
+                except Exception as _e:
+                    logger.warning(f"[prewarm] scope (comp={_cid}, season={_sid}) failed: {_e}")
+        logger.info(f"[prewarm] warmed {_n} scope(s) in {_time.time()-_t0:.0f}s")
+
+    _t = threading.Thread(target=_worker, name="acp-prewarm", daemon=True)
+    _t.start()
+    logger.info("[prewarm] background cache warm started")
+    return True
+
+
 def auto_column_config(df):
     """NumberColumn formats: floats %.2f, ints %d. Display-only polish."""
     import pandas.api.types as ptypes
@@ -8304,6 +8366,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     print(f'[precompute] season {_label} FAILED: {_e}', flush=True)
         print('[precompute] done.', flush=True)
         sys.exit(0)
+
+    # Boot-time pre-warm: warm every scope's in-memory caches in the background
+    # (once per process) so the first post-deploy visitor doesn't eat the per-
+    # scope cold build. No-op after the first rerun (cache_resource singleton).
+    # Opt out with ACP_DISABLE_PREWARM=1.
+    if os.environ.get('ACP_DISABLE_PREWARM') != '1':
+        try:
+            _prewarm_scope_caches(raw_events_df, player_minutes_data, matches_summary_df)
+        except Exception as _pe:
+            logger.warning(f"[prewarm] could not start: {_pe}")
 
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type",
