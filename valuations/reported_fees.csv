@@ -75,6 +75,7 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 # === Real transfers added later ===
 846557,Cláudio Araújo,Varzim,Segunda Liga (TBD),permanent,300000,,,2025-07-15,190090,,,,Liga 3 → Segunda Liga summer 2025; pre-transfer = 24-25 L3 Varzim,0
 776749,Afonso Moreira,Sporting CP B,Lyon (FRA L1),permanent,2000000,,,2025-07-15,190090,,,,Big-money Sporting B → Lyon move summer 2025; pre-transfer = 24-25 L3 Sporting CP B,0
+1038698,Ricardo Brito,Vianense,Santa Clara,permanent,300000,,,2026-07-15,191779,,,,Camp → Primeira Liga summer 2026 step-up; pre-transfer = 25-26 Camp Vianense,0
 
 # === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
 # These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
