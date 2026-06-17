@@ -12431,60 +12431,77 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         if _selected_view == "Overview":
             # --- Engine-role board (shown ABOVE the template Overview) ---
             # Best players per OBSERVED engine role (the 6 data-derived
-            # clusters), ranked by ACP Projection, with Minutes + Age. Built
-            # straight from player_engine.parquet (one row per player-season,
-            # carries role/projection/age/mins) so it's independent of the
-            # disk-cached stats pipeline — no cache-version coupling.
+            # clusters), ranked by ACP Projection, with Minutes + Age.
+            #
+            # CONSISTENCY: the engine ROLE is the ONLY thing taken from
+            # player_engine. Age, Min and Proj are read from the SAME scoped
+            # stats frame (filtered_df) + player_details that the template table
+            # below uses — so every shared column is identical across the two
+            # tables. In particular: Age = age TODAY (_calculate_age), Min =
+            # totalMinutes (TRUE lineup minutes). We deliberately do NOT use the
+            # engine's `age` (as-of-season, ~5.5 mo stale) or `mins_played`
+            # (event-derived undercount) for display.
             _eng_role_df, _ = load_player_engine()
-            if _eng_role_df is not None and not _eng_role_df.empty:
-                _er = _eng_role_df.copy()
-                # scope to the selected league's seasons …
+            if (_eng_role_df is not None and not _eng_role_df.empty
+                    and filtered_df is not None and not filtered_df.empty):
+                _ers = _eng_role_df
+                # scope engine rows to the selected league's seasons …
                 _league_seasons = _season_ids_for_comps(selected_comp_ids)
                 if _league_seasons:
-                    _er = _er[_er['seasonId'].isin(_league_seasons)]
+                    _ers = _ers[_ers['seasonId'].isin(_league_seasons)]
                 # … then to the chosen season(s); None = All Seasons (keep all)
                 if active_season_ids is not None:
                     _sids = (active_season_ids if isinstance(active_season_ids, (list, tuple, set))
                              else [active_season_ids])
-                    _er = _er[_er['seasonId'].isin([int(s) for s in _sids])]
-                # one row per player = latest in-scope season (matches the
-                # engine merge used by the template table below)
-                _er = (_er.sort_values(['playerId', 'seasonId', 'mins_played'])
-                          .drop_duplicates('playerId', keep='last'))
-                # mirror the sidebar minutes filter (engine = lineup minutes)
-                _er = _er[pd.to_numeric(_er['mins_played'], errors='coerce').fillna(0) >= min_minutes_filter]
+                    _ers = _ers[_ers['seasonId'].isin([int(s) for s in _sids])]
+                # role per player = their latest in-scope season's role
+                _role_map = (_ers.sort_values(['playerId', 'seasonId', 'mins_played'])
+                                 .drop_duplicates('playerId', keep='last')[['playerId', 'role']])
+                # join role onto the scoped, minutes-filtered stats pool — the
+                # board now inherits filtered_df's totalMinutes + ACP columns
+                _rb = filtered_df.merge(_role_map, on='playerId', how='inner')
+                # canonical age TODAY (same lookup the template table uses)
+                if (not analysis_player_details_df.empty
+                        and 'birthDate' in analysis_player_details_df.columns):
+                    _rb_age = _rb['playerId'].map(
+                        lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
+                        if pid in analysis_player_details_df.index else None)
+                    _rb = _rb.assign(_age_disp=_rb_age.values)
+                else:
+                    _rb = _rb.assign(_age_disp=None)
                 # Projection is the headline. Rank by it and show only players
                 # who HAVE one (current + recent-lapsed), so inactive historical
                 # players — whose face-value rating would otherwise outrank the
                 # mean-shrunk projections — don't pollute the board. A purely
                 # past-season scope carries no projections, so there we fall
                 # back to rating and relabel the column honestly.
-                _proj_num = pd.to_numeric(_er['projection_abs'], errors='coerce')
+                _proj_num = pd.to_numeric(_rb.get('ACP Projection (abs)'), errors='coerce')
                 if _proj_num.notna().any():
-                    _er = _er[_proj_num.notna()].copy()
-                    _metric_label, _metric_col = 'Proj', 'projection_abs'
+                    _rb = _rb[_proj_num.notna()].copy()
+                    _metric_label, _metric_col = 'Proj', 'ACP Projection (abs)'
                 else:
-                    _metric_label, _metric_col = 'Rating', 'acp_rating_abs'
-                _er['_rankval'] = pd.to_numeric(_er[_metric_col], errors='coerce')
+                    _metric_label, _metric_col = 'Rating', 'ACP Rating (abs)'
+                _rb['_rankval'] = pd.to_numeric(_rb[_metric_col], errors='coerce')
 
                 _ENGINE_ROLE_ORDER = ['Striker', 'Wide Attacker', 'Advanced Midfielder',
                                        'Deep Midfielder', 'Wide Defender', 'Central Defender']
                 _role_sub = ['Player', _metric_label, 'Min', 'Age']
                 _role_cols = {}
                 for _role in _ENGINE_ROLE_ORDER:
-                    _rsub = _er[_er['role'] == _role].sort_values('_rankval', ascending=False).head(num_players)
+                    _rsub = _rb[_rb['role'] == _role].sort_values('_rankval', ascending=False).head(num_players)
                     if _rsub.empty:
                         continue
                     _rows = []
                     for _, _r in _rsub.iterrows():
                         _mval = pd.to_numeric(_r.get(_metric_col), errors='coerce')
-                        _age = pd.to_numeric(_r.get('age'), errors='coerce')
-                        _mins = pd.to_numeric(_r.get('mins_played'), errors='coerce')
+                        _age = _r.get('_age_disp')
+                        _age = float(_age) if isinstance(_age, (int, float)) and pd.notna(_age) else None
+                        _mins = pd.to_numeric(_r.get('totalMinutes'), errors='coerce')
                         _rows.append((
-                            _r.get('name', ''),
+                            _r.get('playerName', ''),
                             (round(float(_mval), 1) if pd.notna(_mval) else ''),
                             (int(_mins) if pd.notna(_mins) else 0),
-                            (round(float(_age), 1) if pd.notna(_age) else ''),
+                            (round(_age, 1) if _age is not None else ''),
                         ))
                     _role_cols[_role] = _rows
 
@@ -12512,16 +12529,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.caption(
                             "Observed ACP engine roles (data-derived from playing patterns), "
                             "ranked by ACP Projection. **Proj** = projected level next season "
-                            "(absolute / cross-league scale); **Age** and **Min** are as of the "
-                            "player's latest in-scope season. Only players with a live "
-                            "projection appear."
+                            "(absolute / cross-league scale). **Age** (current) and **Min** "
+                            "(total minutes in scope) match the table below. Only players with "
+                            "a live projection appear."
                         )
                     else:
                         st.caption(
                             "Observed ACP engine roles (data-derived from playing patterns), "
                             "ranked by ACP **Rating** (absolute scale) — the selected season is "
-                            "historical, so no forward projection exists. **Age** and **Min** "
-                            "are as of that season."
+                            "historical, so no forward projection exists. **Age** is current; "
+                            "**Min** is total minutes in scope."
                         )
                     st.dataframe(_erole_df, use_container_width=True)
                     st.markdown("---")
