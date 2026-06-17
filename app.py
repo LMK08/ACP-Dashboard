@@ -9761,7 +9761,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 "legacy GK rating in this scope.")
                 else:
                     st.info("Not rated by the engine for this scope "
-                            "(below the 500-minute season floor, or no "
+                            "(below the 90-minute floor, or no "
                             "role assignment yet).")
             else:
                 _e = _escope.sort_values('mins_played').iloc[-1]
@@ -11680,15 +11680,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             key="player_analysis_view"
         )
 
-        # Minimum minutes filter
+        # Minimum minutes filter. Floor lowered 500->90 (Lucas 2026-06): the
+        # ACP engine now rates players down to 90 min (scored against the
+        # >=500 cohort, then minutes-shrunk toward replacement), so low-minute
+        # players are penalised by the shrink rather than excluded. Default 90
+        # surfaces them; the shrinkage keeps them off the top of the boards.
         max_minutes = int(player_stats_with_scores_df['totalMinutes'].max())
         min_minutes_filter = st.sidebar.slider(
             "Minimum Minutes Played:",
-            min_value=500,
+            min_value=90,
             max_value=max(max_minutes, 500),
-            value=500,
+            value=90,
             step=45,
-            key="player_analysis_min_minutes"
+            key="player_analysis_min_minutes",
+            help="ACP ratings exist down to 90 min (heavily shrunk toward "
+                 "replacement). Bespoke template scores still need 500+.",
         )
 
         # Number of players to display

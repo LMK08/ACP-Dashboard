@@ -141,7 +141,13 @@ GPA_RAW_CATS = ['Shooting', 'Receiving', 'Dribbling',
 GPA_CATS = ['Shooting', 'Creating', 'Linking', 'Receiving', 'Dribbling']
 SHRINK_K = 300.0          # residual blend shrink, renormalized to full season (v5.4)
 CAREER_DECAY = 0.5        # recency weight = mins x 0.5^(seasons_back)
-MIN_MINS = 500            # rating eligibility / percentile cohort floor
+MIN_MINS = 500            # percentile COHORT floor — defines the reference distribution
+MIN_MINS_ELIG = 90        # rating ELIGIBILITY floor (Lucas 2026-06): rate sub-cohort
+                          # players too. They are scored against the >=MIN_MINS cohort
+                          # and minutes-shrunk as usual (a 90' player keeps ~26% of his
+                          # z, pulled toward replacement) — low minutes are penalised by
+                          # the shrink, not by exclusion. Cohort stays >=MIN_MINS so the
+                          # reference scale is unmoved.
 
 print("[1/4] assemble components…", flush=True)
 g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
@@ -186,9 +192,10 @@ df['yr'] = df['seasonId'].map(SEASON_YR)
 # of evidence and deserves a row in each league he played. Percentile
 # cohorts are still built from >=MIN_MINS rows only; sub-floor rows are
 # scored against those distributions, then minutes-shrunk as usual.
-MIN_MINS_ROW = 180
+MIN_MINS_ROW = 90         # per-row floor, lowered 180->90 (Lucas 2026-06) to admit
+                          # single-competition sub-180' rows; matches MIN_MINS_ELIG
 _season_mins = df.groupby(['playerId', 'yr'])['mins_played'].transform('sum')
-df = df[(_season_mins >= MIN_MINS) & (df['mins_played'] >= MIN_MINS_ROW)
+df = df[(_season_mins >= MIN_MINS_ELIG) & (df['mins_played'] >= MIN_MINS_ROW)
           & (df['position_group'] != 'GK') & df['role'].notna()].copy()
 df['_cohort'] = df['mins_played'] >= MIN_MINS
 # v6.3 ROLE BLENDING (Lucas): median primary-role share is 0.70 — 63% of
@@ -212,8 +219,8 @@ for nm in ROLE_UNIVERSE:
     df['sh_' + nm] = df['sh_' + nm] / _shsum
 print(f"  role blending: {int((~_fallback).sum()):,} share-based, "
        f"{int(_fallback.sum()):,} one-hot fallback")
-print(f"  {len(df):,} eligible player-seasons (outfield; "
-       f"{int((~df['_cohort']).sum())} sub-{MIN_MINS}' rows admitted by season pooling)")
+print(f"  {len(df):,} eligible player-seasons (outfield; floor {MIN_MINS_ELIG}'; "
+       f"{int((~df['_cohort']).sum())} sub-{MIN_MINS}' rows scored vs the cohort + shrunk)")
 
 
 def role_pct(col):
