@@ -4,13 +4,17 @@ permissions:
   contents: write
 
 on:
-  schedule:
-    # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
-    - cron: '0 5 * * 0,1'
-    # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
-    - cron: '0 6 * * 3,4'
+  # ⏸️ SCHEDULED RUNS PAUSED until August 2026 (off-season). The Liga 3 /
+  # Campeonato season is over, so the Wyscout API has no new matches to fetch
+  # and the nightly refresh just re-pushes unchanged data. Re-enable for the
+  # 2026/27 season by UNCOMMENTING the schedule block below.
+  # schedule:
+  #   # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
+  #   - cron: '0 5 * * 0,1'
+  #   # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
+  #   - cron: '0 6 * * 3,4'
 
-  # This line allows you to run the update manually from the GitHub "Actions" tab
+  # Manual run from the GitHub "Actions" tab still works while paused
   workflow_dispatch:
     inputs:
       test_fetch_limit:
@@ -126,6 +130,13 @@ jobs:
           rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
                    --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
                    . "$DEPLOY_DIR/"
+          # HF's pre-receive hook REJECTS raw binary images. Strip the DefR/role
+          # diagnostic plots before pushing (mirrors engine_rebuild.yml /
+          # deploy_to_hf.yml — the app renders charts in-process). This was the
+          # cause of the 2026-06-17 failure: committed *.png plots got pushed
+          # and HF declined the whole push.
+          find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
+          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
           cd "$DEPLOY_DIR"
           git init -b main
           git lfs install

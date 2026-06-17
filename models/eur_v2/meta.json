@@ -19,10 +19,10 @@
     "pos_ST"
   ],
   "chosen_alpha": 100.0,
-  "n_training_rows": 191,
-  "oof_r2": 0.05695507237570485,
-  "oof_mae_log": 0.7815189794190637,
-  "oof_mape_pct": 52.10730911692607,
+  "n_training_rows": 26,
+  "oof_r2": 0.09567165222113538,
+  "oof_mae_log": 0.813214831190727,
+  "oof_mape_pct": 58.860128535097985,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",
