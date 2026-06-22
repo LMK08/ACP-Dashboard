@@ -8398,6 +8398,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     if '--precompute' in sys.argv:
         import time as _t
+        import gc as _gc
         print('[precompute] warming per-season stats caches...', flush=True)
         for _cid, _cfg in COMPETITIONS.items():
             # Each league's individual seasons PLUS its All-Seasons scope
@@ -8406,6 +8407,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             for _sid in (list(_cfg['seasons'].keys()) + [None]):
                 _label = 'ALL' if _sid is None else _sid
                 _t0 = _t.time()
+                _ev = _mins = None
                 try:
                     _ev = get_filtered_events(raw_events_df, _sid, [_cid])
                     _mins = get_season_player_minutes(player_minutes_data, _sid, comp_ids=[_cid])
@@ -8424,6 +8426,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             print(f'[precompute] team_strength {_label} FAILED: {_te}', flush=True)
                 except Exception as _e:
                     print(f'[precompute] season {_label} FAILED: {_e}', flush=True)
+                finally:
+                    # Release this scope's in-memory frames before the next one.
+                    # The per-scope parquet is already on disk (load_and_score_
+                    # player_stats wrote it), so every cached frame for this scope
+                    # is now dead weight. Without this teardown the per-scope
+                    # caches accumulate across all 9 scopes — most importantly the
+                    # @st.cache_resource filtered-events frame (hundreds of MB per
+                    # scope, never evicted within its 24h TTL) — and the heavy
+                    # Camp/L3 All-Seasons scopes near the end OOM-kill the 7 GB
+                    # hosted runner (surfaces as "##[error]The operation was
+                    # canceled."). Runs fine on a 16 GB local box, hence cold CI
+                    # only. Drop local refs, flush the Streamlit caches, then GC.
+                    # The base data frames (raw_events_df / player_minutes_data /
+                    # matches_summary_df) survive — they're held by these locals,
+                    # not the cache, so clear()+gc don't reload them from disk.
+                    _ev = _mins = None
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                    _gc.collect()
         print('[precompute] done.', flush=True)
         sys.exit(0)
 
