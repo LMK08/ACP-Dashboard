@@ -54,8 +54,8 @@ jobs:
         run: |
           missing=0
           for s in 188221 188222 189147 190090 191782 all_43324 190230 191779 all_702; do
-            if [ ! -f "stats_cache/player_stats_v13_${s}.parquet" ]; then
-              echo "MISSING: stats_cache/player_stats_v13_${s}.parquet"; missing=1
+            if [ ! -f "stats_cache/player_stats_v14_${s}.parquet" ]; then
+              echo "MISSING: stats_cache/player_stats_v14_${s}.parquet"; missing=1
             fi
           done
           [ "$missing" = "0" ] && echo "all 9 scopes present" || (echo "::error::missing cache scopes"; exit 1)

@@ -409,7 +409,11 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 191782  # Liga 3 default
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v13'  # Bump this when adding/removing stat columns to invalidate old caches
+STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
+                             # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
+                             # override). v13 percentiles cache served stale minutes
+                             # because the percentiles layer early-returns its disk cache
+                             # and only this version key invalidates it.
 
 
 def _stats_scope_key(season_id, frame):
