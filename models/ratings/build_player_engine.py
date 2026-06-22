@@ -91,6 +91,16 @@ if _pm_path.exists():
         _rows.append(_t)
     _lm = pd.concat(_rows, ignore_index=True).rename(
         columns={'totalMinutes': 'mins_lineup'})
+    # Manual lineup-minutes overrides — mirror app.py MINUTES_OVERRIDE so the
+    # ACP radar header matches the regular radar for Wyscout lineup-data errors
+    # a refresh can't fix. Keyed (playerId, seasonId). Manuel Pedro 23/24: 96'
+    # was a Wyscout dropped-matches gap, his id 273828 was merged on the backend
+    # so a re-fetch 404s — event record ~2,335'. (Lucas 2026-06)
+    _MINS_OVERRIDE = {(273828, 190230): 2335}
+    for (_pid_o, _sid_o), _mins_o in _MINS_OVERRIDE.items():
+        _mask = (_lm['playerId'] == _pid_o) & (_lm['seasonId'] == _sid_o)
+        if _mask.any():
+            _lm.loc[_mask, 'mins_lineup'] = float(_mins_o)
     eng = eng.merge(_lm, on=['playerId', 'seasonId'], how='left')
     eng['mins_lineup'] = eng['mins_lineup'].fillna(eng['mins_played'])
 else:

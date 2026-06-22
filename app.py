@@ -572,6 +572,29 @@ def load_data():
         except NameError:
             pass  # PLAYER_ID_ALIASES not defined yet
 
+        # --- Manual minutes overrides (after alias resolution) ---
+        # Targeted fixes for Wyscout lineup-data errors a refresh can't correct.
+        try:
+            if MINUTES_OVERRIDE:
+                for _sid, _mdf in list(player_minutes_data.items()):
+                    if (not isinstance(_mdf, pd.DataFrame) or _mdf.empty
+                            or 'playerId' not in _mdf.columns
+                            or 'totalMinutes' not in _mdf.columns):
+                        continue
+                    _ov = {pid: mins for (pid, s), mins in MINUTES_OVERRIDE.items()
+                           if s == _sid}
+                    if not _ov:
+                        continue
+                    _mdf = _mdf.copy()
+                    _pid = pd.to_numeric(_mdf['playerId'], errors='coerce')
+                    for _pid_o, _mins_o in _ov.items():
+                        _m = (_pid == _pid_o)
+                        if _m.any():
+                            _mdf.loc[_m, 'totalMinutes'] = float(_mins_o)
+                    player_minutes_data[_sid] = _mdf
+        except NameError:
+            pass  # MINUTES_OVERRIDE not defined yet
+
         # Handle old season_team_stats format {team_name: stats} vs new {season_id: {team: stats}}
         # Old format has string keys (team names), new format has int keys (season IDs)
         if season_team_stats and isinstance(next(iter(season_team_stats.keys())), str):
@@ -620,6 +643,19 @@ PLAYER_ID_ALIASES = {
     # no stats. Remap 71835 → 1322978 so the GPA flows under the
     # correct younger bio.
     71835: 1322978,
+}
+
+# MINUTES_OVERRIDE — manual corrections for known Wyscout lineup-data errors a
+# data refresh can't fix. Keyed (playerId, seasonId) -> totalMinutes. Used when
+# Wyscout merged/changed a player's id on the backend so re-fetching by our
+# cached id 404s (see Manuel Pedro below). Applied to player_minutes_data in
+# load_data, so it survives a complete_player_minutes.pkl regeneration.
+MINUTES_OVERRIDE = {
+    # Manuel Pedro (AD Marco 09), Campeonato 23/24 (190230): Wyscout's lineup
+    # feed dropped ~25 of his matches (read 96'); his id 273828 was later merged
+    # on the backend, so a re-fetch by id 404s. His event record shows ~2,335'
+    # (a near-full season of starts) — override to that. (Lucas 2026-06)
+    (273828, 190230): 2335,
 }
 
 
