@@ -11805,300 +11805,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _zf.writestr(fn, _ff.read())
             return buf.getvalue()
 
-        # Always keep the expander open on the Player Analysis page so the
-        # Cached ZIPs section, debug info, and any errors are unmissable.
-        _bulk_expander_open = True
-        with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
-            _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
-            _bulk_groups = st.multiselect(
-                "Position groups:",
-                _bulk_groups_default,
-                default=_bulk_groups_default,
-                key="bulk_export_groups",
-            )
-            _bulk_mode_label = st.radio(
-                "Radar style:",
-                ["Percentile", "Raw (mean ± 2σ)"],
-                key="bulk_export_mode",
-            )
-            _bulk_min_mins = st.number_input(
-                "Min minutes:",
-                min_value=0,
-                max_value=int(max_minutes) if max_minutes else 5000,
-                value=int(min_minutes_filter),
-                step=45,
-                key="bulk_export_min_mins",
-                help="Default uses the Minimum Minutes Played slider above."
-            )
-            _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
-
-            if _bulk_generate:
-                # Resolve the multi-select group labels to raw position codes.
-                _bulk_raw_codes = set()
-                for _grp in _bulk_groups:
-                    for _role in _TEMPLATE_GROUPS.get(_grp, []):
-                        if _role in POSITION_GROUPS:
-                            _bulk_raw_codes.update(POSITION_GROUPS[_role])
-
-                _export_df = player_stats_with_scores_df[
-                    (pd.to_numeric(player_stats_with_scores_df['totalMinutes'], errors='coerce').fillna(0) >= _bulk_min_mins) &
-                    (player_stats_with_scores_df['primaryPosition'].isin(_bulk_raw_codes))
-                ].copy()
-
-                if _export_df.empty:
-                    st.warning("No players match the selection.")
-                else:
-                    _n_total = len(_export_df)
-                    _progress = st.progress(0.0, text=f"Rendering 0/{_n_total} radars…")
-
-                    def _on_progress(i, n, name, resumed=0):
-                        if resumed:
-                            _progress.progress(
-                                i / max(n, 1),
-                                text=f"Rendering {i}/{n} (resumed {resumed}): {name}"
-                            )
-                        else:
-                            _progress.progress(
-                                i / max(n, 1),
-                                text=f"Rendering {i}/{n}: {name}"
-                            )
-
-                    _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
-                    _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-
-                    # Write each PNG into a per-render directory; the
-                    # download ZIP is built lazily at click time. Sentinel
-                    # meta.pkl is written first so even crashed runs
-                    # appear in the Cached list.
-                    _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
-                    _render_dir = _bulk_render_dir(_cache_key)
-                    _meta_path = _bulk_meta_path(_cache_key)
-                    try:
-                        _os.makedirs(_render_dir, exist_ok=True)
-                        with open(_meta_path, 'wb') as _f:
-                            _pickle.dump({
-                                'status': 'running',
-                                'rendered': 0,
-                                'skipped': [],
-                                'label': f"{_season_lbl}__{_radar_mode}",
-                                'season': _season_lbl,
-                                'mode': _radar_mode,
-                                'groups': list(_bulk_groups),
-                                'min_mins': int(_bulk_min_mins),
-                                'started_at': _time.time(),
-                            }, _f)
-                    except Exception as _sentinel_exc:
-                        st.warning(f"⚠️ Could not write sentinel meta: "
-                                   f"{type(_sentinel_exc).__name__}: {_sentinel_exc}")
-
-                    try:
-                        _result_path, _rendered, _skipped, _resumed = bulk_export_radars(
-                            _export_df,
-                            player_stats_with_scores_df,
-                            radar_mode=_radar_mode,
-                            season_label=_season_lbl,
-                            progress_cb=_on_progress,
-                            output_path=_render_dir,
-                        )
-                        try:
-                            with open(_meta_path, 'wb') as _f:
-                                _pickle.dump({
-                                    'status': 'complete',
-                                    'rendered': _rendered,
-                                    'skipped': _skipped,
-                                    'resumed': _resumed,
-                                    'label': f"{_season_lbl}__{_radar_mode}",
-                                    'season': _season_lbl,
-                                    'mode': _radar_mode,
-                                    'groups': list(_bulk_groups),
-                                    'min_mins': int(_bulk_min_mins),
-                                }, _f)
-                        except Exception as _meta_exc:
-                            st.warning(f"⚠️ Render finished but completion-meta "
-                                       f"write failed: {type(_meta_exc).__name__}: "
-                                       f"{_meta_exc}")
-                        _progress.empty()
-                        _new_count = _rendered - _resumed
-                        _resume_note = (f" (resumed {_resumed}, rendered {_new_count} new)"
-                                         if _resumed else "")
-                        st.success(
-                            f"Rendered {_rendered} radars to disk{_resume_note}"
-                            + (f" · {len(_skipped)} skipped" if _skipped else "")
-                            + ". Use the Prepare ZIP button below."
-                        )
-                    except Exception as _gen_exc:
-                        _progress.empty()
-                        import traceback as _tb
-                        st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
-                        with st.popover("Traceback (for debugging)", use_container_width=True):
-                            st.code(_tb.format_exc())
-
-            # --- Cached Renders section — always shown. ---
-            st.markdown("---")
-            _cached = _list_cached_renders()
-            if _BULK_CACHE_ERROR:
-                st.error(f"⚠️ Cache directory unusable: {_BULK_CACHE_ERROR}. "
-                         f"Generated renders will not survive the page render. "
-                         f"This usually means /tmp/ is not writable in this runtime.")
-            if not _cached:
-                st.caption("💾 No cached renders yet. Run Generate ZIP to create one.")
-            else:
-                st.caption(f"💾 Cached renders ({len(_cached)})")
-            _now = _time.time()
-            for _idx, _entry in enumerate(_cached):
-                _meta = _entry['meta']
-                _rd = _entry['path']
-                _age = _now - _entry['mtime']
-                _age_str = (f"{int(_age)}s ago" if _age < 60 else
-                            f"{int(_age/60)} min ago" if _age < 3600 else
-                            f"{int(_age/3600)} h ago" if _age < 86400 else
-                            f"{int(_age/86400)} d ago")
-                _size_mb = _entry['size'] / (1024 * 1024)
-                _status = _meta.get('status', 'complete')
-                _png_count = _entry['png_count']
-                _season = _meta.get('season', '?')
-                _mode = _meta.get('mode', '?')
-                _mm = _meta.get('min_mins', '?')
-                _ngroups = len(_meta.get('groups', []) or [])
-                _badge = ""
-                if _status == 'running':
-                    _badge = " · 🟡 interrupted (partial download still works)"
-                elif _status == 'incomplete':
-                    _badge = " · 🟠 metadata missing (download still works)"
-                st.markdown(
-                    f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min{_badge}  \n"
-                    f"<span style='color:#888;font-size:0.85em'>{_png_count} radars · "
-                    f"{_size_mb:.1f} MB on disk · {_age_str}</span>",
-                    unsafe_allow_html=True,
-                )
-                # Build ZIP lazily from the directory contents. This is
-                # the moment we pay the in-memory cost for the ZIP, not
-                # during render. Even if the render was interrupted,
-                # every PNG that made it to disk gets bundled cleanly.
-                _zip_btn_key = f"bulk_export_dl_{_idx}"
-                _prep_key = f"bulk_export_prep_{_idx}"
-                _zip_bytes_key = f"bulk_export_bytes_{_idx}"
-                _zip_fp_key = f"bulk_export_fp_{_idx}"
-                # Fingerprint the on-disk state so a previously-built
-                # ZIP gets invalidated when the directory has grown
-                # (e.g. after a resume run). Without this the download
-                # button would happily serve stale bytes.
-                _current_fp = f"{_png_count}_{int(_entry['size'])}"
-                _cached_fp = st.session_state.get(_zip_fp_key)
-                if (_zip_bytes_key in st.session_state
-                        and _cached_fp == _current_fp):
-                    _cached_size_mb = len(st.session_state[_zip_bytes_key]) / (1024*1024)
-                    st.download_button(
-                        label=f"⬇️ Download ({_cached_size_mb:.0f} MB)",
-                        data=st.session_state[_zip_bytes_key],
-                        file_name=f"radars__{_meta.get('label', 'export')}.zip",
-                        mime="application/zip",
-                        key=_zip_btn_key,
-                        use_container_width=True,
-                    )
-                else:
-                    # If we have stale cached bytes, surface that so the
-                    # user understands why the prepare button is back.
-                    if _zip_bytes_key in st.session_state and _cached_fp:
-                        try:
-                            _stale_count = int(_cached_fp.split('_')[0])
-                            st.caption(f"⚠️ Cached ZIP is stale "
-                                       f"({_stale_count} files vs {_png_count} on disk). "
-                                       f"Re-prepare to refresh.")
-                        except Exception:
-                            pass
-                    if st.button(f"📦 Prepare ZIP ({_png_count} files, ~{_size_mb:.0f} MB)",
-                                  key=_prep_key, use_container_width=True):
-                        try:
-                            with st.spinner("Building ZIP from rendered PNGs…"):
-                                st.session_state[_zip_bytes_key] = _build_zip_from_dir(_rd)
-                                st.session_state[_zip_fp_key] = _current_fp
-                            st.rerun()
-                        except Exception as _zip_exc:
-                            st.error(f"ZIP build failed: "
-                                     f"{type(_zip_exc).__name__}: {_zip_exc}")
-                if _meta.get('skipped'):
-                    _sk = _meta['skipped']
-                    with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
-                        for _name, _reason in _sk[:50]:
-                            st.caption(f"• **{_name}** — {_reason}")
-                        if len(_sk) > 50:
-                            st.caption(f"…and {len(_sk) - 50} more")
-
-            # --- Diagnostics: surfaces the actual on-disk state ---
-            # popover instead of expander — Streamlit forbids nested expanders.
-            with st.popover("🔍 Diagnostics", use_container_width=True):
-                st.caption(f"Cache dir: `{_BULK_CACHE_DIR}`")
-                if _BULK_CACHE_ERROR:
-                    st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
-                try:
-                    _entries = sorted(_os.listdir(_BULK_CACHE_DIR))
-                    if not _entries:
-                        st.caption("Directory is empty.")
-                    else:
-                        _rows = []
-                        for _en in _entries:
-                            _ep = _os.path.join(_BULK_CACHE_DIR, _en)
-                            try:
-                                if _os.path.isdir(_ep):
-                                    _png = [f for f in _os.listdir(_ep)
-                                             if f.endswith('.png')]
-                                    _sz = sum(_os.path.getsize(_os.path.join(_ep, f))
-                                               for f in _os.listdir(_ep))
-                                    _mt = _os.path.getmtime(_ep)
-                                    _rows.append({
-                                        'entry': _en + '/',
-                                        'type': 'dir',
-                                        'pngs': len(_png),
-                                        'size_MB': f"{_sz/(1024*1024):.2f}",
-                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
-                                                                _time.localtime(_mt)),
-                                    })
-                                else:
-                                    _sz = _os.path.getsize(_ep)
-                                    _mt = _os.path.getmtime(_ep)
-                                    _rows.append({
-                                        'entry': _en,
-                                        'type': 'file',
-                                        'pngs': 0,
-                                        'size_MB': f"{_sz/(1024*1024):.2f}",
-                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
-                                                                _time.localtime(_mt)),
-                                    })
-                            except Exception:
-                                _rows.append({'entry': _en, 'type': '?',
-                                              'pngs': 0, 'size_MB': '?', 'mtime': '?'})
-                        st.dataframe(pd.DataFrame(_rows),
-                                     use_container_width=True, hide_index=True)
-                except Exception as _diag_exc:
-                    st.error(f"Cannot list cache dir: "
-                             f"{type(_diag_exc).__name__}: {_diag_exc}")
-                # Disk usage info — useful if /tmp/ is filling up
-                try:
-                    import shutil as _shutil
-                    _du = _shutil.disk_usage(_BULK_CACHE_DIR if _os.path.exists(_BULK_CACHE_DIR) else '/tmp')
-                    st.caption(
-                        f"`/tmp/` disk: total {_du.total/(1024**3):.1f} GB · "
-                        f"used {_du.used/(1024**3):.1f} GB · "
-                        f"free {_du.free/(1024**3):.1f} GB"
-                    )
-                except Exception as _du_exc:
-                    st.caption(f"disk_usage error: {_du_exc}")
-                # Process RAM, if psutil is available — early-warning for OOM
-                try:
-                    import psutil as _psutil
-                    _proc = _psutil.Process()
-                    _rss = _proc.memory_info().rss / (1024**3)
-                    _vmem = _psutil.virtual_memory()
-                    st.caption(
-                        f"Process RSS: {_rss:.2f} GB · "
-                        f"system RAM: {_vmem.used/(1024**3):.1f} GB used / "
-                        f"{_vmem.total/(1024**3):.1f} GB total "
-                        f"({_vmem.percent:.0f}%)"
-                    )
-                except Exception:
-                    pass
-
         # Apply minutes filter
         filtered_df = player_stats_with_scores_df[
             player_stats_with_scores_df['totalMinutes'] >= min_minutes_filter
@@ -12132,8 +11838,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.warning(f"No players found in age range {age_range[0]}-{age_range[1]}.")
                         st.stop()
 
-        # --- Show Only Position toggle ---
-        analysis_pos_played_filter = st.sidebar.checkbox("Show Only Position", key="analysis_pos_played_filter")
+        # --- Show Only Position toggle (HIDDEN per Lucas 2026-06) ---
+        # Toggle removed from the sidebar; pos-played filtering stays off.
+        analysis_pos_played_filter = False
         analysis_pos_played_active = False
         analysis_selected_positions = []
         if analysis_pos_played_filter:
@@ -13171,6 +12878,301 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             _ann['font'] = dict(size=11)
                         st.plotly_chart(_fig, use_container_width=True)
 
+        # Always keep the expander open on the Player Analysis page so the
+        # Cached ZIPs section, debug info, and any errors are unmissable.
+        _bulk_expander_open = True
+        with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
+            _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
+            _bulk_groups = st.multiselect(
+                "Position groups:",
+                _bulk_groups_default,
+                default=_bulk_groups_default,
+                key="bulk_export_groups",
+            )
+            _bulk_mode_label = st.radio(
+                "Radar style:",
+                ["Percentile", "Raw (mean ± 2σ)"],
+                key="bulk_export_mode",
+            )
+            _bulk_min_mins = st.number_input(
+                "Min minutes:",
+                min_value=0,
+                max_value=int(max_minutes) if max_minutes else 5000,
+                value=int(min_minutes_filter),
+                step=45,
+                key="bulk_export_min_mins",
+                help="Default uses the Minimum Minutes Played slider above."
+            )
+            _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
+
+            if _bulk_generate:
+                # Resolve the multi-select group labels to raw position codes.
+                _bulk_raw_codes = set()
+                for _grp in _bulk_groups:
+                    for _role in _TEMPLATE_GROUPS.get(_grp, []):
+                        if _role in POSITION_GROUPS:
+                            _bulk_raw_codes.update(POSITION_GROUPS[_role])
+
+                _export_df = player_stats_with_scores_df[
+                    (pd.to_numeric(player_stats_with_scores_df['totalMinutes'], errors='coerce').fillna(0) >= _bulk_min_mins) &
+                    (player_stats_with_scores_df['primaryPosition'].isin(_bulk_raw_codes))
+                ].copy()
+
+                if _export_df.empty:
+                    st.warning("No players match the selection.")
+                else:
+                    _n_total = len(_export_df)
+                    _progress = st.progress(0.0, text=f"Rendering 0/{_n_total} radars…")
+
+                    def _on_progress(i, n, name, resumed=0):
+                        if resumed:
+                            _progress.progress(
+                                i / max(n, 1),
+                                text=f"Rendering {i}/{n} (resumed {resumed}): {name}"
+                            )
+                        else:
+                            _progress.progress(
+                                i / max(n, 1),
+                                text=f"Rendering {i}/{n}: {name}"
+                            )
+
+                    _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
+                    _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
+
+                    # Write each PNG into a per-render directory; the
+                    # download ZIP is built lazily at click time. Sentinel
+                    # meta.pkl is written first so even crashed runs
+                    # appear in the Cached list.
+                    _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
+                    _render_dir = _bulk_render_dir(_cache_key)
+                    _meta_path = _bulk_meta_path(_cache_key)
+                    try:
+                        _os.makedirs(_render_dir, exist_ok=True)
+                        with open(_meta_path, 'wb') as _f:
+                            _pickle.dump({
+                                'status': 'running',
+                                'rendered': 0,
+                                'skipped': [],
+                                'label': f"{_season_lbl}__{_radar_mode}",
+                                'season': _season_lbl,
+                                'mode': _radar_mode,
+                                'groups': list(_bulk_groups),
+                                'min_mins': int(_bulk_min_mins),
+                                'started_at': _time.time(),
+                            }, _f)
+                    except Exception as _sentinel_exc:
+                        st.warning(f"⚠️ Could not write sentinel meta: "
+                                   f"{type(_sentinel_exc).__name__}: {_sentinel_exc}")
+
+                    try:
+                        _result_path, _rendered, _skipped, _resumed = bulk_export_radars(
+                            _export_df,
+                            player_stats_with_scores_df,
+                            radar_mode=_radar_mode,
+                            season_label=_season_lbl,
+                            progress_cb=_on_progress,
+                            output_path=_render_dir,
+                        )
+                        try:
+                            with open(_meta_path, 'wb') as _f:
+                                _pickle.dump({
+                                    'status': 'complete',
+                                    'rendered': _rendered,
+                                    'skipped': _skipped,
+                                    'resumed': _resumed,
+                                    'label': f"{_season_lbl}__{_radar_mode}",
+                                    'season': _season_lbl,
+                                    'mode': _radar_mode,
+                                    'groups': list(_bulk_groups),
+                                    'min_mins': int(_bulk_min_mins),
+                                }, _f)
+                        except Exception as _meta_exc:
+                            st.warning(f"⚠️ Render finished but completion-meta "
+                                       f"write failed: {type(_meta_exc).__name__}: "
+                                       f"{_meta_exc}")
+                        _progress.empty()
+                        _new_count = _rendered - _resumed
+                        _resume_note = (f" (resumed {_resumed}, rendered {_new_count} new)"
+                                         if _resumed else "")
+                        st.success(
+                            f"Rendered {_rendered} radars to disk{_resume_note}"
+                            + (f" · {len(_skipped)} skipped" if _skipped else "")
+                            + ". Use the Prepare ZIP button below."
+                        )
+                    except Exception as _gen_exc:
+                        _progress.empty()
+                        import traceback as _tb
+                        st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
+                        with st.popover("Traceback (for debugging)", use_container_width=True):
+                            st.code(_tb.format_exc())
+
+            # --- Cached Renders section — always shown. ---
+            st.markdown("---")
+            _cached = _list_cached_renders()
+            if _BULK_CACHE_ERROR:
+                st.error(f"⚠️ Cache directory unusable: {_BULK_CACHE_ERROR}. "
+                         f"Generated renders will not survive the page render. "
+                         f"This usually means /tmp/ is not writable in this runtime.")
+            if not _cached:
+                st.caption("💾 No cached renders yet. Run Generate ZIP to create one.")
+            else:
+                st.caption(f"💾 Cached renders ({len(_cached)})")
+            _now = _time.time()
+            for _idx, _entry in enumerate(_cached):
+                _meta = _entry['meta']
+                _rd = _entry['path']
+                _age = _now - _entry['mtime']
+                _age_str = (f"{int(_age)}s ago" if _age < 60 else
+                            f"{int(_age/60)} min ago" if _age < 3600 else
+                            f"{int(_age/3600)} h ago" if _age < 86400 else
+                            f"{int(_age/86400)} d ago")
+                _size_mb = _entry['size'] / (1024 * 1024)
+                _status = _meta.get('status', 'complete')
+                _png_count = _entry['png_count']
+                _season = _meta.get('season', '?')
+                _mode = _meta.get('mode', '?')
+                _mm = _meta.get('min_mins', '?')
+                _ngroups = len(_meta.get('groups', []) or [])
+                _badge = ""
+                if _status == 'running':
+                    _badge = " · 🟡 interrupted (partial download still works)"
+                elif _status == 'incomplete':
+                    _badge = " · 🟠 metadata missing (download still works)"
+                st.markdown(
+                    f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min{_badge}  \n"
+                    f"<span style='color:#888;font-size:0.85em'>{_png_count} radars · "
+                    f"{_size_mb:.1f} MB on disk · {_age_str}</span>",
+                    unsafe_allow_html=True,
+                )
+                # Build ZIP lazily from the directory contents. This is
+                # the moment we pay the in-memory cost for the ZIP, not
+                # during render. Even if the render was interrupted,
+                # every PNG that made it to disk gets bundled cleanly.
+                _zip_btn_key = f"bulk_export_dl_{_idx}"
+                _prep_key = f"bulk_export_prep_{_idx}"
+                _zip_bytes_key = f"bulk_export_bytes_{_idx}"
+                _zip_fp_key = f"bulk_export_fp_{_idx}"
+                # Fingerprint the on-disk state so a previously-built
+                # ZIP gets invalidated when the directory has grown
+                # (e.g. after a resume run). Without this the download
+                # button would happily serve stale bytes.
+                _current_fp = f"{_png_count}_{int(_entry['size'])}"
+                _cached_fp = st.session_state.get(_zip_fp_key)
+                if (_zip_bytes_key in st.session_state
+                        and _cached_fp == _current_fp):
+                    _cached_size_mb = len(st.session_state[_zip_bytes_key]) / (1024*1024)
+                    st.download_button(
+                        label=f"⬇️ Download ({_cached_size_mb:.0f} MB)",
+                        data=st.session_state[_zip_bytes_key],
+                        file_name=f"radars__{_meta.get('label', 'export')}.zip",
+                        mime="application/zip",
+                        key=_zip_btn_key,
+                        use_container_width=True,
+                    )
+                else:
+                    # If we have stale cached bytes, surface that so the
+                    # user understands why the prepare button is back.
+                    if _zip_bytes_key in st.session_state and _cached_fp:
+                        try:
+                            _stale_count = int(_cached_fp.split('_')[0])
+                            st.caption(f"⚠️ Cached ZIP is stale "
+                                       f"({_stale_count} files vs {_png_count} on disk). "
+                                       f"Re-prepare to refresh.")
+                        except Exception:
+                            pass
+                    if st.button(f"📦 Prepare ZIP ({_png_count} files, ~{_size_mb:.0f} MB)",
+                                  key=_prep_key, use_container_width=True):
+                        try:
+                            with st.spinner("Building ZIP from rendered PNGs…"):
+                                st.session_state[_zip_bytes_key] = _build_zip_from_dir(_rd)
+                                st.session_state[_zip_fp_key] = _current_fp
+                            st.rerun()
+                        except Exception as _zip_exc:
+                            st.error(f"ZIP build failed: "
+                                     f"{type(_zip_exc).__name__}: {_zip_exc}")
+                if _meta.get('skipped'):
+                    _sk = _meta['skipped']
+                    with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
+                        for _name, _reason in _sk[:50]:
+                            st.caption(f"• **{_name}** — {_reason}")
+                        if len(_sk) > 50:
+                            st.caption(f"…and {len(_sk) - 50} more")
+
+            # --- Diagnostics: surfaces the actual on-disk state ---
+            # popover instead of expander — Streamlit forbids nested expanders.
+            with st.popover("🔍 Diagnostics", use_container_width=True):
+                st.caption(f"Cache dir: `{_BULK_CACHE_DIR}`")
+                if _BULK_CACHE_ERROR:
+                    st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
+                try:
+                    _entries = sorted(_os.listdir(_BULK_CACHE_DIR))
+                    if not _entries:
+                        st.caption("Directory is empty.")
+                    else:
+                        _rows = []
+                        for _en in _entries:
+                            _ep = _os.path.join(_BULK_CACHE_DIR, _en)
+                            try:
+                                if _os.path.isdir(_ep):
+                                    _png = [f for f in _os.listdir(_ep)
+                                             if f.endswith('.png')]
+                                    _sz = sum(_os.path.getsize(_os.path.join(_ep, f))
+                                               for f in _os.listdir(_ep))
+                                    _mt = _os.path.getmtime(_ep)
+                                    _rows.append({
+                                        'entry': _en + '/',
+                                        'type': 'dir',
+                                        'pngs': len(_png),
+                                        'size_MB': f"{_sz/(1024*1024):.2f}",
+                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
+                                                                _time.localtime(_mt)),
+                                    })
+                                else:
+                                    _sz = _os.path.getsize(_ep)
+                                    _mt = _os.path.getmtime(_ep)
+                                    _rows.append({
+                                        'entry': _en,
+                                        'type': 'file',
+                                        'pngs': 0,
+                                        'size_MB': f"{_sz/(1024*1024):.2f}",
+                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
+                                                                _time.localtime(_mt)),
+                                    })
+                            except Exception:
+                                _rows.append({'entry': _en, 'type': '?',
+                                              'pngs': 0, 'size_MB': '?', 'mtime': '?'})
+                        st.dataframe(pd.DataFrame(_rows),
+                                     use_container_width=True, hide_index=True)
+                except Exception as _diag_exc:
+                    st.error(f"Cannot list cache dir: "
+                             f"{type(_diag_exc).__name__}: {_diag_exc}")
+                # Disk usage info — useful if /tmp/ is filling up
+                try:
+                    import shutil as _shutil
+                    _du = _shutil.disk_usage(_BULK_CACHE_DIR if _os.path.exists(_BULK_CACHE_DIR) else '/tmp')
+                    st.caption(
+                        f"`/tmp/` disk: total {_du.total/(1024**3):.1f} GB · "
+                        f"used {_du.used/(1024**3):.1f} GB · "
+                        f"free {_du.free/(1024**3):.1f} GB"
+                    )
+                except Exception as _du_exc:
+                    st.caption(f"disk_usage error: {_du_exc}")
+                # Process RAM, if psutil is available — early-warning for OOM
+                try:
+                    import psutil as _psutil
+                    _proc = _psutil.Process()
+                    _rss = _proc.memory_info().rss / (1024**3)
+                    _vmem = _psutil.virtual_memory()
+                    st.caption(
+                        f"Process RSS: {_rss:.2f} GB · "
+                        f"system RAM: {_vmem.used/(1024**3):.1f} GB used / "
+                        f"{_vmem.total/(1024**3):.1f} GB total "
+                        f"({_vmem.percent:.0f}%)"
+                    )
+                except Exception:
+                    pass
+
+
     elif analysis_type == 'Match Predictor':
         selected_comp_ids = league_selector("match_predictor")
         st.markdown("Predict the outcome of upcoming matches based on team performance data with season-specific priors.")
@@ -13859,43 +13861,6 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             opp_current_sid, opp_season_map,
         )
 
-    # --- Transferred Players Manager (Bottom of Sidebar) ---
-    st.sidebar.markdown("---")
-    with st.sidebar.expander("Transferred Out Players"):
-        if 'transferred_players' not in st.session_state:
-            st.session_state.transferred_players = load_transferred_players()
-
-        # Build a list of all player names across all seasons for autocomplete
-        _all_names = set()
-        if player_minutes_data:
-            for _sid, _pm in player_minutes_data.items():
-                if isinstance(_pm, pd.DataFrame) and 'playerName' in _pm.columns:
-                    _all_names.update(_pm['playerName'].dropna().unique())
-        all_player_names = sorted(_all_names)
-
-        new_player = st.selectbox(
-            "Add player",
-            options=[""] + [n for n in all_player_names
-                            if n not in st.session_state.transferred_players],
-            key="transfer_add_select",
-        )
-        if st.button("Add", key="transfer_add_btn") and new_player:
-            if new_player not in st.session_state.transferred_players:
-                st.session_state.transferred_players.append(new_player)
-                save_transferred_players(st.session_state.transferred_players)
-                st.rerun()
-
-        if st.session_state.transferred_players:
-            st.caption("Current list:")
-            for pname in list(st.session_state.transferred_players):
-                col_name, col_btn = st.columns([3, 1])
-                col_name.write(pname)
-                if col_btn.button("X", key=f"transfer_rm_{pname}"):
-                    st.session_state.transferred_players.remove(pname)
-                    save_transferred_players(st.session_state.transferred_players)
-                    st.rerun()
-        else:
-            st.caption("No players added yet.")
 
 else:
     st.error("Data files not loaded. Please run `process_data.py` locally and ensure all artifacts are pushed to GitHub.")
