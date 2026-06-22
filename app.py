@@ -520,21 +520,41 @@ def load_data():
             player_minutes_data = {CURRENT_SEASON_ID: player_minutes_data}
 
         # Apply PLAYER_ID_ALIASES to per-season minutes dataframes so a
-        # duplicate pid's minutes flow under the canonical pid. Sum the
-        # mins per position if both pids appear in the same season.
+        # duplicate pid's minutes flow under the canonical pid.
+        #
+        # The alias FROM pid is the stats-bearing record (that's why it's
+        # aliased); the engine reads it directly. When BOTH the FROM and the
+        # canonical TO pid have a minutes row in the SAME season, they are the
+        # same stint duplicated by a Wyscout split (e.g. Mamadu Camará 25/26:
+        # 71835=1144' + 1322978=1276'). Summing them double-counts — keep the
+        # FROM row's minutes, DROP the TO row's, then remap, so the radar
+        # matches the ACP index (1144'). Any leftover same-pid collisions
+        # (genuine multi-position rows) still merge by summing.
         try:
             if PLAYER_ID_ALIASES:
+                _alias_items = list(PLAYER_ID_ALIASES.items())
                 for _sid, _mdf in list(player_minutes_data.items()):
                     if not isinstance(_mdf, pd.DataFrame) or _mdf.empty:
                         continue
                     if 'playerId' not in _mdf.columns:
                         continue
                     _mdf = _mdf.copy()
-                    _mdf['playerId'] = _mdf['playerId'].map(
+                    _pid = pd.to_numeric(_mdf['playerId'], errors='coerce')
+                    _present = set(_pid.dropna().astype(int).tolist())
+                    # drop canonical(TO) duplicate rows when the FROM row is also
+                    # present this season — the FROM record is authoritative
+                    _drop = pd.Series(False, index=_mdf.index)
+                    for _from, _to in _alias_items:
+                        if _from in _present and _to in _present:
+                            _drop |= (_pid == _to)
+                    if _drop.any():
+                        _mdf = _mdf[~_drop]
+                        _pid = pd.to_numeric(_mdf['playerId'], errors='coerce')
+                    _mdf['playerId'] = _pid.map(
                         lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
-                        if p is not None and not pd.isna(p) else p)
-                    # Sum minutes-like numeric columns per (playerId,
-                    # optionally position) so collisions merge cleanly.
+                        if pd.notna(p) else p)
+                    # merge any leftover genuine collisions per (playerId,
+                    # optionally position) by summing numeric columns
                     group_cols = ['playerId']
                     if 'position' in _mdf.columns:
                         group_cols.append('position')
