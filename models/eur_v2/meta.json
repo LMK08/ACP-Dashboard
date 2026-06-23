@@ -20,9 +20,9 @@
   ],
   "chosen_alpha": 100.0,
   "n_training_rows": 26,
-  "oof_r2": 0.09567165222113538,
-  "oof_mae_log": 0.813214831190727,
-  "oof_mape_pct": 58.860128535097985,
+  "oof_r2": 0.17001135288704772,
+  "oof_mae_log": 0.7312011924521291,
+  "oof_mape_pct": 54.47613279614979,
   "pos_groups_one_hot": [
     "pos_AM_WG",
     "pos_CB",

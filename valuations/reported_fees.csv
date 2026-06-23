@@ -76,15 +76,15 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 846557,Cláudio Araújo,Varzim,Segunda Liga (TBD),permanent,300000,,,2025-07-15,190090,,,,Liga 3 → Segunda Liga summer 2025; pre-transfer = 24-25 L3 Varzim,0
 776749,Afonso Moreira,Sporting CP B,Lyon (FRA L1),permanent,2000000,,,2025-07-15,190090,,,,Big-money Sporting B → Lyon move summer 2025; pre-transfer = 24-25 L3 Sporting CP B,0
 1038698,Ricardo Brito,Vianense,Santa Clara,permanent,300000,,,2026-07-15,191779,,,,Camp → Primeira Liga summer 2026 step-up; pre-transfer = 25-26 Camp Vianense,0
+1039596,Catarino Pascoal,Atlético CP,Sporting Lisbon,permanent,500000,,,2026-07-15,191782,,,,Liga 3 → Primeira (Sporting Lisbon) summer 2026; pre-transfer = 25-26 L3 ACP,0
 
 # === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
 # These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
 # Pre-transfer season_id is set explicitly per row; all flagged synthetic_flag=1.
-1039596,Catarino Pascoal,Atlético CP,Sporting Lisbon,permanent,400000,,,2026-07-15,191782,,,,Synthetic: top young L3 mid → Primeira; pre-transfer = 25-26 L3 ACP,1
 598545,Nicolás Souza,Atlético CP,Korea (TBD),permanent,100000,,,2026-07-15,191782,,,,Synthetic: ACP attacker → Korea; pre-transfer = 25-26 L3 ACP,1
-646981,Duarte Henriques,Atlético CP,Segunda Liga (TBD),permanent,100000,,,2026-07-15,191782,,,,Synthetic: ACP regular → Segunda; pre-transfer = 25-26 L3 ACP,1
+646981,Duarte Henriques,Atlético CP,Segunda Liga (TBD),permanent,80000,,,2026-07-15,191782,,,,Synthetic: ACP regular → Segunda; pre-transfer = 25-26 L3 ACP,1
 626950,Leandro Ferreira,Louletano,Atlético CP,permanent,80000,,,2026-07-15,191779,,,,Synthetic: Camp wide forward → ACP step-up; pre-transfer = 25-26 Camp Louletano,1
-693095,Coquinho,Oliveira do Hospital,Atlético CP,permanent,25000,,,2026-07-15,191779,,,,Synthetic: Camp DMF → ACP step-up; pre-transfer = 25-26 Camp,1
+693095,Coquinho,Oliveira do Hospital,Atlético CP,permanent,35000,,,2026-07-15,191779,,,,Synthetic: Camp DMF → ACP step-up; pre-transfer = 25-26 Camp,1
 967585,Nuno Gaspar,Benfica Castelo Branco,Atlético CP,permanent,9000,,,2026-07-15,191779,,,,Synthetic: Camp SS → ACP modest fee; pre-transfer = 25-26 Camp,1
 946612,Matar Manga,JD Lajense,Sintrense,permanent,10000,,,2026-01-15,191779,,,,Synthetic: intra-Camp Jan move; pre-transfer = 25-26 Camp,1
 852804,Miguel Barandas,Atlético CP,Segunda Liga (TBD),permanent,150000,,,2026-07-15,191782,,,,Synthetic: ACP FB → Segunda; pre-transfer = 25-26 L3 ACP,1
