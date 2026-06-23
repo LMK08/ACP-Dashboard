@@ -2668,12 +2668,16 @@ CAMP_PROJECTED_EUR_PENALTY = 0.85
 #   CVI 120  €447k → €450k (+1%)
 PROJECTED_EUR_COEF = 1.10
 PROJECTED_EUR_EXP  = 2.70
-PROJECTED_EUR_CAP  = 500_000
+PROJECTED_EUR_CAP  = None   # cap removed 2026-06-23 (Lucas) — was 500_000. Only
+                            # 1 rated player was pinned at it (max uncapped ~€431k),
+                            # so it was a near-inert safety rail. Set back to a number
+                            # (e.g. 500_000) to re-enable the min() clamp.
 
 
 def cvi_to_projected_eur(cvi, position_group=None, competition_id=None):
     """Convert a CVI score to a projected EUR figure: power curve +
-    position multiplier + Camp penalty + €500k cap. Returns None if
+    position multiplier + Camp penalty. Cap removed 2026-06-23 (the
+    €500k clamp is now opt-in via PROJECTED_EUR_CAP). Returns None if
     cvi is None/<=0."""
     try:
         v = float(cvi)
@@ -2687,9 +2691,9 @@ def cvi_to_projected_eur(cvi, position_group=None, competition_id=None):
                   and not (isinstance(competition_id, float) and pd.isna(competition_id))
                   and int(competition_id) == 702
                   else 1.00)
-    return min(PROJECTED_EUR_COEF * (v ** PROJECTED_EUR_EXP)
-                * pos_mult * camp_mult,
-               PROJECTED_EUR_CAP)
+    val = (PROJECTED_EUR_COEF * (v ** PROJECTED_EUR_EXP)
+            * pos_mult * camp_mult)
+    return val if PROJECTED_EUR_CAP is None else min(val, PROJECTED_EUR_CAP)
 
 
 def _cvi_position_group(primary_position):
