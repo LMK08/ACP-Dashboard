@@ -377,14 +377,17 @@ final = Ridge(alpha=ALPHA).fit(
 cur = o[(o['seasonId'].isin({191782, 191779})) & o[FEATS].notna().all(axis=1)].copy()
 cur['seasons_ago'] = 0
 # Lapsed players (Lucas): last rated 24/25 with no 25/26 row still get
-# a projection off that season — age curve applied over BOTH gap steps,
-# fast-decay evidence decayed one extra idle year, band widened sqrt(2).
+# a projection off that season. EXTRA AGE-YEAR REMOVED 2026-06-24 (Lucas): a
+# lapsed player is now aged like a current 25/26 player at the same age — ONE
+# year of age curve to the 26/27 horizon (the A+1 step), not two. We no longer
+# apply the extra 24/25->25/26 aging step for the season they missed. The
+# fast-decay evidence still decays one idle year and the band is still widened
+# sqrt(2) — both KEPT.
 _lap = o[(o['yr'] == 2024) & o[FEATS].notna().all(axis=1)
            & ~o['playerId'].isin(set(cur['playerId']))].copy()
 _lap = _lap.sort_values('mins_played').drop_duplicates('playerId', keep='last')
-_lap['age_delta'] = (_lap.apply(_blended_age_delta, axis=1)
-                       + _lap.assign(age=_lap['age'] + 1.0)
-                             .apply(_blended_age_delta, axis=1))
+_lap['age_delta'] = (_lap.assign(age=_lap['age'] + 1.0)
+                          .apply(_blended_age_delta, axis=1))
 _lap['eff_mins'] = _lap['eff_mins'] * 0.5
 _lap['eff8'] = _lap['eff8'] * 0.8
 _lap['eff9'] = _lap['eff9'] * 0.9
