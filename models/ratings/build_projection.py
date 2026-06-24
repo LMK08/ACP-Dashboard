@@ -376,25 +376,37 @@ final = Ridge(alpha=ALPHA).fit(
     (P[FEATS] - mu) / sd, P['next_rating'])    # refit on ALL pairs for production
 cur = o[(o['seasonId'].isin({191782, 191779})) & o[FEATS].notna().all(axis=1)].copy()
 cur['seasons_ago'] = 0
-# Lapsed players (Lucas): last rated 24/25 with no 25/26 row still get
-# a projection off that season. EXTRA AGE-YEAR REMOVED 2026-06-24 (Lucas): a
-# lapsed player is now aged like a current 25/26 player at the same age — ONE
-# year of age curve to the 26/27 horizon (the A+1 step), not two. We no longer
-# apply the extra 24/25->25/26 aging step for the season they missed. The
-# fast-decay evidence still decays one idle year and the band is still widened
-# sqrt(2) — both KEPT.
-_lap = o[(o['yr'] == 2024) & o[FEATS].notna().all(axis=1)
-           & ~o['playerId'].isin(set(cur['playerId']))].copy()
-_lap = _lap.sort_values('mins_played').drop_duplicates('playerId', keep='last')
-_lap['age_delta'] = (_lap.assign(age=_lap['age'] + 1.0)
-                          .apply(_blended_age_delta, axis=1))
-_lap['eff_mins'] = _lap['eff_mins'] * 0.5
-_lap['eff8'] = _lap['eff8'] * 0.8
-_lap['eff9'] = _lap['eff9'] * 0.9
-_lap['age'] = _lap['age'] + 1.0      # display on the 25/26 age convention
-_lap['seasons_ago'] = 1
-cur = pd.concat([cur, _lap], ignore_index=True)
-print(f"  +{len(_lap)} lapsed players projected off 24/25 (seasons_ago=1)")
+# Non-current players (Lucas 2026-06-24): project EVERY player with an eligible
+# (>=90') season off their MOST RECENT one — not just the one-season-lapsed.
+# Generalizes the lapsed handling by the idle gap to 25/26 (seasons_ago):
+#   - aged to their CURRENT (25/26) age, then ONE step to the 26/27 horizon
+#     (the extra-age-year removal, generalized — no missed-year aging steps);
+#   - evidence decayed per idle year (eff x decay^seasons_ago — evidence decay
+#     KEPT) so a staler record is trusted less;
+#   - band widened sqrt(1+seasons_ago) further down — staler = wider.
+_stale = o[~o['playerId'].isin(set(cur['playerId']))].copy()
+# most recent eligible season per player (ties broken by minutes)
+_stale = _stale.sort_values(['yr', 'mins_played']).drop_duplicates('playerId', keep='last')
+# players we STILL cannot project — one or more model inputs are missing
+_missing = _stale[~_stale[FEATS].notna().all(axis=1)].copy()
+if len(_missing):
+    _missing['_miss'] = _missing.apply(
+        lambda r: ','.join(c for c in FEATS if pd.isna(r[c])), axis=1)
+    print(f"  !! {len(_missing)} >=90' players NOT projected (missing model inputs):")
+    for _, _m in _missing.sort_values(['seasonId', 'playerId']).iterrows():
+        print(f"     MISSING|{int(_m['playerId'])}|{int(_m['seasonId'])}|"
+               f"{_m.get('role')}|{_m['mins_played']:.0f}|{_m['_miss']}")
+_stale = _stale[_stale[FEATS].notna().all(axis=1)].copy()
+_stale['seasons_ago'] = (2025 - _stale['yr']).clip(lower=1).astype(int)
+_stale['age'] = _stale['age'] + _stale['seasons_ago']            # forward to current (25/26) age
+_stale['age_delta'] = _stale.apply(_blended_age_delta, axis=1)   # ONE step: current age -> 26/27
+_stale['eff_mins'] = _stale['eff_mins'] * 0.5 ** _stale['seasons_ago']
+_stale['eff8'] = _stale['eff8'] * 0.8 ** _stale['seasons_ago']
+_stale['eff9'] = _stale['eff9'] * 0.9 ** _stale['seasons_ago']
+cur = pd.concat([cur, _stale], ignore_index=True)
+print(f"  +{len(_stale)} non-current players projected off their latest season "
+       f"(seasons_ago {int(_stale['seasons_ago'].min()) if len(_stale) else 0}"
+       f"-{int(_stale['seasons_ago'].max()) if len(_stale) else 0})")
 if SHIP == 'ridge':
     cur['projection'] = final.predict((cur[FEATS] - mu) / sd)
 elif SHIP == 'marcel':
