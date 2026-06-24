@@ -381,9 +381,11 @@ cur['seasons_ago'] = 0
 # Generalizes the lapsed handling by the idle gap to 25/26 (seasons_ago):
 #   - aged to their CURRENT (25/26) age, then ONE step to the 26/27 horizon
 #     (the extra-age-year removal, generalized — no missed-year aging steps);
-#   - evidence decayed per idle year (eff x decay^seasons_ago — evidence decay
-#     KEPT) so a staler record is trusted less;
-#   - band widened sqrt(1+seasons_ago) further down — staler = wider.
+#   - evidence is NOT decayed for idle years (Lucas 2026-06-24: minimize the
+#     effect staleness has on evidence — a stale player keeps the evidence
+#     weight it had at its last season; within-record recency still applies);
+#   - band widened sqrt(1+seasons_ago) further down — staler = wider (staleness
+#     now surfaces only as wider uncertainty, not a lower evidence weight).
 _stale = o[~o['playerId'].isin(set(cur['playerId']))].copy()
 # most recent eligible season per player (ties broken by minutes)
 _stale = _stale.sort_values(['yr', 'mins_played']).drop_duplicates('playerId', keep='last')
@@ -400,9 +402,9 @@ _stale = _stale[_stale[FEATS].notna().all(axis=1)].copy()
 _stale['seasons_ago'] = (2025 - _stale['yr']).clip(lower=1).astype(int)
 _stale['age'] = _stale['age'] + _stale['seasons_ago']            # forward to current (25/26) age
 _stale['age_delta'] = _stale.apply(_blended_age_delta, axis=1)   # ONE step: current age -> 26/27
-_stale['eff_mins'] = _stale['eff_mins'] * 0.5 ** _stale['seasons_ago']
-_stale['eff8'] = _stale['eff8'] * 0.8 ** _stale['seasons_ago']
-_stale['eff9'] = _stale['eff9'] * 0.9 ** _stale['seasons_ago']
+# idle-year evidence decay REMOVED (Lucas 2026-06-24, "minimize"): eff_mins /
+# eff8 / eff9 stay at their last-season values — staleness no longer lowers the
+# evidence weight (it still widens the band via seasons_ago below).
 cur = pd.concat([cur, _stale], ignore_index=True)
 print(f"  +{len(_stale)} non-current players projected off their latest season "
        f"(seasons_ago {int(_stale['seasons_ago'].min()) if len(_stale) else 0}"
