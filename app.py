@@ -12264,19 +12264,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _eng_role_df, _ = load_player_engine()
             if (_eng_role_df is not None and not _eng_role_df.empty
                     and filtered_df is not None and not filtered_df.empty):
-                _ers = _eng_role_df
-                # scope engine rows to the selected league's seasons …
-                _league_seasons = _season_ids_for_comps(selected_comp_ids)
-                if _league_seasons:
-                    _ers = _ers[_ers['seasonId'].isin(_league_seasons)]
-                # … then to the chosen season(s); None = All Seasons (keep all)
-                if active_season_ids is not None:
-                    _sids = (active_season_ids if isinstance(active_season_ids, (list, tuple, set))
-                             else [active_season_ids])
-                    _ers = _ers[_ers['seasonId'].isin([int(s) for s in _sids])]
-                # role per player = their latest in-scope season's role
-                _role_map = (_ers.sort_values(['playerId', 'seasonId', 'mins_played'])
-                                 .drop_duplicates('playerId', keep='last')[['playerId', 'role']])
+                # role per player = their MOST COMMON ACP engine role across ALL
+                # seasons and BOTH leagues (Lucas 2026-06-24): sum minutes-in-each-
+                # role (mins_lineup × per-season role share sh_<role>) over the
+                # player's ENTIRE engine history and take the argmax. Uses the full
+                # _eng_role_df — NOT an in-scope slice — so a player is bucketed by
+                # the role they've actually played most, regardless of the selected
+                # league (and immune to the non-chronological seasonId ordering).
+                _sh_cols = [c for c in _eng_role_df.columns if c.startswith('sh_')]
+                _gm = _eng_role_df[['playerId'] + _sh_cols].copy()
+                _w_role = pd.to_numeric(_eng_role_df.get('mins_lineup'), errors='coerce')
+                _w_role = _w_role.fillna(
+                    pd.to_numeric(_eng_role_df.get('mins_played'), errors='coerce')).fillna(0.0)
+                for _c in _sh_cols:
+                    _gm[_c] = pd.to_numeric(_gm[_c], errors='coerce').fillna(0.0) * _w_role.values
+                _role_tot = _gm.groupby('playerId')[_sh_cols].sum()
+                _role_tot = _role_tot[_role_tot.sum(axis=1) > 0]
+                _role_map = (_role_tot.idxmax(axis=1).str[3:]
+                                       .rename('role').reset_index())
                 # join role onto the scoped, minutes-filtered stats pool — the
                 # board now inherits filtered_df's totalMinutes + ACP columns
                 _rb = filtered_df.merge(_role_map, on='playerId', how='inner')
