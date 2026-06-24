@@ -1117,8 +1117,16 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         e = e[e['seasonId'].isin(sids)]
     if e.empty:
         return player_stats_df
-    e = (e.sort_values(['playerId', 'seasonId', 'mins_played'])
-           .drop_duplicates('playerId', keep='last'))
+    # Pick ONE engine row per player. seasonId is NOT chronological across
+    # leagues (Camp 23/24=190230 > L3 24/25=190090), so a plain seasonId-max can
+    # land on an older Campeonato row with no projection — e.g. M. Konaté in an
+    # All-Seasons view (season_ids=None, so both leagues' rows are present).
+    # Prefer the row that carries a projection (the player's chronological-
+    # latest), then fall back to seasonId / minutes. (Lucas 2026-06-24)
+    e = e.assign(_has_proj=e['projection'].notna())
+    e = (e.sort_values(['playerId', '_has_proj', 'seasonId', 'mins_played'])
+           .drop_duplicates('playerId', keep='last')
+           .drop(columns='_has_proj'))
     out = pd.DataFrame({
         'playerId': e['playerId'],
         'ACP Rating': e['acp_rating'],
