@@ -9888,6 +9888,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if _eng_stale:
                     st.caption(f"⏳ Not rated in the selected season — showing "
                                f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
+                # The projection is a single player-level forward-look anchored to
+                # the player's most-recent season. seasonId is NOT chronological
+                # across leagues (Camp 23/24 = 190230 > L3 24/25 = 190090), so the
+                # in-scope "latest" row picked above can be the wrong one and carry
+                # no projection (e.g. M. Konaté). Always source the projection from
+                # the row that actually has one. (Lucas 2026-06-24)
+                _proj_src = (_erows[_erows['projection'].notna()]
+                             if not _erows.empty else _erows)
+                if not _proj_src.empty:
+                    _pr = _proj_src.sort_values('seasonId').iloc[-1]
+                    for _pc in ('projection', 'projection_abs', 'band_sd',
+                                 'proj_delta', 'seasons_ago'):
+                        if _pc in _pr.index:
+                            _e[_pc] = _pr[_pc]
                 _ec1, _ec2, _ec3, _ec4 = st.columns(4)
                 _abs_note = (f"abs {_e['acp_rating_abs']:.0f}"
                              if pd.notna(_e.get('acp_rating_abs'))
