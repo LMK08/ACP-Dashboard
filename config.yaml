@@ -527,6 +527,8 @@ metric_categories:
     - Total Offensive Value
     - GK Total Value
   passing:
+    - Creating Value
+    - Linking Value
     - Passes
     - Passes successful
     - Passes successful %
