@@ -43,23 +43,38 @@ jobs:
 
       - name: Update code files in HF repo
         run: |
-          # Copy code + config files from GitHub into the HF clone.
-          # Data files (.pkl, .parquet) are NOT touched — they stay as-is on HF.
+          # Copy code + config + committed data files from GitHub into the HF
+          # clone. The only committed artifact deliberately left untouched on HF
+          # is raw_events.parquet (178MB, HF-only — it is never committed to
+          # GitHub, so it is never matched below and the clone's copy survives).
           cd github-repo
 
-          # Copy all Python files, config, and requirements
-          # gpa_player_season_values.parquet is a small (~1.3MB) pre-computed
-          # data file from the external GPA model project, included here so the
-          # Value-based radar metrics work on HF. Refreshed manually via
-          # `python src/export_to_dashboard.py` in the GPA repo.
-          # season_simulation.pkl is small (~30KB) and tightly coupled to
-          # simulate_season.py — when we ship a code change that alters the
-          # simulation output structure, the pickle must ship alongside it
-          # rather than waiting for the next scheduled data refresh.
-          for f in *.py requirements.txt config.yaml league_config.py Dockerfile gpa_player_season_values.parquet season_simulation.pkl; do
+          # Code + config files.
+          for f in *.py requirements.txt config.yaml league_config.py Dockerfile; do
             if [ -f "$f" ]; then
               cp "$f" ../hf-repo/
             fi
+          done
+
+          # Every committed root-level data file (.pkl + .parquet). Shipping
+          # these on every code deploy keeps HF in sync with GitHub even when the
+          # force-push data workflows (scheduled_update / engine_rebuild) aren't
+          # running — e.g. the off-season pause, or a hand-committed hotfix like
+          # the Camp 23/24 minutes correction (c7baa3a). Before this, such a file
+          # silently went stale on HF until the next force-push deploy: the fix
+          # also bumped models/ratings/player_engine.parquet + stats_cache/*
+          # (which ship via the directory copy below and updated fine) but
+          # complete_player_minutes.pkl was not in the old whitelist, so HF kept
+          # the old LFS oid. The HF clone's .gitattributes already tracks *.pkl /
+          # *.parquet via LFS, so each file copied here is auto-converted to an
+          # LFS object on `git add`. raw_events.parquet is HF-only (uncommitted)
+          # so it is never matched. Subdir data (models/, stats_cache/,
+          # valuations/) ships via the directory copy below. Covers e.g.
+          # complete_player_minutes.pkl, match_lineups.pkl, player_details.pkl,
+          # all_match_data.pkl, matches_summary.parquet, season_simulation.pkl,
+          # gpa_player_season_values.parquet.
+          for f in $(git ls-files '*.pkl' '*.parquet' | grep -v '/'); do
+            cp "$f" ../hf-repo/
           done
 
           # Copy any subdirectories that contain code (not data)
