@@ -636,6 +636,47 @@ def load_data():
         except Exception:
             pass
 
+        # --- Fill in "Unknown"/blank team names from raw_events (per season) ---
+        # The same incomplete complete_player_minutes records carry teamName
+        # "Unknown". Every event has team.name + seasonId, so resolve the club the
+        # player logged the most events for IN THAT SEASON. Restrict the (4.6M-row)
+        # events groupby to only the players that need it. (Lucas 2026-06-30)
+        try:
+            _BAD_TM = {'unknown', 'n/a', 'nan', 'none', ''}
+            _need_team = set()
+            for _sid, _mdf in player_minutes_data.items():
+                if (isinstance(_mdf, pd.DataFrame) and not _mdf.empty
+                        and 'teamName' in _mdf.columns and 'playerId' in _mdf.columns):
+                    _b = _mdf['teamName'].astype(str).str.strip().str.lower().isin(_BAD_TM)
+                    if _b.any():
+                        _need_team |= set(pd.to_numeric(
+                            _mdf.loc[_b, 'playerId'], errors='coerce').dropna().astype(int))
+            if (_need_team and raw_events_df is not None and not raw_events_df.empty
+                    and {'player.id', 'team.name', 'seasonId'} <= set(raw_events_df.columns)):
+                _ev = raw_events_df[['seasonId', 'player.id', 'team.name']].dropna().copy()
+                _ev['player.id'] = pd.to_numeric(_ev['player.id'], errors='coerce')
+                _ev = _ev[_ev['player.id'].isin(_need_team)]
+                _ev['seasonId'] = pd.to_numeric(_ev['seasonId'], errors='coerce')
+                _team_ev = (_ev.groupby(['seasonId', 'player.id'])['team.name']
+                            .agg(lambda s: s.mode().iloc[0] if len(s.mode()) else None)
+                            .to_dict())
+                for _sid, _mdf in list(player_minutes_data.items()):
+                    if (not isinstance(_mdf, pd.DataFrame) or _mdf.empty
+                            or 'teamName' not in _mdf.columns or 'playerId' not in _mdf.columns):
+                        continue
+                    _b = _mdf['teamName'].astype(str).str.strip().str.lower().isin(_BAD_TM)
+                    if not _b.any():
+                        continue
+                    _mdf = _mdf.copy()
+                    _pidn = pd.to_numeric(_mdf['playerId'], errors='coerce')
+                    _res = _pidn.map(lambda p: _team_ev.get((float(_sid), float(p)))
+                                     if pd.notna(p) else None)
+                    _fill = _b & _res.notna()
+                    _mdf.loc[_fill, 'teamName'] = _res[_fill]
+                    player_minutes_data[_sid] = _mdf
+        except Exception:
+            pass
+
         # Handle old season_team_stats format {team_name: stats} vs new {season_id: {team: stats}}
         # Old format has string keys (team names), new format has int keys (season IDs)
         if season_team_stats and isinstance(next(iter(season_team_stats.keys())), str):
