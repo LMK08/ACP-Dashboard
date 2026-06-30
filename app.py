@@ -599,6 +599,43 @@ def load_data():
         except NameError:
             pass  # MINUTES_OVERRIDE not defined yet
 
+        # --- Fill in "Unknown"/blank player names from player_details ---
+        # complete_player_minutes.pkl lists ~785 players as "Unknown" while
+        # player_details.pkl (the authoritative bio source the engine radar
+        # reads) has their real names → names were inconsistent across the
+        # dashboard. Resolve them here so the stats caches and every display
+        # built on them match the radar. (Lucas 2026-06-30)
+        try:
+            _pdet = load_player_details()
+            if _pdet is not None and not _pdet.empty:
+                _nmap = {}
+                for _pid_i, _r in _pdet.iterrows():
+                    _nm = _r.get('shortName')
+                    if not _nm or (isinstance(_nm, float) and pd.isna(_nm)):
+                        _parts = [str(_r.get(_k)) for _k in ('firstName', 'lastName')
+                                  if _r.get(_k) and not (isinstance(_r.get(_k), float)
+                                                          and pd.isna(_r.get(_k)))]
+                        _nm = ' '.join(_parts).strip()
+                    if _nm:
+                        _nmap[int(_pid_i)] = _nm
+                _BAD_NAMES = {'unknown', 'n/a', 'nan', 'none', ''}
+                for _sid, _mdf in list(player_minutes_data.items()):
+                    if (not isinstance(_mdf, pd.DataFrame) or _mdf.empty
+                            or 'playerId' not in _mdf.columns
+                            or 'playerName' not in _mdf.columns):
+                        continue
+                    _bad = _mdf['playerName'].astype(str).str.strip().str.lower().isin(_BAD_NAMES)
+                    if not _bad.any():
+                        continue
+                    _mdf = _mdf.copy()
+                    _pidn = pd.to_numeric(_mdf['playerId'], errors='coerce')
+                    _resolved = _pidn.map(lambda p: _nmap.get(int(p)) if pd.notna(p) else None)
+                    _fillable = _bad & _resolved.notna()
+                    _mdf.loc[_fillable, 'playerName'] = _resolved[_fillable]
+                    player_minutes_data[_sid] = _mdf
+        except Exception:
+            pass
+
         # Handle old season_team_stats format {team_name: stats} vs new {season_id: {team: stats}}
         # Old format has string keys (team names), new format has int keys (season IDs)
         if season_team_stats and isinstance(next(iter(season_team_stats.keys())), str):
