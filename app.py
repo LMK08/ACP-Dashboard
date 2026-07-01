@@ -1178,6 +1178,52 @@ ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'Engine Value EUR']
 
 
+# Shared "How these ratings work" copy — rendered in an expander on the Player
+# Profile (above the engine card) and the Player Analysis role board.
+RATINGS_EXPLAINER_MD = """
+Both ratings sit on a **0–100 scale where 50 = league average and ±17 ≈ one
+standard deviation** (≈85 is elite, ≈30 well below average), and both are
+**role-fair** — a player is only compared to others in the same role, so a
+defender is never docked for not scoring. **(abs)** puts Campeonato and Liga 3
+on one scale (a Camp rating is shifted ~7 pts down to its Liga-3 equivalent) for
+cross-league comparison.
+
+**ACP Index — how good has this player been?** *(descriptive)*
+
+A role-weighted blend of what a player actually did, each part scored as a
+percentile among same-role players:
+- **Attacking value** (largest share) — on-ball expected-goal value: shooting,
+  creating, linking passes, receiving, carrying.
+- **Defensive contribution** — how much defensive responsibility they take on,
+  and how well they win their duels/situations versus expectation.
+- **Plus-minus** — the team's xG swing while they're on the pitch (intangibles
+  the ball-events miss).
+
+The split shifts by role (strikers lean on attack, centre-backs on defence).
+It's **minutes-shrunk** — thin-minutes players are pulled toward replacement
+level; the **career** version (recency-weighted) is the steadier scouting
+number. Set-pieces are shown separately; goalkeepers use the legacy keeper
+system (the engine is outfield-only).
+
+**ACP Projection — how good will they be next season?** *(predictive)*
+
+A forecast of next season's Index — a recruitment view, not a summary of the
+past. It blends the player's **own career form** (recency-weighted), **how much
+we trust it** (an evidence weight from career minutes), and an **age curve**
+(rising to a peak around 26, declining after).
+- **Thin evidence regresses toward the league** — few minutes or one hot season
+  gets pulled back toward replacement level; established players stay close to
+  their own record.
+- Every player with a **≥90-minute season** gets one, off their most recent
+  season, with a **± band** (uncertainty) and a **"seasons ago"** marker — a
+  player last seen a few seasons back keeps the same central estimate but a
+  **wider band**, not a lower number.
+
+*In short: the **Index** shows who's been best; the **Projection** shows who's
+the best bet going forward, with the uncertainty made explicit.*
+"""
+
+
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
     """Merge ACP engine columns (rating / projection / axis percentiles)
     into the stats DF on playerId. Scope-aware: keeps engine rows from
@@ -9877,6 +9923,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         st.divider()
 
+        with st.expander("ℹ️ How these ratings work"):
+            st.markdown(RATINGS_EXPLAINER_MD)
+
         # --- ACP Engine card: rating + projection + components ---------
         try:
             _eng_df, _eng_meta = load_player_engine()
@@ -12432,6 +12481,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _erole_df.index = range(1, len(_erole_df) + 1)
                     _erole_df.index.name = 'Rank'
                     st.subheader("Best Players by Role")
+                    with st.expander("ℹ️ How these ratings work"):
+                        st.markdown(RATINGS_EXPLAINER_MD)
                     if _metric_label == 'Proj':
                         st.caption(
                             "Observed ACP engine roles (data-derived from playing patterns), "
