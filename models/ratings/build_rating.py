@@ -272,6 +272,25 @@ for c in GPA_CATS:
 # from the cohort mean is shrunk by its per-role rank reliability
 # (regression-to-mean: best estimate of true value = r x observed),
 # then summed in goals/90 and percentiled ONCE for display.
+#
+# TESTED AND REJECTED 2026-06-30 (Lucas + audit): z-scored offence variants.
+#   (a) rawz — z the combined off_blend within role cohort (skew-preserving,
+#       cap ±4σ, z-space minutes shrink): rating YoY 0.436 -> 0.459.
+#   (b) catz — z EACH CATEGORY value first, then the λ·relevance sum:
+#       YoY 0.469 (held in both leagues, on 24->25 only, and team-switch
+#       0.501 -> 0.524; share-blended variant equivalent, 0.467).
+# REJECTED because the audit showed the YoY gain is a WEIGHT-SHIFT artifact,
+# not truth: z-ing each category strips the sd(dev) term from influence
+# (rel·λ·sd -> rel·λ), which crushed striker Shooting 17% -> 6% of the off
+# axis — mechanically re-walking the v6.5 "role fidelity over reliability"
+# trade backwards (rel=1.5 was hand-set to RAISE shooting to ~17%). External
+# validity (rating_T -> next-season raw off value/90, attackers, n=340) was
+# NEUTRAL: pct 0.090 vs catz 0.081, rawz 0.060 — no outcome-level gain, so
+# per the v6.5 decision framework it does not ship. Fourth member of the
+# YoY-flattering artifact family (pooled stability / mechanical career-trait
+# / smoothed-target / weight-shift). IF REVISITED at the 26/27 refit: catz
+# with the relevance grid RE-CALIBRATED in z-space to restore the intended
+# influence shares, gated on external validity, not YoY.
 _off_adj = pd.Series(0.0, index=df.index)
 _lam_log = []
 for role, sub in df.groupby('role'):
