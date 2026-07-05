@@ -501,6 +501,7 @@ weights:
 invert_metrics:
   - Loss index
   - goalsConceded
+  - Dribbled past %
   - Opp xT into Def Area
   - Opp xT from Def Area
   - Opp xT into Def Area OE
@@ -558,6 +559,7 @@ metric_categories:
     - Passing Value
     - Receiving Value
   defensive:
+    - Possessions won
     - Interceptions
     - Aerial duels
     - Aerial duels successful
@@ -571,6 +573,8 @@ metric_categories:
     - Defensive duels
     - Defensive duels successful
     - Defensive duels successful %
+    - Dribbles faced
+    - Dribbled past %
     - Clearances
     - Aerial duels def box
     - Aerial duels def box successful

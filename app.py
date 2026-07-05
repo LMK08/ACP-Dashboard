@@ -2482,7 +2482,7 @@ WEIGHTS = {
     'Target Man': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 2, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 1.0, 'Dribbles': 1.0, 'Dribbles successful %': 1.0, 'Loss index': 5, 'Aerial duels': 10, 'Aerial duels successful %': 10, 'Defensive duels successful': 1.0, 'Interceptions': 1.0, 'Recoveries': 1.0, 'Clearances': 10},
     'Pressing Forward': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 1.0, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 2, 'Dribbles': 2, 'Dribbles successful %': 2, 'Loss index': 5, 'Aerial duels': 1.0, 'Aerial duels successful %': 1.0, 'Defensive duels successful': 1.0, 'Interceptions': 8, 'Recoveries': 10, 'Counterpressing Recoveries': 4}
 }
-INVERT_METRICS = ['Loss index', 'goalsConceded']
+INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %']
 
 # ==============================================================================
 # Composite Value Index (CVI) — v1 parameters
@@ -3784,7 +3784,7 @@ def compute_market_features(player_id, season_id, *,
 
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Creating Value', 'Linking Value', 'Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
-DEFENSIVE_METRICS = ['Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
+DEFENSIVE_METRICS = ['Possessions won', 'Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Dribbles faced', 'Dribbled past %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
 OFF_BALL_DEFENDING_METRICS = ['Defensive Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Opp Pass Success % into Def Area']
@@ -4632,6 +4632,18 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     
     base_df = count_and_merge(base_df, duel_events, 'Offensive duels', check_secondary_list('offensive_duel'))
     base_df = count_and_merge(base_df, duel_events, 'Offensive duels successful', check_secondary_list('offensive_duel') & (duel_events.get('groundDuel.progressedWithBall') == True))
+
+    # Dribbled past % inputs (Lucas 2026-06-30): defensive ground duels against a
+    # DRIBBLE attempt (groundDuel.takeOn). "Dribbled past" = the defender neither
+    # stopped the attacker's progress nor recovered possession — the attacker got
+    # closer to goal. Stop-but-kept stalemates count as prevented, not past.
+    _dribble_faced = (check_secondary_list('defensive_duel')
+                      & (duel_events.get('groundDuel.takeOn') == True))
+    base_df = count_and_merge(base_df, duel_events, 'Dribbles faced', _dribble_faced)
+    base_df = count_and_merge(base_df, duel_events, 'Dribbled past',
+                              _dribble_faced
+                              & ~((duel_events.get('groundDuel.stoppedProgress') == True)
+                                  | (duel_events.get('groundDuel.recoveredPossession') == True)))
     
     base_df = count_and_merge(base_df, duel_events, 'Sliding tackles', check_secondary_list('sliding_tackle'))
     # --- FIX: Added stoppedProgress ---
@@ -4661,6 +4673,19 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df = count_and_merge(base_df, events_df, 'Recoveries', check_secondary_list('recovery'))
     base_df = count_and_merge(base_df, events_df, 'Recoveries Opp Half', check_secondary_list('recovery') & (events_df.get('location.x', 0) >= 50))
     base_df = count_and_merge(base_df, events_df, 'Counterpressing Recoveries', check_secondary_list('counterpressing_recovery'))
+
+    # Possessions won (Lucas 2026-06-30): a ball-winning defensive action that
+    # STARTS a new possession for the player's team — an interception or duel
+    # primary, or a recovery-tagged touch/pass, on the first event
+    # (possession.eventIndex == 0) of a possession owned by the player's team.
+    # Dead-ball restarts (throw-in / free-kick / corner / goal-kick primaries)
+    # never match; clearances count only when Wyscout tags them as recoveries.
+    base_df = count_and_merge(
+        base_df, events_df, 'Possessions won',
+        (events_df.get('possession.eventIndex') == 0)
+        & (events_df.get('possession.team.name') == events_df.get('team.name'))
+        & (events_df['type.primary'].isin(['interception', 'duel'])
+           | check_secondary_list('recovery')))
 
     # -- Throw-In Metrics --
     try:
@@ -5108,6 +5133,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df['Crosses successful %'] = safe_divide_perc('Crosses successful', 'Crosses')
     base_df['Dribbles successful %'] = safe_divide_perc('Dribbles successful', 'Dribbles')
     base_df['Duels successful %'] = safe_divide_perc('Duels successful', 'Duels')
+    base_df['Dribbled past %'] = safe_divide_perc('Dribbled past', 'Dribbles faced')
     base_df['Aerial duels successful %'] = safe_divide_perc('Aerial duels successful', 'Aerial duels')
     base_df['Offensive duels successful %'] = safe_divide_perc('Offensive duels successful', 'Offensive duels')
     base_df['Defensive duels successful %'] = safe_divide_perc('Defensive duels successful', 'Defensive duels')
