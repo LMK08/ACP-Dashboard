@@ -3784,7 +3784,7 @@ def compute_market_features(player_id, season_id, *,
 
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Creating Value', 'Linking Value', 'Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
-DEFENSIVE_METRICS = ['Possessions won', 'Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Dribbles faced', 'Dribbled past %', 'Dribbled past % (proj)', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
+DEFENSIVE_METRICS = ['Possessions won', 'Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Defensive duels vs take-on', 'Defensive duels vs take-on successful %', 'Defensive duels vs offensive duel', 'Defensive duels vs offensive duel successful %', 'Dribbles faced', 'Dribbled past %', 'Dribbled past % (proj)', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
 OFF_BALL_DEFENDING_METRICS = ['Defensive Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Opp Pass Success % into Def Area']
@@ -4644,6 +4644,22 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
                               _dribble_faced
                               & ~((duel_events.get('groundDuel.stoppedProgress') == True)
                                   | (duel_events.get('groundDuel.recoveredPossession') == True)))
+
+    # Defensive duels split by CONTEST KIND (Lucas 2026-07): vs take-on (the
+    # attacker tries to beat you off the dribble, groundDuel.takeOn) vs an
+    # offensive duel (attacker shields/holds up/carries under challenge).
+    # ~15%/85% of defensive duels league-wide. Success = same flags as the
+    # pooled 'Defensive duels successful' (stoppedProgress OR recovered).
+    _dd_win = ((duel_events.get('groundDuel.stoppedProgress') == True)
+               | (duel_events.get('groundDuel.recoveredPossession') == True))
+    _dd_vs_off = (check_secondary_list('defensive_duel')
+                  & (duel_events.get('groundDuel.takeOn') == False))
+    base_df = count_and_merge(base_df, duel_events, 'Defensive duels vs take-on', _dribble_faced)
+    base_df = count_and_merge(base_df, duel_events, 'Defensive duels vs take-on successful',
+                              _dribble_faced & _dd_win)
+    base_df = count_and_merge(base_df, duel_events, 'Defensive duels vs offensive duel', _dd_vs_off)
+    base_df = count_and_merge(base_df, duel_events, 'Defensive duels vs offensive duel successful',
+                              _dd_vs_off & _dd_win)
     
     base_df = count_and_merge(base_df, duel_events, 'Sliding tackles', check_secondary_list('sliding_tackle'))
     # --- FIX: Added stoppedProgress ---
@@ -5134,6 +5150,10 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df['Dribbles successful %'] = safe_divide_perc('Dribbles successful', 'Dribbles')
     base_df['Duels successful %'] = safe_divide_perc('Duels successful', 'Duels')
     base_df['Dribbled past %'] = safe_divide_perc('Dribbled past', 'Dribbles faced')
+    base_df['Defensive duels vs take-on successful %'] = safe_divide_perc(
+        'Defensive duels vs take-on successful', 'Defensive duels vs take-on')
+    base_df['Defensive duels vs offensive duel successful %'] = safe_divide_perc(
+        'Defensive duels vs offensive duel successful', 'Defensive duels vs offensive duel')
     # Dribbled past % (proj) — empirical-Bayes projection of the TRUE rate
     # (Lucas 2026-07): raw % stabilizes at k~54 dribbles faced (variance
     # decomposition on 57k contests; split-half + YoY agree) but a season
