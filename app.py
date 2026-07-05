@@ -2482,7 +2482,7 @@ WEIGHTS = {
     'Target Man': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 2, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 1.0, 'Dribbles': 1.0, 'Dribbles successful %': 1.0, 'Loss index': 5, 'Aerial duels': 10, 'Aerial duels successful %': 10, 'Defensive duels successful': 1.0, 'Interceptions': 1.0, 'Recoveries': 1.0, 'Clearances': 10},
     'Pressing Forward': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 1.0, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 2, 'Dribbles': 2, 'Dribbles successful %': 2, 'Loss index': 5, 'Aerial duels': 1.0, 'Aerial duels successful %': 1.0, 'Defensive duels successful': 1.0, 'Interceptions': 8, 'Recoveries': 10, 'Counterpressing Recoveries': 4}
 }
-INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %']
+INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled past % (proj)']
 
 # ==============================================================================
 # Composite Value Index (CVI) — v1 parameters
@@ -3784,7 +3784,7 @@ def compute_market_features(player_id, season_id, *,
 
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Creating Value', 'Linking Value', 'Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
-DEFENSIVE_METRICS = ['Possessions won', 'Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Dribbles faced', 'Dribbled past %', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
+DEFENSIVE_METRICS = ['Possessions won', 'Interceptions', 'Aerial duels', 'Aerial duels successful', 'Aerial duels successful %', 'Sliding tackles', 'Sliding tackles successful', 'Sliding tackles successful %', 'Recoveries', 'Recoveries Opp Half', 'Counterpressing Recoveries', 'Defensive duels', 'Defensive duels successful', 'Defensive duels successful %', 'Dribbles faced', 'Dribbled past %', 'Dribbled past % (proj)', 'Clearances', 'Fouls', 'Yellow cards', 'Red cards']
 DRIBBLING_METRICS = ['Dribbles', 'Dribbles successful', 'Dribbles successful %', 'Touches in penalty area', 'Progressive runs', 'Fouls suffered']
 GOALKEEPING_METRICS = ['shotsOnTargetAgainst', 'goalsConceded', 'exits', 'saves', 'goalsPrevented', 'goalsPreventedPerSOT', 'savePercentage', 'recoveries_gk', 'passes_gk', 'passesSuccessful_gk', 'Long passes successful %', 'longPasses_gk', 'longPassesSuccessful_gk']
 OFF_BALL_DEFENDING_METRICS = ['Defensive Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Opp Pass Success % into Def Area']
@@ -5134,6 +5134,17 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     base_df['Dribbles successful %'] = safe_divide_perc('Dribbles successful', 'Dribbles')
     base_df['Duels successful %'] = safe_divide_perc('Duels successful', 'Duels')
     base_df['Dribbled past %'] = safe_divide_perc('Dribbled past', 'Dribbles faced')
+    # Dribbled past % (proj) — empirical-Bayes projection of the TRUE rate
+    # (Lucas 2026-07): raw % stabilizes at k~54 dribbles faced (variance
+    # decomposition on 57k contests; split-half + YoY agree) but a season
+    # supplies a median of 8, so single-season raw % is mostly noise. Shrink
+    # toward the scope's league mean with k=54: thin samples project to
+    # average; only real volume moves you away. 0 faced -> exactly the mean.
+    _k_dp = 54.0
+    _dp_tot, _df_tot = base_df['Dribbled past'].sum(), base_df['Dribbles faced'].sum()
+    _dp_mean = (_dp_tot / _df_tot) if _df_tot > 0 else 0.5
+    base_df['Dribbled past % (proj)'] = ((base_df['Dribbled past'] + _k_dp * _dp_mean)
+                                          / (base_df['Dribbles faced'] + _k_dp) * 100)
     base_df['Aerial duels successful %'] = safe_divide_perc('Aerial duels successful', 'Aerial duels')
     base_df['Offensive duels successful %'] = safe_divide_perc('Offensive duels successful', 'Offensive duels')
     base_df['Defensive duels successful %'] = safe_divide_perc('Defensive duels successful', 'Defensive duels')

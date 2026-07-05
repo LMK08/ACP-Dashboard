@@ -502,6 +502,7 @@ invert_metrics:
   - Loss index
   - goalsConceded
   - Dribbled past %
+  - Dribbled past % (proj)
   - Opp xT into Def Area
   - Opp xT from Def Area
   - Opp xT into Def Area OE
@@ -575,6 +576,7 @@ metric_categories:
     - Defensive duels successful %
     - Dribbles faced
     - Dribbled past %
+    - Dribbled past % (proj)
     - Clearances
     - Aerial duels def box
     - Aerial duels def box successful
