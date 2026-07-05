@@ -574,8 +574,6 @@ metric_categories:
     - Defensive duels
     - Defensive duels successful
     - Defensive duels successful %
-    - Defensive duels vs take-on
-    - Defensive duels vs take-on successful %
     - Defensive duels vs offensive duel
     - Defensive duels vs offensive duel successful %
     - Dribbles faced
