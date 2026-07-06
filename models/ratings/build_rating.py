@@ -366,6 +366,28 @@ df['datt_pct'] = role_pct('datt_raw')
 # For the current season as-of == career, so live boards are unchanged;
 # only historical rows get honest. Verified: within-role WOE YoY
 # identical, current-season agreement r = 1.000.
+#
+# TESTED AND REJECTED 2026-07 (Lucas + audit): DANGER-WEIGHTED duel blending.
+# Hypothesis (Lucas, confirmed empirically): being dribbled past is far
+# costlier than losing a hold-up duel — measured possession-xG swing
+# (beaten − won, zone-controlled) take-on 0.0123 vs off-duel 0.0055 =
+# 2.25x, sharpest in the own third (+0.027 xG); middle-third hold-up
+# losses are ~free. Variant: weight take-on contests 2.25x in the ground
+# WOE sum and the stopper/press + takeon/shield composites (volume
+# weighting underweights the costlier skill: take-ons are only ~15% of
+# contests). REJECTED on the gates: qual axis YoY 0.542 -> 0.521 (noise
+# from upweighting the thin 15% overwhelms the importance gain — take-on
+# defence has k~54 contests to stabilize vs a median ~8 faced/season);
+# rating YoY 0.436 -> 0.432, team-switch 0.501 -> 0.498; and the DECISIVE
+# outcome link (within-role qual vs team xGA) did NOT improve (-0.128 ->
+# -0.124) while players moved up to 12.6 rating pts. The system already
+# prices the danger where measurable: WOE expectations are kind x zone x
+# phase bucketed, and the beaten defender's consequences are charged via
+# the possession-value ledger. The 2.25x finding LIVES in the scouting
+# layer instead: 'Dribbled past % (proj)' (k=54 EB shrink) in the
+# dashboard's Defensive metrics. IF REVISITED: try danger-weighting only
+# own-third take-ons (where the swing concentrates), gate on the xGA
+# outcome link, not YoY.
 _ct = pd.read_parquet(_DASH / 'models/duels/contests.parquet',
                         columns=['ladder', 'seasonId', 'playerA', 'playerB',
                                   'scoreA', 'att_kind', 'zx', 'phase'])
