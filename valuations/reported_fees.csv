@@ -78,6 +78,7 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 1038698,Ricardo Brito,Vianense,Santa Clara,permanent,300000,,,2026-07-15,191779,,,,Camp → Primeira Liga summer 2026 step-up; pre-transfer = 25-26 Camp Vianense,0
 1039596,Catarino Pascoal,Atlético CP,Sporting Lisbon,permanent,500000,,,2026-07-15,191782,,,,Liga 3 → Primeira (Sporting Lisbon) summer 2026; pre-transfer = 25-26 L3 ACP,0
 873635,João Machado,CF Os Belenenses,Ukraine Premier League (TBD),permanent,200000,,,2026-07-15,191782,,,,L3 → Ukraine Premier League summer 2026; pre-transfer = 25-26 L3 Belenenses,0
+693095,Coquinho,Oliveira do Hospital,União de Leiria,permanent,200000,,,2026-07-15,191779,,,,Camp → Segunda Liga (União de Leiria) summer 2026; pre-transfer = 25-26 Camp OdH,0
 
 # === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
 # These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
@@ -85,7 +86,6 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 598545,Nicolás Souza,Atlético CP,Korea (TBD),permanent,100000,,,2026-07-15,191782,,,,Synthetic: ACP attacker → Korea; pre-transfer = 25-26 L3 ACP,1
 646981,Duarte Henriques,Atlético CP,Segunda Liga (TBD),permanent,80000,,,2026-07-15,191782,,,,Synthetic: ACP regular → Segunda; pre-transfer = 25-26 L3 ACP,1
 626950,Leandro Ferreira,Louletano,Atlético CP,permanent,80000,,,2026-07-15,191779,,,,Synthetic: Camp wide forward → ACP step-up; pre-transfer = 25-26 Camp Louletano,1
-693095,Coquinho,Oliveira do Hospital,Atlético CP,permanent,35000,,,2026-07-15,191779,,,,Synthetic: Camp DMF → ACP step-up; pre-transfer = 25-26 Camp,1
 967585,Nuno Gaspar,Benfica Castelo Branco,Atlético CP,permanent,9000,,,2026-07-15,191779,,,,Synthetic: Camp SS → ACP modest fee; pre-transfer = 25-26 Camp,1
 946612,Matar Manga,JD Lajense,Sintrense,permanent,10000,,,2026-01-15,191779,,,,Synthetic: intra-Camp Jan move; pre-transfer = 25-26 Camp,1
 852804,Miguel Barandas,Atlético CP,Segunda Liga (TBD),permanent,150000,,,2026-07-15,191782,,,,Synthetic: ACP FB → Segunda; pre-transfer = 25-26 L3 ACP,1
