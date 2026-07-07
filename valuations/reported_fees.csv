@@ -77,6 +77,7 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 776749,Afonso Moreira,Sporting CP B,Lyon (FRA L1),permanent,2000000,,,2025-07-15,190090,,,,Big-money Sporting B → Lyon move summer 2025; pre-transfer = 24-25 L3 Sporting CP B,0
 1038698,Ricardo Brito,Vianense,Santa Clara,permanent,300000,,,2026-07-15,191779,,,,Camp → Primeira Liga summer 2026 step-up; pre-transfer = 25-26 Camp Vianense,0
 1039596,Catarino Pascoal,Atlético CP,Sporting Lisbon,permanent,500000,,,2026-07-15,191782,,,,Liga 3 → Primeira (Sporting Lisbon) summer 2026; pre-transfer = 25-26 L3 ACP,0
+873635,João Machado,CF Os Belenenses,Ukraine Premier League (TBD),permanent,200000,,,2026-07-15,191782,,,,L3 → Ukraine Premier League summer 2026; pre-transfer = 25-26 L3 Belenenses,0
 
 # === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
 # These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
