@@ -397,6 +397,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
         phase_col = mdf['_phase'].to_numpy()
         season = mdf['seasonId'].to_numpy()
         dtype_arr = mdf['_dtype'].to_numpy()         # responder action type
+        id_arr = mdf['id'].to_numpy()                # event id (DefR-OBV value join)
         n = len(mdf)
         # v7 — precomputed defensive-action masks (now include recoveries)
         is_def = mdf['_is_def'].to_numpy()           # responder match + actual
@@ -474,6 +475,7 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
                 'line_state': line_state,
                 'zx': zx, 'zy': zy,
                 't': t0,
+                'event_id': id_arr[i],
                 'responder_slot': responder_slot,
                 'responder_pid': responder_pid,
                 'responder_type': responder_type,
@@ -722,7 +724,8 @@ def compute_per_player(ev: pd.DataFrame,
                          psl: dict,
                          match_teams: dict,
                          def_team_players: dict,
-                         pmt_lookup: dict) -> pd.DataFrame:
+                         pmt_lookup: dict,
+                         value_map: dict | None = None) -> pd.DataFrame:
     """Compute expected + actual defensive actions per (player, season).
     Returns DataFrame with one row per (playerId, seasonId).
 
@@ -740,6 +743,21 @@ def compute_per_player(ev: pd.DataFrame,
     expected_acc = {}        # (pid, sid) → sum of expected_p
     expected_type_acc = {}   # (pid, sid, type) → sum of per-type expected_p
     n_opp_acc = {}           # (pid, sid) → count of opposition events seen
+    # DefR-OBV (StatsBomb Hudl blog): distribute each opposition event's
+    # on-ball value (GPA action_value — our OBV analog) across the on-pitch
+    # defenders PROPORTIONALLY to their responsibility weights, so the
+    # event's full value is conserved (Σ weights = 1 per event). Net values:
+    # a failed opposition action carries negative value, crediting the
+    # defenders responsible for that zone — suppression is rewarded.
+    obv_acc = {}             # (pid, sid) → Σ w_i × value  (net conceded)
+    obv_pos_acc = {}         # (pid, sid) → positive-value-only variant
+    obv_supp_acc = {}        # (pid, sid) → Σ w_i × (value − E[value|ctx]):
+                             #   SUPPRESSION vs expectation — negative = the
+                             #   opposition generated LESS through this
+                             #   player's domain than the same situations
+                             #   yield league-wide (exposure-neutralized).
+    _obv_events = 0          # coverage: events distributed
+    _obv_total = 0.0         # total value distributed (calibration)
 
     print(f"  Processing {len(resp):,} opposition events…", flush=True)
     R_mid = resp['matchId'].to_numpy()
@@ -750,6 +768,21 @@ def compute_per_player(ev: pd.DataFrame,
     R_phase = resp['phase'].to_numpy()
     R_line = resp['line_state'].to_numpy()
     R_t = resp['t'].to_numpy(dtype=float)
+    if value_map is not None and 'event_id' in resp.columns:
+        R_val = resp['event_id'].map(value_map).fillna(0.0).to_numpy(dtype=float)
+    else:
+        R_val = np.zeros(len(resp))
+    # context-mean opposition value E[V | zone x type x phase x line] over the
+    # matched (nonzero) events — the exposure baseline for the suppression variant
+    _vmask = R_val != 0.0
+    if _vmask.any():
+        _ctxdf = pd.DataFrame({'zx': R_zx[_vmask], 'zy': R_zy[_vmask],
+                                'ot': R_type[_vmask], 'ph': R_phase[_vmask],
+                                'ls': R_line[_vmask], 'v': R_val[_vmask]})
+        _ev_ctx = _ctxdf.groupby(['zx', 'zy', 'ot', 'ph', 'ls'])['v'].mean().to_dict()
+        _ev_global = float(_ctxdf['v'].mean())
+    else:
+        _ev_ctx, _ev_global = {}, 0.0
     for k in range(len(resp)):
         mid = R_mid[k]
         opp_team = R_opp[k]
@@ -779,17 +812,36 @@ def compute_per_player(ev: pd.DataFrame,
         slot_cnt = {}
         for _, _, s in onpitch:
             slot_cnt[s] = slot_cnt.get(s, 0) + 1
+        _resp_ws = []          # (pid, sid, responsibility weight) this event
         for pid, sid, slot in onpitch:
             share = slot_cnt[slot]
             p = prob_lookup.get(ctx + (slot,), 0.0)
             if p > 0:
                 expected_acc[(pid, sid)] = expected_acc.get((pid, sid), 0) + p / share
+                _resp_ws.append((pid, sid, p / share))
             d = ptype_lookup.get(ctx + (slot,))
             if d:
                 for T, pT in d.items():
                     kk = (pid, sid, T)
                     expected_type_acc[kk] = expected_type_acc.get(kk, 0) + pT / share
             n_opp_acc[(pid, sid)] = n_opp_acc.get((pid, sid), 0) + 1
+        # DefR-OBV distribution: normalize responsibilities to sum 1, then
+        # hand each defender his share of this event's on-ball value.
+        v = R_val[k]
+        if v != 0.0 and _resp_ws:
+            tot_w = sum(w for _, _, w in _resp_ws)
+            if tot_w > 0:
+                _obv_events += 1
+                _obv_total += v
+                ev_c = _ev_ctx.get((R_zx[k], R_zy[k], R_type[k],
+                                     R_phase[k], R_line[k]), _ev_global)
+                for pid, sid, w in _resp_ws:
+                    kk = (pid, sid)
+                    wn = w / tot_w
+                    obv_acc[kk] = obv_acc.get(kk, 0.0) + wn * v
+                    obv_supp_acc[kk] = obv_supp_acc.get(kk, 0.0) + wn * (v - ev_c)
+                    if v > 0:
+                        obv_pos_acc[kk] = obv_pos_acc.get(kk, 0.0) + wn * v
 
     # Actual defensive actions per (player, season) — v7 precomputed mask
     # (interception | clearance | defensive duel | recovery).
@@ -799,6 +851,11 @@ def compute_per_player(ev: pd.DataFrame,
                 .rename(columns={'player.id': 'playerId'}))
 
     # Build output
+    if _obv_events:
+        _dist = sum(obv_acc.values())
+        print(f"  DefR-OBV: distributed {_obv_events:,} valued opposition events; "
+               f"Σ value {_obv_total:+.1f} vs Σ player-conceded {_dist:+.1f} "
+               f"(conservation Δ {abs(_obv_total-_dist):.4f})", flush=True)
     rows = []
     for (pid, sid), exp_v in expected_acc.items():
         rows.append({
@@ -806,6 +863,9 @@ def compute_per_player(ev: pd.DataFrame,
             'seasonId': sid,
             'expected_def_actions': exp_v,
             'n_opp_events': n_opp_acc.get((pid, sid), 0),
+            'obv_conceded': obv_acc.get((pid, sid), 0.0),
+            'obv_conceded_pos': obv_pos_acc.get((pid, sid), 0.0),
+            'obv_suppression': obv_supp_acc.get((pid, sid), 0.0),
         })
     out = pd.DataFrame(rows)
     out = out.merge(actual.rename(columns={'player.id': 'playerId'}),
@@ -850,6 +910,11 @@ def compute_per_player(ev: pd.DataFrame,
         out = out.merge(gpa, on=['playerId', 'seasonId'], how='left')
         _mp90 = out['mins_played'].fillna(0) / 90.0
         out['defr_per90'] = np.where(_mp90 > 0, out['defr'] / _mp90, np.nan)
+        # DefR-OBV per 90 (responsibility-weighted opposition value through
+        # the player's defensive domain; LOWER = more suppressive)
+        out['obv_conceded_p90'] = np.where(_mp90 > 0, out['obv_conceded'] / _mp90, np.nan)
+        out['obv_conceded_pos_p90'] = np.where(_mp90 > 0, out['obv_conceded_pos'] / _mp90, np.nan)
+        out['obv_suppression_p90'] = np.where(_mp90 > 0, out['obv_suppression'] / _mp90, np.nan)
         # v9 — per-type DefR per 90 (the dashboard display metrics)
         for T in DEFR_TYPES:
             out[f'defr_{T}_p90'] = np.where(
@@ -1002,8 +1067,23 @@ def main():
     print(f"  Probability table: {len(prob):,} bucket × slot combinations.")
 
     print("\n[5/5] Computing per-(player, season) expected + actual…", flush=True)
+    # DefR-OBV value source: per-event GPA action values (our OBV analog).
+    # Join by event id; only opposition pass/carry/shot events in `resp`
+    # will hit the map.
+    print("  Loading GPA action values for DefR-OBV…", flush=True)
+    try:
+        _av = pd.read_parquet(DASHBOARD_DIR.parent.parent / 'GPA Model Project v2'
+                               / 'parquet_data' / 'events_with_action_values.parquet',
+                               columns=['id', 'action_value'])
+        value_map = dict(zip(_av['id'], pd.to_numeric(_av['action_value'],
+                                                        errors='coerce').fillna(0.0)))
+        print(f"  {len(value_map):,} event values loaded.", flush=True)
+    except Exception as _ve:
+        print(f"  [warn] action values unavailable ({_ve}) — DefR-OBV will be 0.")
+        value_map = None
     out = compute_per_player(ev, resp, prob, ptype_lookup, player_slot, psl,
-                               match_teams, def_team_players, pmt_lookup)
+                               match_teams, def_team_players, pmt_lookup,
+                               value_map=value_map)
     print(f"  {len(out):,} (player, season) rows produced.")
 
     # Calibration: with presence-conditioned probs + concurrent splitting,
