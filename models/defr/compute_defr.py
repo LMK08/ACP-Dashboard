@@ -751,6 +751,10 @@ def compute_per_player(ev: pd.DataFrame,
     # defenders responsible for that zone — suppression is rewarded.
     obv_acc = {}             # (pid, sid) → Σ w_i × value  (net conceded)
     obv_pos_acc = {}         # (pid, sid) → positive-value-only variant
+    obv_szone_acc = {}       # (pid, sid) → Σ w_i × (value − E[value|ZONE]) —
+                             #   zone-only adjustment (Lucas): normalizes the
+                             #   danger of WHERE the domain is, keeps credit
+                             #   for the rest.
     obv_supp_acc = {}        # (pid, sid) → Σ w_i × (value − E[value|ctx]):
                              #   SUPPRESSION vs expectation — negative = the
                              #   opposition generated LESS through this
@@ -780,9 +784,13 @@ def compute_per_player(ev: pd.DataFrame,
                                 'ot': R_type[_vmask], 'ph': R_phase[_vmask],
                                 'ls': R_line[_vmask], 'v': R_val[_vmask]})
         _ev_ctx = _ctxdf.groupby(['zx', 'zy', 'ot', 'ph', 'ls'])['v'].mean().to_dict()
+        # zone-only baseline (Lucas): adjust for the AREA of responsibility
+        # only — E[V | zone] — crediting the defender for everything else
+        # (event type mix, phase, line state) that happens in his domain.
+        _ev_zone = _ctxdf.groupby(['zx', 'zy'])['v'].mean().to_dict()
         _ev_global = float(_ctxdf['v'].mean())
     else:
-        _ev_ctx, _ev_global = {}, 0.0
+        _ev_ctx, _ev_zone, _ev_global = {}, {}, 0.0
     for k in range(len(resp)):
         mid = R_mid[k]
         opp_team = R_opp[k]
@@ -835,11 +843,13 @@ def compute_per_player(ev: pd.DataFrame,
                 _obv_total += v
                 ev_c = _ev_ctx.get((R_zx[k], R_zy[k], R_type[k],
                                      R_phase[k], R_line[k]), _ev_global)
+                ev_z = _ev_zone.get((R_zx[k], R_zy[k]), _ev_global)
                 for pid, sid, w in _resp_ws:
                     kk = (pid, sid)
                     wn = w / tot_w
                     obv_acc[kk] = obv_acc.get(kk, 0.0) + wn * v
                     obv_supp_acc[kk] = obv_supp_acc.get(kk, 0.0) + wn * (v - ev_c)
+                    obv_szone_acc[kk] = obv_szone_acc.get(kk, 0.0) + wn * (v - ev_z)
                     if v > 0:
                         obv_pos_acc[kk] = obv_pos_acc.get(kk, 0.0) + wn * v
 
@@ -866,6 +876,7 @@ def compute_per_player(ev: pd.DataFrame,
             'obv_conceded': obv_acc.get((pid, sid), 0.0),
             'obv_conceded_pos': obv_pos_acc.get((pid, sid), 0.0),
             'obv_suppression': obv_supp_acc.get((pid, sid), 0.0),
+            'obv_supp_zone': obv_szone_acc.get((pid, sid), 0.0),
         })
     out = pd.DataFrame(rows)
     out = out.merge(actual.rename(columns={'player.id': 'playerId'}),
@@ -915,6 +926,7 @@ def compute_per_player(ev: pd.DataFrame,
         out['obv_conceded_p90'] = np.where(_mp90 > 0, out['obv_conceded'] / _mp90, np.nan)
         out['obv_conceded_pos_p90'] = np.where(_mp90 > 0, out['obv_conceded_pos'] / _mp90, np.nan)
         out['obv_suppression_p90'] = np.where(_mp90 > 0, out['obv_suppression'] / _mp90, np.nan)
+        out['obv_supp_zone_p90'] = np.where(_mp90 > 0, out['obv_supp_zone'] / _mp90, np.nan)
         # v9 — per-type DefR per 90 (the dashboard display metrics)
         for T in DEFR_TYPES:
             out[f'defr_{T}_p90'] = np.where(
