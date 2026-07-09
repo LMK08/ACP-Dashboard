@@ -923,8 +923,17 @@ DWAE_TO_DISPLAY = {
     'defr_dwae_tackle':  'Tackle Wins AE',
     'defr_dwae_aerial':  'Aerial Wins AE',
 }
+# DefR Value Conceded (né DefR OBV) — responsibility-weighted opposition
+# on-ball value through the player's defensive domain, per 90. LOWER =
+# more suppressive. Descriptive accountability (≈2/3 team exposure —
+# measured); compare within position/league, never read as isolated skill.
+DEFR_VALUE_TO_DISPLAY = {
+    'obv_conceded':      'DefR Value Conceded',
+}
 DEFR_DISPLAY_METRICS = (list(DEFR_TYPE_TO_DISPLAY.values()) + ['DefR Total']
-                          + list(DWAE_TO_DISPLAY.values()))
+                          + list(DWAE_TO_DISPLAY.values())
+                          + list(DEFR_VALUE_TO_DISPLAY.values()))
+_DEFR_PCTL_INVERT = {'DefR Value Conceded'}   # lower = better in percentile mode
 # Base defensive metric (as shown on radars / stat tables)  ->  DefR equivalent.
 # Lets the radar "DefR mode" swap each defensive axis to its DefR value.
 DEFR_RADAR_MAP = {
@@ -964,7 +973,7 @@ def load_defr_values():
                 if p is not None and not pd.isna(p) else p).astype('Int64')
             # sum the count columns on (pid, season) collisions
             cnt = [c for c in df.columns if c.startswith(('defr_', 'act_', 'exp_',
-                     'gk_')) and not c.endswith('_p90') and c not in (
+                     'gk_', 'obv_')) and not c.endswith('_p90') and c not in (
                      'defr_per90', 'defr_per90_vs_position', 'defr_adj', 'defr_career')]
             cnt = [c for c in cnt if pd.api.types.is_numeric_dtype(df[c])]
             cnt += ['mins_played']
@@ -1006,7 +1015,8 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
         return player_stats_df
 
     count_cols = (list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr']
-                    + list(DWAE_TO_DISPLAY.keys()))
+                    + list(DWAE_TO_DISPLAY.keys())
+                    + list(DEFR_VALUE_TO_DISPLAY.keys()))
     count_cols = [c for c in count_cols if c in defr.columns]
     g = defr.copy()
     g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
@@ -1020,6 +1030,9 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
     if 'defr' in agg.columns:
         new_cols['DefR Total'] = agg['defr'] / mins90
     for raw, disp in DWAE_TO_DISPLAY.items():
+        if raw in agg.columns:
+            new_cols[disp] = agg[raw] / mins90
+    for raw, disp in DEFR_VALUE_TO_DISPLAY.items():
         if raw in agg.columns:
             new_cols[disp] = agg[raw] / mins90
     defr_sub = pd.DataFrame({'playerId': agg['playerId'], **new_cols})
@@ -1087,6 +1100,8 @@ def _add_defr_percentiles(df):
             if len(sub) < 3:
                 continue
             ranks = df.loc[sub, m].rank(pct=True)
+            if m in _DEFR_PCTL_INVERT:      # lower = better (value conceded)
+                ranks = 1.0 - ranks
             pctl.loc[sub] = ranks
         df[m + '_percentile'] = pctl.fillna(0.5)
     return df
@@ -2482,7 +2497,7 @@ WEIGHTS = {
     'Target Man': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 2, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 1.0, 'Dribbles': 1.0, 'Dribbles successful %': 1.0, 'Loss index': 5, 'Aerial duels': 10, 'Aerial duels successful %': 10, 'Defensive duels successful': 1.0, 'Interceptions': 1.0, 'Recoveries': 1.0, 'Clearances': 10},
     'Pressing Forward': {'Goals': 15, 'npxG': 30, 'Shots': 10, 'xG per Shot': 8, 'Assists': 10, 'xAOP': 20, 'xTOP': 2, 'Passes': 2, 'Passes successful %': 1.0, 'Progressive Passes': 1.0, 'Deep Completions': 1.0, 'Progressive runs': 2, 'Dribbles': 2, 'Dribbles successful %': 2, 'Loss index': 5, 'Aerial duels': 1.0, 'Aerial duels successful %': 1.0, 'Defensive duels successful': 1.0, 'Interceptions': 8, 'Recoveries': 10, 'Counterpressing Recoveries': 4}
 }
-INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled past % (proj)']
+INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled past % (proj)', 'DefR Value Conceded']
 
 # ==============================================================================
 # Composite Value Index (CVI) — v1 parameters

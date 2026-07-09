@@ -503,6 +503,7 @@ invert_metrics:
   - goalsConceded
   - Dribbled past %
   - Dribbled past % (proj)
+  - DefR Value Conceded
   - Opp xT into Def Area
   - Opp xT from Def Area
   - Opp xT into Def Area OE
