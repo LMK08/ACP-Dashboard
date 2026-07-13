@@ -21,6 +21,12 @@
 #                      mutual_termination — contract dissolved early
 #                      release_clause     — release clause triggered
 #                      pre_contract       — pre-contract signed (Bosman-style)
+#                      offer              — bid received but NOT completed.
+#                                           fee_eur = offer amount; feeds the
+#                                           EUR model as market-price evidence
+#                                           (loader ignores transfer_type, so
+#                                           it trains like a paid fee). Record
+#                                           outcome (rejected/pending) in notes.
 #   fee_eur          Base transfer fee in EUR. Blank/0 = free/loan-without-fee.
 #   add_ons_eur      Performance-based add-ons in EUR (if reported).
 #   sell_on_pct      Percentage of next sale owed back to selling club (0-100).
@@ -79,6 +85,8 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 1039596,Catarino Pascoal,Atlético CP,Sporting Lisbon,permanent,500000,,,2026-07-15,191782,,,,Liga 3 → Primeira (Sporting Lisbon) summer 2026; pre-transfer = 25-26 L3 ACP,0
 873635,João Machado,CF Os Belenenses,Ukraine Premier League (TBD),permanent,200000,,,2026-07-15,191782,,,,L3 → Ukraine Premier League summer 2026; pre-transfer = 25-26 L3 Belenenses,0
 693095,Coquinho,Oliveira do Hospital,União de Leiria,permanent,200000,,,2026-07-15,191779,,,,Camp → Segunda Liga (União de Leiria) summer 2026; pre-transfer = 25-26 Camp OdH,0
+915436,Balelo,Paredes,Bulgaria First League (TBD),permanent,100000,,,2026-07-13,191782,,,,L3 → Bulgaria First League summer 2026; pre-transfer = 25-26 L3 Paredes,0
+710097,Yuk Jinyoung,Paredes,Unknown (offer),offer,130000,,,2026-07-13,191782,,,,OFFER — €130k bid received for player summer 2026; not a completed transfer. Treated as market-price evidence; pre-transfer = 25-26 L3 Paredes,0
 
 # === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
 # These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
