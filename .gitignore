@@ -48,6 +48,8 @@ __pycache__/
 !models/eur_v2/__init__.py
 !models/eur_v2/predict.py
 !models/eur_v2/realization.py
+!models/creation/build_box_passes.py
+!models/creation/box_entry_passes.parquet
 
 # System files
 .DS_Store

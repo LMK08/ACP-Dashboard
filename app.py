@@ -62,6 +62,8 @@ from collections import defaultdict # For player radar calculations
 import seaborn as sns # For player radar distributions
 from collections import defaultdict # Make sure this is at the top with other imports
 import plotly.graph_objects as go
+from pitch_interactive import (plotly_shot_map, plotly_box_passes_map,
+                                mpl_box_passes_map)
 import io # For saving the in-memory image
 # ... after your other imports ...
 import base64
@@ -952,6 +954,28 @@ DEFR_RADAR_MAP = {
     'Aerial duels successful': 'DefR Aerials',
     'Aerial duels successful %': 'DefR Aerials',
 }
+
+
+@st.cache_data(ttl=86400)
+def load_box_passes():
+    """Per-event passes into the attacking box with GPA pass values
+    (models/creation/box_entry_passes.parquet). Empty DF if missing."""
+    path = os.path.join(os.path.dirname(__file__),
+                          'models', 'creation', 'box_entry_passes.parquet')
+    if not os.path.exists(path):
+        logger.info("box_entry_passes.parquet not found — creation chart disabled")
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df['player.id'] = pd.to_numeric(df['player.id'], errors='coerce').astype('Int64')
+        df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        if PLAYER_ID_ALIASES:
+            df['player.id'] = df['player.id'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p)) if pd.notna(p) else p)
+        return df
+    except Exception as e:
+        logger.warning(f"load_box_passes failed: {e}")
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=86400)
@@ -10367,6 +10391,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                  ha='left', fontsize=9, color='black')
                     st.pyplot(_figr, use_container_width=True)
                     plt.close(_figr)
+                # --- Projection outlook fan chart (prototype) ---
+                try:
+                    from pitch_interactive import plotly_projection_fan
+                    _fan = plotly_projection_fan(
+                        _erows, SEASON_ID_MAP, selected_player_name)
+                    if _fan is not None:
+                        st.plotly_chart(_fan, use_container_width=True,
+                                        config={'displayModeBar': False})
+                        st.caption(
+                            "Career ratings by age flowing into next "
+                            "season's projection. Shaded fan = ±1 SD of "
+                            "the projection; green band = typical peak "
+                            "ages for the role (literature-based curve "
+                            "used by the projection model).")
+                except Exception:
+                    logger.exception("Projection fan chart failed")
                 st.caption(
                     f"Engine {_eng_meta.get('rating_version', '?')} · "
                     f"projection {_eng_meta.get('projection_version', '?')} · "
@@ -10375,6 +10415,135 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     f"set piece shown separately (not in the rating)")
         except Exception:
             logger.exception("Engine card failed")
+        st.divider()
+
+        # --- Exportable one-pager PDF ----------------------------------
+        _op_cols = st.columns([1.4, 1.4, 3])
+        with _op_cols[0]:
+            _op_clicked = st.button("📄 Build one-pager PDF",
+                                     key="onepager_build")
+        if _op_clicked:
+            try:
+                with st.spinner("Composing one-pager…"):
+                    from player_onepager import build_player_onepager
+                    # 1) best-fit template radar (percentile mode)
+                    _op_fig_radar = None
+                    try:
+                        _op_matches = player_stats_with_scores_df[
+                            player_stats_with_scores_df['playerId']
+                            == int(selected_player_id)]
+                        if not _op_matches.empty:
+                            _op_row = _op_matches.iloc[0]
+                            _op_pos = _op_row.get('primaryPosition')
+                            _op_elig = [r for r in WEIGHTS
+                                        if _op_pos in POSITION_GROUPS.get(r, [])]
+                            if _op_elig:
+                                _op_role = max(_op_elig, key=lambda r: float(
+                                    _op_row.get(f'{r}_Score', 0) or 0))
+                                _op_pop = player_stats_with_scores_df[
+                                    player_stats_with_scores_df['primaryPosition']
+                                    .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
+                                if len(_op_pop) < 5:
+                                    _op_pop = player_stats_with_scores_df
+                                _op_metrics = [m for m in WEIGHTS[_op_role]
+                                               if m in _op_row.index
+                                               and m not in RADAR_HIDDEN_METRICS]
+                                if _op_metrics:
+                                    _op_seasons = (
+                                        list(active_season_ids)
+                                        if isinstance(active_season_ids, (list, tuple, set))
+                                        else [active_season_ids])
+                                    _op_season_lbl = (
+                                        SEASON_ID_MAP.get(_op_seasons[0], '')
+                                        if len(_op_seasons) == 1 else 'All Seasons')
+                                    _op_fig_radar = create_radar_with_distributions(
+                                        pd.DataFrame([_op_row]), _op_metrics,
+                                        _op_pos, _op_elig, _op_pop,
+                                        full_df_for_ranking=player_stats_with_scores_df,
+                                        season_label=_op_season_lbl,
+                                        radar_mode='percentile')
+                    except Exception:
+                        logger.exception("one-pager radar failed")
+                    # 2) shot map (light re-derivation of the shot log)
+                    _op_fig_shots = None
+                    try:
+                        _op_shots = profile_events_df[
+                            (profile_events_df['player.name'] == selected_player_name)
+                            & (profile_events_df['type.primary'] == 'shot')].copy()
+                        if not _op_shots.empty:
+                            _op_shots = _op_shots.sort_values(
+                                ['matchId', 'minute', 'second'])
+                            _op_shots.reset_index(drop=True, inplace=True)
+                            _op_shots['Shot Number'] = _op_shots.index + 1
+                            _op_fig_shots = create_player_shotmap(
+                                _op_shots, selected_player_name)
+                    except Exception:
+                        logger.exception("one-pager shotmap failed")
+                    # 3) box-pass creativity map
+                    _op_fig_passes = None
+                    try:
+                        _op_bp = load_box_passes()
+                        if not _op_bp.empty:
+                            _op_bp_seasons = (
+                                active_season_ids
+                                if isinstance(active_season_ids, (list, tuple, set))
+                                else [active_season_ids])
+                            _op_bp = _op_bp[
+                                (_op_bp['player.id'] == int(selected_player_id))
+                                & (_op_bp['seasonId'].isin(
+                                    [int(s) for s in _op_bp_seasons]))]
+                            if not _op_bp.empty:
+                                _op_fig_passes = mpl_box_passes_map(
+                                    _op_bp, selected_player_name)
+                    except Exception:
+                        logger.exception("one-pager box passes failed")
+                    # 4) header tiles
+                    _op_tiles = [("Team", current_team),
+                                 ("Position", current_pos),
+                                 ("Age", age_display)]
+                    _op_footer = ""
+                    try:
+                        _op_prow = _erows[_erows['projection'].notna()] \
+                            if not _erows.empty else pd.DataFrame()
+                        if not _op_prow.empty:
+                            _op_e = _op_prow.iloc[-1]
+                            _op_tiles.append(
+                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                            _op_tiles.append(
+                                ("Projection",
+                                 f"{float(_op_e['projection']):.0f} "
+                                 f"± {float(_op_e['band_sd']):.0f}"))
+                        elif not _erows.empty:
+                            _op_e = (_erows.sort_values('mins_played').iloc[-1])
+                            _op_tiles.append(
+                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                        _op_footer = (
+                            f"Engine {_eng_meta.get('rating_version', '?')} · "
+                            f"projection {_eng_meta.get('projection_version', '?')} · "
+                            f"generated {datetime.date.today().isoformat()}")
+                    except Exception:
+                        pass
+                    _op_bytes = build_player_onepager(
+                        selected_player_name,
+                        f"{current_team} · {current_pos}",
+                        _op_tiles, _op_fig_radar, _op_fig_shots,
+                        _op_fig_passes, footer_note=_op_footer)
+                    for _f in (_op_fig_radar, _op_fig_shots, _op_fig_passes):
+                        if _f is not None:
+                            plt.close(_f)
+                    st.session_state['onepager_pdf'] = (
+                        int(selected_player_id), _op_bytes)
+            except Exception:
+                logger.exception("one-pager build failed")
+                st.error("Could not build the one-pager for this player.")
+        _op_cached = st.session_state.get('onepager_pdf')
+        if _op_cached and _op_cached[0] == int(selected_player_id):
+            with _op_cols[1]:
+                st.download_button(
+                    "⬇️ Download one-pager",
+                    data=_op_cached[1],
+                    file_name=f"{selected_player_name.replace(' ', '_')}_onepager.pdf",
+                    mime="application/pdf", key="onepager_dl")
         st.divider()
 
         # Hoisted so every lazy section can access it: the Stats section's
@@ -10387,7 +10556,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         radar_stats_df = merge_defr_values_into_stats(
             player_stats_with_scores_df, active_season_ids, selected_comp_ids)
 
-        _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Duels", "Match Log"]
+        _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log"]
         _active_tab = st.radio("Profile section", _profile_sections,
                                 horizontal=True, label_visibility="collapsed",
                                 key="profile_active_tab")
@@ -11510,7 +11679,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             f"{type(_tv_exc).__name__}: {_tv_exc}")
 
 
-        elif _active_tab == "Shots & Duels":
+        elif _active_tab == "Shots & Creation":
             st.divider()
 
             # --- 7. SHOT ANALYSIS (UPDATED) ---
@@ -11611,10 +11780,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
                 with col_shot_map:
                     st.markdown("**Season Shot Map**")
-                    # Pass the fully processed shot_log which has 'Shot Number'
-                    fig_player_shots = create_player_shotmap(shot_log, selected_player_name)
-                    st.pyplot(fig_player_shots, use_container_width=True)
-                    plt.close(fig_player_shots)
+                    # Interactive upgrade — hover a dot for date/opponent/
+                    # minute/result/xG/body part; static mpl version kept
+                    # for the PDF one-pager.
+                    st.plotly_chart(
+                        plotly_shot_map(shot_log, selected_player_name),
+                        use_container_width=True,
+                        config={'displayModeBar': False})
                 
                 with col_shot_table:
                     st.markdown("**Shot Log**")
@@ -11656,6 +11828,62 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             else:
                 st.info("No shots recorded for this player.")
+
+            st.divider()
+
+            # --- 7a-bis. CREATION — passes into the attacking box ---
+            st.subheader("Creation — Passes into the Box")
+            _bp_all = load_box_passes()
+            if _bp_all.empty:
+                st.caption("Box-pass data not available in this deployment.")
+            else:
+                _bp_seasons = (active_season_ids
+                               if isinstance(active_season_ids, (list, tuple, set))
+                               else [active_season_ids])
+                _bp_p = _bp_all[
+                    (_bp_all['player.id'] == int(selected_player_id)) &
+                    (_bp_all['seasonId'].isin([int(s) for s in _bp_seasons]))
+                ].copy()
+                if _bp_p.empty:
+                    st.info("No passes into the box recorded for this player "
+                            "in the selected season(s).")
+                else:
+                    _cc1, _cc2, _cc3 = st.columns([1, 1, 2])
+                    with _cc1:
+                        _bp_no_sp = st.checkbox(
+                            "Open play only", value=False,
+                            help="Exclude corner / free-kick / throw-in deliveries")
+                    with _cc2:
+                        _bp_acc_only = st.checkbox("Completed only", value=False)
+                    _bp_view = _bp_p
+                    if _bp_no_sp:
+                        _bp_view = _bp_view[_bp_view['phase'] != 'set_piece']
+                    if _bp_acc_only:
+                        _bp_view = _bp_view[_bp_view['pass.accurate'] == True]  # noqa: E712
+                    if _bp_view.empty:
+                        st.info("No box passes match the current filters.")
+                    else:
+                        st.plotly_chart(
+                            plotly_box_passes_map(_bp_view, selected_player_name),
+                            use_container_width=True,
+                            config={'displayModeBar': False})
+                        _n_bp = len(_bp_view)
+                        _mets = st.columns(4)
+                        _mets[0].metric("Box passes", f"{_n_bp}")
+                        _mets[1].metric(
+                            "Completed",
+                            f"{(_bp_view['pass.accurate'] == True).mean():.0%}")  # noqa: E712
+                        _mets[2].metric(
+                            "Total pass value",
+                            f"{pd.to_numeric(_bp_view['action_value'], errors='coerce').sum():+.3f}",
+                            help="Sum of GPA action values of these passes")
+                        _mets[3].metric(
+                            "Value / pass",
+                            f"{pd.to_numeric(_bp_view['action_value'], errors='coerce').mean():+.4f}")
+                        st.caption(
+                            "Arrow color = GPA pass value (red = value created, "
+                            "blue = negative value); arrow weight scales with "
+                            "|value|. Hover an endpoint for pass details.")
 
             st.divider()
 
@@ -11982,7 +12210,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         _ordered_templates = []
         for _grp_templates in _TEMPLATE_GROUPS.values():
             _ordered_templates.extend([t for t in _grp_templates if t in POSITION_GROUPS])
-        _selector_options = ["Overview"] + _ordered_templates + ["Individual Metric"]
+        _selector_options = ["Overview"] + _ordered_templates + ["Individual Metric", "Peer Scatter"]
         _selected_view = st.sidebar.selectbox(
             "View:",
             _selector_options,
@@ -12652,6 +12880,129 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             else:
                 st.warning("No players match current filters.")
 
+        elif _selected_view == "Peer Scatter":
+            # --- Peer Scatter: any metric vs any metric, full peer cloud ---
+            _SC_SET_PIECE = ['Set Piece Value', 'Corner Value',
+                             'Free Kick Value', 'Throw-In Value',
+                             'xASP', 'xTSP']
+            _sc_categories = {
+                "Output": OUTPUT_METRICS,
+                "Passing": PASSING_METRICS,
+                "Defensive": DEFENSIVE_METRICS,
+                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
+                "Dribbling": DRIBBLING_METRICS,
+                "Goalkeeping": GOALKEEPING_METRICS,
+                "Set Pieces": _SC_SET_PIECE,
+                "ACP Index": ENGINE_DISPLAY_METRICS,
+                "Template Ratings": sorted(
+                    [c for c in filtered_df.columns if c.endswith('_Score')]),
+            }
+
+            def _sc_metric_picker(axis_label, default_cat, default_metric):
+                cat = st.sidebar.selectbox(
+                    f"{axis_label} category:", list(_sc_categories.keys()),
+                    index=list(_sc_categories.keys()).index(default_cat),
+                    key=f"peer_scatter_cat_{axis_label}")
+                opts = [m for m in _sc_categories[cat]
+                        if m in filtered_df.columns]
+                if not opts:
+                    return None
+                idx = opts.index(default_metric) if default_metric in opts else 0
+                return st.sidebar.selectbox(
+                    f"{axis_label} metric:", opts, index=idx,
+                    key=f"peer_scatter_metric_{axis_label}")
+
+            _sc_x = _sc_metric_picker("X", "Defensive", "Interceptions")
+            _sc_y = _sc_metric_picker("Y", "Output", "npxG")
+
+            _sc_positions = sorted(
+                filtered_df['primaryPosition'].dropna().unique().tolist())
+            _sc_pos_filter = st.sidebar.multiselect(
+                "Filter by Position (optional):", _sc_positions, default=[],
+                key="peer_scatter_positions")
+
+            if _sc_x is None or _sc_y is None:
+                st.warning("No metrics available for the selected categories.")
+                st.stop()
+            if _sc_x == _sc_y:
+                st.info("Pick two different metrics to compare.")
+                st.stop()
+
+            _sc_df = filtered_df
+            if _sc_pos_filter:
+                _sc_df = _sc_df[_sc_df['primaryPosition'].isin(_sc_pos_filter)]
+            _sc_df = _sc_df.dropna(subset=[_sc_x, _sc_y])
+            if len(_sc_df) < 5:
+                st.warning("Not enough players with both metrics under the "
+                           "current filters.")
+                st.stop()
+
+            st.subheader(f"{_sc_y} vs {_sc_x} (per 90)")
+            _sc_c1, _sc_c2 = st.columns([2, 1])
+            with _sc_c1:
+                _sc_hl = st.selectbox(
+                    "Highlight player:",
+                    ["(none)"] + sorted(_sc_df['playerName'].dropna().unique().tolist()),
+                    key="peer_scatter_highlight")
+            with _sc_c2:
+                _sc_fit = st.checkbox("Show line of best fit", value=True,
+                                      key="peer_scatter_fit")
+
+            _sx = pd.to_numeric(_sc_df[_sc_x], errors='coerce')
+            _sy = pd.to_numeric(_sc_df[_sc_y], errors='coerce')
+            _sc_fig = go.Figure()
+            _sc_hover = [
+                f"<b>{r.playerName}</b> · {r.teamName}<br>"
+                f"{r.primaryPosition} · {int(r.totalMinutes)}'<br>"
+                f"{_sc_x}: {x:.3f}<br>{_sc_y}: {y:.3f}"
+                for r, x, y in zip(_sc_df.itertuples(), _sx, _sy)]
+            _sc_fig.add_trace(go.Scatter(
+                x=_sx, y=_sy, mode='markers',
+                marker=dict(size=8, color='rgba(110,125,118,0.45)',
+                            line=dict(color='rgba(255,255,255,0.6)', width=0.5)),
+                text=_sc_hover, hovertemplate='%{text}<extra></extra>',
+                name='peers'))
+            _sc_fig.add_vline(x=float(_sx.median()), line_dash='dot',
+                              line_color='rgba(128,128,128,0.5)')
+            _sc_fig.add_hline(y=float(_sy.median()), line_dash='dot',
+                              line_color='rgba(128,128,128,0.5)')
+            if _sc_fit and len(_sc_df) >= 3:
+                _b, _a = np.polyfit(_sx, _sy, 1)
+                _xline = np.linspace(_sx.min(), _sx.max(), 50)
+                _r = float(np.corrcoef(_sx, _sy)[0, 1])
+                _sc_fig.add_trace(go.Scatter(
+                    x=_xline, y=_b * _xline + _a, mode='lines',
+                    line=dict(color='#3987e5', width=2, dash='dash'),
+                    hoverinfo='skip', name=f'fit (r = {_r:+.2f})'))
+            if _sc_hl != "(none)":
+                _hrow = _sc_df[_sc_df['playerName'] == _sc_hl]
+                _sc_fig.add_trace(go.Scatter(
+                    x=pd.to_numeric(_hrow[_sc_x], errors='coerce'),
+                    y=pd.to_numeric(_hrow[_sc_y], errors='coerce'),
+                    mode='markers+text',
+                    marker=dict(size=14, color='#2aa876',
+                                line=dict(color='white', width=2)),
+                    text=[_sc_hl] * len(_hrow), textposition='top center',
+                    textfont=dict(size=12),
+                    hoverinfo='skip', name=_sc_hl))
+            _sc_fig.update_layout(
+                height=640, showlegend=True,
+                legend=dict(orientation='h', yanchor='bottom', y=1.01),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                xaxis=dict(title=_sc_x, gridcolor='rgba(128,128,128,0.15)',
+                           zeroline=False),
+                yaxis=dict(title=_sc_y, gridcolor='rgba(128,128,128,0.15)',
+                           zeroline=False))
+            st.plotly_chart(_sc_fig, use_container_width=True)
+            _sc_notes = []
+            if _sc_x in INVERT_METRICS or _sc_y in INVERT_METRICS:
+                _inv = [m for m in (_sc_x, _sc_y) if m in INVERT_METRICS]
+                _sc_notes.append(f"lower is better for: {', '.join(_inv)}")
+            _sc_notes.append("dotted lines = peer medians")
+            _sc_notes.append(f"{len(_sc_df)} players shown "
+                             "(sidebar minutes/age filters apply)")
+            st.caption(" · ".join(_sc_notes))
+
         elif _selected_view == "Individual Metric":
             # --- Individual Metric mode (preserved from original) ---
             # Set-piece metrics — the four GPA action-value columns
@@ -12827,7 +13178,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # ===== Distribution violins (appended below either Overview or
         # template table). Skips Individual Metric because that view is
         # already a per-metric leaderboard. =====
-        if _selected_view != "Individual Metric":
+        if _selected_view not in ("Individual Metric", "Peer Scatter"):
             st.markdown("---")
 
             from plotly.subplots import make_subplots as _make_subplots
