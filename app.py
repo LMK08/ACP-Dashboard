@@ -4533,13 +4533,25 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         cached = pd.read_parquet(cache_path)
         if _REQUIRED_STAT_COLS.issubset(cached.columns):
             # Sanity check: goalsConceded should always be per-90 (typical
-            # GK rate ≈ 0.5–1.5). If the cached value looks like a season
-            # total (≥ 5 means we've got tens of goals, almost certainly a
-            # raw count), invalidate the cache and recompute.
+            # GK rate ≈ 0.5–1.5). Judge by the MEDIAN across keepers with
+            # real minutes, not the max: a few data-gap keepers carry
+            # broken tiny totalMinutes (e.g. a full season shown as 90')
+            # whose legit per-90 division yields 20+, and the old max>=5
+            # check invalidated five healthy caches on EVERY boot — the
+            # resulting cold recompute loop is what segfaulted the HF
+            # Space (2026-07-14). A cache of season TOTALS would put the
+            # median regular keeper at 20+, so median>=5 still catches
+            # the real failure this check exists for.
             if 'goalsConceded' in cached.columns and 'totalMinutes' in cached.columns:
-                _gk_rows = cached[cached['goalsConceded'] > 0]
-                if not _gk_rows.empty and float(_gk_rows['goalsConceded'].max()) >= 5:
-                    print(f"Cache has goalsConceded as totals (max={_gk_rows['goalsConceded'].max():.1f}); invalidating and recomputing")
+                _gk_rows = cached[
+                    (cached['goalsConceded'] > 0)
+                    & (pd.to_numeric(cached['totalMinutes'],
+                                      errors='coerce') >= 450)]
+                if (not _gk_rows.empty
+                        and float(_gk_rows['goalsConceded'].median()) >= 5):
+                    print(f"Cache has goalsConceded as totals (median="
+                          f"{_gk_rows['goalsConceded'].median():.1f}); "
+                          f"invalidating and recomputing")
                     os.remove(cache_path)
                 else:
                     print(f"Loading cached player stats for scope {_scope_key}")
