@@ -740,6 +740,19 @@ MINUTES_OVERRIDE = {
     # on the backend, so a re-fetch by id 404s. His event record shows ~2,335'
     # (a near-full season of starts) — override to that. (Lucas 2026-06)
     (273828, 190230): 2335,
+    # Camp 23/24 lineup-gap goalkeepers: same Wyscout gap as the 63-outfielder
+    # fix (c7baa3a), but that sweep required >=500 event minutes, which these
+    # GK records missed. Lineup feed shows one match (~90') while their event
+    # record spans a full/partial season, so every per-90 GK metric (goals
+    # conceded, saves…) was inflated 10-30x. Values are event-derived minutes
+    # (same estimator as precompute_minutes.py). (2026-07)
+    (135928, 190230): 2933,   # André Preto (Pevidém) — 32 matches, was 90'
+    (593057, 190230): 2627,   # Diogo Figueiredo (Amarante) — 28 matches, was 96'
+    (553006, 190230): 2278,   # Heitor Silva (Ribeirão) — 24 matches, was 92'
+    (413326, 190230): 1971,   # Imerson Soares (Rabo Peixe) — 21 matches, was 93'
+    (623567, 190230): 1774,   # Pedro Teixeira (Marítimo II) — 19 matches, was 92'
+    (553543, 190230): 458,    # Pedro Palha (Vilar de Perdizes) — 5 matches, was 96'
+    (968986, 190230): 280,    # Caio Mendonça (Fontinhas) — 3 matches, was 94'
 }
 
 

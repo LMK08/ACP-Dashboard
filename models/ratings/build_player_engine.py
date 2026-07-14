@@ -96,7 +96,20 @@ if _pm_path.exists():
     # a refresh can't fix. Keyed (playerId, seasonId). Manuel Pedro 23/24: 96'
     # was a Wyscout dropped-matches gap, his id 273828 was merged on the backend
     # so a re-fetch 404s — event record ~2,335'. (Lucas 2026-06)
-    _MINS_OVERRIDE = {(273828, 190230): 2335}
+    # Camp 23/24 lineup-gap goalkeepers (2026-07): same gap family, but the
+    # c7baa3a outfielder sweep required >=500 event minutes which these GK
+    # records missed — lineup feed shows ~90' for full/partial seasons.
+    # Event-derived minutes, mirroring app.py MINUTES_OVERRIDE.
+    _MINS_OVERRIDE = {
+        (273828, 190230): 2335,   # Manuel Pedro (AD Marco 09)
+        (135928, 190230): 2933,   # André Preto (Pevidém)
+        (593057, 190230): 2627,   # Diogo Figueiredo (Amarante)
+        (553006, 190230): 2278,   # Heitor Silva (Ribeirão)
+        (413326, 190230): 1971,   # Imerson Soares (Rabo Peixe)
+        (623567, 190230): 1774,   # Pedro Teixeira (Marítimo II)
+        (553543, 190230): 458,    # Pedro Palha (Vilar de Perdizes)
+        (968986, 190230): 280,    # Caio Mendonça (Fontinhas)
+    }
     for (_pid_o, _sid_o), _mins_o in _MINS_OVERRIDE.items():
         _mask = (_lm['playerId'] == _pid_o) & (_lm['seasonId'] == _sid_o)
         if _mask.any():
