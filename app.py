@@ -5196,6 +5196,14 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     shots_faced_df['shot.goalkeeper.id'] = shots_faced_df['shot.goalkeeper.id'].astype(int)
     gk_shot_stopping_stats = shots_faced_df.groupby('shot.goalkeeper.id').agg(shotsOnTargetAgainst=('shot.isGoal', 'count'), goalsConceded=('shot.isGoal', 'sum'), psxG_faced=('shot.postShotXg', 'sum')).reset_index().rename(columns={'shot.goalkeeper.id': 'player.id'})
     if not gk_shot_stopping_stats.empty:
+        # shot.isGoal is object dtype in the events parquet, so its
+        # groupby-sum can come out object (pandas-build dependent) — which
+        # made the per-90 loop's is_numeric_dtype gate silently skip
+        # goalsConceded so it stayed a season total. Coerce here so
+        # normalization is deterministic and goalsPrevented/savePercentage
+        # inherit float dtype.
+        gk_shot_stopping_stats['goalsConceded'] = pd.to_numeric(
+            gk_shot_stopping_stats['goalsConceded'], errors='coerce').fillna(0).astype('float64')
         gk_shot_stopping_stats['goalsPrevented'] = gk_shot_stopping_stats['psxG_faced'] - gk_shot_stopping_stats['goalsConceded']
         gk_shot_stopping_stats['goalsPreventedPerSOT'] = (gk_shot_stopping_stats['goalsPrevented'] / gk_shot_stopping_stats['shotsOnTargetAgainst']).fillna(0)
         gk_shot_stopping_stats['savePercentage'] = ((gk_shot_stopping_stats['shotsOnTargetAgainst'] - gk_shot_stopping_stats['goalsConceded']) / gk_shot_stopping_stats['shotsOnTargetAgainst'] * 100).fillna(0)
@@ -5272,29 +5280,38 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     info_cols = ['playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition', 'tertiaryPosition', 'player.id', 'player.id_x', 'player.id_y', 'Defensive Area', 'Expected xT at Center']
     dont_normalize = rate_cols + info_cols
 
-    # DEBUG: Log goalsConceded before normalization
-    if 'goalsConceded' in base_df.columns:
-        gk_mask = base_df['goalsConceded'] > 0
-        if gk_mask.any():
-            print(f"  DEBUG goalsConceded BEFORE normalization: {base_df.loc[gk_mask, 'goalsConceded'].head(3).tolist()}")
-            print(f"  DEBUG totalMinutes for those GKs: {base_df.loc[gk_mask, 'totalMinutes'].head(3).tolist()}")
-
+    # Track what actually got divided so the backstop below can normalize
+    # skipped columns EXACTLY once — never by re-inspecting value shapes.
+    _normalized_cols = set()
     for col in all_calculated_metrics:
         if col not in dont_normalize and pd.api.types.is_numeric_dtype(base_df[col]):
-            if col == 'goalsConceded':
-                print(f"  DEBUG: Normalizing goalsConceded (in dont_normalize={col in dont_normalize})")
             base_df[col] = np.where(
                 minutes_gt_0,
                 (base_df[col].astype(float) / total_minutes) * 90,
                 0
             )
+            _normalized_cols.add(col)
 
-    # DEBUG: Log goalsConceded after normalization
-    if 'goalsConceded' in base_df.columns:
-        gk_mask = base_df['goalsConceded'] > 0
-        if gk_mask.any():
-            print(f"  DEBUG goalsConceded AFTER normalization: {base_df.loc[gk_mask, 'goalsConceded'].head(3).tolist()}")
-            
+    # ── Exactly-once backstop for the GK counting metrics ────────────────
+    # goalsConceded historically reached the loop above as OBJECT dtype (the
+    # groupby-sum of object-typed shot.isGoal), so the is_numeric_dtype gate
+    # silently skipped it and it stayed a season total. The old backstop
+    # (further down, now removed) rescaled whenever the MAX value "looked
+    # like a total" — but data-gap keepers with broken tiny minutes (a full
+    # season shown as ~90') have legit per-90 values above those thresholds,
+    # so it also re-divided ALREADY-normalized columns a second time: the
+    # 10-30x-low shotsOnTargetAgainst / psxG_faced / exits mis-scale that
+    # flipped with unrelated MINUTES_OVERRIDE edits (see f683ed8). With the
+    # dtype coerced at the source and this membership check, each column is
+    # divided exactly once and no value-shape heuristic can misfire.
+    for _col in ['goalsConceded', 'shotsOnTargetAgainst', 'psxG_faced',
+                 'exits', 'goalsPrevented']:
+        if _col in base_df.columns and _col not in _normalized_cols:
+            print(f"  ⚠️ {_col} skipped the per-90 loop "
+                  f"(dtype={base_df[_col].dtype}); normalizing it once now")
+            _v = pd.to_numeric(base_df[_col], errors='coerce').fillna(0)
+            base_df[_col] = np.where(minutes_gt_0, _v / total_minutes * 90, 0)
+
     # -- OE (Over-Expectation) metrics: normalize opposition metrics by Expected xT at Center --
     # This accounts for positional expectation: CBs near goal naturally face higher opposition xT.
     # OE = raw metric / Expected xT at Center — higher OE = more opposition threat than expected.
@@ -5347,35 +5364,12 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
 
     base_df = base_df.drop(columns=cols_to_drop, errors='ignore')
 
-    # ── Defensive per-90 normalization for goalsConceded ────────────────
-    # The main normalization loop above SHOULD handle this, but production
-    # has reproducibly shown goalsConceded slipping through as a season
-    # total in the radar (e.g. 27 instead of 0.82) while every other GK
-    # metric in the same row is correct. Rather than keep chasing the
-    # root cause, force per-90 here as a final safety net. The threshold
-    # `>= 5` cleanly distinguishes a per-90 rate (typically 0.5–1.5) from
-    # a season total (typically 10–40); we only renormalize when the
-    # value looks unmistakably like a total.
-    if 'goalsConceded' in base_df.columns and 'totalMinutes' in base_df.columns:
-        _gc = pd.to_numeric(base_df['goalsConceded'], errors='coerce').fillna(0)
-        _mins = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
-        if (_mins > 0).any():
-            _max_with_mins = float(_gc[_mins > 0].max())
-            if _max_with_mins >= 5:
-                print(f"  ⚠️ goalsConceded slipped through main normalization (max={_max_with_mins:.1f}); forcing per-90")
-                base_df['goalsConceded'] = np.where(_mins > 0, _gc * 90 / _mins, 0)
-    # Same defensive normalization for other GK count-style metrics that
-    # share the same data path. (psxG_faced is an xG sum so a "looks like
-    # total" check uses a higher threshold.)
-    for _col, _total_threshold in [('shotsOnTargetAgainst', 20), ('exits', 20), ('psxG_faced', 5)]:
-        if _col in base_df.columns and 'totalMinutes' in base_df.columns:
-            _v = pd.to_numeric(base_df[_col], errors='coerce').fillna(0)
-            _mins = pd.to_numeric(base_df['totalMinutes'], errors='coerce').fillna(0)
-            if (_mins > 0).any():
-                _max_v = float(_v[_mins > 0].max())
-                if _max_v >= _total_threshold:
-                    print(f"  ⚠️ {_col} slipped through main normalization (max={_max_v:.1f}); forcing per-90")
-                    base_df[_col] = np.where(_mins > 0, _v * 90 / _mins, 0)
+    # (The old "defensive per-90" max-threshold safety nets for goalsConceded /
+    # shotsOnTargetAgainst / exits / psxG_faced lived here. They re-divided
+    # already-normalized columns whenever an outlier keeper's per-90 crossed a
+    # magnitude threshold — replaced by the exactly-once backstop right after
+    # the main normalization loop, plus numeric coercion of goalsConceded at
+    # its groupby-sum. See that block's comment for the full history.)
 
     print("--- FINISHED: New All-Player-Stats Calculation ---")
     result = base_df.fillna(0).reset_index()
@@ -5391,12 +5385,6 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
                                       if pd.to_numeric(s, errors='coerce').dropna().size else np.nan))
         result['competitionId'] = pd.to_numeric(
             result['playerId'].map(_player_comp), errors='coerce')
-
-    # DEBUG: Verify goalsConceded in final result for Diogo Figueiredo
-    if 'goalsConceded' in result.columns and 'playerId' in result.columns:
-        _dbg = result[result['playerId'] == 593057]
-        if not _dbg.empty:
-            print(f"  DEBUG FINAL RESULT: Diogo Figueiredo goalsConceded={_dbg['goalsConceded'].values[0]:.4f}, totalMinutes={_dbg['totalMinutes'].values[0]}")
 
     # Save to disk cache for fast loading on restart
     os.makedirs(STATS_CACHE_DIR, exist_ok=True)
