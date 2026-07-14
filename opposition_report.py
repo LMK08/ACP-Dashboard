@@ -210,6 +210,9 @@ def _get_projected_starting_xi(events_df, matches_df, team_name, season_id):
     formation = '4-4-2'
     if 'team.formation' in mr_events.columns:
         fc = mr_events['team.formation'].dropna().value_counts()
+        # team.formation is categorical: value_counts reports zero-count
+        # categories too — drop them or an absent formation wins the fallback
+        fc = fc[fc > 0]
         if len(fc) > 0:
             formation = fc.index[0]
 

@@ -70,6 +70,30 @@ import base64
 import pitch_visualizations as pv
 
 
+# ------------------------------------------------------------------------------
+# groupby(observed=True) shim — REQUIRED while raw_events string columns are
+# stored as pandas category dtype (see load_data). With categorical keys,
+# pandas' observed=False default emits a row for EVERY category (all 109 teams
+# in a 2-team match groupby, cartesian blowups on multi-key groupbys). Every
+# groupby in this codebase was written for object-dtype keys, i.e. observed
+# semantics, so default observed=True process-wide. Explicit observed=... at a
+# callsite still wins; non-categorical keys are unaffected. pandas 3.0 makes
+# observed=True the default, at which point this shim becomes a no-op.
+_orig_df_groupby = pd.DataFrame.groupby
+_orig_ser_groupby = pd.Series.groupby
+
+def _df_groupby_observed(self, *args, **kwargs):
+    kwargs.setdefault('observed', True)
+    return _orig_df_groupby(self, *args, **kwargs)
+
+def _ser_groupby_observed(self, *args, **kwargs):
+    kwargs.setdefault('observed', True)
+    return _orig_ser_groupby(self, *args, **kwargs)
+
+pd.DataFrame.groupby = _df_groupby_observed
+pd.Series.groupby = _ser_groupby_observed
+
+
 # Metrics that need 3 decimal places (thousandths) instead of the default 2
 THOUSANDTHS_METRICS = {'goalsPreventedPerSOT'}
 WHOLE_NUMBER_METRICS = {'Defensive Area'}
@@ -463,19 +487,23 @@ def load_data():
 
     try:
         logger.info("Loading data files...")
-        # Only load columns actually used in the app (reduces memory from 510MB to 250MB)
+        # Only load columns actually used in the app. Audited 2026-07-14: every
+        # column below has a real read site in app.py / pitch_visualizations /
+        # pitch_interactive / opposition_report / player_onepager. Dropped as
+        # dead weight (never read, ~150 MB deep): 'pass', 'shot', 'infraction'
+        # (all-null struct markers) and 'relatedEventId'.
         events_columns = [
             'id', 'matchId', 'seasonId', 'competitionId', 'minute', 'second', 'matchTimestamp',
             'type.primary', 'type.secondary', 'player.id', 'player.name', 'player.position',
             'team.name', 'opponentTeam.name', 'location.x', 'location.y',
-            'pass', 'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
-            'shot', 'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.bodyPart', 'shot.postShotXg', 'shot.goalkeeper.id',
+            'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
+            'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.bodyPart', 'shot.postShotXg', 'shot.goalkeeper.id',
             'groundDuel.duelType', 'groundDuel.keptPossession', 'groundDuel.progressedWithBall',
             'groundDuel.recoveredPossession', 'groundDuel.stoppedProgress', 'groundDuel.takeOn',
             'aerialDuel.firstTouch', 'carry.endLocation.x', 'carry.endLocation.y',
             'possession.id', 'possession.eventIndex', 'possession.duration', 'possession.team.name', 'possession.types',
-            'infraction', 'infraction.type', 'infraction.yellowCard', 'infraction.redCard',
-            'is_dribble_attempt', 'is_custom_dribble_success', 'relatedEventId',
+            'infraction.type', 'infraction.yellowCard', 'infraction.redCard',
+            'is_dribble_attempt', 'is_custom_dribble_success',
             'team.formation'
         ]
         # Load parquet, falling back to exclude competitionId if it doesn't exist yet
@@ -500,6 +528,32 @@ def load_data():
         # Backfill competitionId if not present (first run after upgrade)
         if 'competitionId' not in raw_events_df.columns:
             raw_events_df['competitionId'] = raw_events_df['seasonId'].map(competition_for_season)
+
+        # ---- Memory slim (2026-07-14): 6.15 GB -> ~3.5 GB deep -------------
+        # High-repetition string columns become category dtype (nunique 3..3.5k
+        # over 4.7M rows). Scoped copies cut by _get_filtered_events_cached
+        # inherit the dtype, so the per-scope cache entries shrink too.
+        # REQUIRES the pd.*.groupby(observed=True) shim at the top of this
+        # module — without it, groupbys keyed on these columns emit zero-rows
+        # for every out-of-scope category. type.secondary / possession.types
+        # are list-typed and stay object. Must run AFTER the free-kick
+        # type.primary rewrite above ('shot' has to exist as a value first).
+        _cat_cols = [
+            'type.primary', 'player.name', 'player.position', 'team.name',
+            'opponentTeam.name', 'possession.team.name', 'team.formation',
+            'groundDuel.duelType', 'infraction.type', 'shot.bodyPart',
+        ]
+        for _cc in _cat_cols:
+            if _cc in raw_events_df.columns:
+                raw_events_df[_cc] = raw_events_df[_cc].astype('category')
+        # Numeric-string column ("14.118731", 661k uniques — not category
+        # material). Parsed once here; the one read site
+        # (_calculate_radars_from_events) handles both str and numeric.
+        if 'possession.duration' in raw_events_df.columns:
+            raw_events_df['possession.duration'] = pd.to_numeric(
+                raw_events_df['possession.duration'].astype(str).str.replace('s', '', regex=False),
+                errors='coerce').astype('float32')
+
         matches_summary_df = pd.read_parquet('matches_summary.parquet')
         if 'competitionId' not in matches_summary_df.columns:
             matches_summary_df['competitionId'] = matches_summary_df['seasonId'].map(competition_for_season)
@@ -1667,22 +1721,27 @@ def get_season_events(raw_events_df, season_id):
         return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
 
-@st.cache_resource(ttl=86400, show_spinner=False, max_entries=3)
+@st.cache_resource(ttl=86400, show_spinner=False, max_entries=5)
 def _get_filtered_events_cached(_events_df, season_key, comp_key):
     """Cache wrapper keyed on the hashable season/comp tuple. Uses
-    cache_RESOURCE (returns the SAME object, no copy) — a season's events
-    are ~657 MB, and cache_data was deserializing a full copy on EVERY
-    rerun (the dominant per-interaction cost). Downstream consumers only
-    read/slice/.copy() the frame (never mutate in place), so sharing one
-    read-only instance across reruns is safe.
+    cache_RESOURCE (returns the SAME object, no copy) — cache_data was
+    deserializing a full copy on EVERY rerun (the dominant per-interaction
+    cost). Downstream consumers only read/slice/.copy() the frame (never
+    mutate in place), so sharing one read-only instance across reruns is
+    safe.
 
-    max_entries=3 (LRU) is load-bearing: the master frame is ~10.5 GB deep
-    and the per-scope filtered copies total ~21 GB across all 9 scopes —
-    unbounded, the warm Space sat at ~31.5 GB on 32 GB hardware and
-    segfaulted (exit 139) on any allocation spike (2026-07-14). A scope
-    miss re-filters in a few seconds; the disk caches keep everything else
-    fast. Keep the prewarm list (in _prewarm_scope_caches) no larger than
-    this bound or the warm loop just churns the LRU."""
+    max_entries (LRU) is load-bearing: unbounded, the warm Space sat at
+    ~31.5 GB on 32 GB hardware and segfaulted (exit 139) on any allocation
+    spike (2026-07-14, when the master frame was still ~10.5 GB deep).
+    After the load_data memory slim (category dtypes + dead-column drop,
+    same date) the arithmetic is: master ~3.5 GB + worst-case scope copy
+    1.9 GB deep (Liga 3 all-seasons; single seasons ≤0.9 GB) →
+    3.5 + 5 × 1.9 + ~4 GB app/runtime overhead ≈ 17 GB, well under 32 GB
+    even with every slot holding the biggest scope. Hence max_entries=5
+    (was 3 pre-slim). A scope miss re-filters in a few seconds; the disk
+    caches keep everything else fast. Keep the prewarm list (in
+    _prewarm_scope_caches) no larger than this bound or the warm loop just
+    churns the LRU."""
     return _filter_events_impl(_events_df, season_key, comp_key)
 
 
@@ -4055,6 +4114,9 @@ def get_team_primary_formation(events_df, team_name):
     if 'team.formation' not in team_events.columns:
         return '4-4-2'
     formation_counts = team_events['team.formation'].dropna().value_counts()
+    # team.formation is categorical: value_counts lists every category, so
+    # drop zero-count rows or an absent formation could win the fallback.
+    formation_counts = formation_counts[formation_counts > 0]
     if len(formation_counts) > 0:
         return formation_counts.index[0]
     return '4-4-2'  # Default fallback
@@ -4915,7 +4977,10 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         _ellipse_params = {}  # {player_id: (mean, cov_inv, area_sq_m)}
         for _pid, _grp in _open_def.groupby('player.id'):
             # Filter to primary position to avoid inflated areas for multi-position players
+            # (player.position is categorical — drop the zero-count categories
+            # value_counts now reports, else all-NaN players pick a bogus one)
             _pos_counts = _grp['player.position'].dropna().value_counts()
+            _pos_counts = _pos_counts[_pos_counts > 0]
             if not _pos_counts.empty:
                 _primary_pos = _pos_counts.index[0]
                 _grp = _grp[_grp['player.position'] == _primary_pos]
@@ -5551,6 +5616,38 @@ def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_seaso
     return player_stats_df, player_stats_with_scores_df
 
 
+def _log_rss(tag: str) -> None:
+    """One grep-able container-log line: 'RSS x.x GB — <tag>'."""
+    try:
+        import psutil
+        _rss = psutil.Process().memory_info().rss / (1024 ** 3)
+        logger.info(f"RSS {_rss:.1f} GB — {tag}")
+    except Exception:
+        pass  # psutil missing/failing must never take the app down
+
+
+@st.cache_resource(show_spinner=False)
+def _start_rss_telemetry():
+    """Log RSS at boot and every ~5 min from a daemon thread.
+
+    cache_resource makes this a once-per-process singleton (app.py re-executes
+    on every rerun; without the guard each rerun would spawn a new thread).
+    Keeps the next memory incident diagnosable from container logs alone.
+    """
+    import threading, time as _time
+
+    _log_rss('boot')
+
+    def _worker():
+        while True:
+            _time.sleep(300)
+            _log_rss('periodic')
+
+    _t = threading.Thread(target=_worker, name='acp-rss-telemetry', daemon=True)
+    _t.start()
+    return True
+
+
 @st.cache_resource(show_spinner=False)
 def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary_df):
     """Warm every (league, season) scope's IN-MEMORY caches once per process.
@@ -5594,9 +5691,9 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
         _time.sleep(8)
         _t0 = _time.time(); _n = 0
         # Warm ONLY the current-season scopes (the default landing pages).
-        # The filtered-events cache is bounded at max_entries=3 for memory
-        # (see _get_filtered_events_cached) — warming all 9 scopes would
-        # hold ~21 GB of frame copies and just churn the LRU anyway. Other
+        # The filtered-events cache is LRU-bounded at max_entries=5 (see
+        # _get_filtered_events_cached for the memory arithmetic) — keep this
+        # warm list within that bound or the loop just churns the LRU. Other
         # scopes lazy-build in a few seconds on first visit (disk caches
         # cover the expensive layers).
         _WARM_SCOPES = [(_cid, _sid) for _cid, _cfg in COMPETITIONS.items()
@@ -5619,11 +5716,216 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
                 except Exception as _e:
                     logger.warning(f"[prewarm] scope (comp={_cid}, season={_sid}) failed: {_e}")
         logger.info(f"[prewarm] warmed {_n} scope(s) in {_time.time()-_t0:.0f}s")
+        _log_rss('post-prewarm')
 
     _t = threading.Thread(target=_worker, name="acp-prewarm", daemon=True)
     _t.start()
     logger.info("[prewarm] background cache warm started")
     return True
+
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=64)
+def _render_acp_index_card_png(player_id, season_scope_key, stats_cache_ver,
+                               engine_ver, career_view,
+                               _eng_df, _e, _eng_meta):
+    """ACP Index radar + cohort-KDE card, rendered once to PNG bytes.
+
+    This always-on matplotlib figure used to rebuild on every rerun (~2-3 s
+    per profile section toggle). Cached on (playerId, season scope,
+    STATS_CACHE_VERSION, engine rating_version, career_view) — the
+    underscore-prefixed frame/row/meta args are NOT hashed, they are the
+    render inputs. Returns PNG bytes, or None when fewer than 5 radar axes
+    have data (the card is skipped, matching the old inline behavior).
+
+    Radar: RAW per-90 values on a mean ± 2σ scale vs the player's
+    league × season × role cohort, with per-axis cohort distributions on the
+    right — mirrors the traditional radar's raw mode + KDE panels.
+    Set piece removed (Lucas); Duel-att raw = n-weighted take-on/shield
+    Glicko; Def Quality raw = DWAE/90.
+    """
+    _eng_rad_df = _eng_df.copy()
+    _nt = _eng_rad_df['duel_takeon_n'].fillna(0.0)
+    _ns = _eng_rad_df['duel_shield_n'].fillna(0.0)
+    _eng_rad_df['_datt_glicko'] = (
+        (_eng_rad_df['duel_takeon'].fillna(0.0) * _nt
+         + _eng_rad_df['duel_shield'].fillna(0.0) * _ns)
+        / (_nt + _ns).replace(0.0, np.nan))
+    if 'aerial_grade_pct' in _eng_rad_df.columns:
+        _eng_rad_df['_aer_grade100'] = _eng_rad_df['aerial_grade_pct'] * 100.0
+        _eng_rad_df['_grd_grade100'] = _eng_rad_df['ground_grade_pct'] * 100.0
+    _RAD_AXES = [
+        ('Shooting', 'raw_Shooting90', 'output', '{:.2f}'),
+        ('Receiving', 'raw_Receiving90', 'output', '{:.2f}'),
+        ('Creating', 'raw_Creating90', 'passing', '{:.2f}'),
+        ('Linking', 'raw_Linking90', 'passing', '{:.2f}'),
+        ('Dribbling', 'raw_Dribbling90', 'dribbling', '{:.2f}'),
+        ('Off Duel Grade', '_datt_glicko', 'dribbling', '{:.0f}'),
+        ('Aerial Grade', '_aer_grade100', 'defensive', '{:.0f}'),
+        ('Ground Def Grade', '_grd_grade100', 'defensive', '{:.0f}'),
+        ('Def Volume', 'raw_resp', 'defensive', '{:.2f}'),
+        ('RAPM', 'raw_rapm', 'team', '{:.2f}'),
+    ]
+    _RAD_COLORS = {'output': 'green', 'passing': 'orange',
+                    'defensive': 'red', 'dribbling': 'purple',
+                    'team': '#0077b6'}
+    _RAD_LEGEND = [('Output', 'green'),
+                    ('Passing / Creation', 'orange'),
+                    ('Ball Carrying', 'purple'),
+                    ('Defending', 'red'),
+                    ('Team Impact (RAPM)', '#0077b6')]
+    if career_view:
+        # cohort pooled across ALL seasons of this league+role;
+        # player point = minutes-weighted career per-90
+        _coh = _eng_rad_df[
+            (_eng_rad_df['league'] == _e['league'])
+            & (_eng_rad_df['role'] == _e['role'])
+            & (_eng_rad_df['mins_played'] >= 500)]
+        _pr = _eng_rad_df[_eng_rad_df['playerId'] == int(player_id)]
+        _pw = pd.to_numeric(_pr['mins_played'], errors='coerce').fillna(0.0).to_numpy()
+        _pe = _pr.sort_values('mins_played').iloc[-1].copy()
+        for _rc in [c for _, c, _g, _fm in _RAD_AXES]:
+            if _rc in _pr.columns and _pw.sum() > 0:
+                _rv = pd.to_numeric(_pr[_rc], errors='coerce').to_numpy()
+                _rm = ~np.isnan(_rv)
+                if _rm.any():
+                    _pe[_rc] = float(np.average(_rv[_rm], weights=_pw[_rm]))
+    else:
+        _coh = _eng_rad_df[
+            (_eng_rad_df['league'] == _e['league'])
+            & (_eng_rad_df['seasonId'] == _e['seasonId'])
+            & (_eng_rad_df['role'] == _e['role'])
+            & (_eng_rad_df['mins_played'] >= 500)]
+        _pe = _eng_rad_df.loc[_e.name]
+    _rad = []
+    for _lbl, _col, _g, _f in _RAD_AXES:
+        if _col not in _eng_rad_df.columns:
+            continue
+        _pv = _pe.get(_col)
+        _pop = _coh[_col].dropna()
+        if _pv is None or pd.isna(_pv) or len(_pop) < 5:
+            continue
+        _mu = float(_pop.mean())
+        _sd = float(_pop.std()) or 1.0
+        _mapped = float(np.clip(
+            50.0 + (float(_pv) - _mu) / _sd * 25.0, 0.0, 100.0))
+        _rad.append((_lbl, _mapped, _g, float(_pv), _mu, _sd,
+                      _f, _pop))
+    if len(_rad) < 5:
+        return None
+    from math import pi as _pi
+    _n = len(_rad)
+    _ang = [k / float(_n) * 2 * _pi for k in range(_n)]
+    _vals = [m for _, m, _g, _pv, _mu, _sd, _f, _pop in _rad]
+    _figr = plt.figure(figsize=(20, 10))
+    try:
+        _figr.patch.set_facecolor((0.95, 0.92, 0.87))
+        _gsr = GridSpec(1, 2, width_ratios=[2.5, 1.2],
+                         figure=_figr)
+        _axr = plt.subplot(_gsr[0], polar=True)
+        _axr.set_facecolor((0.99, 0.98, 0.95))
+        _figr.subplots_adjust(top=0.80, bottom=0.08, left=0.03)
+        _axr.set_theta_offset(_pi / 2)    # first axis at 12 o'clock
+        _axr.set_theta_direction(-1)       # clockwise
+        _axr.set_xticks(_ang)
+        _axr.set_xticklabels([])
+        _axr.plot(_ang + _ang[:1], _vals + _vals[:1],
+                   linewidth=2, linestyle='solid',
+                   color='#0077b6', zorder=3)
+        _axr.fill(_ang + _ang[:1], _vals + _vals[:1],
+                   '#0077b6', alpha=0.25, zorder=2)
+        _axr.set_rlabel_position(-180.0 / _n)
+        _axr.set_yticks([25, 50, 75, 100])
+        _axr.set_yticklabels(["", "", "", ""],
+                               color="grey", size=7)
+        _axr.set_ylim(0, 100)
+        # per-spoke gridline labels show RAW cohort values at
+        # -1σ / mean / +1σ / +2σ (traditional raw mode)
+        for _k, (_lbl, _m, _g, _pv, _mu, _sd, _f, _pop) in enumerate(_rad):
+            for _lvl, _sig in zip([25, 50, 75, 100],
+                                    [-1, 0, 1, 2]):
+                _axr.text(_ang[_k], _lvl + 3,
+                           _f.format(_mu + _sig * _sd),
+                           size=7, ha='center', va='bottom',
+                           color='black')
+            _axr.text(_ang[_k], 116, _lbl, size=10,
+                       ha='center', va='center',
+                       color=_RAD_COLORS[_g], fontweight='bold')
+        _team_lbl = (str(_e.get('team'))
+                      if pd.notna(_e.get('team')) else '')
+        plt.figtext(0.04, 0.95,
+                     f"{_e['name']}"
+                     + (f" | {_team_lbl}" if _team_lbl else ''),
+                     fontsize=16, color='black', ha='left',
+                     weight='bold')
+        _disp_mins = (_e['mins_lineup']
+                       if pd.notna(_e.get('mins_lineup'))
+                       else _e['mins_played'])
+        plt.figtext(0.04, 0.905,
+                     f"{_e['role']} | {int(_disp_mins)} minutes"
+                     f" | ACP Index {_e['acp_rating']:.0f}"
+                     + (f" → projection {_e['projection']:.0f}"
+                        if pd.notna(_e.get('projection')) else '')
+                     + " | Raw per 90 vs role cohort (mean ± 2σ)",
+                     fontsize=12, color='black', ha='left')
+        _patches = [plt.Line2D([0], [0], color=c, lw=4)
+                    for _, c in _RAD_LEGEND]
+        _figr.legend(_patches, [l for l, _ in _RAD_LEGEND],
+                      loc='upper right',
+                      bbox_to_anchor=(0.60, 0.99),
+                      frameon=False, fontsize=9)
+        # --- cohort distribution panels (right side) -------
+        _gsd = GridSpec(_n, 1, left=0.66, right=0.92,
+                         top=0.86, bottom=0.07, hspace=0.7,
+                         figure=_figr)
+        for _k, (_lbl, _m, _g, _pv, _mu, _sd, _f, _pop) in enumerate(_rad):
+            _axd = plt.subplot(_gsd[_k])
+            _axd.set_facecolor((0.99, 0.98, 0.95))
+            if len(_pop) > 1:
+                sns.kdeplot(_pop, ax=_axd, fill=True,
+                             color=_RAD_COLORS[_g], cut=0)
+            _pct = scipy.stats.percentileofscore(
+                _pop, _pv, kind='strict')
+            _lo = float(min(_pop.min(), _pv))
+            _hi = float(max(_pop.max(), _pv))
+            if _lo == _hi:
+                _lo, _hi = _lo - 0.1, _hi + 0.1
+            _axd.set_xlim(_lo, _hi)
+            _axd.set_xticks([_lo, _hi])
+            _axd.set_xticklabels([_f.format(_lo), _f.format(_hi)],
+                                   fontsize=8)
+            _axd.axvline(_pv, color='blue', linestyle='--')
+            _sfx = get_percentile_suffix(int(_pct))
+            _axd.text(1.04, 0.5,
+                       f"%-tile: {int(_pct)}{_sfx}\n"
+                       f"value: {_f.format(_pv)}",
+                       transform=_axd.transAxes, fontsize=8,
+                       va='center')
+            _axd.set_yticks([])
+            _axd.set_ylabel('')
+            _axd.set_xlabel('')
+            _lgd = _axd.get_legend()
+            if _lgd is not None:
+                _lgd.remove()
+            _axd.text(-0.04, 0.5, _lbl, transform=_axd.transAxes,
+                       fontsize=9, fontweight='bold',
+                       va='center', ha='right')
+        plt.figtext(0.04, 0.035,
+                     f"Raw per-90 values vs {_e['role']} cohort "
+                     f"({_e['league']}, current season, 500+ mins) · "
+                     f"Aerial/Ground Def Grade = wins-above-expectation "
+                     f"+ opponent-adjusted duel ladder, 0-100 in cohort · "
+                     f"Off Duel Grade raw = take-on/shield Glicko · "
+                     f"RAPM = on-pitch xGD/90 · "
+                     f"Engine {_eng_meta.get('rating_version', '')} · "
+                     f"Data via Wyscout · @lucaskimball · "
+                     f"{datetime.date.today()}",
+                     ha='left', fontsize=9, color='black')
+        _buf = io.BytesIO()
+        _figr.savefig(_buf, format='png', dpi=110,
+                      facecolor=_figr.get_facecolor())
+        return _buf.getvalue()
+    finally:
+        plt.close(_figr)
 
 
 def auto_column_config(df):
@@ -6409,7 +6711,12 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
     teams = season_events_df['team.name'].unique()
     matches_played = season_events_df.groupby('team.name')['matchId'].nunique() if 'matchId' in season_events_df.columns else pd.Series(dtype='int')
 
-    season_events_df['possession.duration_sec'] = pd.to_numeric(season_events_df.get('possession.duration', pd.Series(dtype='str')).str.replace('s', ''), errors='coerce')
+    # possession.duration arrives as float32 since the load_data memory slim;
+    # keep a str-path for stray frames that still carry the raw "12.3s" form.
+    _pd_dur = season_events_df.get('possession.duration', pd.Series(dtype='float'))
+    if _pd_dur.dtype == object:
+        _pd_dur = _pd_dur.str.replace('s', '', regex=False)
+    season_events_df['possession.duration_sec'] = pd.to_numeric(_pd_dur, errors='coerce')
     season_events_df['location.x'] = pd.to_numeric(season_events_df.get('location.x'), errors='coerce')
     season_events_df['location.y'] = pd.to_numeric(season_events_df.get('location.y'), errors='coerce')
     season_events_df['pass.endLocation.x'] = pd.to_numeric(season_events_df.get('pass.endLocation.x'), errors='coerce')
@@ -8636,6 +8943,12 @@ st.markdown('<h1 style="text-align: center; color: #1a1a1a; font-weight: 700; le
 with st.spinner("Loading match data..."):
     raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups = load_data()
 
+# RSS telemetry: boot line + 5-min daemon (singleton via cache_resource)
+try:
+    _start_rss_telemetry()
+except Exception as _rss_e:
+    logger.warning(f"[rss] telemetry could not start: {_rss_e}")
+
 # --- Declare player_stats_with_scores_df globally for the app session ---
 # This ensures it's accessible inside the plotting function
 player_stats_with_scores_df = pd.DataFrame()
@@ -10252,189 +10565,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             st.caption(f"{_lbl} · {float(_v)*100:.0f}")
                         else:
                             st.caption(f"{_lbl} · —")
-                # --- ACP Index radar: RAW per-90 values on a mean ± 2σ
-                # scale vs the player's league × season × role cohort,
-                # with per-axis cohort distributions on the right —
-                # mirrors the traditional radar's raw mode + KDE panels.
-                # Set piece removed (Lucas); Duel-att raw = n-weighted
-                # take-on/shield Glicko; Def Quality raw = DWAE/90.
-                _eng_rad_df = _eng_df.copy()
-                _nt = _eng_rad_df['duel_takeon_n'].fillna(0.0)
-                _ns = _eng_rad_df['duel_shield_n'].fillna(0.0)
-                _eng_rad_df['_datt_glicko'] = (
-                    (_eng_rad_df['duel_takeon'].fillna(0.0) * _nt
-                     + _eng_rad_df['duel_shield'].fillna(0.0) * _ns)
-                    / (_nt + _ns).replace(0.0, np.nan))
-                if 'aerial_grade_pct' in _eng_rad_df.columns:
-                    _eng_rad_df['_aer_grade100'] = _eng_rad_df['aerial_grade_pct'] * 100.0
-                    _eng_rad_df['_grd_grade100'] = _eng_rad_df['ground_grade_pct'] * 100.0
-                _RAD_AXES = [
-                    ('Shooting', 'raw_Shooting90', 'output', '{:.2f}'),
-                    ('Receiving', 'raw_Receiving90', 'output', '{:.2f}'),
-                    ('Creating', 'raw_Creating90', 'passing', '{:.2f}'),
-                    ('Linking', 'raw_Linking90', 'passing', '{:.2f}'),
-                    ('Dribbling', 'raw_Dribbling90', 'dribbling', '{:.2f}'),
-                    ('Off Duel Grade', '_datt_glicko', 'dribbling', '{:.0f}'),
-                    ('Aerial Grade', '_aer_grade100', 'defensive', '{:.0f}'),
-                    ('Ground Def Grade', '_grd_grade100', 'defensive', '{:.0f}'),
-                    ('Def Volume', 'raw_resp', 'defensive', '{:.2f}'),
-                    ('RAPM', 'raw_rapm', 'team', '{:.2f}'),
-                ]
-                _RAD_COLORS = {'output': 'green', 'passing': 'orange',
-                                'defensive': 'red', 'dribbling': 'purple',
-                                'team': '#0077b6'}
-                _RAD_LEGEND = [('Output', 'green'),
-                                ('Passing / Creation', 'orange'),
-                                ('Ball Carrying', 'purple'),
-                                ('Defending', 'red'),
-                                ('Team Impact (RAPM)', '#0077b6')]
-                if _career_view:
-                    # cohort pooled across ALL seasons of this league+role;
-                    # player point = minutes-weighted career per-90
-                    _coh = _eng_rad_df[
-                        (_eng_rad_df['league'] == _e['league'])
-                        & (_eng_rad_df['role'] == _e['role'])
-                        & (_eng_rad_df['mins_played'] >= 500)]
-                    _pr = _eng_rad_df[_eng_rad_df['playerId'] == int(selected_player_id)]
-                    _pw = pd.to_numeric(_pr['mins_played'], errors='coerce').fillna(0.0).to_numpy()
-                    _pe = _pr.sort_values('mins_played').iloc[-1].copy()
-                    for _rc in [c for _, c, _g, _fm in _RAD_AXES]:
-                        if _rc in _pr.columns and _pw.sum() > 0:
-                            _rv = pd.to_numeric(_pr[_rc], errors='coerce').to_numpy()
-                            _rm = ~np.isnan(_rv)
-                            if _rm.any():
-                                _pe[_rc] = float(np.average(_rv[_rm], weights=_pw[_rm]))
-                else:
-                    _coh = _eng_rad_df[
-                        (_eng_rad_df['league'] == _e['league'])
-                        & (_eng_rad_df['seasonId'] == _e['seasonId'])
-                        & (_eng_rad_df['role'] == _e['role'])
-                        & (_eng_rad_df['mins_played'] >= 500)]
-                    _pe = _eng_rad_df.loc[_e.name]
-                _rad = []
-                for _lbl, _col, _g, _f in _RAD_AXES:
-                    if _col not in _eng_rad_df.columns:
-                        continue
-                    _pv = _pe.get(_col)
-                    _pop = _coh[_col].dropna()
-                    if _pv is None or pd.isna(_pv) or len(_pop) < 5:
-                        continue
-                    _mu = float(_pop.mean())
-                    _sd = float(_pop.std()) or 1.0
-                    _mapped = float(np.clip(
-                        50.0 + (float(_pv) - _mu) / _sd * 25.0, 0.0, 100.0))
-                    _rad.append((_lbl, _mapped, _g, float(_pv), _mu, _sd,
-                                  _f, _pop))
-                if len(_rad) >= 5:
-                    from math import pi as _pi
-                    _n = len(_rad)
-                    _ang = [k / float(_n) * 2 * _pi for k in range(_n)]
-                    _vals = [m for _, m, _g, _pv, _mu, _sd, _f, _pop in _rad]
-                    _figr = plt.figure(figsize=(20, 10))
-                    _figr.patch.set_facecolor((0.95, 0.92, 0.87))
-                    _gsr = GridSpec(1, 2, width_ratios=[2.5, 1.2],
-                                     figure=_figr)
-                    _axr = plt.subplot(_gsr[0], polar=True)
-                    _axr.set_facecolor((0.99, 0.98, 0.95))
-                    _figr.subplots_adjust(top=0.80, bottom=0.08, left=0.03)
-                    _axr.set_theta_offset(_pi / 2)    # first axis at 12 o'clock
-                    _axr.set_theta_direction(-1)       # clockwise
-                    _axr.set_xticks(_ang)
-                    _axr.set_xticklabels([])
-                    _axr.plot(_ang + _ang[:1], _vals + _vals[:1],
-                               linewidth=2, linestyle='solid',
-                               color='#0077b6', zorder=3)
-                    _axr.fill(_ang + _ang[:1], _vals + _vals[:1],
-                               '#0077b6', alpha=0.25, zorder=2)
-                    _axr.set_rlabel_position(-180.0 / _n)
-                    _axr.set_yticks([25, 50, 75, 100])
-                    _axr.set_yticklabels(["", "", "", ""],
-                                           color="grey", size=7)
-                    _axr.set_ylim(0, 100)
-                    # per-spoke gridline labels show RAW cohort values at
-                    # -1σ / mean / +1σ / +2σ (traditional raw mode)
-                    for _k, (_lbl, _m, _g, _pv, _mu, _sd, _f, _pop) in enumerate(_rad):
-                        for _lvl, _sig in zip([25, 50, 75, 100],
-                                                [-1, 0, 1, 2]):
-                            _axr.text(_ang[_k], _lvl + 3,
-                                       _f.format(_mu + _sig * _sd),
-                                       size=7, ha='center', va='bottom',
-                                       color='black')
-                        _axr.text(_ang[_k], 116, _lbl, size=10,
-                                   ha='center', va='center',
-                                   color=_RAD_COLORS[_g], fontweight='bold')
-                    _team_lbl = (str(_e.get('team'))
-                                  if pd.notna(_e.get('team')) else '')
-                    plt.figtext(0.04, 0.95,
-                                 f"{_e['name']}"
-                                 + (f" | {_team_lbl}" if _team_lbl else ''),
-                                 fontsize=16, color='black', ha='left',
-                                 weight='bold')
-                    _disp_mins = (_e['mins_lineup']
-                                   if pd.notna(_e.get('mins_lineup'))
-                                   else _e['mins_played'])
-                    plt.figtext(0.04, 0.905,
-                                 f"{_e['role']} | {int(_disp_mins)} minutes"
-                                 f" | ACP Index {_e['acp_rating']:.0f}"
-                                 + (f" → projection {_e['projection']:.0f}"
-                                    if pd.notna(_e.get('projection')) else '')
-                                 + " | Raw per 90 vs role cohort (mean ± 2σ)",
-                                 fontsize=12, color='black', ha='left')
-                    _patches = [plt.Line2D([0], [0], color=c, lw=4)
-                                for _, c in _RAD_LEGEND]
-                    _figr.legend(_patches, [l for l, _ in _RAD_LEGEND],
-                                  loc='upper right',
-                                  bbox_to_anchor=(0.60, 0.99),
-                                  frameon=False, fontsize=9)
-                    # --- cohort distribution panels (right side) -------
-                    _gsd = GridSpec(_n, 1, left=0.66, right=0.92,
-                                     top=0.86, bottom=0.07, hspace=0.7,
-                                     figure=_figr)
-                    for _k, (_lbl, _m, _g, _pv, _mu, _sd, _f, _pop) in enumerate(_rad):
-                        _axd = plt.subplot(_gsd[_k])
-                        _axd.set_facecolor((0.99, 0.98, 0.95))
-                        if len(_pop) > 1:
-                            sns.kdeplot(_pop, ax=_axd, fill=True,
-                                         color=_RAD_COLORS[_g], cut=0)
-                        _pct = scipy.stats.percentileofscore(
-                            _pop, _pv, kind='strict')
-                        _lo = float(min(_pop.min(), _pv))
-                        _hi = float(max(_pop.max(), _pv))
-                        if _lo == _hi:
-                            _lo, _hi = _lo - 0.1, _hi + 0.1
-                        _axd.set_xlim(_lo, _hi)
-                        _axd.set_xticks([_lo, _hi])
-                        _axd.set_xticklabels([_f.format(_lo), _f.format(_hi)],
-                                               fontsize=8)
-                        _axd.axvline(_pv, color='blue', linestyle='--')
-                        _sfx = get_percentile_suffix(int(_pct))
-                        _axd.text(1.04, 0.5,
-                                   f"%-tile: {int(_pct)}{_sfx}\n"
-                                   f"value: {_f.format(_pv)}",
-                                   transform=_axd.transAxes, fontsize=8,
-                                   va='center')
-                        _axd.set_yticks([])
-                        _axd.set_ylabel('')
-                        _axd.set_xlabel('')
-                        _lgd = _axd.get_legend()
-                        if _lgd is not None:
-                            _lgd.remove()
-                        _axd.text(-0.04, 0.5, _lbl, transform=_axd.transAxes,
-                                   fontsize=9, fontweight='bold',
-                                   va='center', ha='right')
-                    plt.figtext(0.04, 0.035,
-                                 f"Raw per-90 values vs {_e['role']} cohort "
-                                 f"({_e['league']}, current season, 500+ mins) · "
-                                 f"Aerial/Ground Def Grade = wins-above-expectation "
-                                 f"+ opponent-adjusted duel ladder, 0-100 in cohort · "
-                                 f"Off Duel Grade raw = take-on/shield Glicko · "
-                                 f"RAPM = on-pitch xGD/90 · "
-                                 f"Engine {_eng_meta.get('rating_version', '')} · "
-                                 f"Data via Wyscout · @lucaskimball · "
-                                 f"{datetime.date.today()}",
-                                 ha='left', fontsize=9, color='black')
-                    st.pyplot(_figr, use_container_width=True)
-                    plt.close(_figr)
+                # --- ACP Index radar card: cached PNG render (see
+                # _render_acp_index_card_png). Building the matplotlib
+                # radar+KDE figure inline cost ~2-3 s on every rerun /
+                # profile section toggle; the PNG bytes are cached on
+                # (player, season scope, stats-cache ver, engine ver).
+                _card_png = _render_acp_index_card_png(
+                    int(selected_player_id),
+                    tuple(sorted(_e_sids)) if _e_sids else (),
+                    STATS_CACHE_VERSION,
+                    str(_eng_meta.get('rating_version', '')),
+                    _career_view,
+                    _eng_df, _e, _eng_meta)
+                if _card_png:
+                    st.image(_card_png, use_container_width=True)
                 # --- Projection outlook fan chart (prototype) ---
                 try:
                     from pitch_interactive import plotly_projection_fan
