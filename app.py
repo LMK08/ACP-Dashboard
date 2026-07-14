@@ -1667,14 +1667,22 @@ def get_season_events(raw_events_df, season_id):
         return raw_events_df[raw_events_df['seasonId'].isin(season_id)]
     return raw_events_df[raw_events_df['seasonId'] == season_id]
 
-@st.cache_resource(ttl=86400, show_spinner=False)
+@st.cache_resource(ttl=86400, show_spinner=False, max_entries=3)
 def _get_filtered_events_cached(_events_df, season_key, comp_key):
     """Cache wrapper keyed on the hashable season/comp tuple. Uses
     cache_RESOURCE (returns the SAME object, no copy) — a season's events
     are ~657 MB, and cache_data was deserializing a full copy on EVERY
     rerun (the dominant per-interaction cost). Downstream consumers only
     read/slice/.copy() the frame (never mutate in place), so sharing one
-    read-only instance across reruns is safe."""
+    read-only instance across reruns is safe.
+
+    max_entries=3 (LRU) is load-bearing: the master frame is ~10.5 GB deep
+    and the per-scope filtered copies total ~21 GB across all 9 scopes —
+    unbounded, the warm Space sat at ~31.5 GB on 32 GB hardware and
+    segfaulted (exit 139) on any allocation spike (2026-07-14). A scope
+    miss re-filters in a few seconds; the disk caches keep everything else
+    fast. Keep the prewarm list (in _prewarm_scope_caches) no larger than
+    this bound or the warm loop just churns the LRU."""
     return _filter_events_impl(_events_df, season_key, comp_key)
 
 
@@ -5591,16 +5599,22 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
             except Exception:
                 pass
         # Politeness: this thread shares the process (and the GIL) with the
-        # script runner. On the 2-vCPU Space an unthrottled warm loop starves
-        # every interaction for minutes after a deploy — users see section
-        # toggles stuck on "Running" (2026-07-14). Let the first page load
-        # settle, then yield between scopes so clicks preempt the warm-up.
+        # script runner. On the shared-CPU Space an unthrottled warm loop
+        # starves every interaction for minutes after a deploy — users see
+        # section toggles stuck on "Running" (2026-07-14). Let the first
+        # page load settle, then yield between scopes so clicks preempt.
         _time.sleep(8)
         _t0 = _time.time(); _n = 0
-        for _cid, _cfg in COMPETITIONS.items():
-            # single seasons first (cheaper, more scopes ready sooner), then the
-            # All-Seasons (None) scope — the heaviest cold build.
-            for _sid in (list(_cfg.get('seasons', {}).keys()) + [None]):
+        # Warm ONLY the current-season scopes (the default landing pages).
+        # The filtered-events cache is bounded at max_entries=3 for memory
+        # (see _get_filtered_events_cached) — warming all 9 scopes would
+        # hold ~21 GB of frame copies and just churn the LRU anyway. Other
+        # scopes lazy-build in a few seconds on first visit (disk caches
+        # cover the expensive layers).
+        _WARM_SCOPES = [(_cid, _sid) for _cid, _cfg in COMPETITIONS.items()
+                        for _sid in _cfg.get('seasons', {})
+                        if _sid in (CURRENT_SEASON_ID, 191779)]
+        for _cid, _sid in _WARM_SCOPES:
                 _time.sleep(2.0)
                 try:
                     _ev = get_filtered_events(_raw_events_df, _sid, [_cid])
