@@ -11799,30 +11799,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             
                 # --- DATA PROCESSING END ---
 
-                # --- VISUALIZATION ---
-                col_shot_map, col_shot_table = st.columns([1, 1.4])
-            
-                with col_shot_map:
-                    st.markdown("**Season Shot Map**")
-                    # Interactive upgrade — hover a dot for date/opponent/
-                    # minute/result/xG/body part; static mpl version kept
-                    # for the PDF one-pager.
-                    st.plotly_chart(
-                        plotly_shot_map(shot_log, selected_player_name),
-                        use_container_width=True,
-                        config={'displayModeBar': False})
-                
-                with col_shot_table:
-                    st.markdown("**Shot Log**")
-                
-                    # Prepare display table
-                    display_cols = ['Shot Number', 'Date', 'Opponent', 'Result', 'xG', 'Body Part', 'SCA']
-                    table_display = shot_log[display_cols].rename(columns={
-                        'Shot Number': '#',
-                        'SCA': 'Creating Action'
-                    }).sort_values(by='#', ascending=False) # Show newest first (highest number)
-                
-                    st.dataframe(table_display, use_container_width=True, height=500, hide_index=True, column_config=auto_column_config(table_display))
+                # --- VISUALIZATION: one combined visual — full-width
+                # StatsBomb-style map (shape = creating action, color =
+                # xG, ring = goal), shot log directly beneath. Static mpl
+                # version kept for the PDF one-pager.
+                st.plotly_chart(
+                    plotly_shot_map(shot_log, selected_player_name,
+                                    height=660),
+                    use_container_width=True,
+                    config={'displayModeBar': False})
+
+                st.markdown("**Shot Log**")
+                display_cols = ['Shot Number', 'Date', 'Opponent', 'Result', 'xG', 'Body Part', 'SCA']
+                table_display = shot_log[display_cols].rename(columns={
+                    'Shot Number': '#',
+                    'SCA': 'Creating Action'
+                }).sort_values(by='#', ascending=False) # Show newest first (highest number)
+
+                st.dataframe(table_display, use_container_width=True, height=380, hide_index=True, column_config=auto_column_config(table_display))
 
                 # --- NEW: SUMMARY TABLES ---
                 st.markdown("---")
