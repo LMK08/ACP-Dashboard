@@ -1,14 +1,40 @@
 """
-Pre-compute player stats and percentiles for all seasons.
-Saves to stats_cache/ so the Streamlit app loads instantly.
+!!! DEPRECATED — DO NOT USE !!!
 
-Run this after process_data.py or whenever data changes.
+This script is a stale replica of the stats pipeline in app.py and its
+outputs are NOT read by anything:
+
+  * It writes legacy un-versioned cache files
+    (stats_cache/player_stats_{season_id}.parquet). The app only loads the
+    versioned player_stats_v14_* files written by
+    calculate_all_player_stats() in app.py.
+  * Its GK aggregation predates the numeric-coercion fix for
+    shot.isGoal (app.py commit 424852e), so the goalsConceded /
+    savePercentage numbers it computes are wrong.
+  * Its hardcoded ALL_SEASON_IDS list is missing seasons (e.g. 190230,
+    191779) that the canonical cache covers.
+
+To regenerate the stats caches, use the canonical pipeline instead:
+
+    python app.py --precompute
+
+(which is also what .github/workflows/precompute_caches.yml runs).
+
+The runtime guard below aborts execution; pass --force-deprecated to run
+anyway at your own risk.
 """
 import os
 import sys
 import pandas as pd
 import pickle
 import numpy as np
+
+if '--force-deprecated' not in sys.argv:
+    sys.exit(
+        "precompute_stats.py is DEPRECATED: its outputs are unused and its GK "
+        "stats are wrong (see module docstring). Use `python app.py --precompute` "
+        "instead, or pass --force-deprecated to run anyway."
+    )
 
 # We need the computation logic from app.py but can't import it directly
 # due to Streamlit decorators. So we replicate the essential functions here.
