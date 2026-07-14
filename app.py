@@ -956,6 +956,16 @@ DEFR_RADAR_MAP = {
 }
 
 
+def _season_id_list(active):
+    """Normalize get_season_ids_for_selection output (None | int | list)
+    to a list of ints. Empty list = All Seasons (no season filter)."""
+    if active is None:
+        return []
+    if isinstance(active, (list, tuple, set)):
+        return [int(s) for s in active if s is not None and pd.notna(s)]
+    return [int(active)]
+
+
 @st.cache_data(ttl=86400)
 def load_box_passes():
     """Per-event passes into the attacking box with GPA pass values
@@ -10456,10 +10466,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                                if m in _op_row.index
                                                and m not in RADAR_HIDDEN_METRICS]
                                 if _op_metrics:
-                                    _op_seasons = (
-                                        list(active_season_ids)
-                                        if isinstance(active_season_ids, (list, tuple, set))
-                                        else [active_season_ids])
+                                    _op_seasons = _season_id_list(active_season_ids)
                                     _op_season_lbl = (
                                         SEASON_ID_MAP.get(_op_seasons[0], '')
                                         if len(_op_seasons) == 1 else 'All Seasons')
@@ -10491,14 +10498,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     try:
                         _op_bp = load_box_passes()
                         if not _op_bp.empty:
-                            _op_bp_seasons = (
-                                active_season_ids
-                                if isinstance(active_season_ids, (list, tuple, set))
-                                else [active_season_ids])
+                            _op_bp_seasons = _season_id_list(active_season_ids)
                             _op_bp = _op_bp[
-                                (_op_bp['player.id'] == int(selected_player_id))
-                                & (_op_bp['seasonId'].isin(
-                                    [int(s) for s in _op_bp_seasons]))]
+                                _op_bp['player.id'] == int(selected_player_id)]
+                            if _op_bp_seasons:
+                                _op_bp = _op_bp[
+                                    _op_bp['seasonId'].isin(_op_bp_seasons)]
                             if not _op_bp.empty:
                                 _op_fig_passes = mpl_box_passes_map(
                                     _op_bp, selected_player_name)
@@ -11844,13 +11849,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if _bp_all.empty:
                 st.caption("Box-pass data not available in this deployment.")
             else:
-                _bp_seasons = (active_season_ids
-                               if isinstance(active_season_ids, (list, tuple, set))
-                               else [active_season_ids])
+                _bp_seasons = _season_id_list(active_season_ids)
                 _bp_p = _bp_all[
-                    (_bp_all['player.id'] == int(selected_player_id)) &
-                    (_bp_all['seasonId'].isin([int(s) for s in _bp_seasons]))
-                ].copy()
+                    _bp_all['player.id'] == int(selected_player_id)].copy()
+                if _bp_seasons:
+                    _bp_p = _bp_p[_bp_p['seasonId'].isin(_bp_seasons)]
                 if _bp_p.empty:
                     st.info("No passes into the box recorded for this player "
                             "in the selected season(s).")
