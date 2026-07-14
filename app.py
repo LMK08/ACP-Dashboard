@@ -5590,11 +5590,18 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
                 _logging.getLogger(_nm).setLevel(_logging.ERROR)
             except Exception:
                 pass
+        # Politeness: this thread shares the process (and the GIL) with the
+        # script runner. On the 2-vCPU Space an unthrottled warm loop starves
+        # every interaction for minutes after a deploy — users see section
+        # toggles stuck on "Running" (2026-07-14). Let the first page load
+        # settle, then yield between scopes so clicks preempt the warm-up.
+        _time.sleep(8)
         _t0 = _time.time(); _n = 0
         for _cid, _cfg in COMPETITIONS.items():
             # single seasons first (cheaper, more scopes ready sooner), then the
             # All-Seasons (None) scope — the heaviest cold build.
             for _sid in (list(_cfg.get('seasons', {}).keys()) + [None]):
+                _time.sleep(2.0)
                 try:
                     _ev = get_filtered_events(_raw_events_df, _sid, [_cid])
                     _mins = get_season_player_minutes(_player_minutes_data, _sid, comp_ids=[_cid])
