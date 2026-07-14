@@ -10400,11 +10400,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.plotly_chart(_fan, use_container_width=True,
                                         config={'displayModeBar': False})
                         st.caption(
-                            "Career ratings by age flowing into next "
-                            "season's projection. Shaded fan = ±1 SD of "
-                            "the projection; green band = typical peak "
-                            "ages for the role (literature-based curve "
-                            "used by the projection model).")
+                            "Career ratings by season (league and age on "
+                            "each tick) flowing into next season's "
+                            "projection. Shaded fan = ±1 SD of the "
+                            "projection; a faded segment bridges seasons "
+                            "missing from our data; green band = typical "
+                            "peak ages for the role (literature-based "
+                            "curve used by the projection model); "
+                            "evidence % = how much data underwrites the "
+                            "starting point. Cross-league careers plot on "
+                            "the L3-equivalent scale (CAMP seasons "
+                            "discounted by the league conversion — hover "
+                            "a dot for the native rating).")
                 except Exception:
                     logger.exception("Projection fan chart failed")
                 st.caption(

@@ -252,10 +252,24 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
     if proj_rows.empty:
         return None
     pr = proj_rows.iloc[-1]
-    proj, band = float(pr['projection']), float(pr.get('band_sd', 5.0) or 5.0)
+    band = float(pr.get('band_sd', 5.0) or 5.0)
     role = str(pr.get('role', ''))
+    # cross-league careers plot on the L3-equivalent (abs) scale so the
+    # line doesn't jump between league baselines; CAMP seasons are
+    # discounted by the league-conversion delta
+    use_abs = (df['league'].astype(str).nunique() > 1
+               and 'acp_rating_abs' in df.columns)
+    if use_abs:
+        df['_val'] = pd.to_numeric(df['acp_rating_abs'],
+                                   errors='coerce').fillna(df['acp_rating'])
+        proj = (float(pr['projection_abs'])
+                if pd.notna(pr.get('projection_abs'))
+                else float(pr['projection']))
+    else:
+        df['_val'] = df['acp_rating']
+        proj = float(pr['projection'])
     last = df.iloc[-1]
-    x_last, y_last = float(last['yr']), float(last['acp_rating'])
+    x_last, y_last = float(last['yr']), float(last['_val'])
     x_proj = x_last + 1
 
     fig = go.Figure()
@@ -275,6 +289,7 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
     # league-average reference
     fig.add_hline(y=50, line_dash='dot', line_color='rgba(128,128,128,0.6)',
                   annotation_text='league avg (50)',
+                  annotation_position='bottom left',
                   annotation_font=dict(size=10, color='gray'))
     # uncertainty fan (±1 SD)
     fig.add_trace(go.Scatter(
@@ -282,13 +297,37 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
         y=[y_last, proj + band, proj - band, y_last],
         mode='none', fill='toself', fillcolor='rgba(42,168,118,0.16)',
         hoverinfo='skip', showlegend=False))
-    # career history
-    hovers = [f"{season_labels.get(int(r['seasonId']), r['seasonId'])} · "
-              f"{r.get('league', '')}<br>rating {r['acp_rating']:.1f} · "
-              f"{int(r['mins_played'])}'" for _, r in df.iterrows()]
+    # career history — solid segments between consecutive seasons, FADED
+    # across gaps (dashed is reserved for the projection connector; with
+    # every season shown on the axis, a missing dot + faded bridge reads
+    # as "no data those years")
+    _yrs = df['yr'].tolist()
+    _vals = df['_val'].tolist()
+    for _i in range(len(_yrs) - 1):
+        _gap = _yrs[_i + 1] - _yrs[_i]
+        fig.add_trace(go.Scatter(
+            x=[_yrs[_i], _yrs[_i + 1]], y=[_vals[_i], _vals[_i + 1]],
+            mode='lines',
+            line=dict(color=('rgba(57,135,229,0.30)' if _gap > 1
+                             else '#3987e5'),
+                      width=2 if _gap > 1 else 2.5),
+            hoverinfo='skip', showlegend=False))
+
+    def _hover(r):
+        lbl = (f"{season_labels.get(int(r['seasonId']), r['seasonId'])} · "
+               f"{r.get('league', '')}<br>")
+        native = float(r['acp_rating'])
+        val = float(r['_val'])
+        if abs(native - val) > 0.05:
+            lbl += f"rating {native:.1f} → L3-eq {val:.1f}"
+        else:
+            lbl += f"rating {val:.1f}"
+        return lbl + f" · {int(r['mins_played'])}'"
+
+    hovers = [_hover(r) for _, r in df.iterrows()]
     fig.add_trace(go.Scatter(
-        x=df['yr'], y=df['acp_rating'], mode='lines+markers',
-        line=dict(color='#3987e5', width=2.5), marker=dict(size=9),
+        x=df['yr'], y=df['_val'], mode='markers',
+        marker=dict(size=9, color='#3987e5'),
         text=hovers, hovertemplate='%{text}<extra></extra>',
         name='seasons'))
     # dashed connector + projection diamond
@@ -306,16 +345,48 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
         hovertemplate=(f'projection {proj:.1f} ± {band:.1f}'
                        '<extra></extra>'),
         name='projection'))
+    # evidence % — the data weight behind the projection's starting point
+    _w_ev = pd.to_numeric(pr.get('w_evidence'), errors='coerce')
+    if pd.notna(_w_ev):
+        fig.add_annotation(
+            x=x_proj, y=proj,
+            yshift=(-34 if y_last > proj else 34),
+            text=f'evidence {float(_w_ev):.0%}', showarrow=False,
+            font=dict(size=10.5, color='rgba(128,128,128,0.9)'))
 
-    # season labels on the x ticks ('25-26' style), projection tick marked
-    tickvals = list(df['yr']) + [x_proj]
+    # x ticks: EVERY season from first career year to the projection —
+    # including years the player has no data for — with league next to
+    # played seasons and the player's age under each tick (engine age is
+    # as-of the latest season, so per-season age = age_now - years back)
     _sample = str(season_labels.get(int(last['seasonId']), ''))
-    _proj_lbl = (f'{int(x_proj)}/{(int(x_proj) + 1) % 100:02d} (proj)'
-                 if '/' in _sample else
-                 f'{int(x_proj) % 100:02d}-{(int(x_proj) + 1) % 100:02d} (proj)')
-    ticktext = ([str(season_labels.get(int(r['seasonId']), int(r['yr'])))
-                 for _, r in df.iterrows()] + [_proj_lbl])
-    ys = list(df['acp_rating']) + [proj + band, proj - band, 50]
+    _slash = '/' in _sample
+
+    def _season_lbl(y):
+        y = int(y)
+        return (f'{y}/{(y + 1) % 100:02d}' if _slash
+                else f'{y % 100:02d}-{(y + 1) % 100:02d}')
+
+    def _with_age(lbl, yr):
+        if pd.isna(age_now):
+            return lbl
+        return f'{lbl}<br>age {float(age_now) - (x_last - float(yr)):.1f}'
+
+    _row_by_yr = {int(r['yr']): r for _, r in df.iterrows()}
+    _years = list(range(int(df['yr'].min()), int(x_last) + 1))
+
+    def _tick_lbl(y):
+        r = _row_by_yr.get(int(y))
+        if r is not None:
+            base = str(season_labels.get(int(r['seasonId']), _season_lbl(y)))
+            base += f" · {r.get('league', '')}"
+        else:
+            base = _season_lbl(y)
+        return _with_age(base, y)
+
+    _proj_lbl = _season_lbl(x_proj) + ' (proj)'
+    tickvals = _years + [x_proj]
+    ticktext = [_tick_lbl(y) for y in _years] + [_with_age(_proj_lbl, x_proj)]
+    ys = list(df['_val']) + [proj + band, proj - band, 50]
     fig.update_layout(
         height=340, showlegend=False,
         margin=dict(l=10, r=30, t=32, b=10),
@@ -323,7 +394,9 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
         xaxis=dict(tickvals=tickvals, ticktext=ticktext, showgrid=False,
                    zeroline=False, fixedrange=True,
                    range=[df['yr'].min() - 0.4, x_hi + 0.6]),
-        yaxis=dict(title='ACP rating', range=[min(ys) - 4, max(ys) + 4],
+        yaxis=dict(title=('ACP rating (L3-equivalent)' if use_abs
+                          else 'ACP rating'),
+                   range=[min(ys) - 4, max(ys) + 4],
                    gridcolor='rgba(128,128,128,0.15)', zeroline=False,
                    fixedrange=True),
         title=dict(text=f'{player_name} — projection outlook',
