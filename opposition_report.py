@@ -170,12 +170,14 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
         order is not the draw order.
       zone_heatmap  (tag,)
 
-    xg_history is keyed (season_key, comp_key, team_name) but reads a frame
-    that, on this base, calculate_xg_history_data computes once per process
-    and returns for every scope (all its args are underscore-prefixed, so it
-    has no key at all). This cache reproduces whatever it is handed and does
-    not make that worse; the figure still changes per team, which is what the
-    site varies. Fixed separately for Team Analysis in 2df7ab4.
+    xg_history is the one figure season_key does not move, and that is
+    CORRECT rather than a stale key: its frame is the league-filtered,
+    all-seasons opp_events (not season_events_df), so the chart is the team's
+    history across every season in the league. season_key stays in the key
+    anyway — it is one key for all 12 kinds, and an extra component can only
+    cost a duplicate entry, never a wrong picture. What it genuinely depends
+    on is comp_key, and the call site now passes a matching league scope_key
+    to calculate_xg_history_data so the frame actually follows it.
 
     Returns the PNG pair, or None when the plotter produced no figure.
     """
@@ -1357,8 +1359,19 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     # xG history
     try:
+        # Both frames are underscore-prefixed inside, so scope_key is the only
+        # thing that makes this cache follow the scope — without it the first
+        # league to render wins and every later one is served ITS xG history.
+        #
+        # The key is the LEAGUE only, not the (season, comp, stage) triple
+        # Team Analysis passes: what arrives here is filter_by_league(...) with
+        # no season or stage filter (see app.py's opp_events/opp_matches), so
+        # this frame spans every season of the selected league. Keying it by
+        # season would split one frame across N identical entries and imply a
+        # season-sensitivity the data does not have.
         xg_hist = app.calculate_xg_history_data(
             raw_events_df, matches_summary_df,
+            scope_key=('opposition_all_seasons', _fig_comp_key),
         )
         if not xg_hist.empty:
             _show_opp_png('xg_history', pdf_key='xg_history', payload=xg_hist)
