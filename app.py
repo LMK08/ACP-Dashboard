@@ -7724,10 +7724,20 @@ def plot_xg_flowchart(match_events_df, match_info):
     return fig
 
 @st.cache_data
-def calculate_xg_history_data(_raw_events_df, _matches_summary_df):
+def calculate_xg_history_data(_raw_events_df, _matches_summary_df, scope_key=None):
     """
     Aggregates xG For and Against for every team for every match.
     (Previously named calculate_rolling_xg_data)
+
+    scope_key is the cache key, and it is the ONLY one: both frames are
+    underscore-prefixed, so Streamlit ignores them when hashing. Without it
+    this function has no key components at all — it computes once per process
+    and returns that first frame for every season/competition/stage after.
+
+    Pass (season_key, comp_key, stage_key) — the same triple that keys
+    _render_team_figure_png — because the caller hands us the SCOPED frames
+    (get_filtered_events + filter_by_stage), so the scope has to be in the
+    key for the result to follow it.
     """
     # ... (Logic is identical to your previous function, just renamed for clarity) ...
     print("Calculating xG history data...") 
@@ -7978,14 +7988,27 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     return result
 
 @st.cache_data(ttl=86400)
-def calculate_set_piece_metrics(_events_df, season_id=None):
+def calculate_set_piece_metrics(_events_df, season_id=None, stage=None):
     """Calculate set piece xG and goals metrics for all teams.
-    season_id is used as a cache key so Streamlit recomputes when the season changes."""
-    _SP_CACHE_VERSION = 'v4'
+
+    season_id and stage are cache keys only — they never filter anything;
+    _events_df arrives already scoped by the caller. Both must be named here:
+    _events_df is unhashed (leading underscore), so a scope the key omits is
+    invisible to Streamlit AND to the parquet below, and a stage-filtered call
+    gets served the All-Stages numbers. Pass stage whenever the caller narrowed
+    _events_df with filter_by_stage()."""
+    import re
+    _SP_CACHE_VERSION = 'v5'
+    cache_path = None
     if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{_SP_CACHE_VERSION}_{season_id}.parquet')
+        _stage_tag = ''
+        if stage is not None:
+            _stage_tag = '_' + (re.sub(r'[^\w-]+', '_', str(stage)).strip('_') or 'stage')
+        cache_path = os.path.join(
+            STATS_CACHE_DIR,
+            f'set_piece_metrics_{_SP_CACHE_VERSION}_{season_id}{_stage_tag}.parquet')
         if os.path.exists(cache_path):
-            print(f"Loading cached set piece metrics for season {season_id}")
+            print(f"Loading cached set piece metrics for season {season_id}{_stage_tag}")
             return pd.read_parquet(cache_path)
     # Convert minute/second to total seconds
     events_df = _events_df.copy()
@@ -8203,10 +8226,10 @@ def calculate_set_piece_metrics(_events_df, season_id=None):
 
     result_df = pd.DataFrame.from_dict(results, orient='index')
     logger.info(f"✅ Set piece metrics calculated for {len(result_df)} teams")
-    if season_id is not None:
+    if cache_path is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
         try:
-            result_df.to_parquet(os.path.join(STATS_CACHE_DIR, f'set_piece_metrics_{_SP_CACHE_VERSION}_{season_id}.parquet'))
+            result_df.to_parquet(cache_path)
         except Exception:
             pass
     return result_df
@@ -9722,7 +9745,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         sp_df_raw = None
         sp_df_pct = None
         try:
-            sp_df_raw = calculate_set_piece_metrics(team_events_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
+            # team_events_df is stage-filtered above, so the stage has to ride
+            # in the key — it is unhashed inside (leading underscore), and the
+            # season alone would serve the All-Stages numbers here and cache
+            # them to a stage-blind parquet.
+            sp_df_raw = calculate_set_piece_metrics(
+                team_events_df,
+                season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id,
+                stage=selected_stage if _stage_active else None,
+            )
             if sp_df_raw is not None and not sp_df_raw.empty:
                 sp_df_pct = sp_df_raw.copy()
                 for col in sp_df_pct.columns:
@@ -9962,8 +9993,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         with st.expander("Rolling xG (5-Game Average)", expanded=False):
             try:
                 # Use the stage-filtered events/matches so the rolling
-                # series only covers matches in the active stage.
-                rolling_xg_data_for_plot = calculate_xg_history_data(team_events_df, team_matches_df)
+                # series only covers matches in the active stage. Both frames
+                # are underscore-prefixed inside, so scope_key is what makes
+                # the cache follow the scope — reuse the same triple the
+                # figure cache keys on.
+                rolling_xg_data_for_plot = calculate_xg_history_data(
+                    team_events_df, team_matches_df,
+                    scope_key=(_fig_season_key, _fig_comp_key, _fig_stage_key))
                 if not rolling_xg_data_for_plot.empty:
                     _show_team_png('rolling_xg', payload=rolling_xg_data_for_plot)
                 else:
