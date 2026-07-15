@@ -14777,6 +14777,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             opp_events, opp_matches, all_match_data,
             season_team_stats, player_minutes_data,
             opp_current_sid, opp_season_map,
+            comp_ids=selected_comp_ids,
         )
 
 

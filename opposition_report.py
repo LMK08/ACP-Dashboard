@@ -35,11 +35,15 @@ def _get_transferred_players():
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+# Liga 3 ONLY — ACP's own 2025/26 group, seeded into the opponent list so the
+# rivals that matter are pickable before they have played. Meaningless for any
+# other competition: see the guard at the all_opponents union.
 GROUP_B_TEAMS = [
     '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra',
     'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses',
     'Lusitano Évora 1911',
 ]
+LIGA3_COMP_ID = 43324
 
 OUR_TEAM = 'Atlético CP'
 
@@ -138,6 +142,13 @@ def _get_team_recent_form(matches_df, team_name, season_id, n=5):
         (season_matches['awayTeamName'] == team_name)
     ].copy()
 
+    # No fixtures for this team in this scope: bail before the mask below.
+    # .apply on an EMPTY column returns an empty OBJECT-dtype Series, which
+    # pandas reads as a column list rather than a boolean mask — so tm[mask]
+    # would select zero COLUMNS and the next line would KeyError on 'dateutc'.
+    if tm.empty:
+        return []
+
     def _is_played(score):
         if pd.isna(score):
             return False
@@ -190,6 +201,12 @@ def _get_projected_starting_xi(events_df, matches_df, team_name, season_id):
         (season_matches['homeTeamName'] == team_name) |
         (season_matches['awayTeamName'] == team_name)
     ].copy()
+
+    # Same empty-column-mask trap as _get_team_recent_form: guard before the
+    # mask, not after it. This is the line that took the whole page down when
+    # the opponent had no fixtures in the selected competition.
+    if tm.empty:
+        return '4-4-2', {}
 
     def _is_played(score):
         if pd.isna(score):
@@ -618,14 +635,22 @@ def _generate_key_takeaways(team_name, strengths, weaknesses, profiles,
 def render_opposition_report(raw_events_df, matches_summary_df,
                              all_match_data, season_team_stats,
                              player_minutes_data,
-                             current_season_id, season_id_map):
+                             current_season_id, season_id_map,
+                             comp_ids=None):
     """Entry point called from app.py."""
     app = _get_app()
 
     st.header("Opposition Report")
 
     # --- Season selector ---
-    selected_season_id = app.season_selector("opposition_report")
+    # comp_ids scopes the season list to the selected league, and it is what
+    # makes this page work for Campeonato at all. Without it season_selector
+    # falls back to the flat SEASON_ID_MAP, which merges Liga 3 first and
+    # dedupes display labels — so its label->id reverse lookup returned Liga 3's
+    # id for EVERY shared label. Picking Campeonato therefore asked for a Liga 3
+    # season, got empty frames, and took the page down. Same call shape League
+    # Analysis already uses.
+    selected_season_id = app.season_selector("opposition_report", comp_ids=comp_ids)
 
     # --- Season data ---
     season_events_df = app.get_season_events(raw_events_df, selected_season_id)
@@ -641,8 +666,16 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     next_fixture = _find_next_fixture(matches_summary_df, selected_season_id)
 
+    # Seed the list with ACP's group only when Liga 3 is actually selected.
+    # Unioned unconditionally, those 9 Liga 3 sides also landed in Campeonato's
+    # opponent list — and since the list is sorted, '1º Dezembro' became
+    # Campeonato's DEFAULT opponent: a team with no matches in the competition
+    # being viewed.
+    _seed_teams = (set(GROUP_B_TEAMS)
+                   if comp_ids is None or LIGA3_COMP_ID in comp_ids
+                   else set())
     all_opponents = sorted(
-        set(GROUP_B_TEAMS)
+        _seed_teams
         | set(season_matches_df['homeTeamName'].dropna().unique())
         | set(season_matches_df['awayTeamName'].dropna().unique())
     )
