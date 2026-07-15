@@ -440,6 +440,16 @@ STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e
                              # override). v13 percentiles cache served stale minutes
                              # because the percentiles layer early-returns its disk cache
                              # and only this version key invalidates it.
+FIGURE_CACHE_VERSION = 'v1'  # Bump when any DRAWING code behind the cached-PNG figure
+                             # renderers changes (_render_match_figure_png /
+                             # _render_team_figure_png and everything they call:
+                             # create_match_shotmap, plot_xg_flowchart, plot_radar_chart,
+                             # create_season_shotmap, plot_corner_analysis, the
+                             # pitch_visualizations plotters, ...). Those renderers key on
+                             # the DATA scope only, so a pure drawing change (colour,
+                             # label, marker size) is invisible to the key and would keep
+                             # serving the old PNG until the 24 h TTL expires. Same role
+                             # STATS_CACHE_VERSION plays for the stat caches.
 
 
 def _stats_scope_key(season_id, frame):
@@ -8879,6 +8889,184 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
     return fig
 
 
+# ==============================================================================
+# 6Z. CACHED FIGURE RENDERERS (Match Analysis / Team Analysis)
+# ==============================================================================
+# Both pages rebuilt ~10 matplotlib figures from scratch on EVERY rerun —
+# nothing was cached, so a page switch, a selectbox change, even an expander
+# toggle paid the full cost. Measured 2026-07-15 on a dev Mac: Team Analysis
+# 7.1 s, Match Analysis 4.2-4.8 s per rerun, against 0.2-0.9 s for Player
+# Profile. The Space runs ~3x slower per core, which is the 10-20 s page
+# switch users actually saw. Each figure is ~0.4 s: ~0.1 s to build it and
+# ~0.3 s for st.pyplot to serialise it to PNG.
+#
+# Fix is the one proven on the ACP Index card in f1c5a6f: build the figure
+# once, cache the PNG BYTES, and st.image() them. A cache hit skips both the
+# build and the serialise.
+#
+# CACHE-KEY CONTRACT — read this before adding a `kind`:
+#   * The hashed args must name EVERY input that changes the picture. A key
+#     that's missing a component doesn't render slowly, it renders the WRONG
+#     TEAM'S MAP under the right heading. That is the only way this change can
+#     hurt, so the keys are documented per-renderer below.
+#   * Underscore-prefixed args are NOT hashed (Streamlit convention, same as
+#     the stat caches in this file). They are the render inputs; the plain
+#     scalars alongside them are the actual key and must pin them down
+#     completely.
+#   * FIGURE_CACHE_VERSION is in every key so a drawing-code change (colour,
+#     label, marker size) invalidates the cache — the keys describe the DATA,
+#     so nothing else would notice.
+
+
+def _fig_png_bytes(fig):
+    """Serialise a matplotlib figure to PNG bytes, then close it.
+
+    dpi=200 + bbox_inches='tight' are exactly what st.pyplot hands to savefig
+    (streamlit/elements/pyplot.py: `options = {"bbox_inches": "tight",
+    "dpi": 200, "format": "png"}`), so st.image(_fig_png_bytes(fig)) is
+    pixel-identical to the st.pyplot(fig) it replaces. facecolor is
+    deliberately not passed: st.pyplot doesn't pass it either, so both paths
+    fall through to rcParams['savefig.facecolor'] ('auto' = the figure's own
+    facecolor) and the radars keep their '#f5f1e9' background.
+
+    The close is in a finally so a savefig raise can't leak the figure.
+    """
+    try:
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
+
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=192)
+def _render_match_figure_png(kind, match_id, team_name, fig_ver,
+                              _match_events_df, _match_info, _match_lineup):
+    """One Match Analysis figure -> PNG bytes.
+
+    KEY: (kind, match_id, team_name, FIGURE_CACHE_VERSION).
+
+    Why that key is complete — every render input is a function of match_id
+    and team_name:
+      * _match_events_df is always raw_events_df[matchId == match_id].
+        raw_events_df is the UNSCOPED master frame (assigned once in
+        load_data, never reassigned), and Match Analysis never scopes it —
+        it slices by matchId directly. A matchId belongs to exactly one
+        match in exactly one season and competition, so the league/season
+        selectors cannot change these events. season/comp are therefore
+        deliberately absent from this key; adding them would only split the
+        cache into identical entries.
+      * _match_info is season_matches_df's row for match_id.
+      * _match_lineup is match_lineups[match_id][team_name].
+      * team_name is what separates home from away — the two calls are
+        otherwise identical (same kind, same frame). If anything here is
+        cross-wired, it is this, so it is the one component to check first.
+
+    Returns PNG bytes, or None when the plotter produced no figure.
+    """
+    if kind == 'shotmap':
+        fig = create_match_shotmap(_match_events_df, _match_info, team_name)
+    elif kind == 'xg_flowchart':
+        # Whole-match figure: both teams on one axes, so team_name is None.
+        fig = plot_xg_flowchart(_match_events_df, _match_info)
+    elif kind == 'avg_positions':
+        fig = pv.plot_average_positions(_match_events_df, team_name,
+                                         match_lineup=_match_lineup)
+    elif kind == 'avg_positions_by_subs':
+        fig = pv.plot_avg_positions_by_subs(_match_events_df, team_name,
+                                             match_lineup=_match_lineup)
+    elif kind == 'passing_network':
+        fig = pv.plot_passing_network(_match_events_df, team_name)
+    elif kind == 'recovery_map':
+        fig = pv.plot_recovery_map(_match_events_df, team_name)
+    elif kind == 'loss_map':
+        fig = pv.plot_loss_map(_match_events_df, team_name)
+    elif kind == 'defensive_duels':
+        fig = pv.plot_defensive_duels_map(_match_events_df, team_name)
+    elif kind == 'shot_assists':
+        fig = pv.plot_shot_assists_and_dribbles(_match_events_df, team_name)
+    else:
+        raise ValueError(f"unknown match figure kind: {kind!r}")
+    return _fig_png_bytes(fig) if fig is not None else None
+
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=192)
+def _render_team_figure_png(kind, team_name, season_key, comp_key, stage_key,
+                             extra, fig_ver,
+                             _team_events_df, _team_matches_df, _payload):
+    """One Team Analysis figure -> PNG bytes.
+
+    KEY: (kind, team_name, season_key, comp_key, stage_key, extra,
+          FIGURE_CACHE_VERSION).
+
+    Why that key is complete — unlike Match Analysis, these figures read a
+    SCOPED frame, so the scope has to be in the key. Both frames are built by
+    exactly two steps at the top of the Team Analysis block:
+        team_events_df  = get_filtered_events(raw_events_df,
+                                              active_season_ids,
+                                              selected_comp_ids)
+        team_events_df, team_matches_df = filter_by_stage(..., selected_stage)
+    so (season_key, comp_key, stage_key) pins both frames down, and team_name
+    picks the team out of them.
+
+    season_key: _season_id_list(active_season_ids) normalised to a SORTED
+      TUPLE. active_season_ids is None | int | list, and the None case ('All
+      Seasons' — no season filter) must stay distinct from any specific
+      season; the empty tuple keeps it distinct. Sorting means [a, b] and
+      [b, a] share one entry, which is correct — filter_by_stage/
+      get_filtered_events use `.isin`, so order can't change the result.
+    comp_key: sorted tuple of selected_comp_ids (Liga 3 / Campeonato / both).
+    stage_key: the stage label, or '' for STAGE_ALL/None.
+    extra: the remaining per-figure inputs, as a hashable tuple. Anything
+      DRAWN AS TEXT must live here — the radars print league and season
+      labels onto the image, and season_label comes from selected_season_id
+      rather than active_season_ids, so it is passed explicitly instead of
+      assumed to follow from season_key.
+
+    For the radars, `extra` also carries the plotted VALUES themselves. They
+    are only ~10 floats and they make the key airtight: the picture is then a
+    pure function of the key, independent of whether the upstream stat cache
+    (calculate_all_team_radars_stats / calculate_set_piece_metrics) keyed
+    itself correctly. The pitch maps can't do that — their input is a
+    multi-hundred-MB event frame — so they rely on the scope key above.
+
+    Returns PNG bytes, or None when the plotter produced no figure.
+    """
+    if kind == 'radar':
+        _title, _params, _color, _league, _season = extra
+        _values_raw, _values_pct = _payload
+        fig = plot_radar_chart(list(_params), list(_values_raw),
+                                list(_values_pct), team_name, _title, _color,
+                                league=_league, season=_season)
+    elif kind == 'formation_xi':
+        _formation = extra[0]
+        fig = create_formation_graphic(_formation, _payload, team_name)
+    elif kind == 'season_shotmap_for':
+        fig = create_season_shotmap(_team_events_df, team_name)
+    elif kind == 'season_shotmap_against':
+        fig = create_season_shots_against_shotmap(_team_events_df,
+                                                   _team_matches_df, team_name)
+    elif kind == 'rolling_xg':
+        fig = plot_match_xg_history(_payload, team_name)
+    elif kind == 'corner_analysis':
+        _side = extra[0]
+        fig = plot_corner_analysis(_team_events_df, team_name, _side)
+    elif kind == 'zone_heatmap':
+        _tag = extra[0]
+        # league_events_df is the same scoped frame — the plotter derives the
+        # league average from it, so it needs no key of its own.
+        fig = pv.plot_zone_heatmap(_team_events_df, team_name, _tag,
+                                    league_events_df=_team_events_df)
+    elif kind == 'passing_network':
+        fig = pv.plot_passing_network(_team_events_df, team_name)
+    elif kind == 'defensive_structure':
+        fig = pv.plot_defensive_structure(_team_events_df, team_name,
+                                           league_events_df=_team_events_df)
+    else:
+        raise ValueError(f"unknown team figure kind: {kind!r}")
+    return _fig_png_bytes(fig) if fig is not None else None
+
+
 def render_season_report_section(team_events_df, team_matches_df, team_name,
                                    season_ids=None, stage=None, cache_key=None):
     """Render the 7-dimension season report for one team.
@@ -9179,14 +9367,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # --- Get the match events ONCE ---
             match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
 
+            # Every pitch figure on this page goes through _show_match_png ->
+            # _render_match_figure_png, which caches the PNG bytes on
+            # (kind, matchId, team, FIGURE_CACHE_VERSION). See that function
+            # for why those four components are the complete key. int() the
+            # matchId so a numpy int64 and a Python int can't key separately.
+            _mid = int(selected_match_id)
+
+            def _show_match_png(kind, team=None, lineup=None):
+                _png = _render_match_figure_png(
+                    kind, _mid, team, FIGURE_CACHE_VERSION,
+                    match_events_df, selected_match_info, lineup)
+                if _png:
+                    st.image(_png, use_container_width=True)
+
             with col1:
-                fig_sm_h = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['homeTeamName'])
-                st.pyplot(fig_sm_h, use_container_width=True)
-                plt.close(fig_sm_h)
+                _show_match_png('shotmap', selected_match_info['homeTeamName'])
             with col2:
-                fig_sm_a = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['awayTeamName'])
-                st.pyplot(fig_sm_a, use_container_width=True)
-                plt.close(fig_sm_a)
+                _show_match_png('shotmap', selected_match_info['awayTeamName'])
 
             # --- NEW: Shot Details Tables ---
             st.markdown("---") # Add a separator
@@ -9237,8 +9435,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
             if not match_events_df.empty:
                 try:
-                    fig_flowchart = plot_xg_flowchart(match_events_df, selected_match_info)
-                    st.pyplot(fig_flowchart, use_container_width=True)
+                    _show_match_png('xg_flowchart')
                 except Exception as e:
                     st.warning(f"Could not generate xG flowchart: {e}")
             else:
@@ -9279,37 +9476,25 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_ap1, col_ap2 = st.columns(2)
             with col_ap1:
                 try:
-                    fig_ap_h = pv.plot_average_positions(match_events_df, home_team,
-                                                         match_lineup=home_lineup)
-                    st.pyplot(fig_ap_h, use_container_width=True)
-                    plt.close(fig_ap_h)
+                    _show_match_png('avg_positions', home_team, home_lineup)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_ap2:
                 try:
-                    fig_ap_a = pv.plot_average_positions(match_events_df, away_team,
-                                                         match_lineup=away_lineup)
-                    st.pyplot(fig_ap_a, use_container_width=True)
-                    plt.close(fig_ap_a)
+                    _show_match_png('avg_positions', away_team, away_lineup)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
             # 2. Average Positions by Substitution Phase
             st.markdown(f"**{home_team} — Avg Positions by Phase**")
             try:
-                fig_sp_h = pv.plot_avg_positions_by_subs(match_events_df, home_team,
-                                                          match_lineup=home_lineup)
-                st.pyplot(fig_sp_h, use_container_width=True)
-                plt.close(fig_sp_h)
+                _show_match_png('avg_positions_by_subs', home_team, home_lineup)
             except Exception as e:
                 st.caption(f"Could not render: {e}")
 
             st.markdown(f"**{away_team} — Avg Positions by Phase**")
             try:
-                fig_sp_a = pv.plot_avg_positions_by_subs(match_events_df, away_team,
-                                                          match_lineup=away_lineup)
-                st.pyplot(fig_sp_a, use_container_width=True)
-                plt.close(fig_sp_a)
+                _show_match_png('avg_positions_by_subs', away_team, away_lineup)
             except Exception as e:
                 st.caption(f"Could not render: {e}")
 
@@ -9318,16 +9503,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_pn1, col_pn2 = st.columns(2)
             with col_pn1:
                 try:
-                    fig_pn_h = pv.plot_passing_network(match_events_df, home_team)
-                    st.pyplot(fig_pn_h, use_container_width=True)
-                    plt.close(fig_pn_h)
+                    _show_match_png('passing_network', home_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_pn2:
                 try:
-                    fig_pn_a = pv.plot_passing_network(match_events_df, away_team)
-                    st.pyplot(fig_pn_a, use_container_width=True)
-                    plt.close(fig_pn_a)
+                    _show_match_png('passing_network', away_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9341,16 +9522,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_rl1, col_rl2 = st.columns(2)
             with col_rl1:
                 try:
-                    fig_rec = pv.plot_recovery_map(match_events_df, tac_team)
-                    st.pyplot(fig_rec, use_container_width=True)
-                    plt.close(fig_rec)
+                    # tac_team is the selectbox above — it IS the team component
+                    # of the key, so the toggle needs nothing extra.
+                    _show_match_png('recovery_map', tac_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_rl2:
                 try:
-                    fig_loss = pv.plot_loss_map(match_events_df, tac_team)
-                    st.pyplot(fig_loss, use_container_width=True)
-                    plt.close(fig_loss)
+                    _show_match_png('loss_map', tac_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9359,16 +9538,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_dd1, col_dd2 = st.columns(2)
             with col_dd1:
                 try:
-                    fig_dd_h = pv.plot_defensive_duels_map(match_events_df, home_team)
-                    st.pyplot(fig_dd_h, use_container_width=True)
-                    plt.close(fig_dd_h)
+                    _show_match_png('defensive_duels', home_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_dd2:
                 try:
-                    fig_dd_a = pv.plot_defensive_duels_map(match_events_df, away_team)
-                    st.pyplot(fig_dd_a, use_container_width=True)
-                    plt.close(fig_dd_a)
+                    _show_match_png('defensive_duels', away_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9377,16 +9552,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_sa1, col_sa2 = st.columns(2)
             with col_sa1:
                 try:
-                    fig_sa_h = pv.plot_shot_assists_and_dribbles(match_events_df, home_team)
-                    st.pyplot(fig_sa_h, use_container_width=True)
-                    plt.close(fig_sa_h)
+                    _show_match_png('shot_assists', home_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_sa2:
                 try:
-                    fig_sa_a = pv.plot_shot_assists_and_dribbles(match_events_df, away_team)
-                    st.pyplot(fig_sa_a, use_container_width=True)
-                    plt.close(fig_sa_a)
+                    _show_match_png('shot_assists', away_team)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9461,6 +9632,39 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             pass
 
         league_label = get_league_label(selected_comp_ids)
+
+        # --- Cached-PNG figure plumbing for this page ---------------------
+        # Every figure below reads team_events_df / team_matches_df, which are
+        # fully determined by (active_season_ids, selected_comp_ids,
+        # selected_stage) — see _render_team_figure_png for the full argument.
+        # These three become the scope half of every cache key; team_name and
+        # `extra` supply the rest. _season_id_list normalises the
+        # None|int|list active_season_ids ('All Seasons' -> () stays distinct
+        # from any real season).
+        _fig_season_key = tuple(sorted(_season_id_list(active_season_ids)))
+        _fig_comp_key = tuple(sorted(int(c) for c in (selected_comp_ids or [])))
+        _fig_stage_key = '' if selected_stage in (STAGE_ALL, None) else str(selected_stage)
+
+        def _show_team_png(kind, extra=(), payload=None):
+            _png = _render_team_figure_png(
+                kind, selected_team_t, _fig_season_key, _fig_comp_key,
+                _fig_stage_key, extra, FIGURE_CACHE_VERSION,
+                team_events_df, team_matches_df, payload)
+            if _png:
+                st.image(_png, use_container_width=True)
+
+        def _show_team_radar(title, params, values_raw, values_pct, color):
+            # The plotted values ride in `extra` (hashed), not just the scope:
+            # ~10 floats, and it makes the radar a pure function of its key
+            # regardless of how the upstream stat caches key themselves.
+            # league_label/season_label are drawn onto the image, so they
+            # belong in the key too — season_label derives from
+            # selected_season_id, which season_key does not capture.
+            _show_team_png(
+                'radar',
+                extra=(title, tuple(params), color, league_label, season_label),
+                payload=(tuple(values_raw), tuple(values_pct)))
+
         st.subheader(f"Team Style Radars (Percentile Ranks vs {league_label})")
         if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
             offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
@@ -9481,9 +9685,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.markdown("**Offensive Radar**")
                 valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
                 if valid_offensive_params:
-                     fig_off = plot_radar_chart(valid_offensive_params, team_stats_raw[valid_offensive_params].tolist(), team_stats_pct[valid_offensive_params].tolist(), selected_team_t, "Offensive Radar", '#e60000', league=current_league, season=current_season)
-                     st.pyplot(fig_off, use_container_width=True)
-                     plt.close(fig_off)
+                     _show_team_radar("Offensive Radar", valid_offensive_params,
+                                      team_stats_raw[valid_offensive_params].tolist(),
+                                      team_stats_pct[valid_offensive_params].tolist(),
+                                      '#e60000')
             with col_r2:
                 st.markdown("**Distribution Radar**")
                 valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
@@ -9491,9 +9696,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      raw_dist_values = team_stats_raw[valid_distribution_params].tolist()
                      try: poss_index = valid_distribution_params.index('Ball Possession'); raw_dist_values[poss_index] = f"{raw_dist_values[poss_index]:.0f}%"
                      except ValueError: pass
-                     fig_dist = plot_radar_chart(valid_distribution_params, raw_dist_values, team_stats_pct[valid_distribution_params].tolist(), selected_team_t, "Distribution Radar", '#0077b6', league=current_league, season=current_season)
-                     st.pyplot(fig_dist, use_container_width=True)
-                     plt.close(fig_dist)
+                     _show_team_radar("Distribution Radar", valid_distribution_params,
+                                      raw_dist_values,
+                                      team_stats_pct[valid_distribution_params].tolist(),
+                                      '#0077b6')
 
             # Row 2: Defensive + Set Piece
             col_r3, col_r4 = st.columns(2)
@@ -9506,9 +9712,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      except ValueError: pass
                      try: def_idx = valid_defensive_params.index('Defensive Duel Win %'); raw_def_values[def_idx] = f"{raw_def_values[def_idx]:.0f}%"
                      except ValueError: pass
-                     fig_def = plot_radar_chart(valid_defensive_params, raw_def_values, team_stats_pct[valid_defensive_params].tolist(), selected_team_t, "Defensive Radar", '#52A736', league=current_league, season=current_season)
-                     st.pyplot(fig_def, use_container_width=True)
-                     plt.close(fig_def)
+                     _show_team_radar("Defensive Radar", valid_defensive_params,
+                                      raw_def_values,
+                                      team_stats_pct[valid_defensive_params].tolist(),
+                                      '#52A736')
             with col_r4:
                 st.markdown("**Set Piece Radar**")
                 if sp_df_raw is not None and not sp_df_raw.empty and selected_team_t in sp_df_raw.index:
@@ -9524,9 +9731,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
                             except ValueError:
                                 pass
-                        fig_sp = plot_radar_chart(valid_sp_params, raw_sp_values, sp_team_pct[valid_sp_params].tolist(), selected_team_t, "Set Piece Radar", '#ff8c00', league=current_league, season=current_season)
-                        st.pyplot(fig_sp, use_container_width=True)
-                        plt.close(fig_sp)
+                        _show_team_radar("Set Piece Radar", valid_sp_params,
+                                         raw_sp_values,
+                                         sp_team_pct[valid_sp_params].tolist(),
+                                         '#ff8c00')
                     else:
                         st.info("Set piece data not available.")
                 else:
@@ -9564,9 +9772,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         with col_xi1:
             if primary_formation and starting_xi:
-                fig_xi = create_formation_graphic(primary_formation, starting_xi, selected_team_t)
-                st.pyplot(fig_xi, use_container_width=True)
-                plt.close(fig_xi)
+                # starting_xi is the render payload; the formation string rides
+                # in the key alongside the scope. Both are derived from
+                # (team_events_df, team) i.e. the scope key + team, so the
+                # scope pins the XI too — the formation is included because it
+                # is cheap and makes the key self-evident.
+                _show_team_png('formation_xi', extra=(primary_formation,),
+                               payload=starting_xi)
             else:
                 st.info("Formation data not available for this team.")
 
@@ -9642,14 +9854,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         col1_shot, col2_shot = st.columns(2)
         with col1_shot:
             st.markdown(f"**Shots FOR {selected_team_t}**")
-            fig_shots_for = create_season_shotmap(team_events_df, selected_team_t)
-            st.pyplot(fig_shots_for, use_container_width=True)
-            plt.close(fig_shots_for)
+            _show_team_png('season_shotmap_for')
         with col2_shot:
             st.markdown(f"**Shots AGAINST {selected_team_t}**")
-            fig_shots_against = create_season_shots_against_shotmap(team_events_df, team_matches_df, selected_team_t)
-            st.pyplot(fig_shots_against, use_container_width=True)
-            plt.close(fig_shots_against)
+            _show_team_png('season_shotmap_against')
 
         # --- Rolling xG History ---
         with st.expander("Rolling xG (5-Game Average)", expanded=False):
@@ -9658,9 +9866,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # series only covers matches in the active stage.
                 rolling_xg_data_for_plot = calculate_xg_history_data(team_events_df, team_matches_df)
                 if not rolling_xg_data_for_plot.empty:
-                    fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
-                    st.pyplot(fig_rolling_xg, use_container_width=True)
-                    plt.close(fig_rolling_xg)
+                    _show_team_png('rolling_xg', payload=rolling_xg_data_for_plot)
                 else:
                     st.warning("No data available to calculate xG history.")
             except Exception as e:
@@ -9670,12 +9876,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         col_c1, col_c2 = st.columns(2)
         with col_c1:
             st.markdown("**Corners from Left Side**")
-            fig_corner_left = plot_corner_analysis(team_events_df, selected_team_t, 'left')
-            st.pyplot(fig_corner_left, use_container_width=True)
+            # (These two were also the only figures on the page with no
+            # plt.close — they leaked until the plt.close('all') at the end of
+            # the script. Going through _fig_png_bytes closes them properly.)
+            _show_team_png('corner_analysis', extra=('left',))
         with col_c2:
             st.markdown("**Corners from Right Side**")
-            fig_corner_right = plot_corner_analysis(team_events_df, selected_team_t, 'right')
-            st.pyplot(fig_corner_right, use_container_width=True)
+            _show_team_png('corner_analysis', extra=('right',))
 
         st.subheader("Season-Long Stats")
         if selected_team_t in team_season_stats and 'corners' in team_season_stats[selected_team_t]:
@@ -9697,43 +9904,28 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # 1. Ball Recovery Zones (vs league average)
         st.markdown("**Ball Recovery Zones** (vs League Average)")
         try:
-            fig_rec_z = pv.plot_zone_heatmap(
-                team_events_df, selected_team_t, 'recovery',
-                league_events_df=team_events_df,
-            )
-            st.pyplot(fig_rec_z, use_container_width=True)
-            plt.close(fig_rec_z)
+            _show_team_png('zone_heatmap', extra=('recovery',))
         except Exception as e:
             st.caption(f"Could not render recovery zones: {e}")
 
         # 2. Ball Loss Zones (vs league average)
         st.markdown("**Ball Loss Zones** (vs League Average)")
         try:
-            fig_loss_z = pv.plot_zone_heatmap(
-                team_events_df, selected_team_t, 'loss',
-                league_events_df=team_events_df,
-            )
-            st.pyplot(fig_loss_z, use_container_width=True)
-            plt.close(fig_loss_z)
+            _show_team_png('zone_heatmap', extra=('loss',))
         except Exception as e:
             st.caption(f"Could not render loss zones: {e}")
 
         # 3. Passing Network (Season)
         st.markdown("**Passing Network (Season)**")
         try:
-            fig_pn = pv.plot_passing_network(team_events_df, selected_team_t)
-            st.pyplot(fig_pn, use_container_width=True)
-            plt.close(fig_pn)
+            _show_team_png('passing_network')
         except Exception as e:
             st.caption(f"Could not render passing network: {e}")
 
         # 4. Defensive Structure
         st.markdown("**Defensive Structure**")
         try:
-            fig_ds = pv.plot_defensive_structure(team_events_df, selected_team_t,
-                                                   league_events_df=team_events_df)
-            st.pyplot(fig_ds, use_container_width=True)
-            plt.close(fig_ds)
+            _show_team_png('defensive_structure')
         except Exception as e:
             st.caption(f"Could not render defensive structure: {e}")
 
