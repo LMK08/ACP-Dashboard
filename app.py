@@ -7504,7 +7504,12 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season=
     ax.set_title(f'Team Strength Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
     ax.set_ylabel('Defending Strength (30% NP Goals Against, 70% NPxG Against)', fontsize=12)
-    #ax.grid(True, linestyle='--', alpha=0.5); plt.tight_layout(); return fig
+    # The grid and tight_layout that used to share this line stay disabled: the
+    # whole line was commented out, so neither has ever run against these
+    # charts, and enabling them now would change every one of them. Only the
+    # return is restored -- without it the callers' st.pyplot(None) silently
+    # rendered pyplot's global current figure instead.
+    return fig
 
 # app.py (Add this new function)
 
