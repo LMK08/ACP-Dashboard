@@ -442,7 +442,9 @@ STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e
                              # and only this version key invalidates it.
 FIGURE_CACHE_VERSION = 'v1'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
-                             # _render_team_figure_png and everything they call:
+                             # _render_team_figure_png / _render_league_figure_png /
+                             # opposition_report._render_opp_figure_png, and
+                             # everything they call:
                              # create_match_shotmap, plot_xg_flowchart, plot_radar_chart,
                              # create_season_shotmap, plot_corner_analysis, the
                              # pitch_visualizations plotters, ...). Those renderers key on
@@ -7515,6 +7517,11 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season=
     ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
     ax.set_ylabel('Defending Strength (30% NP Goals Against, 70% NPxG Against)', fontsize=12)
     #ax.grid(True, linestyle='--', alpha=0.5); plt.tight_layout(); return fig
+    # `return fig` was commented out with the grid above, so every caller got
+    # None and st.pyplot(None) silently rendered plt.gcf() instead — which is
+    # why these figures were never closed. Grid and tight_layout stay off:
+    # gcf() is this same figure, so returning it changes nothing on screen.
+    return fig
 
 # app.py (Add this new function)
 
@@ -9067,6 +9074,98 @@ def _render_team_figure_png(kind, team_name, season_key, comp_key, stage_key,
     return _fig_png_bytes(fig) if fig is not None else None
 
 
+_STRENGTH_COLS = ('Attacking Strength', 'Defending Strength')
+
+
+def _plot_cell_key(v):
+    """One frame cell, normalised for a cache key. Rounded so float noise
+    can't split two entries that would draw the same picture."""
+    try:
+        return round(float(v), 6)
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _plot_values_key(df, cols):
+    """The numbers a strength/scatter figure draws, as a hashable tuple.
+
+    plot_team_strength and plot_custom_scatter read NOTHING from their frame
+    except its index and the columns named here — the points, the axis limits,
+    plot_custom_scatter's mean quadrant lines and the per-team logo lookup all
+    come out of that slice. So this tuple describes the picture's data
+    completely, which is what lets _render_league_figure_png key on the DATA
+    rather than on the scope.
+
+    Row order is preserved, not sorted: it is the draw order, so it decides
+    which logo lands on top where two overlap.
+
+    A missing column returns a sentinel instead — the plotters draw a 'metric
+    not found' card in that case, which is its own picture.
+    """
+    missing = tuple(c for c in cols if c not in df.columns)
+    if missing:
+        return ('__missing__', missing)
+    return tuple(
+        (str(idx), *(_plot_cell_key(v) for v in vals))
+        for idx, *vals in df[list(cols)].itertuples(name=None)
+    )
+
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=64)
+def _render_league_figure_png(kind, values_key, extra, day_key, fig_ver, _stats_df):
+    """One League Analysis figure -> PNG bytes.
+
+    KEY: (kind, values_key, extra, day_key, FIGURE_CACHE_VERSION).
+
+    Unlike the Match/Team renderers this one does NOT key on the data scope.
+    Its two plotters touch only the frame's index and the columns they plot,
+    so values_key (see _plot_values_key) IS the data half of the key. That is
+    deliberately stronger than a scope key would be: it holds however
+    league_events_df was filtered, and regardless of whether the stat caches
+    upstream — calculate_team_strength, calculate_expanded_team_stats,
+    calculate_set_piece_metrics — keyed themselves correctly. A scope change
+    either moves these numbers, and misses, or it doesn't, in which case the
+    picture is genuinely identical and one entry is right.
+
+    `extra` carries what is drawn but is NOT a number in the frame. This is
+    the half no scope key could supply, because it is WIDGET STATE:
+      team_strength:  (teams_to_include, icon_zoom, season_label)
+        teams_to_include is the subset actually plotted; the axis limits still
+        come from every row, which is why values_key covers the whole frame.
+        season_label is None except on the multi-season chart (which passes
+        season="Multi-Season"); None means 'leave the plotter's default
+        alone' rather than restating that default here.
+      custom_scatter: (x_metric, y_metric, invert_x, invert_y)
+        The metrics are the axis LABELS as well as the columns, and the invert
+        flags flip the limits without moving a single value — so neither is
+        implied by values_key.
+
+    day_key is today's date. Both plotters stamp 'As of: {date}' into the
+    title, so without it a figure built at 23:59 would keep serving
+    yesterday's date for the rest of the 24 h TTL.
+
+    league=/season= are left at their defaults by every call site here, so
+    they are compile-time constants and FIGURE_CACHE_VERSION covers a change
+    to them. Same for icons/: adding a team's logo changes the picture
+    without moving any key component, so that is a version bump too.
+
+    Returns PNG bytes, or None when the plotter produced no figure.
+    """
+    if kind == 'team_strength':
+        _teams, _icon_zoom, _season_label = extra
+        _kw = {} if _season_label is None else {'season': _season_label}
+        fig = plot_team_strength(_stats_df,
+                                  teams_to_include=list(_teams) if _teams else None,
+                                  icon_zoom=_icon_zoom, **_kw)
+    elif kind == 'custom_scatter':
+        _x_metric, _y_metric, _invert_x, _invert_y = extra
+        fig = plot_custom_scatter(_stats_df, _x_metric, _y_metric,
+                                   _invert_x, _invert_y)
+    else:
+        raise ValueError(f"unknown league figure kind: {kind!r}")
+    return _fig_png_bytes(fig) if fig is not None else None
+
+
 def render_season_report_section(team_events_df, team_matches_df, team_name,
                                    season_ids=None, stage=None, cache_key=None):
     """Render the 7-dimension season report for one team.
@@ -9985,6 +10084,34 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         valid_all_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in combined_stats_df.index]
 
+        # --- Cached-PNG figure plumbing for this page ---------------------
+        # These figures do NOT key on the data scope the way Match/Team do.
+        # Both plotters read only their frame's index and the columns they
+        # plot, so _plot_values_key() of that slice is the data half of the
+        # key — see _render_league_figure_png. What no scope key could supply
+        # is the WIDGET STATE: which metric sits on each axis, whether it is
+        # inverted, which teams are drawn, which seasons the multi-season
+        # chart concatenated. That rides in `extra`.
+        _fig_day_key = datetime.date.today().isoformat()
+
+        def _show_strength_png(stats_df, teams=None, icon_zoom=0.25,
+                                season_label=None):
+            _png = _render_league_figure_png(
+                'team_strength', _plot_values_key(stats_df, _STRENGTH_COLS),
+                (tuple(teams) if teams is not None else None, icon_zoom,
+                 season_label),
+                _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
+            if _png:
+                st.image(_png, use_container_width=True)
+
+        def _show_scatter_png(stats_df, x_metric, y_metric, invert_x, invert_y):
+            _png = _render_league_figure_png(
+                'custom_scatter', _plot_values_key(stats_df, (x_metric, y_metric)),
+                (x_metric, y_metric, bool(invert_x), bool(invert_y)),
+                _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
+            if _png:
+                st.image(_png, use_container_width=True)
+
         # --- 3. League Tables ---
         st.subheader("League Standings")
 
@@ -10021,8 +10148,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.subheader(f"Team Strength Scatterplot ({get_league_label(selected_comp_ids)} - Group B)")
             if not team_strength_df.empty:
                 valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
-                fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
-                st.pyplot(fig_group_b_strength, use_container_width=True)
+                _show_strength_png(team_strength_df,
+                                    teams=valid_group_b_strength_teams,
+                                    icon_zoom=0.4)
                 with st.expander("View Group B Raw Strength Data"):
                     if valid_group_b_strength_teams:
                         st.dataframe(team_strength_df.loc[valid_group_b_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
@@ -10052,8 +10180,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     invert_y_gb = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_gb, key='invert_y_group_b')
 
                 if x_metric_gb and y_metric_gb:
-                    fig_custom_gb = plot_custom_scatter(group_b_stats_df, x_metric_gb, y_metric_gb, invert_x_gb, invert_y_gb)
-                    st.pyplot(fig_custom_gb, use_container_width=True)
+                    _show_scatter_png(group_b_stats_df, x_metric_gb, y_metric_gb,
+                                       invert_x_gb, invert_y_gb)
             else:
                 st.info("No data available for Group B custom plot.")
 
@@ -10091,8 +10219,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if combined_strength_frames:
                 multi_strength_df = pd.concat(combined_strength_frames)
                 # Plot with text labels (no logos since same team appears multiple times)
-                fig_multi = plot_team_strength(multi_strength_df, season="Multi-Season")
-                st.pyplot(fig_multi, use_container_width=True)
+                # scatter_seasons is not named in the key: it reaches the picture
+                # only through multi_strength_df, whose index is
+                # "{team} ({season})" per row — so values_key already carries
+                # every season drawn, in the order they were concatenated.
+                _show_strength_png(multi_strength_df, season_label="Multi-Season")
                 with st.expander("View Multi-Season Raw Strength Data"):
                     st.dataframe(multi_strength_df[['Attacking Strength', 'Defending Strength', 'Season']].round(2))
             else:
@@ -10101,8 +10232,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Single season (original behavior)
             if not team_strength_df.empty:
                 valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
-                fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
-                st.pyplot(fig_all_strength, use_container_width=True)
+                _show_strength_png(team_strength_df, teams=valid_all_strength_teams)
                 with st.expander("View All Teams Raw Strength Data"):
                      st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
             else:
@@ -10130,8 +10260,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 invert_y_all = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_all, key='invert_y_all')
 
             if x_metric_all and y_metric_all:
-                fig_custom_all = plot_custom_scatter(combined_stats_df, x_metric_all, y_metric_all, invert_x_all, invert_y_all)
-                st.pyplot(fig_custom_all, use_container_width=True)
+                _show_scatter_png(combined_stats_df, x_metric_all, y_metric_all,
+                                   invert_x_all, invert_y_all)
 
             with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
                 st.dataframe(combined_stats_df.round(2))
@@ -14901,6 +15031,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             opp_events, opp_matches, all_match_data,
             season_team_stats, player_minutes_data,
             opp_current_sid, opp_season_map,
+            comp_ids=selected_comp_ids,
         )
 
 
