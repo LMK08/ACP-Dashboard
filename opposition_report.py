@@ -32,15 +32,11 @@ def _get_transferred_players():
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-# Liga 3 ONLY — ACP's own 2025/26 group, seeded into the opponent list so the
-# rivals that matter are pickable before they have played. Meaningless for any
-# other competition: see the guard at the all_opponents union.
 GROUP_B_TEAMS = [
     '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra',
     'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses',
     'Lusitano Évora 1911',
 ]
-LIGA3_COMP_ID = 43324
 
 OUR_TEAM = 'Atlético CP'
 
@@ -74,164 +70,6 @@ def _fig_to_png_bytes(fig):
                 facecolor=fig.get_facecolor())
     buf.seek(0)
     return buf.getvalue()
-
-
-def _fig_png_pair(fig):
-    """(display PNG, PDF PNG) from one figure, then close it.
-
-    Two renders because this page needs both and should only BUILD once:
-      [0] dpi=200, no explicit facecolor — byte-for-byte what st.pyplot hands
-          savefig (streamlit/elements/pyplot.py), so st.image() of it is
-          pixel-identical to the st.pyplot() it replaces.
-      [1] dpi=150 + explicit facecolor — what _fig_to_png_bytes was already
-          writing into pdf_figures at each call site, kept exactly so the
-          generated PDF is unchanged by this commit.
-    Both live under one cache entry, so a hit skips the build AND both
-    savefigs. pdf_figures is rebuilt on every rerun (the Generate PDF button
-    just reruns the script), so caching only the display bytes would leave the
-    PDF capture paying full price on every rerun anyway.
-
-    The close is in a finally so a savefig raise can't leak the figure.
-    """
-    try:
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
-        return buf.getvalue(), _fig_to_png_bytes(fig)
-    finally:
-        plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# Cached figure rendering
-# ---------------------------------------------------------------------------
-# Same fix as app.py's Match/Team pages (d428284): build the figure once, cache
-# the PNG bytes, st.image() them. This page is the biggest single surface —
-# 24 figures across 17 sites, every one of them rebuilt from scratch on every
-# rerun, including on an expander toggle or an opponent switch.
-#
-# CACHE-KEY CONTRACT — read before adding a `kind`:
-#   * The hashed args must name EVERY input that changes the picture. A key
-#     missing a component doesn't render slowly, it renders the WRONG TEAM'S
-#     MAP under the right heading. Keys are documented per-kind below.
-#   * Underscore-prefixed args are NOT hashed (Streamlit convention). They are
-#     the render inputs; the scalars alongside them are the actual key and must
-#     pin them down completely.
-#   * FIGURE_CACHE_VERSION (from app.py) is in every key so a drawing-code
-#     change invalidates it — the keys describe DATA, so nothing else would.
-@st.cache_data(ttl=86400, show_spinner=False, max_entries=96)
-def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key,
-                           fig_ver, _events_df, _matches_df, _payload):
-    """One Opposition Report figure -> (display PNG, PDF PNG). See _fig_png_pair.
-
-    KEY: (kind, season_key, comp_key, team_name, extra, day_key,
-          FIGURE_CACHE_VERSION).
-
-    season_key is selected_season_id; comp_key is the league selection. Both
-    are needed even though a Wyscout seasonId belongs to exactly one
-    competition: the frames here are
-        get_season_events(filter_by_league(raw_events_df, comp_ids), season_id)
-    and that league filter is applied in app.py BEFORE this module is called,
-    so from in here it is invisible. Picking a league that doesn't contain
-    season_key empties the frames — a real, if odd, distinct picture. comp_key
-    is passed in from the call site for exactly that reason.
-
-    team_name is the opponent, and is what separates one report from the next.
-    It is None for the set-piece scatters, which draw the whole league and
-    highlight nobody — the opponent genuinely does not change those pictures,
-    so they are shared across opponents rather than duplicated per opponent.
-
-    day_key is today's date. plot_radar_chart, plot_custom_scatter and
-    plot_match_xg_history all stamp 'As of: {date}' into their titles, and
-    _create_base_radar_chart (under create_radar_with_distributions) reads
-    today for its age labels — so without this a figure built at 23:59 would
-    serve yesterday's date for the rest of the 24 h TTL. It costs one rebuild
-    a day on the figures that don't draw a date.
-
-    `extra`, per kind:
-      radar         (title_suffix, params, color, values_raw, values_pct)
-        The plotted values ride in the KEY, not just in the scope: ~11 numbers,
-        and they make the radar a pure function of its key regardless of how
-        calculate_all_team_radars_stats / calculate_set_piece_metrics key
-        themselves. (values_raw may hold preformatted strings like '45%'.)
-      formation     (formation, xi_key)
-        xi_key is ((slot, name, id), ...) in dict order — the 11 players drawn
-        and the slots they occupy, so the picture is pinned without trusting
-        _get_projected_starting_xi to be a pure function of the scope.
-      player_radar  (player_id, position, metrics, eligible_groups)
-        The one kind that leans on the scope rather than on values: its
-        distribution curves are drawn from the whole position-group
-        population, which is far too big to key on. (season_key, comp_key)
-        pins that population, player_id pins the player within it.
-      corner_analysis (side,)
-      sp_scatter    (x_metric, y_metric, title, values_key)
-        values_key is app._plot_values_key of the two plotted columns — the
-        same airtight trick League Analysis uses. `title` is the post-hoc
-        set_title() the call site used to apply AFTER the plotter returned;
-        it happens in here now, or it would be lost on a cache hit.
-      avg_positions (xi_names,)
-        The projected XI restricts which players are drawn, so it is a real
-        picture input. Sorted: it is a set at the call site, and set iteration
-        order is not the draw order.
-      zone_heatmap  (tag,)
-
-    xg_history is the one figure season_key does not move, and that is
-    CORRECT rather than a stale key: its frame is the league-filtered,
-    all-seasons opp_events (not season_events_df), so the chart is the team's
-    history across every season in the league. season_key stays in the key
-    anyway — it is one key for all 12 kinds, and an extra component can only
-    cost a duplicate entry, never a wrong picture. What it genuinely depends
-    on is comp_key, and the call site now passes a matching league scope_key
-    to calculate_xg_history_data so the frame actually follows it.
-
-    Returns the PNG pair, or None when the plotter produced no figure.
-    """
-    app = _get_app()
-    if kind == 'radar':
-        _title, _params, _color, _values_raw, _values_pct = extra
-        fig = app.plot_radar_chart(list(_params), list(_values_raw),
-                                   list(_values_pct), team_name, _title, _color)
-    elif kind == 'formation':
-        _formation, _xi_key = extra
-        fig = app.create_formation_graphic(_formation, _payload, team_name)
-    elif kind == 'player_radar':
-        _player_id, _position, _metrics, _eligible = extra
-        _player_data, _all_position_data, _full_df = _payload
-        fig = app.create_radar_with_distributions(
-            _player_data, list(_metrics), _position, list(_eligible),
-            _all_position_data, full_df_for_ranking=_full_df)
-    elif kind == 'corner_analysis':
-        _side, = extra
-        fig = app.plot_corner_analysis(_events_df, team_name, _side)
-    elif kind == 'sp_scatter':
-        _x_metric, _y_metric, _title, _values_key = extra
-        fig = app.plot_custom_scatter(_payload, _x_metric, _y_metric)
-        fig.axes[0].set_title(_title, fontsize=14, weight='bold')
-    elif kind == 'xg_history':
-        fig = app.plot_match_xg_history(_payload, team_name)
-    elif kind == 'season_shotmap_for':
-        fig = app.create_season_shotmap(_events_df, team_name)
-    elif kind == 'season_shotmap_against':
-        fig = app.create_season_shots_against_shotmap(_events_df, _matches_df,
-                                                      team_name)
-    elif kind == 'avg_positions':
-        _xi_names, = extra
-        fig = pv.plot_average_positions(
-            _events_df, team_name,
-            player_names=set(_xi_names) if _xi_names else None)
-    elif kind == 'defensive_structure':
-        # league_events_df is the same scoped frame — the plotter derives the
-        # league average from it, so it needs no key of its own.
-        fig = pv.plot_defensive_structure(_events_df, team_name,
-                                          league_events_df=_events_df)
-    elif kind == 'zone_heatmap':
-        _tag, = extra
-        fig = pv.plot_zone_heatmap(_events_df, team_name, _tag,
-                                   league_events_df=_events_df)
-    elif kind == 'shot_assists':
-        fig = pv.plot_shot_assists_and_dribbles(_events_df, team_name)
-    else:
-        raise ValueError(f"unknown opposition figure kind: {kind!r}")
-    return _fig_png_pair(fig) if fig is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -297,13 +135,6 @@ def _get_team_recent_form(matches_df, team_name, season_id, n=5):
         (season_matches['awayTeamName'] == team_name)
     ].copy()
 
-    # No fixtures for this team in this scope: bail before the mask below.
-    # .apply on an EMPTY column returns an empty OBJECT-dtype Series, which
-    # pandas reads as a column list rather than a boolean mask — so tm[mask]
-    # would select zero COLUMNS and the next line would KeyError on 'dateutc'.
-    if tm.empty:
-        return []
-
     def _is_played(score):
         if pd.isna(score):
             return False
@@ -356,12 +187,6 @@ def _get_projected_starting_xi(events_df, matches_df, team_name, season_id):
         (season_matches['homeTeamName'] == team_name) |
         (season_matches['awayTeamName'] == team_name)
     ].copy()
-
-    # Same empty-column-mask trap as _get_team_recent_form: guard before the
-    # mask, not after it. This is the line that took the whole page down when
-    # the opponent had no fixtures in the selected competition.
-    if tm.empty:
-        return '4-4-2', {}
 
     def _is_played(score):
         if pd.isna(score):
@@ -790,28 +615,14 @@ def _generate_key_takeaways(team_name, strengths, weaknesses, profiles,
 def render_opposition_report(raw_events_df, matches_summary_df,
                              all_match_data, season_team_stats,
                              player_minutes_data,
-                             current_season_id, season_id_map,
-                             comp_ids=None):
-    """Entry point called from app.py.
-
-    comp_ids is the league selection. It does not filter anything in here —
-    app.py already applied it to the frames it hands us — but the figure cache
-    has to key on it, and it is not recoverable from the frames. See
-    _render_opp_figure_png.
-    """
+                             current_season_id, season_id_map):
+    """Entry point called from app.py."""
     app = _get_app()
 
     st.header("Opposition Report")
 
     # --- Season selector ---
-    # comp_ids scopes the season list to the selected league, and it is what
-    # makes this page work for Campeonato at all. Without it season_selector
-    # falls back to the flat SEASON_ID_MAP, which merges Liga 3 first and
-    # dedupes display labels — so its label->id reverse lookup returned Liga 3's
-    # id for EVERY shared label. Picking Campeonato therefore asked for a Liga 3
-    # season, got empty frames, and took the page down. Same call shape League
-    # Analysis already uses.
-    selected_season_id = app.season_selector("opposition_report", comp_ids=comp_ids)
+    selected_season_id = app.season_selector("opposition_report")
 
     # --- Season data ---
     season_events_df = app.get_season_events(raw_events_df, selected_season_id)
@@ -827,16 +638,8 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     next_fixture = _find_next_fixture(matches_summary_df, selected_season_id)
 
-    # Seed the list with ACP's group only when Liga 3 is actually selected.
-    # Unioned unconditionally, those 9 Liga 3 sides also landed in Campeonato's
-    # opponent list — and since the list is sorted, '1º Dezembro' became
-    # Campeonato's DEFAULT opponent: a team with no matches in the competition
-    # being viewed.
-    _seed_teams = (set(GROUP_B_TEAMS)
-                   if comp_ids is None or LIGA3_COMP_ID in comp_ids
-                   else set())
     all_opponents = sorted(
-        _seed_teams
+        set(GROUP_B_TEAMS)
         | set(season_matches_df['homeTeamName'].dropna().unique())
         | set(season_matches_df['awayTeamName'].dropna().unique())
     )
@@ -873,41 +676,6 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # Collections for PDF
     pdf_figures = {}   # key -> PNG bytes
     pdf_texts = {}
-
-    # --- Cached-PNG figure plumbing for this page ---------------------------
-    # Every figure below goes through _show_opp_png -> _render_opp_figure_png,
-    # which caches (display PNG, PDF PNG) on the key documented there. The
-    # display bytes are st.image()'d and the PDF bytes go straight into
-    # pdf_figures, so a cache hit costs neither the build nor either savefig.
-    #
-    # use_container_width=True on every st.image is deliberate and NOT
-    # cosmetic: st.pyplot defaults to width="stretch" whereas st.image
-    # defaults to width="content", so the sites that called st.pyplot(fig)
-    # with no flag still need it here to render at the size they always have.
-    _fig_season_key = selected_season_id
-    _fig_comp_key = tuple(sorted(int(c) for c in (comp_ids or [])))
-    _fig_day_key = datetime.date.today().isoformat()
-
-    def _show_opp_png(kind, pdf_key=None, extra=(), payload=None,
-                      team=None, _team_set=False):
-        _pair = _render_opp_figure_png(
-            kind, _fig_season_key, _fig_comp_key,
-            team if _team_set else selected_opponent,
-            extra, _fig_day_key, app.FIGURE_CACHE_VERSION,
-            season_events_df, season_matches_df, payload)
-        if not _pair:
-            return
-        st.image(_pair[0], use_container_width=True)
-        if pdf_key:
-            pdf_figures[pdf_key] = _pair[1]
-
-    def _show_opp_radar(pdf_key, title, params, values_raw, values_pct, color):
-        # The plotted values go in `extra` (hashed), not in `payload`
-        # (unhashed) — that is what makes the radar a pure function of its key
-        # rather than a bet on the upstream stat cache.
-        _show_opp_png('radar', pdf_key=pdf_key,
-                      extra=(title, tuple(params), color,
-                             tuple(values_raw), tuple(values_pct)))
 
     # Initialise variables used across sections
     strengths, weaknesses, profiles = [], [], []
@@ -947,18 +715,28 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         # Offensive
         off_m = [m for m in OFFENSIVE_METRICS if m in team_pct.index]
         if off_m:
+            fig = app.plot_radar_chart(
+                off_m, [team_raw[m] for m in off_m],
+                [team_pct[m] for m in off_m],
+                selected_opponent, "Offensive", '#e63946',
+            )
             with col1:
-                _show_opp_radar('radar_offensive', "Offensive", off_m,
-                                [team_raw[m] for m in off_m],
-                                [team_pct[m] for m in off_m], '#e63946')
+                st.pyplot(fig, use_container_width=True)
+            pdf_figures['radar_offensive'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
 
         # Distribution
         dist_m = [m for m in DISTRIBUTION_METRICS if m in team_pct.index]
         if dist_m:
+            fig = app.plot_radar_chart(
+                dist_m, [team_raw[m] for m in dist_m],
+                [team_pct[m] for m in dist_m],
+                selected_opponent, "Distribution", '#0077b6',
+            )
             with col2:
-                _show_opp_radar('radar_distribution', "Distribution", dist_m,
-                                [team_raw[m] for m in dist_m],
-                                [team_pct[m] for m in dist_m], '#0077b6')
+                st.pyplot(fig, use_container_width=True)
+            pdf_figures['radar_distribution'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
 
         # Row 2: Defensive + Set Piece
         col3, col4 = st.columns(2)
@@ -966,10 +744,15 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         # Defensive
         def_m = [m for m in DEFENSIVE_METRICS_TEAM if m in team_pct.index]
         if def_m:
+            fig = app.plot_radar_chart(
+                def_m, [team_raw[m] for m in def_m],
+                [team_pct[m] for m in def_m],
+                selected_opponent, "Defensive", '#2a9d8f',
+            )
             with col3:
-                _show_opp_radar('radar_defensive', "Defensive", def_m,
-                                [team_raw[m] for m in def_m],
-                                [team_pct[m] for m in def_m], '#2a9d8f')
+                st.pyplot(fig, use_container_width=True)
+            pdf_figures['radar_defensive'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
 
         # Set Piece
         if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
@@ -984,10 +767,15 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                         raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
                     except ValueError:
                         pass
+                fig = app.plot_radar_chart(
+                    sp_m, raw_sp_values,
+                    [sp_team_pct[m] for m in sp_m],
+                    selected_opponent, "Set Piece Radar", '#ff8c00',
+                )
                 with col4:
-                    _show_opp_radar('radar_set_piece', "Set Piece Radar", sp_m,
-                                    raw_sp_values,
-                                    [sp_team_pct[m] for m in sp_m], '#ff8c00')
+                    st.pyplot(fig, use_container_width=True)
+                pdf_figures['radar_set_piece'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
     else:
         st.warning(f"No radar data available for {selected_opponent}.")
 
@@ -1016,14 +804,12 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         col_form, col_subs = st.columns([2, 1])
 
         with col_form:
-            # xi_key pins the 11 players and their slots into the key, in the
-            # dict order create_formation_graphic draws them.
-            _xi_key = tuple(
-                (str(_pos), str(_info.get('name')), _info.get('id'))
-                for _pos, _info in starting_xi.items()
+            fig = app.create_formation_graphic(
+                formation, starting_xi, selected_opponent,
             )
-            _show_opp_png('formation', pdf_key='formation',
-                          extra=(formation, _xi_key), payload=starting_xi)
+            st.pyplot(fig)
+            pdf_figures['formation'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
 
         with col_subs:
             st.markdown("**Projected Substitutes**")
@@ -1123,15 +909,16 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                                                 'primaryPosition'
                                             ].isin(pos_grp)
                                         ]
-                                        _show_opp_png(
-                                            'player_radar',
-                                            pdf_key=f'player_{i}',
-                                            extra=(kp['player_id'], player_pos,
-                                                   tuple(metrics),
-                                                   tuple(eligible_groups)),
-                                            payload=(player_data, all_pos,
-                                                     player_percentiles_df),
+                                        fig = app.create_radar_with_distributions(
+                                            player_data, metrics, player_pos,
+                                            eligible_groups, all_pos,
+                                            full_df_for_ranking=player_percentiles_df,
                                         )
+                                        st.pyplot(fig)
+                                        pdf_figures[f'player_{i}'] = (
+                                            _fig_to_png_bytes(fig)
+                                        )
+                                        plt.close(fig)
                                     except Exception as e:
                                         st.caption(
                                             f"Could not render radar: {e}"
@@ -1312,15 +1099,23 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         col_l, col_r = st.columns(2)
         with col_l:
             try:
-                _show_opp_png('corner_analysis', pdf_key='corner_left',
-                              extra=('left',))
+                fig = app.plot_corner_analysis(
+                    season_events_df, selected_opponent, 'left',
+                )
+                st.pyplot(fig)
+                pdf_figures['corner_left'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
             except Exception as e:
                 st.caption(f"Could not render left corner analysis: {e}")
 
         with col_r:
             try:
-                _show_opp_png('corner_analysis', pdf_key='corner_right',
-                              extra=('right',))
+                fig = app.plot_corner_analysis(
+                    season_events_df, selected_opponent, 'right',
+                )
+                st.pyplot(fig)
+                pdf_figures['corner_right'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
             except Exception as e:
                 st.caption(f"Could not render right corner analysis: {e}")
 
@@ -1347,16 +1142,15 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 x_met, y_met, scatter_title = scatter_pairs[si]
                 with col:
                     try:
-                        # team=None: this scatter plots the whole league and
-                        # highlights nobody, so the opponent is not one of its
-                        # inputs — keying on it would just duplicate the entry
-                        # per opponent. The numbers ride in the key instead.
-                        _show_opp_png(
-                            'sp_scatter', pdf_key=f'sp_scatter_{si}',
-                            extra=(x_met, y_met, scatter_title,
-                                   app._plot_values_key(set_piece_df,
-                                                        (x_met, y_met))),
-                            payload=set_piece_df, team=None, _team_set=True)
+                        fig = app.plot_custom_scatter(
+                            set_piece_df, x_met, y_met,
+                        )
+                        fig.axes[0].set_title(scatter_title,
+                                              fontsize=14, weight='bold')
+                        st.pyplot(fig)
+                        pdf_figures[f'sp_scatter_{si}'] = (
+                            _fig_to_png_bytes(fig))
+                        plt.close(fig)
                     except Exception as e:
                         st.caption(f"Could not render {scatter_title}: {e}")
 
@@ -1391,22 +1185,14 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     # xG history
     try:
-        # Both frames are underscore-prefixed inside, so scope_key is the only
-        # thing that makes this cache follow the scope — without it the first
-        # league to render wins and every later one is served ITS xG history.
-        #
-        # The key is the LEAGUE only, not the (season, comp, stage) triple
-        # Team Analysis passes: what arrives here is filter_by_league(...) with
-        # no season or stage filter (see app.py's opp_events/opp_matches), so
-        # this frame spans every season of the selected league. Keying it by
-        # season would split one frame across N identical entries and imply a
-        # season-sensitivity the data does not have.
         xg_hist = app.calculate_xg_history_data(
             raw_events_df, matches_summary_df,
-            scope_key=('opposition_all_seasons', _fig_comp_key),
         )
         if not xg_hist.empty:
-            _show_opp_png('xg_history', pdf_key='xg_history', payload=xg_hist)
+            fig = app.plot_match_xg_history(xg_hist, selected_opponent)
+            st.pyplot(fig)
+            pdf_figures['xg_history'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render xG history: {e}")
 
@@ -1416,14 +1202,24 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     with col_sf:
         st.markdown("**Shots For**")
         try:
-            _show_opp_png('season_shotmap_for', pdf_key='shotmap_for')
+            fig = app.create_season_shotmap(
+                season_events_df, selected_opponent,
+            )
+            st.pyplot(fig, use_container_width=True)
+            pdf_figures['shotmap_for'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render shot map: {e}")
 
     with col_sa:
         st.markdown("**Shots Conceded**")
         try:
-            _show_opp_png('season_shotmap_against', pdf_key='shotmap_against')
+            fig = app.create_season_shots_against_shotmap(
+                season_events_df, season_matches_df, selected_opponent,
+            )
+            st.pyplot(fig, use_container_width=True)
+            pdf_figures['shotmap_against'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render shots against map: {e}")
 
@@ -1437,15 +1233,24 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # Average Player Positions (season) — restricted to projected XI (exactly 11)
     st.markdown("**Average Player Positions (Season)**")
     try:
-        _show_opp_png('avg_positions', pdf_key='avg_positions',
-                      extra=(tuple(sorted(xi_names)) if xi_names else None,))
+        fig = pv.plot_average_positions(
+            season_events_df, selected_opponent,
+            player_names=xi_names if xi_names else None,
+        )
+        st.pyplot(fig)
+        pdf_figures['avg_positions'] = _fig_to_png_bytes(fig)
+        plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render average positions: {e}")
 
     # Defensive Structure
     st.markdown("**Defensive Structure**")
     try:
-        _show_opp_png('defensive_structure', pdf_key='defensive_structure')
+        fig = pv.plot_defensive_structure(season_events_df, selected_opponent,
+                                          league_events_df=season_events_df)
+        st.pyplot(fig, use_container_width=True)
+        pdf_figures['defensive_structure'] = _fig_to_png_bytes(fig)
+        plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render defensive structure: {e}")
 
@@ -1454,23 +1259,36 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     with col_rz:
         st.markdown("**Recovery Zones vs League**")
         try:
-            _show_opp_png('zone_heatmap', pdf_key='zone_recovery',
-                          extra=('recovery',))
+            fig = pv.plot_zone_heatmap(
+                season_events_df, selected_opponent, 'recovery',
+                league_events_df=season_events_df,
+            )
+            st.pyplot(fig)
+            pdf_figures['zone_recovery'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render: {e}")
 
     with col_lz:
         st.markdown("**Loss Zones vs League**")
         try:
-            _show_opp_png('zone_heatmap', pdf_key='zone_loss',
-                          extra=('loss',))
+            fig = pv.plot_zone_heatmap(
+                season_events_df, selected_opponent, 'loss',
+                league_events_df=season_events_df,
+            )
+            st.pyplot(fig)
+            pdf_figures['zone_loss'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render: {e}")
 
     # Shot Assists + Dribbles in Final Third
     st.markdown("**Shot Assists & Dribbles in Final Third**")
     try:
-        _show_opp_png('shot_assists', pdf_key='shot_assists_dribbles')
+        fig = pv.plot_shot_assists_and_dribbles(season_events_df, selected_opponent)
+        st.pyplot(fig)
+        pdf_figures['shot_assists_dribbles'] = _fig_to_png_bytes(fig)
+        plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render shot assists & dribbles: {e}")
 
