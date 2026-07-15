@@ -4,6 +4,9 @@
 - plotly_box_passes_map  — every pass into the attacking box, arrows
                             colored by GPA pass value
 - mpl_box_passes_map     — static matplotlib twin for PDF export
+- plotly_projection_fan  — career ratings flowing into next season's
+                            projection, with a ±1 SD fan
+- mpl_projection_fan     — static matplotlib twin for PDF export
 
 Coordinates are Wyscout 100x100 (x toward opponent goal). Both plotly
 charts render a portrait half-pitch, goal at the top:
@@ -457,6 +460,161 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
         title=dict(text=f'{player_name} — projection outlook',
                    font=dict(size=14)),
     )
+    return fig
+
+
+def mpl_projection_fan(erows: pd.DataFrame, season_labels: dict,
+                       player_name: str):
+    """Static matplotlib twin of plotly_projection_fan (PDF export).
+
+    Deliberately mirrors that function's decisions rather than making its
+    own: the same L3-equivalent scale for cross-league careers, the same
+    biggest-minutes row per football year, the same faded bridge across
+    seasons with no data, the same peak-age window. The two are meant to
+    show the same picture — if you change one, change the other.
+
+    Returns None when there is not enough to draw (no rated seasons, no
+    parseable season labels, or no projection), matching the plotly twin.
+    """
+    df = erows.dropna(subset=['acp_rating']).copy()
+    if df.empty:
+        return None
+    df['yr'] = df['seasonId'].map(
+        lambda s: _season_start_year(s, season_labels))
+    df = df.dropna(subset=['yr'])
+    if df.empty:
+        return None
+    # one point per football year — keep the biggest-minutes row (a player
+    # can have two same-year rows after a mid-season league switch)
+    df = (df.sort_values('mins_played')
+            .groupby('yr', as_index=False).tail(1)
+            .sort_values('yr'))
+    proj_rows = (erows[erows.get('projection').notna()]
+                 if 'projection' in erows.columns else pd.DataFrame())
+    if proj_rows.empty:
+        return None
+    pr = proj_rows.iloc[-1]
+    band = float(pr.get('band_sd', 5.0) or 5.0)
+    role = str(pr.get('role', ''))
+    # cross-league careers plot on the L3-equivalent (abs) scale so the line
+    # does not jump between league baselines
+    use_abs = (df['league'].astype(str).nunique() > 1
+               and 'acp_rating_abs' in df.columns)
+    if use_abs:
+        df['_val'] = pd.to_numeric(df['acp_rating_abs'],
+                                   errors='coerce').fillna(df['acp_rating'])
+        proj = (float(pr['projection_abs'])
+                if pd.notna(pr.get('projection_abs'))
+                else float(pr['projection']))
+    else:
+        df['_val'] = df['acp_rating']
+        proj = float(pr['projection'])
+    last = df.iloc[-1]
+    x_last, y_last = float(last['yr']), float(last['_val'])
+    x_proj = x_last + 1
+
+    fig = plt.figure(figsize=(12, 5))
+    fig.set_facecolor(PITCH_BG)
+    ax = fig.add_subplot(111)
+    ax.set_facecolor(PITCH_BG)
+
+    # typical peak window for the role, mapped from age to seasons
+    peak = ROLE_PEAK_DISPLAY.get(role)
+    age_now = pd.to_numeric(pr.get('age'), errors='coerce')
+    x_hi = x_proj
+    if peak is not None and pd.notna(age_now):
+        yr_at_peak = x_last + (peak - float(age_now))
+        if df['yr'].min() - 1.5 <= yr_at_peak <= x_proj + 3:
+            ax.axvspan(yr_at_peak - 1.0, yr_at_peak + 1.0,
+                       color='#2aa876', alpha=0.10, lw=0, zorder=0)
+            ax.text(yr_at_peak + 1.0, 0.985, f'typical {role} peak',
+                    transform=ax.get_xaxis_transform(), ha='right',
+                    va='top', fontsize=9, color='#2aa876')
+            x_hi = max(x_hi, yr_at_peak + 1.0)
+
+    x_lo = df['yr'].min() - 0.4
+    # league-average reference
+    ax.axhline(50, ls=':', color='gray', alpha=0.6, lw=1, zorder=1)
+    ax.text(x_lo, 50, ' league avg (50)', ha='left', va='top',
+            fontsize=9, color='gray')
+    # uncertainty fan (±1 SD)
+    ax.fill([x_last, x_proj, x_proj, x_last],
+            [y_last, proj + band, proj - band, y_last],
+            color='#2aa876', alpha=0.16, lw=0, zorder=1)
+    # career history — solid between consecutive seasons, FADED across gaps
+    # (dashed is reserved for the projection connector; a missing dot plus a
+    # faded bridge reads as "no data those years")
+    _yrs = df['yr'].tolist()
+    _vals = df['_val'].tolist()
+    for _i in range(len(_yrs) - 1):
+        _gap = _yrs[_i + 1] - _yrs[_i]
+        ax.plot([_yrs[_i], _yrs[_i + 1]], [_vals[_i], _vals[_i + 1]],
+                color='#3987e5', alpha=0.30 if _gap > 1 else 1.0,
+                lw=2 if _gap > 1 else 2.5, solid_capstyle='round', zorder=2)
+    ax.scatter(df['yr'], df['_val'], s=55, color='#3987e5', zorder=3)
+    # dashed connector + projection diamond
+    ax.plot([x_last, x_proj], [y_last, proj], ls='--', color='#2aa876',
+            lw=2, zorder=2)
+    ax.scatter([x_proj], [proj], marker='D', s=130, color='#2aa876',
+               edgecolors='white', linewidths=1.5, zorder=4)
+    _below = y_last > proj
+    ax.annotate(f'{proj:.0f} ± {band:.0f}', (x_proj, proj),
+                textcoords='offset points',
+                xytext=(0, -20 if _below else 14), ha='center',
+                fontsize=11, weight='bold', color='#2aa876')
+    # evidence % — the data weight behind the projection's starting point
+    _w_ev = pd.to_numeric(pr.get('w_evidence'), errors='coerce')
+    if pd.notna(_w_ev):
+        ax.annotate(f'evidence {float(_w_ev):.0%}', (x_proj, proj),
+                    textcoords='offset points',
+                    xytext=(0, -34 if _below else 30), ha='center',
+                    fontsize=9, color='gray')
+
+    # x ticks: EVERY season from the first career year to the projection,
+    # including years with no data, with league next to played seasons and
+    # the player's age under each tick (engine age is as-of the latest
+    # season, so per-season age = age_now - years back)
+    _sample = str(season_labels.get(int(last['seasonId']), ''))
+    _slash = '/' in _sample
+
+    def _season_lbl(y):
+        y = int(y)
+        return (f'{y}/{(y + 1) % 100:02d}' if _slash
+                else f'{y % 100:02d}-{(y + 1) % 100:02d}')
+
+    def _with_age(lbl, yr):
+        if pd.isna(age_now):
+            return lbl
+        return f'{lbl}\nage {float(age_now) - (x_last - float(yr)):.1f}'
+
+    _row_by_yr = {int(r['yr']): r for _, r in df.iterrows()}
+    _years = list(range(int(df['yr'].min()), int(x_last) + 1))
+
+    def _tick_lbl(y):
+        r = _row_by_yr.get(int(y))
+        if r is not None:
+            base = str(season_labels.get(int(r['seasonId']), _season_lbl(y)))
+            base += f" · {r.get('league', '')}"
+        else:
+            base = _season_lbl(y)
+        return _with_age(base, y)
+
+    ax.set_xticks(_years + [x_proj])
+    ax.set_xticklabels([_tick_lbl(y) for y in _years]
+                       + [_with_age(_season_lbl(x_proj) + ' (proj)', x_proj)],
+                       fontsize=8)
+    ys = list(df['_val']) + [proj + band, proj - band, 50]
+    ax.set_xlim(x_lo, x_hi + 0.6)
+    ax.set_ylim(min(ys) - 4, max(ys) + 4)
+    ax.set_ylabel('ACP rating (L3-equivalent)' if use_abs else 'ACP rating',
+                  fontsize=10)
+    ax.set_title(f'{player_name} — projection outlook',
+                 fontsize=14, weight='bold', pad=12)
+    ax.grid(axis='y', color='gray', alpha=0.15)
+    ax.set_axisbelow(True)
+    for _s in ('top', 'right'):
+        ax.spines[_s].set_visible(False)
+    fig.tight_layout()
     return fig
 
 
