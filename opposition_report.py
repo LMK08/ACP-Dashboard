@@ -7,6 +7,9 @@ Analyzes the next opponent and generates a comprehensive scouting report.
 import streamlit as st
 import pandas as pd
 import numpy as np
+# Selects the Agg backend before pyplot is imported, and owns MPL_LOCK, the
+# process-wide lock serialising all matplotlib work (see mpl_safety.py).
+from mpl_safety import MPL_LOCK
 import matplotlib.pyplot as plt
 import datetime
 import sys
@@ -715,28 +718,30 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         # Offensive
         off_m = [m for m in OFFENSIVE_METRICS if m in team_pct.index]
         if off_m:
-            fig = app.plot_radar_chart(
-                off_m, [team_raw[m] for m in off_m],
-                [team_pct[m] for m in off_m],
-                selected_opponent, "Offensive", '#e63946',
-            )
-            with col1:
-                st.pyplot(fig, use_container_width=True)
-            pdf_figures['radar_offensive'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.plot_radar_chart(
+                    off_m, [team_raw[m] for m in off_m],
+                    [team_pct[m] for m in off_m],
+                    selected_opponent, "Offensive", '#e63946',
+                )
+                with col1:
+                    st.pyplot(fig, use_container_width=True)
+                pdf_figures['radar_offensive'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
 
         # Distribution
         dist_m = [m for m in DISTRIBUTION_METRICS if m in team_pct.index]
         if dist_m:
-            fig = app.plot_radar_chart(
-                dist_m, [team_raw[m] for m in dist_m],
-                [team_pct[m] for m in dist_m],
-                selected_opponent, "Distribution", '#0077b6',
-            )
-            with col2:
-                st.pyplot(fig, use_container_width=True)
-            pdf_figures['radar_distribution'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.plot_radar_chart(
+                    dist_m, [team_raw[m] for m in dist_m],
+                    [team_pct[m] for m in dist_m],
+                    selected_opponent, "Distribution", '#0077b6',
+                )
+                with col2:
+                    st.pyplot(fig, use_container_width=True)
+                pdf_figures['radar_distribution'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
 
         # Row 2: Defensive + Set Piece
         col3, col4 = st.columns(2)
@@ -744,15 +749,16 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         # Defensive
         def_m = [m for m in DEFENSIVE_METRICS_TEAM if m in team_pct.index]
         if def_m:
-            fig = app.plot_radar_chart(
-                def_m, [team_raw[m] for m in def_m],
-                [team_pct[m] for m in def_m],
-                selected_opponent, "Defensive", '#2a9d8f',
-            )
-            with col3:
-                st.pyplot(fig, use_container_width=True)
-            pdf_figures['radar_defensive'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.plot_radar_chart(
+                    def_m, [team_raw[m] for m in def_m],
+                    [team_pct[m] for m in def_m],
+                    selected_opponent, "Defensive", '#2a9d8f',
+                )
+                with col3:
+                    st.pyplot(fig, use_container_width=True)
+                pdf_figures['radar_defensive'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
 
         # Set Piece
         if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
@@ -767,15 +773,16 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                         raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
                     except ValueError:
                         pass
-                fig = app.plot_radar_chart(
-                    sp_m, raw_sp_values,
-                    [sp_team_pct[m] for m in sp_m],
-                    selected_opponent, "Set Piece Radar", '#ff8c00',
-                )
-                with col4:
-                    st.pyplot(fig, use_container_width=True)
-                pdf_figures['radar_set_piece'] = _fig_to_png_bytes(fig)
-                plt.close(fig)
+                with MPL_LOCK:
+                    fig = app.plot_radar_chart(
+                        sp_m, raw_sp_values,
+                        [sp_team_pct[m] for m in sp_m],
+                        selected_opponent, "Set Piece Radar", '#ff8c00',
+                    )
+                    with col4:
+                        st.pyplot(fig, use_container_width=True)
+                    pdf_figures['radar_set_piece'] = _fig_to_png_bytes(fig)
+                    plt.close(fig)
     else:
         st.warning(f"No radar data available for {selected_opponent}.")
 
@@ -804,12 +811,13 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         col_form, col_subs = st.columns([2, 1])
 
         with col_form:
-            fig = app.create_formation_graphic(
-                formation, starting_xi, selected_opponent,
-            )
-            st.pyplot(fig)
-            pdf_figures['formation'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.create_formation_graphic(
+                    formation, starting_xi, selected_opponent,
+                )
+                st.pyplot(fig)
+                pdf_figures['formation'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
 
         with col_subs:
             st.markdown("**Projected Substitutes**")
@@ -909,16 +917,17 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                                                 'primaryPosition'
                                             ].isin(pos_grp)
                                         ]
-                                        fig = app.create_radar_with_distributions(
-                                            player_data, metrics, player_pos,
-                                            eligible_groups, all_pos,
-                                            full_df_for_ranking=player_percentiles_df,
-                                        )
-                                        st.pyplot(fig)
-                                        pdf_figures[f'player_{i}'] = (
-                                            _fig_to_png_bytes(fig)
-                                        )
-                                        plt.close(fig)
+                                        with MPL_LOCK:
+                                            fig = app.create_radar_with_distributions(
+                                                player_data, metrics, player_pos,
+                                                eligible_groups, all_pos,
+                                                full_df_for_ranking=player_percentiles_df,
+                                            )
+                                            st.pyplot(fig)
+                                            pdf_figures[f'player_{i}'] = (
+                                                _fig_to_png_bytes(fig)
+                                            )
+                                            plt.close(fig)
                                     except Exception as e:
                                         st.caption(
                                             f"Could not render radar: {e}"
@@ -1099,23 +1108,25 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         col_l, col_r = st.columns(2)
         with col_l:
             try:
-                fig = app.plot_corner_analysis(
-                    season_events_df, selected_opponent, 'left',
-                )
-                st.pyplot(fig)
-                pdf_figures['corner_left'] = _fig_to_png_bytes(fig)
-                plt.close(fig)
+                with MPL_LOCK:
+                    fig = app.plot_corner_analysis(
+                        season_events_df, selected_opponent, 'left',
+                    )
+                    st.pyplot(fig)
+                    pdf_figures['corner_left'] = _fig_to_png_bytes(fig)
+                    plt.close(fig)
             except Exception as e:
                 st.caption(f"Could not render left corner analysis: {e}")
 
         with col_r:
             try:
-                fig = app.plot_corner_analysis(
-                    season_events_df, selected_opponent, 'right',
-                )
-                st.pyplot(fig)
-                pdf_figures['corner_right'] = _fig_to_png_bytes(fig)
-                plt.close(fig)
+                with MPL_LOCK:
+                    fig = app.plot_corner_analysis(
+                        season_events_df, selected_opponent, 'right',
+                    )
+                    st.pyplot(fig)
+                    pdf_figures['corner_right'] = _fig_to_png_bytes(fig)
+                    plt.close(fig)
             except Exception as e:
                 st.caption(f"Could not render right corner analysis: {e}")
 
@@ -1142,15 +1153,16 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 x_met, y_met, scatter_title = scatter_pairs[si]
                 with col:
                     try:
-                        fig = app.plot_custom_scatter(
-                            set_piece_df, x_met, y_met,
-                        )
-                        fig.axes[0].set_title(scatter_title,
-                                              fontsize=14, weight='bold')
-                        st.pyplot(fig)
-                        pdf_figures[f'sp_scatter_{si}'] = (
-                            _fig_to_png_bytes(fig))
-                        plt.close(fig)
+                        with MPL_LOCK:
+                            fig = app.plot_custom_scatter(
+                                set_piece_df, x_met, y_met,
+                            )
+                            fig.axes[0].set_title(scatter_title,
+                                                  fontsize=14, weight='bold')
+                            st.pyplot(fig)
+                            pdf_figures[f'sp_scatter_{si}'] = (
+                                _fig_to_png_bytes(fig))
+                            plt.close(fig)
                     except Exception as e:
                         st.caption(f"Could not render {scatter_title}: {e}")
 
@@ -1189,10 +1201,11 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             raw_events_df, matches_summary_df,
         )
         if not xg_hist.empty:
-            fig = app.plot_match_xg_history(xg_hist, selected_opponent)
-            st.pyplot(fig)
-            pdf_figures['xg_history'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.plot_match_xg_history(xg_hist, selected_opponent)
+                st.pyplot(fig)
+                pdf_figures['xg_history'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render xG history: {e}")
 
@@ -1202,24 +1215,26 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     with col_sf:
         st.markdown("**Shots For**")
         try:
-            fig = app.create_season_shotmap(
-                season_events_df, selected_opponent,
-            )
-            st.pyplot(fig, use_container_width=True)
-            pdf_figures['shotmap_for'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.create_season_shotmap(
+                    season_events_df, selected_opponent,
+                )
+                st.pyplot(fig, use_container_width=True)
+                pdf_figures['shotmap_for'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render shot map: {e}")
 
     with col_sa:
         st.markdown("**Shots Conceded**")
         try:
-            fig = app.create_season_shots_against_shotmap(
-                season_events_df, season_matches_df, selected_opponent,
-            )
-            st.pyplot(fig, use_container_width=True)
-            pdf_figures['shotmap_against'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = app.create_season_shots_against_shotmap(
+                    season_events_df, season_matches_df, selected_opponent,
+                )
+                st.pyplot(fig, use_container_width=True)
+                pdf_figures['shotmap_against'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render shots against map: {e}")
 
@@ -1233,24 +1248,26 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # Average Player Positions (season) — restricted to projected XI (exactly 11)
     st.markdown("**Average Player Positions (Season)**")
     try:
-        fig = pv.plot_average_positions(
-            season_events_df, selected_opponent,
-            player_names=xi_names if xi_names else None,
-        )
-        st.pyplot(fig)
-        pdf_figures['avg_positions'] = _fig_to_png_bytes(fig)
-        plt.close(fig)
+        with MPL_LOCK:
+            fig = pv.plot_average_positions(
+                season_events_df, selected_opponent,
+                player_names=xi_names if xi_names else None,
+            )
+            st.pyplot(fig)
+            pdf_figures['avg_positions'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render average positions: {e}")
 
     # Defensive Structure
     st.markdown("**Defensive Structure**")
     try:
-        fig = pv.plot_defensive_structure(season_events_df, selected_opponent,
-                                          league_events_df=season_events_df)
-        st.pyplot(fig, use_container_width=True)
-        pdf_figures['defensive_structure'] = _fig_to_png_bytes(fig)
-        plt.close(fig)
+        with MPL_LOCK:
+            fig = pv.plot_defensive_structure(season_events_df, selected_opponent,
+                                              league_events_df=season_events_df)
+            st.pyplot(fig, use_container_width=True)
+            pdf_figures['defensive_structure'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render defensive structure: {e}")
 
@@ -1259,36 +1276,39 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     with col_rz:
         st.markdown("**Recovery Zones vs League**")
         try:
-            fig = pv.plot_zone_heatmap(
-                season_events_df, selected_opponent, 'recovery',
-                league_events_df=season_events_df,
-            )
-            st.pyplot(fig)
-            pdf_figures['zone_recovery'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = pv.plot_zone_heatmap(
+                    season_events_df, selected_opponent, 'recovery',
+                    league_events_df=season_events_df,
+                )
+                st.pyplot(fig)
+                pdf_figures['zone_recovery'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render: {e}")
 
     with col_lz:
         st.markdown("**Loss Zones vs League**")
         try:
-            fig = pv.plot_zone_heatmap(
-                season_events_df, selected_opponent, 'loss',
-                league_events_df=season_events_df,
-            )
-            st.pyplot(fig)
-            pdf_figures['zone_loss'] = _fig_to_png_bytes(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = pv.plot_zone_heatmap(
+                    season_events_df, selected_opponent, 'loss',
+                    league_events_df=season_events_df,
+                )
+                st.pyplot(fig)
+                pdf_figures['zone_loss'] = _fig_to_png_bytes(fig)
+                plt.close(fig)
         except Exception as e:
             st.caption(f"Could not render: {e}")
 
     # Shot Assists + Dribbles in Final Third
     st.markdown("**Shot Assists & Dribbles in Final Third**")
     try:
-        fig = pv.plot_shot_assists_and_dribbles(season_events_df, selected_opponent)
-        st.pyplot(fig)
-        pdf_figures['shot_assists_dribbles'] = _fig_to_png_bytes(fig)
-        plt.close(fig)
+        with MPL_LOCK:
+            fig = pv.plot_shot_assists_and_dribbles(season_events_df, selected_opponent)
+            st.pyplot(fig)
+            pdf_figures['shot_assists_dribbles'] = _fig_to_png_bytes(fig)
+            plt.close(fig)
     except Exception as e:
         st.caption(f"Could not render shot assists & dribbles: {e}")
 

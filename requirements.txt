@@ -1,17 +1,23 @@
-adjustText
-matplotlib
-mplsoccer
-numpy
-pandas
-pillow<12
-pyarrow
-requests
-scipy
-seaborn
-plotly
-pyyaml
-scikit-learn
-joblib
-fpdf2
-tqdm
-psutil
+# Exact pins: these are the versions the HF Space resolved on its 2026-07-14
+# rebuild, i.e. what production already runs. Unpinned, every image rebuild
+# re-resolves and can silently swap native libs (numpy/pyarrow/matplotlib)
+# under a working app. Do not relax to >= without a deliberate rebuild+test.
+# Note: streamlit is NOT installed from here — HF pins it via the README
+# frontmatter (sdk_version: 1.41.0). Keep the two in sync by hand.
+adjustText==1.4.0
+matplotlib==3.11.0
+mplsoccer==1.6.1
+numpy==2.4.6
+pandas==2.3.3
+pillow==11.3.0
+pyarrow==25.0.0
+requests==2.34.2
+scipy==1.17.1
+seaborn==0.13.2
+plotly==6.9.0
+pyyaml==6.0.3
+scikit-learn==1.9.0
+joblib==1.5.3
+fpdf2==2.8.7
+tqdm==4.68.4
+psutil==7.2.2

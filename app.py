@@ -1,5 +1,12 @@
 # app.py
 
+# Dump a C-level + Python traceback to stderr on SIGSEGV/SIGFPE/SIGABRT.
+# The Space has been exiting 139 with nothing in the logs to act on; HF captures
+# stderr, so the next fault lands in the container log instead of being inferred.
+# Must come before anything that loads native code (numpy/pyarrow/matplotlib).
+import faulthandler
+faulthandler.enable()
+
 import sys
 import streamlit as st
 import pandas as pd
@@ -7,6 +14,9 @@ import numpy as np
 import pickle
 import logging
 import yaml
+# Selects the Agg backend before pyplot is imported, and owns MPL_LOCK, the
+# process-wide lock serialising all matplotlib work (see mpl_safety.py).
+from mpl_safety import MPL_LOCK, mpl_locked
 import matplotlib.pyplot as plt
 
 # Configure logging
@@ -5724,7 +5734,11 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
     return True
 
 
+# mpl_locked sits INSIDE cache_data so a cache hit never touches the lock;
+# only an actual build serialises. Self-contained: savefig + close before it
+# returns PNG bytes, so no live figure escapes the critical section.
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=64)
+@mpl_locked
 def _render_acp_index_card_png(player_id, season_scope_key, stats_cache_ver,
                                engine_ver, career_view,
                                _eng_df, _e, _eng_meta):
@@ -6189,6 +6203,13 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     return fig
 
 
+# Locked for the WHOLE export, not per player: the loop calls plt.close('all')
+# after each render (see the anti-OOM note inside), which would free other
+# sessions' in-flight figures if the lock were dropped between iterations.
+# Cost: a bulk export of dozens of players stalls other sessions' charts for
+# its duration. Accepted -- it is a deliberate, infrequent admin action, and it
+# already saturates the GIL while it runs.
+@mpl_locked
 def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
                         season_label='All Seasons', progress_cb=None,
                         output_path=None):
@@ -9185,13 +9206,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
 
             with col1:
-                fig_sm_h = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['homeTeamName'])
-                st.pyplot(fig_sm_h, use_container_width=True)
-                plt.close(fig_sm_h)
+                with MPL_LOCK:
+                    fig_sm_h = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['homeTeamName'])
+                    st.pyplot(fig_sm_h, use_container_width=True)
+                    plt.close(fig_sm_h)
             with col2:
-                fig_sm_a = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['awayTeamName'])
-                st.pyplot(fig_sm_a, use_container_width=True)
-                plt.close(fig_sm_a)
+                with MPL_LOCK:
+                    fig_sm_a = create_match_shotmap(match_events_df, selected_match_info, selected_match_info['awayTeamName'])
+                    st.pyplot(fig_sm_a, use_container_width=True)
+                    plt.close(fig_sm_a)
 
             # --- NEW: Shot Details Tables ---
             st.markdown("---") # Add a separator
@@ -9242,8 +9265,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
             if not match_events_df.empty:
                 try:
-                    fig_flowchart = plot_xg_flowchart(match_events_df, selected_match_info)
-                    st.pyplot(fig_flowchart, use_container_width=True)
+                    with MPL_LOCK:
+                        fig_flowchart = plot_xg_flowchart(match_events_df, selected_match_info)
+                        st.pyplot(fig_flowchart, use_container_width=True)
                 except Exception as e:
                     st.warning(f"Could not generate xG flowchart: {e}")
             else:
@@ -9284,37 +9308,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_ap1, col_ap2 = st.columns(2)
             with col_ap1:
                 try:
-                    fig_ap_h = pv.plot_average_positions(match_events_df, home_team,
-                                                         match_lineup=home_lineup)
-                    st.pyplot(fig_ap_h, use_container_width=True)
-                    plt.close(fig_ap_h)
+                    with MPL_LOCK:
+                        fig_ap_h = pv.plot_average_positions(match_events_df, home_team,
+                                                             match_lineup=home_lineup)
+                        st.pyplot(fig_ap_h, use_container_width=True)
+                        plt.close(fig_ap_h)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_ap2:
                 try:
-                    fig_ap_a = pv.plot_average_positions(match_events_df, away_team,
-                                                         match_lineup=away_lineup)
-                    st.pyplot(fig_ap_a, use_container_width=True)
-                    plt.close(fig_ap_a)
+                    with MPL_LOCK:
+                        fig_ap_a = pv.plot_average_positions(match_events_df, away_team,
+                                                             match_lineup=away_lineup)
+                        st.pyplot(fig_ap_a, use_container_width=True)
+                        plt.close(fig_ap_a)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
             # 2. Average Positions by Substitution Phase
             st.markdown(f"**{home_team} — Avg Positions by Phase**")
             try:
-                fig_sp_h = pv.plot_avg_positions_by_subs(match_events_df, home_team,
-                                                          match_lineup=home_lineup)
-                st.pyplot(fig_sp_h, use_container_width=True)
-                plt.close(fig_sp_h)
+                with MPL_LOCK:
+                    fig_sp_h = pv.plot_avg_positions_by_subs(match_events_df, home_team,
+                                                              match_lineup=home_lineup)
+                    st.pyplot(fig_sp_h, use_container_width=True)
+                    plt.close(fig_sp_h)
             except Exception as e:
                 st.caption(f"Could not render: {e}")
 
             st.markdown(f"**{away_team} — Avg Positions by Phase**")
             try:
-                fig_sp_a = pv.plot_avg_positions_by_subs(match_events_df, away_team,
-                                                          match_lineup=away_lineup)
-                st.pyplot(fig_sp_a, use_container_width=True)
-                plt.close(fig_sp_a)
+                with MPL_LOCK:
+                    fig_sp_a = pv.plot_avg_positions_by_subs(match_events_df, away_team,
+                                                              match_lineup=away_lineup)
+                    st.pyplot(fig_sp_a, use_container_width=True)
+                    plt.close(fig_sp_a)
             except Exception as e:
                 st.caption(f"Could not render: {e}")
 
@@ -9323,16 +9351,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_pn1, col_pn2 = st.columns(2)
             with col_pn1:
                 try:
-                    fig_pn_h = pv.plot_passing_network(match_events_df, home_team)
-                    st.pyplot(fig_pn_h, use_container_width=True)
-                    plt.close(fig_pn_h)
+                    with MPL_LOCK:
+                        fig_pn_h = pv.plot_passing_network(match_events_df, home_team)
+                        st.pyplot(fig_pn_h, use_container_width=True)
+                        plt.close(fig_pn_h)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_pn2:
                 try:
-                    fig_pn_a = pv.plot_passing_network(match_events_df, away_team)
-                    st.pyplot(fig_pn_a, use_container_width=True)
-                    plt.close(fig_pn_a)
+                    with MPL_LOCK:
+                        fig_pn_a = pv.plot_passing_network(match_events_df, away_team)
+                        st.pyplot(fig_pn_a, use_container_width=True)
+                        plt.close(fig_pn_a)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9346,16 +9376,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_rl1, col_rl2 = st.columns(2)
             with col_rl1:
                 try:
-                    fig_rec = pv.plot_recovery_map(match_events_df, tac_team)
-                    st.pyplot(fig_rec, use_container_width=True)
-                    plt.close(fig_rec)
+                    with MPL_LOCK:
+                        fig_rec = pv.plot_recovery_map(match_events_df, tac_team)
+                        st.pyplot(fig_rec, use_container_width=True)
+                        plt.close(fig_rec)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_rl2:
                 try:
-                    fig_loss = pv.plot_loss_map(match_events_df, tac_team)
-                    st.pyplot(fig_loss, use_container_width=True)
-                    plt.close(fig_loss)
+                    with MPL_LOCK:
+                        fig_loss = pv.plot_loss_map(match_events_df, tac_team)
+                        st.pyplot(fig_loss, use_container_width=True)
+                        plt.close(fig_loss)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9364,16 +9396,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_dd1, col_dd2 = st.columns(2)
             with col_dd1:
                 try:
-                    fig_dd_h = pv.plot_defensive_duels_map(match_events_df, home_team)
-                    st.pyplot(fig_dd_h, use_container_width=True)
-                    plt.close(fig_dd_h)
+                    with MPL_LOCK:
+                        fig_dd_h = pv.plot_defensive_duels_map(match_events_df, home_team)
+                        st.pyplot(fig_dd_h, use_container_width=True)
+                        plt.close(fig_dd_h)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_dd2:
                 try:
-                    fig_dd_a = pv.plot_defensive_duels_map(match_events_df, away_team)
-                    st.pyplot(fig_dd_a, use_container_width=True)
-                    plt.close(fig_dd_a)
+                    with MPL_LOCK:
+                        fig_dd_a = pv.plot_defensive_duels_map(match_events_df, away_team)
+                        st.pyplot(fig_dd_a, use_container_width=True)
+                        plt.close(fig_dd_a)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9382,16 +9416,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             col_sa1, col_sa2 = st.columns(2)
             with col_sa1:
                 try:
-                    fig_sa_h = pv.plot_shot_assists_and_dribbles(match_events_df, home_team)
-                    st.pyplot(fig_sa_h, use_container_width=True)
-                    plt.close(fig_sa_h)
+                    with MPL_LOCK:
+                        fig_sa_h = pv.plot_shot_assists_and_dribbles(match_events_df, home_team)
+                        st.pyplot(fig_sa_h, use_container_width=True)
+                        plt.close(fig_sa_h)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
             with col_sa2:
                 try:
-                    fig_sa_a = pv.plot_shot_assists_and_dribbles(match_events_df, away_team)
-                    st.pyplot(fig_sa_a, use_container_width=True)
-                    plt.close(fig_sa_a)
+                    with MPL_LOCK:
+                        fig_sa_a = pv.plot_shot_assists_and_dribbles(match_events_df, away_team)
+                        st.pyplot(fig_sa_a, use_container_width=True)
+                        plt.close(fig_sa_a)
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
@@ -9486,9 +9522,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.markdown("**Offensive Radar**")
                 valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
                 if valid_offensive_params:
-                     fig_off = plot_radar_chart(valid_offensive_params, team_stats_raw[valid_offensive_params].tolist(), team_stats_pct[valid_offensive_params].tolist(), selected_team_t, "Offensive Radar", '#e60000', league=current_league, season=current_season)
-                     st.pyplot(fig_off, use_container_width=True)
-                     plt.close(fig_off)
+                     with MPL_LOCK:
+                         fig_off = plot_radar_chart(valid_offensive_params, team_stats_raw[valid_offensive_params].tolist(), team_stats_pct[valid_offensive_params].tolist(), selected_team_t, "Offensive Radar", '#e60000', league=current_league, season=current_season)
+                         st.pyplot(fig_off, use_container_width=True)
+                         plt.close(fig_off)
             with col_r2:
                 st.markdown("**Distribution Radar**")
                 valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
@@ -9496,9 +9533,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      raw_dist_values = team_stats_raw[valid_distribution_params].tolist()
                      try: poss_index = valid_distribution_params.index('Ball Possession'); raw_dist_values[poss_index] = f"{raw_dist_values[poss_index]:.0f}%"
                      except ValueError: pass
-                     fig_dist = plot_radar_chart(valid_distribution_params, raw_dist_values, team_stats_pct[valid_distribution_params].tolist(), selected_team_t, "Distribution Radar", '#0077b6', league=current_league, season=current_season)
-                     st.pyplot(fig_dist, use_container_width=True)
-                     plt.close(fig_dist)
+                     with MPL_LOCK:
+                         fig_dist = plot_radar_chart(valid_distribution_params, raw_dist_values, team_stats_pct[valid_distribution_params].tolist(), selected_team_t, "Distribution Radar", '#0077b6', league=current_league, season=current_season)
+                         st.pyplot(fig_dist, use_container_width=True)
+                         plt.close(fig_dist)
 
             # Row 2: Defensive + Set Piece
             col_r3, col_r4 = st.columns(2)
@@ -9511,9 +9549,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                      except ValueError: pass
                      try: def_idx = valid_defensive_params.index('Defensive Duel Win %'); raw_def_values[def_idx] = f"{raw_def_values[def_idx]:.0f}%"
                      except ValueError: pass
-                     fig_def = plot_radar_chart(valid_defensive_params, raw_def_values, team_stats_pct[valid_defensive_params].tolist(), selected_team_t, "Defensive Radar", '#52A736', league=current_league, season=current_season)
-                     st.pyplot(fig_def, use_container_width=True)
-                     plt.close(fig_def)
+                     with MPL_LOCK:
+                         fig_def = plot_radar_chart(valid_defensive_params, raw_def_values, team_stats_pct[valid_defensive_params].tolist(), selected_team_t, "Defensive Radar", '#52A736', league=current_league, season=current_season)
+                         st.pyplot(fig_def, use_container_width=True)
+                         plt.close(fig_def)
             with col_r4:
                 st.markdown("**Set Piece Radar**")
                 if sp_df_raw is not None and not sp_df_raw.empty and selected_team_t in sp_df_raw.index:
@@ -9529,9 +9568,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
                             except ValueError:
                                 pass
-                        fig_sp = plot_radar_chart(valid_sp_params, raw_sp_values, sp_team_pct[valid_sp_params].tolist(), selected_team_t, "Set Piece Radar", '#ff8c00', league=current_league, season=current_season)
-                        st.pyplot(fig_sp, use_container_width=True)
-                        plt.close(fig_sp)
+                        with MPL_LOCK:
+                            fig_sp = plot_radar_chart(valid_sp_params, raw_sp_values, sp_team_pct[valid_sp_params].tolist(), selected_team_t, "Set Piece Radar", '#ff8c00', league=current_league, season=current_season)
+                            st.pyplot(fig_sp, use_container_width=True)
+                            plt.close(fig_sp)
                     else:
                         st.info("Set piece data not available.")
                 else:
@@ -9569,9 +9609,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         with col_xi1:
             if primary_formation and starting_xi:
-                fig_xi = create_formation_graphic(primary_formation, starting_xi, selected_team_t)
-                st.pyplot(fig_xi, use_container_width=True)
-                plt.close(fig_xi)
+                with MPL_LOCK:
+                    fig_xi = create_formation_graphic(primary_formation, starting_xi, selected_team_t)
+                    st.pyplot(fig_xi, use_container_width=True)
+                    plt.close(fig_xi)
             else:
                 st.info("Formation data not available for this team.")
 
@@ -9647,14 +9688,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         col1_shot, col2_shot = st.columns(2)
         with col1_shot:
             st.markdown(f"**Shots FOR {selected_team_t}**")
-            fig_shots_for = create_season_shotmap(team_events_df, selected_team_t)
-            st.pyplot(fig_shots_for, use_container_width=True)
-            plt.close(fig_shots_for)
+            with MPL_LOCK:
+                fig_shots_for = create_season_shotmap(team_events_df, selected_team_t)
+                st.pyplot(fig_shots_for, use_container_width=True)
+                plt.close(fig_shots_for)
         with col2_shot:
             st.markdown(f"**Shots AGAINST {selected_team_t}**")
-            fig_shots_against = create_season_shots_against_shotmap(team_events_df, team_matches_df, selected_team_t)
-            st.pyplot(fig_shots_against, use_container_width=True)
-            plt.close(fig_shots_against)
+            with MPL_LOCK:
+                fig_shots_against = create_season_shots_against_shotmap(team_events_df, team_matches_df, selected_team_t)
+                st.pyplot(fig_shots_against, use_container_width=True)
+                plt.close(fig_shots_against)
 
         # --- Rolling xG History ---
         with st.expander("Rolling xG (5-Game Average)", expanded=False):
@@ -9663,9 +9706,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # series only covers matches in the active stage.
                 rolling_xg_data_for_plot = calculate_xg_history_data(team_events_df, team_matches_df)
                 if not rolling_xg_data_for_plot.empty:
-                    fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
-                    st.pyplot(fig_rolling_xg, use_container_width=True)
-                    plt.close(fig_rolling_xg)
+                    with MPL_LOCK:
+                        fig_rolling_xg = plot_match_xg_history(rolling_xg_data_for_plot, selected_team_t)
+                        st.pyplot(fig_rolling_xg, use_container_width=True)
+                        plt.close(fig_rolling_xg)
                 else:
                     st.warning("No data available to calculate xG history.")
             except Exception as e:
@@ -9675,12 +9719,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         col_c1, col_c2 = st.columns(2)
         with col_c1:
             st.markdown("**Corners from Left Side**")
-            fig_corner_left = plot_corner_analysis(team_events_df, selected_team_t, 'left')
-            st.pyplot(fig_corner_left, use_container_width=True)
+            with MPL_LOCK:
+                fig_corner_left = plot_corner_analysis(team_events_df, selected_team_t, 'left')
+                st.pyplot(fig_corner_left, use_container_width=True)
         with col_c2:
             st.markdown("**Corners from Right Side**")
-            fig_corner_right = plot_corner_analysis(team_events_df, selected_team_t, 'right')
-            st.pyplot(fig_corner_right, use_container_width=True)
+            with MPL_LOCK:
+                fig_corner_right = plot_corner_analysis(team_events_df, selected_team_t, 'right')
+                st.pyplot(fig_corner_right, use_container_width=True)
 
         st.subheader("Season-Long Stats")
         if selected_team_t in team_season_stats and 'corners' in team_season_stats[selected_team_t]:
@@ -9702,43 +9748,47 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # 1. Ball Recovery Zones (vs league average)
         st.markdown("**Ball Recovery Zones** (vs League Average)")
         try:
-            fig_rec_z = pv.plot_zone_heatmap(
-                team_events_df, selected_team_t, 'recovery',
-                league_events_df=team_events_df,
-            )
-            st.pyplot(fig_rec_z, use_container_width=True)
-            plt.close(fig_rec_z)
+            with MPL_LOCK:
+                fig_rec_z = pv.plot_zone_heatmap(
+                    team_events_df, selected_team_t, 'recovery',
+                    league_events_df=team_events_df,
+                )
+                st.pyplot(fig_rec_z, use_container_width=True)
+                plt.close(fig_rec_z)
         except Exception as e:
             st.caption(f"Could not render recovery zones: {e}")
 
         # 2. Ball Loss Zones (vs league average)
         st.markdown("**Ball Loss Zones** (vs League Average)")
         try:
-            fig_loss_z = pv.plot_zone_heatmap(
-                team_events_df, selected_team_t, 'loss',
-                league_events_df=team_events_df,
-            )
-            st.pyplot(fig_loss_z, use_container_width=True)
-            plt.close(fig_loss_z)
+            with MPL_LOCK:
+                fig_loss_z = pv.plot_zone_heatmap(
+                    team_events_df, selected_team_t, 'loss',
+                    league_events_df=team_events_df,
+                )
+                st.pyplot(fig_loss_z, use_container_width=True)
+                plt.close(fig_loss_z)
         except Exception as e:
             st.caption(f"Could not render loss zones: {e}")
 
         # 3. Passing Network (Season)
         st.markdown("**Passing Network (Season)**")
         try:
-            fig_pn = pv.plot_passing_network(team_events_df, selected_team_t)
-            st.pyplot(fig_pn, use_container_width=True)
-            plt.close(fig_pn)
+            with MPL_LOCK:
+                fig_pn = pv.plot_passing_network(team_events_df, selected_team_t)
+                st.pyplot(fig_pn, use_container_width=True)
+                plt.close(fig_pn)
         except Exception as e:
             st.caption(f"Could not render passing network: {e}")
 
         # 4. Defensive Structure
         st.markdown("**Defensive Structure**")
         try:
-            fig_ds = pv.plot_defensive_structure(team_events_df, selected_team_t,
-                                                   league_events_df=team_events_df)
-            st.pyplot(fig_ds, use_container_width=True)
-            plt.close(fig_ds)
+            with MPL_LOCK:
+                fig_ds = pv.plot_defensive_structure(team_events_df, selected_team_t,
+                                                       league_events_df=team_events_df)
+                st.pyplot(fig_ds, use_container_width=True)
+                plt.close(fig_ds)
         except Exception as e:
             st.caption(f"Could not render defensive structure: {e}")
 
@@ -9834,8 +9884,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.subheader(f"Team Strength Scatterplot ({get_league_label(selected_comp_ids)} - Group B)")
             if not team_strength_df.empty:
                 valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
-                fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
-                st.pyplot(fig_group_b_strength, use_container_width=True)
+                with MPL_LOCK:
+                    fig_group_b_strength = plot_team_strength(team_strength_df, teams_to_include=valid_group_b_strength_teams, icon_zoom=0.4)
+                    st.pyplot(fig_group_b_strength, use_container_width=True)
                 with st.expander("View Group B Raw Strength Data"):
                     if valid_group_b_strength_teams:
                         st.dataframe(team_strength_df.loc[valid_group_b_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
@@ -9865,8 +9916,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     invert_y_gb = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_gb, key='invert_y_group_b')
 
                 if x_metric_gb and y_metric_gb:
-                    fig_custom_gb = plot_custom_scatter(group_b_stats_df, x_metric_gb, y_metric_gb, invert_x_gb, invert_y_gb)
-                    st.pyplot(fig_custom_gb, use_container_width=True)
+                    with MPL_LOCK:
+                        fig_custom_gb = plot_custom_scatter(group_b_stats_df, x_metric_gb, y_metric_gb, invert_x_gb, invert_y_gb)
+                        st.pyplot(fig_custom_gb, use_container_width=True)
             else:
                 st.info("No data available for Group B custom plot.")
 
@@ -9904,8 +9956,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if combined_strength_frames:
                 multi_strength_df = pd.concat(combined_strength_frames)
                 # Plot with text labels (no logos since same team appears multiple times)
-                fig_multi = plot_team_strength(multi_strength_df, season="Multi-Season")
-                st.pyplot(fig_multi, use_container_width=True)
+                with MPL_LOCK:
+                    fig_multi = plot_team_strength(multi_strength_df, season="Multi-Season")
+                    st.pyplot(fig_multi, use_container_width=True)
                 with st.expander("View Multi-Season Raw Strength Data"):
                     st.dataframe(multi_strength_df[['Attacking Strength', 'Defending Strength', 'Season']].round(2))
             else:
@@ -9914,8 +9967,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # Single season (original behavior)
             if not team_strength_df.empty:
                 valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
-                fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
-                st.pyplot(fig_all_strength, use_container_width=True)
+                with MPL_LOCK:
+                    fig_all_strength = plot_team_strength(team_strength_df, teams_to_include=valid_all_strength_teams)
+                    st.pyplot(fig_all_strength, use_container_width=True)
                 with st.expander("View All Teams Raw Strength Data"):
                      st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
             else:
@@ -9943,8 +9997,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 invert_y_all = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_all, key='invert_y_all')
 
             if x_metric_all and y_metric_all:
-                fig_custom_all = plot_custom_scatter(combined_stats_df, x_metric_all, y_metric_all, invert_x_all, invert_y_all)
-                st.pyplot(fig_custom_all, use_container_width=True)
+                with MPL_LOCK:
+                    fig_custom_all = plot_custom_scatter(combined_stats_df, x_metric_all, y_metric_all, invert_x_all, invert_y_all)
+                    st.pyplot(fig_custom_all, use_container_width=True)
 
             with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
                 st.dataframe(combined_stats_df.round(2))
@@ -10626,108 +10681,111 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             try:
                 with st.spinner("Composing one-pager…"):
                     from player_onepager import build_player_onepager
-                    # 1) best-fit template radar (percentile mode)
-                    _op_fig_radar = None
-                    try:
-                        _op_matches = player_stats_with_scores_df[
-                            player_stats_with_scores_df['playerId']
-                            == int(selected_player_id)]
-                        if not _op_matches.empty:
-                            _op_row = _op_matches.iloc[0]
-                            _op_pos = _op_row.get('primaryPosition')
-                            _op_elig = [r for r in WEIGHTS
-                                        if _op_pos in POSITION_GROUPS.get(r, [])]
-                            if _op_elig:
-                                _op_role = max(_op_elig, key=lambda r: float(
-                                    _op_row.get(f'{r}_Score', 0) or 0))
-                                _op_pop = player_stats_with_scores_df[
-                                    player_stats_with_scores_df['primaryPosition']
-                                    .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
-                                if len(_op_pop) < 5:
-                                    _op_pop = player_stats_with_scores_df
-                                _op_metrics = [m for m in WEIGHTS[_op_role]
-                                               if m in _op_row.index
-                                               and m not in RADAR_HIDDEN_METRICS]
-                                if _op_metrics:
-                                    _op_seasons = _season_id_list(active_season_ids)
-                                    _op_season_lbl = (
-                                        SEASON_ID_MAP.get(_op_seasons[0], '')
-                                        if len(_op_seasons) == 1 else 'All Seasons')
-                                    _op_fig_radar = create_radar_with_distributions(
-                                        pd.DataFrame([_op_row]), _op_metrics,
-                                        _op_pos, _op_elig, _op_pop,
-                                        full_df_for_ranking=player_stats_with_scores_df,
-                                        season_label=_op_season_lbl,
-                                        radar_mode='percentile')
-                    except Exception:
-                        logger.exception("one-pager radar failed")
-                    # 2) shot map (light re-derivation of the shot log)
-                    _op_fig_shots = None
-                    try:
-                        _op_shots = profile_events_df[
-                            (profile_events_df['player.name'] == selected_player_name)
-                            & (profile_events_df['type.primary'] == 'shot')].copy()
-                        if not _op_shots.empty:
-                            _op_shots = _op_shots.sort_values(
-                                ['matchId', 'minute', 'second'])
-                            _op_shots.reset_index(drop=True, inplace=True)
-                            _op_shots['Shot Number'] = _op_shots.index + 1
-                            _op_fig_shots = create_player_shotmap(
-                                _op_shots, selected_player_name)
-                    except Exception:
-                        logger.exception("one-pager shotmap failed")
-                    # 3) box-pass creativity map
-                    _op_fig_passes = None
-                    try:
-                        _op_bp = load_box_passes()
-                        if not _op_bp.empty:
-                            _op_bp_seasons = _season_id_list(active_season_ids)
-                            _op_bp = _op_bp[
-                                _op_bp['player.id'] == int(selected_player_id)]
-                            if _op_bp_seasons:
-                                _op_bp = _op_bp[
-                                    _op_bp['seasonId'].isin(_op_bp_seasons)]
+                    # Build, PDF-render and close all three figures in ONE critical section:
+                    # build_player_onepager() savefig()s them, so the render is inside here too.
+                    with MPL_LOCK:
+                        # 1) best-fit template radar (percentile mode)
+                        _op_fig_radar = None
+                        try:
+                            _op_matches = player_stats_with_scores_df[
+                                player_stats_with_scores_df['playerId']
+                                == int(selected_player_id)]
+                            if not _op_matches.empty:
+                                _op_row = _op_matches.iloc[0]
+                                _op_pos = _op_row.get('primaryPosition')
+                                _op_elig = [r for r in WEIGHTS
+                                            if _op_pos in POSITION_GROUPS.get(r, [])]
+                                if _op_elig:
+                                    _op_role = max(_op_elig, key=lambda r: float(
+                                        _op_row.get(f'{r}_Score', 0) or 0))
+                                    _op_pop = player_stats_with_scores_df[
+                                        player_stats_with_scores_df['primaryPosition']
+                                        .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
+                                    if len(_op_pop) < 5:
+                                        _op_pop = player_stats_with_scores_df
+                                    _op_metrics = [m for m in WEIGHTS[_op_role]
+                                                   if m in _op_row.index
+                                                   and m not in RADAR_HIDDEN_METRICS]
+                                    if _op_metrics:
+                                        _op_seasons = _season_id_list(active_season_ids)
+                                        _op_season_lbl = (
+                                            SEASON_ID_MAP.get(_op_seasons[0], '')
+                                            if len(_op_seasons) == 1 else 'All Seasons')
+                                        _op_fig_radar = create_radar_with_distributions(
+                                            pd.DataFrame([_op_row]), _op_metrics,
+                                            _op_pos, _op_elig, _op_pop,
+                                            full_df_for_ranking=player_stats_with_scores_df,
+                                            season_label=_op_season_lbl,
+                                            radar_mode='percentile')
+                        except Exception:
+                            logger.exception("one-pager radar failed")
+                        # 2) shot map (light re-derivation of the shot log)
+                        _op_fig_shots = None
+                        try:
+                            _op_shots = profile_events_df[
+                                (profile_events_df['player.name'] == selected_player_name)
+                                & (profile_events_df['type.primary'] == 'shot')].copy()
+                            if not _op_shots.empty:
+                                _op_shots = _op_shots.sort_values(
+                                    ['matchId', 'minute', 'second'])
+                                _op_shots.reset_index(drop=True, inplace=True)
+                                _op_shots['Shot Number'] = _op_shots.index + 1
+                                _op_fig_shots = create_player_shotmap(
+                                    _op_shots, selected_player_name)
+                        except Exception:
+                            logger.exception("one-pager shotmap failed")
+                        # 3) box-pass creativity map
+                        _op_fig_passes = None
+                        try:
+                            _op_bp = load_box_passes()
                             if not _op_bp.empty:
-                                _op_fig_passes = mpl_box_passes_map(
-                                    _op_bp, selected_player_name)
-                    except Exception:
-                        logger.exception("one-pager box passes failed")
-                    # 4) header tiles
-                    _op_tiles = [("Team", current_team),
-                                 ("Position", current_pos),
-                                 ("Age", age_display)]
-                    _op_footer = ""
-                    try:
-                        _op_prow = _erows[_erows['projection'].notna()] \
-                            if not _erows.empty else pd.DataFrame()
-                        if not _op_prow.empty:
-                            _op_e = _op_prow.iloc[-1]
-                            _op_tiles.append(
-                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
-                            _op_tiles.append(
-                                ("Projection",
-                                 f"{float(_op_e['projection']):.0f} "
-                                 f"± {float(_op_e['band_sd']):.0f}"))
-                        elif not _erows.empty:
-                            _op_e = (_erows.sort_values('mins_played').iloc[-1])
-                            _op_tiles.append(
-                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
-                        _op_footer = (
-                            f"Engine {_eng_meta.get('rating_version', '?')} · "
-                            f"projection {_eng_meta.get('projection_version', '?')} · "
-                            f"generated {datetime.date.today().isoformat()}")
-                    except Exception:
-                        pass
-                    _op_bytes = build_player_onepager(
-                        selected_player_name,
-                        f"{current_team} · {current_pos}",
-                        _op_tiles, _op_fig_radar, _op_fig_shots,
-                        _op_fig_passes, footer_note=_op_footer)
-                    for _f in (_op_fig_radar, _op_fig_shots, _op_fig_passes):
-                        if _f is not None:
-                            plt.close(_f)
-                    st.session_state['onepager_pdf'] = (
-                        int(selected_player_id), _op_bytes)
+                                _op_bp_seasons = _season_id_list(active_season_ids)
+                                _op_bp = _op_bp[
+                                    _op_bp['player.id'] == int(selected_player_id)]
+                                if _op_bp_seasons:
+                                    _op_bp = _op_bp[
+                                        _op_bp['seasonId'].isin(_op_bp_seasons)]
+                                if not _op_bp.empty:
+                                    _op_fig_passes = mpl_box_passes_map(
+                                        _op_bp, selected_player_name)
+                        except Exception:
+                            logger.exception("one-pager box passes failed")
+                        # 4) header tiles
+                        _op_tiles = [("Team", current_team),
+                                     ("Position", current_pos),
+                                     ("Age", age_display)]
+                        _op_footer = ""
+                        try:
+                            _op_prow = _erows[_erows['projection'].notna()] \
+                                if not _erows.empty else pd.DataFrame()
+                            if not _op_prow.empty:
+                                _op_e = _op_prow.iloc[-1]
+                                _op_tiles.append(
+                                    ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                                _op_tiles.append(
+                                    ("Projection",
+                                     f"{float(_op_e['projection']):.0f} "
+                                     f"± {float(_op_e['band_sd']):.0f}"))
+                            elif not _erows.empty:
+                                _op_e = (_erows.sort_values('mins_played').iloc[-1])
+                                _op_tiles.append(
+                                    ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                            _op_footer = (
+                                f"Engine {_eng_meta.get('rating_version', '?')} · "
+                                f"projection {_eng_meta.get('projection_version', '?')} · "
+                                f"generated {datetime.date.today().isoformat()}")
+                        except Exception:
+                            pass
+                        _op_bytes = build_player_onepager(
+                            selected_player_name,
+                            f"{current_team} · {current_pos}",
+                            _op_tiles, _op_fig_radar, _op_fig_shots,
+                            _op_fig_passes, footer_note=_op_footer)
+                        for _f in (_op_fig_radar, _op_fig_shots, _op_fig_passes):
+                            if _f is not None:
+                                plt.close(_f)
+                        st.session_state['onepager_pdf'] = (
+                            int(selected_player_id), _op_bytes)
             except Exception:
                 logger.exception("one-pager build failed")
                 st.error("Could not build the one-pager for this player.")
@@ -11010,17 +11068,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # Plot
                 _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
                 _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
-                fig_radar = create_radar_with_distributions(
-                    radar_player_data_row,
-                    metrics_to_plot,
-                    best_role,
-                    eligible_roles,
-                    all_position_data=final_population,
-                    full_df_for_ranking=radar_stats_df,
-                    season_label=_radar_season_label,
-                    radar_mode=_radar_mode
-                )
-                st.pyplot(fig_radar, use_container_width=True)
+                with MPL_LOCK:
+                    fig_radar = create_radar_with_distributions(
+                        radar_player_data_row,
+                        metrics_to_plot,
+                        best_role,
+                        eligible_roles,
+                        all_position_data=final_population,
+                        full_df_for_ranking=radar_stats_df,
+                        season_label=_radar_season_label,
+                        radar_mode=_radar_mode
+                    )
+                    st.pyplot(fig_radar, use_container_width=True)
 
             # Career radar section disabled to reduce memory usage
             # TODO: Re-enable when Streamlit Cloud resources are upgraded
@@ -12077,12 +12136,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # --- 7b. Shot Assists & Dribbles in Final Third ---
             st.subheader("Shot Assists & Dribbles in Final Third")
             try:
-                fig_sa_player = pv.plot_shot_assists_and_dribbles(
-                    profile_events_df, current_team,
-                    player_name=selected_player_name,
-                )
-                st.pyplot(fig_sa_player, use_container_width=True)
-                plt.close(fig_sa_player)
+                with MPL_LOCK:
+                    fig_sa_player = pv.plot_shot_assists_and_dribbles(
+                        profile_events_df, current_team,
+                        player_name=selected_player_name,
+                    )
+                    st.pyplot(fig_sa_player, use_container_width=True)
+                    plt.close(fig_sa_player)
             except Exception as e:
                 st.caption(f"Could not render shot assists & dribbles: {e}")
 
@@ -12120,15 +12180,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     include_recoveries=True,
                 )
 
-                fig_def_heatmap = pv.plot_defensive_action_heatmap(
-                    profile_events_df, player_id, selected_player_name,
-                    position_codes=_heatmap_pos_codes,
-                    player_minutes_df=profile_player_minutes_df,
-                    peer_density_stack=_peer_stack,
-                    include_recoveries=True,
-                )
-                st.pyplot(fig_def_heatmap, use_container_width=True)
-                plt.close(fig_def_heatmap)
+                with MPL_LOCK:
+                    fig_def_heatmap = pv.plot_defensive_action_heatmap(
+                        profile_events_df, player_id, selected_player_name,
+                        position_codes=_heatmap_pos_codes,
+                        player_minutes_df=profile_player_minutes_df,
+                        peer_density_stack=_peer_stack,
+                        include_recoveries=True,
+                    )
+                    st.pyplot(fig_def_heatmap, use_container_width=True)
+                    plt.close(fig_def_heatmap)
                 st.caption(f"Colour intensity normalised across **{_heatmap_peer_label}** peers.")
             except Exception as e:
                 st.caption(f"Could not render defensive action heatmap: {e}")
@@ -12342,19 +12403,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                            and m not in RADAR_HIDDEN_METRICS]
 
         # --- FIX: Use a square figure to prevent distortion ---
-        fig = plt.figure(figsize=(15, 15))
-        # [left, bottom, width, height] - This centers the radar
-        ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
+        with MPL_LOCK:
+            fig = plt.figure(figsize=(15, 15))
+            # [left, bottom, width, height] - This centers the radar
+            ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
 
-        plot_comparison_radar(
-            ax_radar,
-            player_a_data,
-            player_b_data,
-            metrics_to_plot,
-            selected_template
-        )
+            plot_comparison_radar(
+                ax_radar,
+                player_a_data,
+                player_b_data,
+                metrics_to_plot,
+                selected_template
+            )
 
-        st.pyplot(fig, use_container_width=True)
+            st.pyplot(fig, use_container_width=True)
 
     # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
@@ -14622,15 +14684,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
         with left_col:
             st.subheader("Formation View")
-            fig = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
-            st.pyplot(fig)
-            plt.close(fig)
+            with MPL_LOCK:
+                fig = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
+                st.pyplot(fig)
+                plt.close(fig)
 
-            # Export PNG
-            buf = io.BytesIO()
-            fig_export = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
-            fig_export.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor='#1a472a')
-            plt.close(fig_export)
+                # Export PNG
+                buf = io.BytesIO()
+                fig_export = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
+                fig_export.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor='#1a472a')
+                plt.close(fig_export)
             buf.seek(0)
             st.download_button(
                 label="Download PNG",
@@ -14723,4 +14786,12 @@ else:
 # Free every matplotlib figure created during this rerun. st.pyplot has
 # already rasterized them to PNG; without this, the 41 figure call sites
 # accumulate across reruns and leak memory on the HF Space.
-plt.close('all')
+#
+# close('all') is process-global, not session-scoped: it frees figures owned by
+# every other browser session too, not just this rerun's. That is only safe
+# because it takes MPL_LOCK and because every build+render elsewhere holds that
+# same lock across the WHOLE span -- so no other thread can be holding a figure
+# that is built but not yet rasterized when this runs. Dropping the lock here,
+# or splitting a build/render span, reintroduces a use-after-free in Agg.
+with MPL_LOCK:
+    plt.close('all')

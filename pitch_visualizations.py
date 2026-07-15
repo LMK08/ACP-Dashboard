@@ -6,6 +6,10 @@ All functions expect Wyscout-normalised coordinates (0-100 on both axes).
 
 import numpy as np
 import pandas as pd
+# Selects the Agg backend before pyplot is imported. Every builder here is
+# called under MPL_LOCK by its caller (app.py / opposition_report.py); the
+# figures are created via pyplot's global manager, so that is load-bearing.
+import mpl_safety  # noqa: F401
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from mplsoccer import Pitch, VerticalPitch
