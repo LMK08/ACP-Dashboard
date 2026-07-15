@@ -2623,6 +2623,82 @@ WEIGHTS = {
 }
 INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled past % (proj)', 'DefR Value Conceded']
 
+# --- Player one-pager: engine-role helpers -----------------------------------
+# The six canonical engine roles (player_engine.parquet's `role`). The PDF
+# branches on these, not on the raw position or the config template names:
+# Lucas asked for the split by engine role (Central Defender / Wide Defender /
+# Advanced Midfielder / ...). The three "attacking" roles get shot + creation
+# maps; the three others get the defensive heatmap.
+_ENGINE_ATTACK_ROLES = {'Striker', 'Wide Attacker', 'Advanced Midfielder'}
+_ENGINE_DEF_ROLES = {'Deep Midfielder', 'Wide Defender', 'Central Defender'}
+# Config-template fallback for players with no engine row (keepers, mostly).
+# An ALLOWLIST, not a denylist: only these template roles get the attacking
+# layout (shot + creation maps); everything else — GK templates, centre-backs,
+# full-backs, holding mids — gets the defensive heatmap, which is the safe
+# default for any position. A denylist silently routed keepers to the
+# attacking branch, because the GK templates were not in it.
+_ATTACK_TEMPLATE_ROLES = {
+    'Mobile Striker', 'Shadow Striker', 'Poacher', 'Target Man',
+    'Pressing Forward',                                    # CF / SS
+    'Advanced Playmaker', 'Wide Winger', 'Creative Winger',
+    'Inside Forward',                                      # wingers / AM
+}
+# A handful of legacy rows carry dirty variants (STRIKER, WINGER, CB, CM);
+# normalise them so the split is total.
+_ENGINE_ROLE_ALIASES = {
+    'STRIKER': 'Striker', 'WINGER': 'Wide Attacker',
+    'CB': 'Central Defender', 'CM': 'Deep Midfielder',
+}
+
+
+def _canonical_engine_role(raw):
+    """Map a raw engine `role` value to one of the six canonical roles, or
+    None when it is missing/unrecognised (e.g. keepers, whom the engine
+    does not rate)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s in _ENGINE_ATTACK_ROLES or s in _ENGINE_DEF_ROLES:
+        return s
+    return _ENGINE_ROLE_ALIASES.get(s.upper())
+
+
+def _engine_role_is_attacking(role):
+    """True for Striker / Wide Attacker / Advanced Midfielder. Keepers and
+    anything unclassified fall through to the defensive layout, which is the
+    safe default — a defensive heatmap is meaningful for every position, a
+    shot map is not."""
+    return _canonical_engine_role(role) in _ENGINE_ATTACK_ROLES
+
+
+def _role_key_stats(stats_row, template_role, cap=12):
+    """Return [(metric, 'value p90', pct_0_100 or None), ...] for the metrics
+    that matter most to `template_role`, ordered by the role's own weights.
+
+    WEIGHTS[role] maps metric -> weight, so 'most important' is not an
+    arbitrary pick — it is the role model's own emphasis. Percentiles come
+    from the {metric}_percentile columns (0-1, inversion already applied);
+    scaled to 0-100 here for the colour wash.
+    """
+    weights = WEIGHTS.get(template_role, {})
+    if not weights or stats_row is None:
+        return []
+    ordered = sorted(weights.items(), key=lambda kv: kv[1], reverse=True)
+    out = []
+    for metric, _w in ordered:
+        if metric in RADAR_HIDDEN_METRICS or metric not in stats_row.index:
+            continue
+        raw = stats_row.get(metric)
+        if raw is None or pd.isna(raw):
+            continue
+        pct = stats_row.get(f'{metric}_percentile')
+        pct100 = None if pct is None or pd.isna(pct) else float(pct) * 100.0
+        out.append((metric, f'{fmt_val(metric, float(raw))}', pct100))
+        if len(out) >= cap:
+            break
+    return out
+
+
 # ==============================================================================
 # Composite Value Index (CVI) — v1 parameters
 # ==============================================================================
@@ -10675,113 +10751,239 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # --- Exportable one-pager PDF ----------------------------------
         _op_cols = st.columns([1.4, 1.4, 3])
         with _op_cols[0]:
-            _op_clicked = st.button("📄 Build one-pager PDF",
+            _op_clicked = st.button("📄 Build player report PDF",
                                      key="onepager_build")
         if _op_clicked:
             try:
-                with st.spinner("Composing one-pager…"):
+                with st.spinner("Composing player report…"):
                     from player_onepager import build_player_onepager
-                    # Build, PDF-render and close all three figures in ONE critical section:
-                    # build_player_onepager() savefig()s them, so the render is inside here too.
+                    from pitch_interactive import mpl_projection_fan
+                    # The whole build runs under ONE MPL_LOCK: every figure is
+                    # created here and rasterised inside build_player_onepager,
+                    # so build + render + close must not be split (a figure
+                    # freed by another session's plt.close('all') mid-render is
+                    # a segfault — see mpl_safety). Each figure has its own
+                    # try/except so one failure drops that panel, not the PDF.
+                    _op_figs = []          # every fig we create, for cleanup
                     with MPL_LOCK:
-                        # 1) best-fit template radar (percentile mode)
+                        # --- resolve the player's stats row + best-fit role ---
+                        _op_row = None
+                        _op_role = None      # config template role (radar/stats)
+                        _op_elig = []
+                        _op_pop = player_stats_with_scores_df
+                        _op_matches = player_stats_with_scores_df[
+                            player_stats_with_scores_df['playerId']
+                            == int(selected_player_id)]
+                        if not _op_matches.empty:
+                            _op_row = _op_matches.iloc[0]
+                            _op_pos = _op_row.get('primaryPosition')
+                            _op_elig = [r for r in WEIGHTS
+                                        if _op_pos in POSITION_GROUPS.get(r, [])]
+                            if _op_elig:
+                                _op_role = max(_op_elig, key=lambda r: float(
+                                    _op_row.get(f'{r}_Score', 0) or 0))
+                                _op_pop = player_stats_with_scores_df[
+                                    player_stats_with_scores_df['primaryPosition']
+                                    .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
+                                if len(_op_pop) < 5:
+                                    _op_pop = player_stats_with_scores_df
+
+                        # --- engine row: reuse the header's `_e` when present
+                        # (it is sorted/scoped correctly); fall back defensively
+                        # for keepers, who have no engine row at all. ---
+                        _op_e = None
+                        _op_eng_role = None
+                        if not _erows.empty:
+                            _op_prow = _erows[_erows['projection'].notna()]
+                            if not _op_prow.empty:
+                                # match the header's chronological pick, NOT the
+                                # unsorted .iloc[-1] the old build used
+                                _op_e = _op_prow.sort_values('seasonId').iloc[-1]
+                            else:
+                                _op_e = _erows.sort_values('mins_played').iloc[-1]
+                            _op_eng_role = _canonical_engine_role(
+                                _op_e.get('role'))
+                        # attacker vs defender: engine role first (the split
+                        # Lucas asked for), then fall back to the config
+                        # template allowlist for players the engine does not
+                        # rate (keepers). Unknown -> defensive layout.
+                        _op_attacking = (
+                            _engine_role_is_attacking(_op_eng_role)
+                            if _op_eng_role is not None
+                            else (_op_role in _ATTACK_TEMPLATE_ROLES))
+
+                        # 1) template radar (percentile mode)
                         _op_fig_radar = None
                         try:
-                            _op_matches = player_stats_with_scores_df[
-                                player_stats_with_scores_df['playerId']
-                                == int(selected_player_id)]
-                            if not _op_matches.empty:
-                                _op_row = _op_matches.iloc[0]
-                                _op_pos = _op_row.get('primaryPosition')
-                                _op_elig = [r for r in WEIGHTS
-                                            if _op_pos in POSITION_GROUPS.get(r, [])]
-                                if _op_elig:
-                                    _op_role = max(_op_elig, key=lambda r: float(
-                                        _op_row.get(f'{r}_Score', 0) or 0))
-                                    _op_pop = player_stats_with_scores_df[
-                                        player_stats_with_scores_df['primaryPosition']
-                                        .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
-                                    if len(_op_pop) < 5:
-                                        _op_pop = player_stats_with_scores_df
-                                    _op_metrics = [m for m in WEIGHTS[_op_role]
-                                                   if m in _op_row.index
-                                                   and m not in RADAR_HIDDEN_METRICS]
-                                    if _op_metrics:
-                                        _op_seasons = _season_id_list(active_season_ids)
-                                        _op_season_lbl = (
-                                            SEASON_ID_MAP.get(_op_seasons[0], '')
-                                            if len(_op_seasons) == 1 else 'All Seasons')
-                                        _op_fig_radar = create_radar_with_distributions(
-                                            pd.DataFrame([_op_row]), _op_metrics,
-                                            _op_pos, _op_elig, _op_pop,
-                                            full_df_for_ranking=player_stats_with_scores_df,
-                                            season_label=_op_season_lbl,
-                                            radar_mode='percentile')
+                            if _op_row is not None and _op_role:
+                                _op_metrics = [m for m in WEIGHTS[_op_role]
+                                               if m in _op_row.index
+                                               and m not in RADAR_HIDDEN_METRICS]
+                                if _op_metrics:
+                                    _op_seasons = _season_id_list(active_season_ids)
+                                    _op_season_lbl = (
+                                        SEASON_ID_MAP.get(_op_seasons[0], '')
+                                        if len(_op_seasons) == 1 else 'All Seasons')
+                                    _op_fig_radar = create_radar_with_distributions(
+                                        pd.DataFrame([_op_row]), _op_metrics,
+                                        _op_pos, _op_elig, _op_pop,
+                                        full_df_for_ranking=player_stats_with_scores_df,
+                                        season_label=_op_season_lbl,
+                                        radar_mode='percentile')
+                                    _op_figs.append(_op_fig_radar)
                         except Exception:
                             logger.exception("one-pager radar failed")
-                        # 2) shot map (light re-derivation of the shot log)
-                        _op_fig_shots = None
+
+                        # 2) projection outlook (matplotlib twin of the fan)
+                        _op_fig_proj = None
                         try:
-                            _op_shots = profile_events_df[
-                                (profile_events_df['player.name'] == selected_player_name)
-                                & (profile_events_df['type.primary'] == 'shot')].copy()
-                            if not _op_shots.empty:
-                                _op_shots = _op_shots.sort_values(
-                                    ['matchId', 'minute', 'second'])
-                                _op_shots.reset_index(drop=True, inplace=True)
-                                _op_shots['Shot Number'] = _op_shots.index + 1
-                                _op_fig_shots = create_player_shotmap(
-                                    _op_shots, selected_player_name)
+                            if not _erows.empty:
+                                _op_fig_proj = mpl_projection_fan(
+                                    _erows, SEASON_ID_MAP, selected_player_name)
+                                if _op_fig_proj is not None:
+                                    _op_figs.append(_op_fig_proj)
                         except Exception:
-                            logger.exception("one-pager shotmap failed")
-                        # 3) box-pass creativity map
-                        _op_fig_passes = None
-                        try:
-                            _op_bp = load_box_passes()
-                            if not _op_bp.empty:
-                                _op_bp_seasons = _season_id_list(active_season_ids)
-                                _op_bp = _op_bp[
-                                    _op_bp['player.id'] == int(selected_player_id)]
-                                if _op_bp_seasons:
-                                    _op_bp = _op_bp[
-                                        _op_bp['seasonId'].isin(_op_bp_seasons)]
+                            logger.exception("one-pager projection failed")
+
+                        # 3) position-conditional maps
+                        _op_fig_shots = _op_fig_passes = _op_fig_def = None
+                        if _op_attacking:
+                            try:   # shot map
+                                _op_shots = profile_events_df[
+                                    (profile_events_df['player.name'] == selected_player_name)
+                                    & (profile_events_df['type.primary'] == 'shot')].copy()
+                                if not _op_shots.empty:
+                                    _op_shots = _op_shots.sort_values(
+                                        ['matchId', 'minute', 'second'])
+                                    _op_shots.reset_index(drop=True, inplace=True)
+                                    _op_shots['Shot Number'] = _op_shots.index + 1
+                                    _op_fig_shots = create_player_shotmap(
+                                        _op_shots, selected_player_name)
+                                    _op_figs.append(_op_fig_shots)
+                            except Exception:
+                                logger.exception("one-pager shotmap failed")
+                            try:   # box-pass creativity map
+                                _op_bp = load_box_passes()
                                 if not _op_bp.empty:
-                                    _op_fig_passes = mpl_box_passes_map(
-                                        _op_bp, selected_player_name)
+                                    _op_bp_seasons = _season_id_list(active_season_ids)
+                                    _op_bp = _op_bp[
+                                        _op_bp['player.id'] == int(selected_player_id)]
+                                    if _op_bp_seasons:
+                                        _op_bp = _op_bp[
+                                            _op_bp['seasonId'].isin(_op_bp_seasons)]
+                                    if not _op_bp.empty:
+                                        _op_fig_passes = mpl_box_passes_map(
+                                            _op_bp, selected_player_name)
+                                        _op_figs.append(_op_fig_passes)
+                            except Exception:
+                                logger.exception("one-pager box passes failed")
+                        else:
+                            try:   # defensive action heatmap
+                                # Same peer-group resolution + cached density
+                                # stack the Shots & Creation tab uses, so the
+                                # PDF heatmap is normalised identically.
+                                _DEF_PEERS = {
+                                    'GK': ['GK'],
+                                    'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
+                                    'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
+                                    'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF',
+                                           'LCMF3', 'RCMF3'],
+                                    'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW',
+                                                'LWF', 'RWF'],
+                                    'ST': ['CF', 'SS'],
+                                }
+                                _op_pos_codes = [current_pos]
+                                for _gc in _DEF_PEERS.values():
+                                    if current_pos in _gc:
+                                        _op_pos_codes = _gc
+                                        break
+                                _op_ev_hash = hashlib.md5(
+                                    f"{len(profile_events_df)}_"
+                                    f"{tuple(sorted(_op_pos_codes))}".encode()
+                                ).hexdigest()
+                                _op_stack = _compute_peer_density_stack(
+                                    _op_ev_hash, profile_events_df,
+                                    tuple(sorted(_op_pos_codes)),
+                                    _player_minutes_df=profile_player_minutes_df,
+                                    include_recoveries=True)
+                                _op_fig_def = pv.plot_defensive_action_heatmap(
+                                    profile_events_df, player_id,
+                                    selected_player_name,
+                                    position_codes=_op_pos_codes,
+                                    player_minutes_df=profile_player_minutes_df,
+                                    peer_density_stack=_op_stack,
+                                    include_recoveries=True)
+                                if _op_fig_def is not None:
+                                    _op_figs.append(_op_fig_def)
+                            except Exception:
+                                logger.exception("one-pager def heatmap failed")
+
+                        # 4) role-relevant stats (percentile-washed table)
+                        _op_role_stats = _role_key_stats(_op_row, _op_role) \
+                            if _op_role else []
+
+                        # 5) engine card PNG — reuse the header's cached render
+                        _op_card_png = None
+                        _op_card_aspect = 2.0    # figsize (20, 10)
+                        try:
+                            if _op_e is not None and not _erows.empty:
+                                _op_card_png = _render_acp_index_card_png(
+                                    int(selected_player_id),
+                                    tuple(sorted(_e_sids)) if _e_sids else (),
+                                    STATS_CACHE_VERSION,
+                                    str(_eng_meta.get('rating_version', '')),
+                                    _career_view,
+                                    _eng_df, _op_e, _eng_meta)
                         except Exception:
-                            logger.exception("one-pager box passes failed")
-                        # 4) header tiles
+                            logger.exception("one-pager engine card failed")
+
+                        # --- header tiles + bio strip ---
                         _op_tiles = [("Team", current_team),
                                      ("Position", current_pos),
-                                     ("Age", age_display)]
-                        _op_footer = ""
-                        try:
-                            _op_prow = _erows[_erows['projection'].notna()] \
-                                if not _erows.empty else pd.DataFrame()
-                            if not _op_prow.empty:
-                                _op_e = _op_prow.iloc[-1]
-                                _op_tiles.append(
-                                    ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                                     ("Age", age_display),
+                                     ("Minutes", f"{total_minutes:,.0f}")]
+                        _op_val = (_tv_projected_eur if str(current_pos).upper().startswith('GK')
+                                   else _eng_proj_eur)
+                        if _op_val is not None:
+                            _op_tiles.append(("Proj. value",
+                                              f"EUR {_op_val:,.0f}"))
+                        if _op_e is not None:
+                            _op_tiles.append(
+                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                            if pd.notna(_op_e.get('projection')):
                                 _op_tiles.append(
                                     ("Projection",
                                      f"{float(_op_e['projection']):.0f} "
-                                     f"± {float(_op_e['band_sd']):.0f}"))
-                            elif not _erows.empty:
-                                _op_e = (_erows.sort_values('mins_played').iloc[-1])
-                                _op_tiles.append(
-                                    ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
-                            _op_footer = (
-                                f"Engine {_eng_meta.get('rating_version', '?')} · "
-                                f"projection {_eng_meta.get('projection_version', '?')} · "
-                                f"generated {datetime.date.today().isoformat()}")
-                        except Exception:
-                            pass
+                                     f"+/- {float(_op_e.get('band_sd', 0) or 0):.0f}"))
+                        _op_bio = [
+                            ("Nationality", player_bio.get('passportArea')),
+                            ("Foot", str(player_bio.get('foot', '')).capitalize()),
+                            ("Height", f"{player_bio.get('height')} cm"
+                             if player_bio.get('height') else None),
+                            ("Weight", f"{player_bio.get('weight')} kg"
+                             if player_bio.get('weight') else None),
+                            ("Born", player_bio.get('birthArea')),
+                        ]
+                        _op_footer = (
+                            f"Engine {_eng_meta.get('rating_version', '?')} · "
+                            f"projection {_eng_meta.get('projection_version', '?')} · "
+                            f"data through {_eng_meta.get('data_through', '?')} · "
+                            f"generated {datetime.date.today().isoformat()}"
+                        ) if not _erows.empty else (
+                            f"Generated {datetime.date.today().isoformat()}")
+
                         _op_bytes = build_player_onepager(
                             selected_player_name,
                             f"{current_team} · {current_pos}",
                             _op_tiles, _op_fig_radar, _op_fig_shots,
-                            _op_fig_passes, footer_note=_op_footer)
-                        for _f in (_op_fig_radar, _op_fig_shots, _op_fig_passes):
+                            _op_fig_passes, footer_note=_op_footer,
+                            bio=_op_bio, role_stats=_op_role_stats,
+                            role_label=_op_role or '',
+                            fig_projection=_op_fig_proj,
+                            fig_defensive=_op_fig_def,
+                            engine_card_png=_op_card_png,
+                            engine_card_aspect=_op_card_aspect)
+                        for _f in _op_figs:
                             if _f is not None:
                                 plt.close(_f)
                         st.session_state['onepager_pdf'] = (
@@ -10793,9 +10995,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         if _op_cached and _op_cached[0] == int(selected_player_id):
             with _op_cols[1]:
                 st.download_button(
-                    "⬇️ Download one-pager",
+                    "⬇️ Download player report",
                     data=_op_cached[1],
-                    file_name=f"{selected_player_name.replace(' ', '_')}_onepager.pdf",
+                    file_name=f"{selected_player_name.replace(' ', '_')}_report.pdf",
                     mime="application/pdf", key="onepager_dl")
         st.divider()
 
