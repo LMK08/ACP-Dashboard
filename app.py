@@ -7717,10 +7717,20 @@ def plot_xg_flowchart(match_events_df, match_info):
     return fig
 
 @st.cache_data
-def calculate_xg_history_data(_raw_events_df, _matches_summary_df):
+def calculate_xg_history_data(_raw_events_df, _matches_summary_df, scope_key=None):
     """
     Aggregates xG For and Against for every team for every match.
     (Previously named calculate_rolling_xg_data)
+
+    scope_key is the cache key, and it is the ONLY one: both frames are
+    underscore-prefixed, so Streamlit ignores them when hashing. Without it
+    this function has no key components at all — it computes once per process
+    and returns that first frame for every season/competition/stage after.
+
+    Pass (season_key, comp_key, stage_key) — the same triple that keys
+    _render_team_figure_png — because the caller hands us the SCOPED frames
+    (get_filtered_events + filter_by_stage), so the scope has to be in the
+    key for the result to follow it.
     """
     # ... (Logic is identical to your previous function, just renamed for clarity) ...
     print("Calculating xG history data...") 
@@ -9884,8 +9894,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         with st.expander("Rolling xG (5-Game Average)", expanded=False):
             try:
                 # Use the stage-filtered events/matches so the rolling
-                # series only covers matches in the active stage.
-                rolling_xg_data_for_plot = calculate_xg_history_data(team_events_df, team_matches_df)
+                # series only covers matches in the active stage. Both frames
+                # are underscore-prefixed inside, so scope_key is what makes
+                # the cache follow the scope — reuse the same triple the
+                # figure cache keys on.
+                rolling_xg_data_for_plot = calculate_xg_history_data(
+                    team_events_df, team_matches_df,
+                    scope_key=(_fig_season_key, _fig_comp_key, _fig_stage_key))
                 if not rolling_xg_data_for_plot.empty:
                     _show_team_png('rolling_xg', payload=rolling_xg_data_for_plot)
                 else:
