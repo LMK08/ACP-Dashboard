@@ -10,7 +10,13 @@ mplsoccer==1.6.1
 numpy==2.4.6
 pandas==2.3.3
 pillow==11.3.0
-pyarrow==25.0.0
+# 24.0.0, NOT current: 25.0.0 (released 2026-07-10, pulled in by the 07-14
+# image rebuild) segfaults inside its parquet reader under this app's load —
+# caught by faulthandler on 2026-07-15: pd.read_parquet of a stats-cache file
+# faulted in pyarrow/parquet/core.py:1590 with no matplotlib in any thread.
+# 24.0.0 ran clean for the six weeks before that rebuild. Re-test before
+# ever bumping this.
+pyarrow==24.0.0
 requests==2.34.2
 scipy==1.17.1
 seaborn==0.13.2
