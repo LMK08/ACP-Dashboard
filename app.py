@@ -1303,6 +1303,205 @@ def load_player_engine():
         return pd.DataFrame(), {}
 
 
+# ============================================================================
+# Player TENDENCIES + STYLES (models/roles/) — the descriptive stylistic layer.
+# Tendencies = within-role percentiles of attempt composition (50 = role-
+# typical); styles = tendency-derived archetypes with a Conventional centre.
+# Both are DISPLAY-ONLY and never touch the rating/projection. GKs are excluded
+# upstream (no role assignment), so keepers simply get nothing here.
+# ============================================================================
+@st.cache_data(ttl=86400)
+def load_tendencies():
+    """tendencies_season.parquet -> one row per (playerId, seasonId, role) with
+    t_<key> raw values, p_<key> within-role percentiles, thin_sample flag.
+    Empty DF if the file is missing (feature degrades to hidden)."""
+    path = os.path.join(os.path.dirname(__file__), 'models', 'roles',
+                        'tendencies_season.parquet')
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+        df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        if PLAYER_ID_ALIASES:
+            df['playerId'] = df['playerId'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                if p is not None and not pd.isna(p) else p).astype('Int64')
+        return df
+    except Exception:
+        logger.exception("Failed to load tendencies_season.parquet")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=86400)
+def load_styles():
+    """style_assignments_season.parquet -> style + style_fit + top-2 mix per
+    (playerId, seasonId). Empty DF if missing."""
+    path = os.path.join(os.path.dirname(__file__), 'models', 'roles',
+                        'style_assignments_season.parquet')
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+        df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+        if PLAYER_ID_ALIASES:
+            df['playerId'] = df['playerId'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                if p is not None and not pd.isna(p) else p).astype('Int64')
+        return df
+    except Exception:
+        logger.exception("Failed to load style_assignments_season.parquet")
+        return pd.DataFrame()
+
+
+# The tendency metadata + role menus live in the builder so there is one source
+# of truth. Import them; if the builder is unavailable (e.g. a code-only deploy
+# that dropped models/roles), fall back to empty and the panel hides itself.
+try:
+    import sys as _sys
+    _roles_dir = os.path.join(os.path.dirname(__file__), 'models', 'roles')
+    if _roles_dir not in _sys.path:
+        _sys.path.insert(0, _roles_dir)
+    from build_tendencies import (TENDENCY_META as TENDENCY_META,
+                                   ROLE_TENDENCY_MENU as ROLE_TENDENCY_MENU,
+                                   ALL_TENDENCIES as ALL_TENDENCIES,
+                                   poles as tendency_poles)
+except Exception:
+    logger.exception("tendency metadata import failed — tendencies panel off")
+    TENDENCY_META, ROLE_TENDENCY_MENU, ALL_TENDENCIES = {}, {}, []
+
+    def tendency_poles(role, key):
+        m = TENDENCY_META.get(key, {})
+        return m.get('pole_low', ''), m.get('pole_high', '')
+
+
+def get_scoped_tendencies(player_id, season_ids):
+    """Season-scope-aware tendency row for a player.
+
+    season_ids None (All Seasons) -> minutes-weighted average of the player's
+    season tendency percentiles (matching the ACP card's career aggregation);
+    a single/list scope -> that scope's rows, minutes-weighted if more than one.
+    Returns (Series-like dict of p_<key>/t_<key>, role, mins, thin_sample) or
+    None when the player has no tendencies (GK, or below the 300' floor)."""
+    tend = load_tendencies()
+    if tend is None or tend.empty:
+        return None
+    rows = tend[tend['playerId'] == int(player_id)]
+    if rows.empty:
+        return None
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                 else [season_ids])]
+        rows = rows[rows['seasonId'].isin(sids)]
+    if rows.empty:
+        return None
+    # role = the player's most-played role across the scoped rows
+    w = pd.to_numeric(rows['mins_played'], errors='coerce').fillna(0.0)
+    role = (rows.assign(_w=w).groupby('role')['_w'].sum().idxmax())
+    rr = rows[rows['role'] == role]
+    ww = pd.to_numeric(rr['mins_played'], errors='coerce').fillna(0.0).to_numpy()
+    agg = {}
+    for k in ALL_TENDENCIES:
+        for pfx in ('p_', 't_'):
+            col = f'{pfx}{k}'
+            if col not in rr.columns:
+                continue
+            v = pd.to_numeric(rr[col], errors='coerce').to_numpy()
+            m = ~np.isnan(v)
+            agg[col] = (float(np.average(v[m], weights=ww[m]))
+                        if m.any() and ww[m].sum() > 0 else np.nan)
+    mins = float(ww.sum())
+    return {'values': agg, 'role': role, 'mins': mins,
+            'thin_sample': mins < 900}
+
+
+def get_scoped_style(player_id, season_ids):
+    """Season-scope-aware style label for a player: the style of his highest-
+    minutes row in scope (styles are per-season; All Seasons -> most-played
+    season's style). Returns dict or None."""
+    styles = load_styles()
+    if styles is None or styles.empty:
+        return None
+    rows = styles[styles['playerId'] == int(player_id)]
+    if rows.empty:
+        return None
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                 else [season_ids])]
+        rows = rows[rows['seasonId'].isin(sids)]
+    if rows.empty:
+        return None
+    r = rows.sort_values('mins_played').iloc[-1]
+    return {'style': r.get('style'), 'style_fit': r.get('style_fit'),
+            'style_2': r.get('style_2'), 'style_2_fit': r.get('style_2_fit'),
+            'role': r.get('role'), 'thin_sample': bool(r.get('thin_sample', False))}
+
+
+def render_tendencies_panel(player_id, season_ids, st_container=None):
+    """futi-style bipolar tendency sliders for the player's role menu.
+
+    Each slider is the within-role percentile (50 = role-typical). The dominant
+    side is coloured, the other greyed. Low-confidence pairs (near/far post) are
+    tucked into an expander. Renders nothing for players without tendencies."""
+    tgt = st_container if st_container is not None else st
+    scoped = get_scoped_tendencies(player_id, season_ids)
+    if scoped is None:
+        return False
+    role = scoped['role']
+    menu = ROLE_TENDENCY_MENU.get(role, [])
+    if not menu:
+        return False
+    vals = scoped['values']
+
+    def _slider(key):
+        p = vals.get(f'p_{key}')
+        if p is None or pd.isna(p):
+            return
+        lo, hi = tendency_poles(role, key)
+        p = float(p)
+        # colour the dominant side, grey the other; 50 is role-typical. Use
+        # HTML (not markdown **) for the bold — markdown isn't parsed inside a
+        # raw-HTML block, so ** would render as literal asterisks.
+        dom_hi = p >= 50
+        pct_hi = p
+        _dom = "font-weight:700;color:#1a1a1a"
+        _sub = "color:#8a8a8a"
+        left_lbl = f"<span style='{_sub if dom_hi else _dom}'>{lo}</span>"
+        right_lbl = f"<span style='{_dom if dom_hi else _sub}'>{hi}</span>"
+        c1, c2, c3 = tgt.columns([2.2, 5, 2.2])
+        c1.markdown(f"<div style='text-align:right'>{left_lbl}</div>",
+                    unsafe_allow_html=True)
+        # diverging bar centred at 50
+        fill = int(round(pct_hi))
+        bar = (f"<div style='background:#e9ecef;border-radius:5px;height:12px;"
+               f"width:100%;position:relative'>"
+               f"<div style='position:absolute;left:50%;top:0;height:12px;"
+               f"width:1px;background:#adb5bd'></div>"
+               f"<div style='background:{'#2f6feb' if dom_hi else '#e8590c'};"
+               f"height:12px;border-radius:5px;"
+               f"{'left:50%;width:'+str(max(fill-50,0))+'%' if dom_hi else 'right:50%;width:'+str(max(50-fill,0))+'%'};"
+               f"position:absolute;top:0'></div></div>")
+        c2.markdown(bar, unsafe_allow_html=True)
+        c3.markdown(f"{right_lbl} <span style='color:#adb5bd;font-size:0.8em'>"
+                    f"{p:.0f}</span>", unsafe_allow_html=True)
+
+    hi_conf = [k for k in menu if TENDENCY_META.get(k, {}).get('confidence') != 'low']
+    lo_conf = [k for k in menu if TENDENCY_META.get(k, {}).get('confidence') == 'low']
+    for k in hi_conf:
+        _slider(k)
+    if scoped['thin_sample']:
+        tgt.caption(f"⚠️ thin sample ({int(scoped['mins'])}′) — scored against "
+                    f"the {role} cohort but read with caution.")
+    if lo_conf:
+        with tgt.expander("Low-confidence tendencies (thin event support)"):
+            st.caption("Shot-side pairs rest on few events; futi hides these — "
+                       "shown here for completeness, not for judgement.")
+            for k in lo_conf:
+                _slider(k)
+    return True
+
+
 ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'ACP Projection (abs)', 'Projection Band',
                            'Evidence Weight', 'Offensive Value %',
@@ -1359,6 +1558,24 @@ we trust it** (an evidence weight from career minutes), and an **age curve**
 
 *In short: the **Index** shows who's been best; the **Projection** shows who's
 the best bet going forward, with the uncertainty made explicit.*
+
+**Roles, Tendencies & Styles — *what kind* of player, not how good** *(descriptive, never in the rating)*
+
+Separate from the quality question, we describe *how* a player plays:
+- **Role** — where he actually operates, learned from where his events happen
+  match by match (a Striker, Wide Defender, Deep Midfielder…), not the
+  lineup-card position. A season role is a blend of his per-match roles.
+- **Tendencies** — within his role, which way he leans on the things he
+  *attempts*: carry vs pass, cross vs combine, come short vs run behind, and so
+  on. Each is a **within-role percentile** (50 = typical for the role, so a
+  full bar means "does far more of this than his peers"). It's **attempt
+  composition, not quality** — a high bar is never "better", just "more of
+  that".
+- **Style** — a single archetype read off the strongest tendencies (Wide
+  Arriver, Deep-Lying Playmaker, Ball-Playing Defender…). Players without a
+  pronounced lean are **"Conventional"** for their role — a real centre, not a
+  gap. Styles describe; they **never enter the rating or projection**.
+  Goalkeepers are outside this system for now.
 """
 
 
@@ -11019,6 +11236,27 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if _badges:
                     st.markdown("  \n".join(_badges))
 
+                # --- style chip: role + tendency-derived archetype ----------
+                # Descriptive only (never in the rating). Scope-aware: the
+                # style of the player's highest-minutes row in the selected
+                # scope. GKs / sub-300' players simply get no chip.
+                try:
+                    _sty = get_scoped_style(int(selected_player_id), _e_sids)
+                    _role_disp = _e.get('role')
+                    if _sty and pd.notna(_sty.get('style')):
+                        _fit = _sty.get('style_fit')
+                        _fit_txt = (f" · {float(_fit):.0f}% fit"
+                                    if _fit is not None and pd.notna(_fit) else "")
+                        _thin = " · thin sample" if _sty.get('thin_sample') else ""
+                        st.markdown(
+                            f"<span style='background:#eef2ff;color:#3730a3;"
+                            f"padding:3px 10px;border-radius:12px;font-size:0.9em;"
+                            f"font-weight:600'>{_role_disp} · "
+                            f"{_sty['style']}{_fit_txt}{_thin}</span>",
+                            unsafe_allow_html=True)
+                except Exception:
+                    logger.exception("style chip failed")
+
                 # component bars
                 _comp_cols = st.columns(6)
                 for _i, (_lbl, _col) in enumerate([
@@ -11049,6 +11287,27 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _eng_df, _e, _eng_meta)
                 if _card_png:
                     st.image(_card_png, use_container_width=True)
+
+                # --- Tendencies panel: futi-style bipolar sliders ----------
+                # The role's menu of attempt-composition leanings, each a
+                # within-role percentile (50 = role-typical). Descriptive, never
+                # a rating. Hidden entirely for players without tendencies.
+                try:
+                    _has_tend = get_scoped_tendencies(
+                        int(selected_player_id), _e_sids) is not None
+                    if _has_tend:
+                        with st.expander("🎚️ Tendencies — how he plays the role",
+                                         expanded=False):
+                            st.caption(
+                                "Each bar is a **within-role percentile** of "
+                                "what he attempts (50 = typical for the role) — "
+                                "style, not quality, and never part of the "
+                                "rating. The leaning side is coloured.")
+                            render_tendencies_panel(int(selected_player_id),
+                                                    _e_sids)
+                except Exception:
+                    logger.exception("tendencies panel failed")
+
                 # --- Projection outlook fan chart (prototype) ---
                 try:
                     from pitch_interactive import plotly_projection_fan
@@ -13524,9 +13783,41 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _metric_label, _metric_col = 'Rating', 'ACP Rating (abs)'
                 _rb['_rankval'] = pd.to_numeric(_rb[_metric_col], errors='coerce')
 
+                # --- style per board player (scope-aware, descriptive) ------
+                # Highest-minutes style row within the scoped seasons; falls
+                # back to the player's most-played season overall so a purely
+                # historical scope still shows a style.
+                _styles_all = load_styles()
+                _style_map = {}
+                if _styles_all is not None and not _styles_all.empty:
+                    _sc = _styles_all
+                    if active_season_ids is not None:
+                        _ssids = [int(s) for s in (active_season_ids
+                                  if isinstance(active_season_ids, (list, tuple, set))
+                                  else [active_season_ids])]
+                        _sc_scope = _sc[_sc['seasonId'].isin(_ssids)]
+                        _sc = _sc_scope if not _sc_scope.empty else _sc
+                    _sc = _sc.sort_values('mins_played').drop_duplicates(
+                        'playerId', keep='last')
+                    _style_map = dict(zip(_sc['playerId'], _sc['style']))
+                _rb['_style'] = _rb['playerId'].map(_style_map)
+
+                # --- style filter selectbox ---------------------------------
+                _style_opts = ['All styles'] + sorted(
+                    {s for s in _rb['_style'].dropna().unique()})
+                _sel_style = 'All styles'
+                if len(_style_opts) > 1:
+                    _sel_style = st.selectbox(
+                        "Filter board by style", _style_opts, index=0,
+                        key="role_board_style_filter",
+                        help="Descriptive tendency-derived archetype (never in "
+                             "the rating). Filters the board to one style.")
+                    if _sel_style != 'All styles':
+                        _rb = _rb[_rb['_style'] == _sel_style].copy()
+
                 _ENGINE_ROLE_ORDER = ['Striker', 'Wide Attacker', 'Advanced Midfielder',
                                        'Deep Midfielder', 'Wide Defender', 'Central Defender']
-                _role_sub = ['Player', _metric_label, 'Min', 'Age']
+                _role_sub = ['Player', _metric_label, 'Min', 'Age', 'Style']
                 _role_cols = {}
                 for _role in _ENGINE_ROLE_ORDER:
                     _rsub = _rb[_rb['role'] == _role].sort_values('_rankval', ascending=False).head(num_players)
@@ -13538,11 +13829,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         _age = _r.get('_age_disp')
                         _age = float(_age) if isinstance(_age, (int, float)) and pd.notna(_age) else None
                         _mins = pd.to_numeric(_r.get('totalMinutes'), errors='coerce')
+                        _stl = _r.get('_style')
                         _rows.append((
                             _r.get('playerName', ''),
                             (round(float(_mval), 1) if pd.notna(_mval) else ''),
                             (int(_mins) if pd.notna(_mins) else 0),
                             (round(_age, 1) if _age is not None else ''),
+                            (str(_stl) if _stl is not None and pd.notna(_stl) else '—'),
                         ))
                     _role_cols[_role] = _rows
 
@@ -13573,17 +13866,24 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             "Observed ACP engine roles (data-derived from playing patterns), "
                             "ranked by ACP Projection. **Proj** = projected level next season "
                             "(absolute / cross-league scale). **Age** (current) and **Min** "
-                            "(total minutes in scope) match the table below. Only players with "
-                            "a live projection appear."
+                            "(total minutes in scope) match the table below. **Style** = the "
+                            "player's tendency-derived archetype (descriptive, never in the "
+                            "rating). Only players with a live projection appear."
                         )
                     else:
                         st.caption(
                             "Observed ACP engine roles (data-derived from playing patterns), "
                             "ranked by ACP **Rating** (absolute scale) — the selected season is "
                             "historical, so no forward projection exists. **Age** is current; "
-                            "**Min** is total minutes in scope."
+                            "**Min** is total minutes in scope. **Style** = tendency-derived "
+                            "archetype (descriptive, never in the rating)."
                         )
                     st.dataframe(_erole_df, use_container_width=True)
+                    st.markdown("---")
+                elif _sel_style != 'All styles':
+                    st.subheader("Best Players by Role")
+                    st.info(f"No players match the style “{_sel_style}” in this "
+                            f"scope. Clear the style filter to see the full board.")
                     st.markdown("---")
 
             # Build wide pivot table: each template is a column group with Player, Team, Minutes, Rating
