@@ -1573,8 +1573,12 @@ Separate from the quality question, we describe *how* a player plays:
   that".
 - **Style** — a single archetype read off the strongest tendencies (Wide
   Arriver, Deep-Lying Playmaker, Ball-Playing Defender…). Players without a
-  pronounced lean are **"Conventional"** for their role — a real centre, not a
-  gap. Styles describe; they **never enter the rating or projection**.
+  pronounced lean — or with two leans too close to call — are
+  **"Conventional"** for their role: a real centre, not a gap. To keep labels
+  from flipping on a few noisy months, the style reads a recency-weighted view
+  of the player's tendencies (this season blended with his last season in the
+  same role); the tendency bars themselves always show the selected season
+  as-is. Styles describe; they **never enter the rating or projection**.
   Goalkeepers are outside this system for now.
 """
 

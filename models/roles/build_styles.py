@@ -21,8 +21,23 @@ Order of resolution (composites FIRST, per spec):
   1. COMPOSITE styles — the multi-tendency archetypes futi names (Wingback =
      crosses + gets forward; Target Striker = aerial + arrives). Checked first
      because a composite is a stronger claim than any single pole.
-  2. SINGLE POLE — the most extreme style-defining tendency, if |z| >= thr.
+  2. SINGLE POLE — the most extreme style-defining tendency, if |z| >= thr AND
+     it beats the runner-up named pole by the role's margin (v3.1).
   3. CONVENTIONAL <Role>.
+
+v3.1 RELIABILITY RETUNE (2026-07-16, Lucas-approved "full sticky retune"):
+  * STICKY LABELS — styles are assigned on a recency-weighted blend of this
+    season's z with the player's same-role prior season (minutes-weighted,
+    LAMBDA_PRIOR discount; ~futi's rolling-12-month assignment). Display
+    tendencies stay strictly per-season; only the label + fit read the blend.
+  * MARGIN RULE — near-tied top poles no longer coin-flip the argmax between
+    seasons; ties fall to Conventional. Tuned jointly with the threshold.
+  * Both the sticky label churn (what users see) AND the unsmoothed
+    same-config YoY (the underlying signal) are reported, so the improvement
+    from smoothing is never mistaken for signal — this project's artifact
+    family (pooled/mechanical/smoothed-target/weight-shift) demands it.
+  * NOT done, deliberately: reliability-weighting the axes (tested — raw
+    agreement up, kappa DOWN via taxonomy collapse; rejected).
 
 Not every displayed tendency is style-defining. Panels show context axes
 (defensive-line height, near/far post) that describe a player without making an
@@ -61,9 +76,19 @@ _PROF = _HERE / 'style_profiles.csv'
 _V2 = _ROLES_DIR / 'style_assignments_season_v2_backup.parquet'
 
 THR_GRID = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
+MARGIN_GRID = [0.0, 0.10, 0.20, 0.30]   # runner-up margin, tuned with thr
 CONVENTIONAL_TARGET = (0.20, 0.45)      # spec: Conventional should be 20-45%
 MAX_STYLE_SHARE = 0.60
 MIN_STYLE_SHARE = 0.08
+
+# v3.1 sticky blend: the ASSIGNMENT vector is this season's z blended with the
+# player's same-role prior-season z, weighted by minutes with the prior
+# discounted (w_cur = m_t / (m_t + LAMBDA_PRIOR * m_{t-1}); equal minutes ->
+# 2/3 current). futi assigns styles on a rolling 12 months; strict per-season
+# labelling was noisier by construction (Lucas approved the divergence-from-
+# per-season 2026-07-16). DISPLAY tendencies remain purely per-season — only
+# the label (and its fit) read the blended vector.
+LAMBDA_PRIOR = 0.5
 
 YEAR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024, 191782: 2025,
         190230: 2023, 191779: 2025}
@@ -101,18 +126,17 @@ STYLE_AXES = {
         'carry_pass':             {'high': None, 'low': 'Ball Carrier'},
         'secure_progressive':     {'high': None, 'low': 'Circulator'},
     },
-    # OPEN CALL FOR LUCAS (evidence in the commit report): Midfield Destroyer
-    # rests on passive_active = DefR volume, whose YoY is only 0.374 because
-    # defensive volume is largely the coach's scheme, not the player — the same
-    # team-context lesson the DefR value-conceded ladder taught. With the three
-    # original axes alone (passive_active / passive_active_buildup /
-    # return_circulate) every DM sits at a near-identical |z| on all three
-    # (medians 0.72 / 0.59 / 0.67, argmax split 36/34/30) so the label was a
-    # three-way coin flip: kappa 0.074, barely above chance. Adding carry_pass
-    # (the most reliable DM tendency, YoY 0.592) gives the argmax a stable
-    # anchor and lifts DM kappa to 0.234. Dropping Midfield Destroyer entirely
-    # would reach 0.376 — but the spec names it, so that is Lucas's call, not
-    # one to make silently here.
+    # Midfield Destroyer rests on passive_active = DefR volume, whose YoY is
+    # only 0.374 because defensive volume is largely the coach's scheme, not
+    # the player — the same team-context lesson the DefR value-conceded ladder
+    # taught. With the three original axes alone (passive_active /
+    # passive_active_buildup / return_circulate) every DM sat at a
+    # near-identical |z| on all three (argmax split 36/34/30, kappa 0.074);
+    # carry_pass (the most reliable DM tendency, YoY 0.592) anchors the argmax.
+    # RESOLVED 2026-07-16: Lucas ruled keep Destroyer unless DM kappa stayed
+    # under ~0.3 after the v3.1 sticky retune — it came out 0.524, so it stays
+    # (same ruling covered Aggressive Defender and Defensive Fullback; CB
+    # 0.501 / WD 0.466).
     'Deep Midfielder': {
         'passive_active':         {'high': 'Midfield Destroyer', 'low': None},
         'passive_active_buildup': {'high': 'Deep-Lying Playmaker', 'low': None},
@@ -197,13 +221,64 @@ def apply_zstats(T, stats):
     return Z
 
 
-def assign_styles(T, Z, thr_by_role):
-    """Composites -> most-extreme named single pole -> Conventional."""
+def _prior_z_table(T, Z):
+    """(playerId, role, year+1) -> minutes-weighted mean of the PRIOR season's
+    raw z + that season's minutes. Keyed at year+1 so it merges directly onto
+    the current row. A player with rows in both leagues the same year (loan /
+    mid-season move) contributes both, minutes-weighted."""
+    zcols = list(Z.columns)
+    D = pd.concat([T[['playerId', 'role', 'year', 'mins_played']]
+                   .reset_index(drop=True), Z.reset_index(drop=True)], axis=1)
+    D = D[D['year'].notna()]
+    rows = []
+    for (pid, role, yr), g in D.groupby(['playerId', 'role', 'year']):
+        w = g['mins_played'].to_numpy(float)
+        Zg = g[zcols].to_numpy(float)
+        vals = np.where(np.isnan(Zg), 0.0, Zg)
+        wm = np.where(np.isnan(Zg), 0.0, w[:, None])
+        den = wm.sum(axis=0)
+        avg = np.divide((vals * wm).sum(axis=0), den,
+                        out=np.full(len(zcols), np.nan), where=den > 0)
+        rows.append((pid, role, yr + 1, w.sum(), *avg))
+    return pd.DataFrame(rows, columns=['playerId', 'role', 'year',
+                                       'prior_mins'] + zcols)
+
+
+def blend_z(T, Z, prior, lam=LAMBDA_PRIOR):
+    """Sticky assignment space: blend this season's z with the same-role prior
+    season's (from _prior_z_table). Rows with no prior pass through unchanged;
+    a NaN on either side falls back to the other."""
+    zcols = list(Z.columns)
+    D = T[['playerId', 'role', 'year', 'mins_played']].reset_index(drop=True)
+    M = D.merge(prior, on=['playerId', 'role', 'year'], how='left')
+    cur = Z.to_numpy(float)
+    prv = M[zcols].to_numpy(float)
+    pm = M['prior_mins'].to_numpy(float)
+    w = np.where(np.isnan(pm), 1.0,
+                 D['mins_played'].to_numpy(float)
+                 / (D['mins_played'].to_numpy(float) + lam * np.nan_to_num(pm)))
+    w = w[:, None]
+    out = np.where(np.isnan(prv), cur,
+                   np.where(np.isnan(cur), prv, w * cur + (1.0 - w) * prv))
+    return pd.DataFrame(out, index=T.index, columns=zcols)
+
+
+def assign_styles(T, Z, thr_by_role, margin_by_role=None):
+    """Composites -> most-extreme named single pole -> Conventional.
+
+    v3.1 margin rule: the winning pole must clear the role's |z| threshold AND
+    beat the runner-up NAMED pole by the role's margin. Two near-tied leans are
+    an ambiguous read — before this rule they swapped the argmax between
+    seasons for no footballing reason (the largest churn source); now they fall
+    to Conventional, which is the honest label for a player without one
+    dominant lean."""
+    margin_by_role = margin_by_role or {}
     out = []
     zcols = set(Z.columns)
     for i, role in zip(T.index, T['role']):
         axes = STYLE_AXES.get(role, {})
         thr = thr_by_role.get(role, 0.75)
+        mar = margin_by_role.get(role, 0.0)
         lab = None
         for name, conds in COMPOSITES.get(role, []):
             ok = True
@@ -216,16 +291,19 @@ def assign_styles(T, Z, thr_by_role):
                 lab = name
                 break
         if lab is None:
-            best, best_abs = None, thr
+            cands = []
             for k, pole in axes.items():
                 z = Z.at[i, f'z_{k}'] if f'z_{k}' in zcols else np.nan
-                if pd.isna(z) or abs(z) < best_abs:
+                if pd.isna(z):
                     continue
                 nm = pole['high'] if z > 0 else pole['low']
                 if nm is None:
                     continue
-                best, best_abs = nm, abs(z)
-            lab = best
+                cands.append((abs(z), nm))
+            cands.sort(key=lambda t: -t[0])
+            if (cands and cands[0][0] >= thr
+                    and (len(cands) == 1 or cands[0][0] - cands[1][0] >= mar)):
+                lab = cands[0][1]
         out.append(lab if lab is not None else conventional(role))
     return pd.Series(out, index=T.index, name='style')
 
@@ -348,43 +426,59 @@ def _yoy(frame, styles, roles=None, same_role=True):
 
 
 def tune_thresholds(T, Z, cohort):
-    """Pick each role's |z| threshold: among thresholds that put Conventional in
-    the spec's 20-45% band and keep every named style within 8-60%, take the one
-    with the best YoY hard-label agreement. If none satisfies occupancy, take
-    the one closest to the Conventional band (and say so)."""
+    """Pick each role's (|z| threshold, runner-up margin) JOINTLY: among grid
+    combos that put Conventional in the spec's 20-45% band and keep every named
+    style within 8-60%, take the one with the best YoY hard-label agreement.
+    If none satisfies occupancy, take the combo closest to the Conventional
+    band (and say so).
+
+    Occupancy is a hard gate BEFORE YoY on purpose — it is what stops this
+    tuner from rediscovering the reliability-flattering collapse (label
+    everything Conventional and YoY soars). Kappa per role is reported
+    downstream as the second guard."""
     chosen, report = {}, []
     for role in ROLE_TENDENCY_MENU:
         g = T[(T['role'] == role) & cohort]
         if g.empty:
-            chosen[role] = 0.75
+            chosen[role] = (0.75, 0.0)
             continue
         best = None
         for thr in THR_GRID:
-            st = assign_styles(g, Z.loc[g.index], {role: thr})
-            share = st.value_counts(normalize=True)
-            conv = share.get(conventional(role), 0.0)
-            named = share.drop(labels=[conventional(role)], errors='ignore')
-            ok_occ = bool(len(named)
-                          and CONVENTIONAL_TARGET[0] <= conv <= CONVENTIONAL_TARGET[1]
-                          and (named < MAX_STYLE_SHARE).all()
-                          and (named >= MIN_STYLE_SHARE).all())
-            y, n, _ = _yoy(g, st, g['role'])
-            report.append((role, thr, conv, y, ok_occ, len(named)))
-            # distance from the Conventional band, for the fallback ordering
-            dist = max(0.0, CONVENTIONAL_TARGET[0] - conv,
-                       conv - CONVENTIONAL_TARGET[1])
-            cand = (ok_occ, -dist if not ok_occ else 0.0,
-                    y if y == y else -1, thr)
-            if best is None or (cand[0], cand[1], cand[2]) > (best[0], best[1], best[2]):
-                best = cand
-        chosen[role] = best[3]
-    return chosen, report
+            for mar in MARGIN_GRID:
+                st = assign_styles(g, Z.loc[g.index], {role: thr}, {role: mar})
+                share = st.value_counts(normalize=True)
+                conv = share.get(conventional(role), 0.0)
+                named = share.drop(labels=[conventional(role)], errors='ignore')
+                ok_occ = bool(len(named)
+                              and CONVENTIONAL_TARGET[0] <= conv <= CONVENTIONAL_TARGET[1]
+                              and (named < MAX_STYLE_SHARE).all()
+                              and (named >= MIN_STYLE_SHARE).all())
+                y, n, _ = _yoy(g, st, g['role'])
+                report.append((role, thr, mar, conv, y, ok_occ, len(named)))
+                dist = max(0.0, CONVENTIONAL_TARGET[0] - conv,
+                           conv - CONVENTIONAL_TARGET[1])
+                cand = ((1 if ok_occ else 0), -dist, y if y == y else -1,
+                        thr, mar)
+                if best is None or cand[:3] > best[:3]:
+                    best = cand
+        chosen[role] = (best[3], best[4])
+    thr = {r: v[0] for r, v in chosen.items()}
+    mar = {r: v[1] for r, v in chosen.items()}
+    return thr, mar, report
 
 
-def split_half(T, stats, thr, cohort):
+def split_half(T, stats, thr, mar, prior, cohort):
     """Odd/even-match reliability: rebuild tendencies on each half of a player's
     matches through the SAME code path, label each half, and ask whether the two
     halves agree. This is v2's headline check (76.7%) run on v3.
+
+    Reported in BOTH labelling modes:
+      margin-only — each half labelled from its own z alone. The honest
+          within-season reliability of the underlying signal.
+      sticky      — each half blended with the player's prior FULL season,
+          exactly as production labels are. Mechanically flattered (both
+          halves share the same prior anchor) but it IS the reliability of
+          the label users see; read it with that caveat.
 
     CAVEAT, disclosed: DefR is published per player-season, so passive_active
     (SEASON_ONLY_TENDENCIES) cannot be halved — it is held at its season value
@@ -397,27 +491,40 @@ def split_half(T, stats, thr, cohort):
     # each half is ~half a season: keep the per-90 rates comparable
     roles['mins_played'] = roles['mins_played'] / 2.0
     H, _ = tendency_table(ev, keys, roles, load_defr())
-    H = H.merge(roles[['playerId', 'seasonId', 'role']], on=['playerId', 'seasonId'],
-                how='left')
+    H = H.merge(roles[['playerId', 'seasonId', 'role', 'mins_played']]
+                .rename(columns={'mins_played': '_half_mins'}),
+                on=['playerId', 'seasonId'], how='left')
+    # blend weight uses the half's minutes vs the prior FULL season's — the
+    # as-deployed behaviour for a part-season sample
+    H['mins_played'] = H['_half_mins'] if 'mins_played' not in H.columns \
+        else H['mins_played'].fillna(H['_half_mins'])
     keep = set(map(tuple, T.loc[cohort, ['playerId', 'seasonId']].to_numpy()))
     H = H[[tuple(r) in keep for r in H[['playerId', 'seasonId']].to_numpy()]]
+    H['year'] = H['seasonId'].map(YEAR)
     ZH = apply_zstats(H, stats)
-    lab = assign_styles(H, ZH, thr)
-    H = H.assign(style=lab)
-    h0 = H[H['parity'] == 0][['playerId', 'seasonId', 'style']]
-    h1 = H[H['parity'] == 1][['playerId', 'seasonId', 'style']]
-    m = h0.merge(h1, on=['playerId', 'seasonId'], suffixes=('_0', '_1'))
-    agree = (m['style_0'] == m['style_1']).mean()
-    print(f"  v3 split-half style agreement: {agree * 100:.1f}%  (n={len(m)})")
+    ZHb = blend_z(H, ZH, prior)
+    out = {}
+    for tag, Zx in (('margin-only', ZH), ('sticky', ZHb)):
+        lab = assign_styles(H, Zx, thr, mar)
+        Hx = H.assign(style=lab)
+        h0 = Hx[Hx['parity'] == 0][['playerId', 'seasonId', 'style']]
+        h1 = Hx[Hx['parity'] == 1][['playerId', 'seasonId', 'style']]
+        m = h0.merge(h1, on=['playerId', 'seasonId'], suffixes=('_0', '_1'))
+        agree = (m['style_0'] == m['style_1']).mean()
+        out[tag] = agree
+        print(f"  v3.1 split-half agreement [{tag}]: {agree * 100:.1f}%  "
+              f"(n={len(m)})")
+        per = []
+        for role, g in m.merge(T[['playerId', 'seasonId', 'role']],
+                               on=['playerId', 'seasonId']).groupby('role'):
+            per.append((role, (g['style_0'] == g['style_1']).mean(), len(g)))
+        for role, a, n in sorted(per, key=lambda t: -t[1]):
+            print(f"      {role:<22}{a * 100:5.1f}%  (n={n})")
     print(f"    NOTE: passive_active held at its season value in both halves "
-          f"(DefR is season-level) — flatters DM/WD/CB.")
-    per = []
-    for role, g in m.merge(T[['playerId', 'seasonId', 'role']],
-                           on=['playerId', 'seasonId']).groupby('role'):
-        per.append((role, (g['style_0'] == g['style_1']).mean(), len(g)))
-    for role, a, n in sorted(per, key=lambda t: -t[1]):
-        print(f"      {role:<22}{a * 100:5.1f}%  (n={n})")
-    return agree
+          f"(DefR is season-level) — flatters DM/WD/CB in both modes; the "
+          f"sticky mode additionally shares the prior-season anchor across "
+          f"halves by construction.")
+    return out
 
 
 def per_role_stability(frame, styles, roles):
@@ -479,19 +586,34 @@ def main():
 
     print("[2/6] z-scores within role…", flush=True)
     Z, stats = zscores(T, cohort)
+    prior = _prior_z_table(T, Z)
+    Zb = blend_z(T, Z, prior)
+    has_prior = (T[['playerId', 'role', 'year']]
+                 .merge(prior[['playerId', 'role', 'year']].drop_duplicates(),
+                        on=['playerId', 'role', 'year'], how='left',
+                        indicator=True)['_merge'] == 'both')
+    print(f"  sticky blend (lam={LAMBDA_PRIOR}): "
+          f"{int(has_prior.sum()):,}/{len(T):,} rows have a same-role prior "
+          f"season; the rest label from this season alone")
 
-    print("[3/6] tuning |z| thresholds per role…", flush=True)
-    thr, report = tune_thresholds(T, Z, cohort)
-    print(f"  {'role':<22}{'thr':>6}{'conv%':>8}{'YoY':>7}{'occ ok':>9}{'styles':>8}")
-    for role, t, conv, y, ok, n in report:
-        mark = '  <- chosen' if abs(thr[role] - t) < 1e-9 else ''
-        ys = f"{y * 100:>6.0f}%" if y == y else "     —"
-        print(f"  {role:<22}{t:>6.2f}{conv * 100:>7.0f}%{ys}{str(ok):>9}{n:>8}{mark}")
-    print("\n  chosen: " + ", ".join(f"{r}={v:.2f}" for r, v in thr.items()))
+    print("[3/6] tuning (|z| threshold, runner-up margin) per role…", flush=True)
+    thr, mar, report = tune_thresholds(T, Zb, cohort)
+    feas = {}
+    for role, t, m, conv, y, ok, n in report:
+        feas[role] = feas.get(role, 0) + (1 if ok else 0)
+    print(f"  {'role':<22}{'thr':>6}{'mar':>6}{'conv%':>8}{'stickyYoY':>11}"
+          f"{'feasible':>10}")
+    for role in thr:
+        row = next(r for r in report
+                   if r[0] == role and abs(r[1] - thr[role]) < 1e-9
+                   and abs(r[2] - mar[role]) < 1e-9)
+        ys = f"{row[4] * 100:>9.0f}%" if row[4] == row[4] else "         —"
+        print(f"  {role:<22}{thr[role]:>6.2f}{mar[role]:>6.2f}"
+              f"{row[3] * 100:>7.0f}%{ys}{feas[role]:>7}/28")
 
     print("\n[4/6] assigning…", flush=True)
-    styles = assign_styles(T, Z, thr)
-    fits, s2, f2 = fit_and_mix(T, Z, styles)
+    styles = assign_styles(T, Zb, thr, mar)
+    fits, s2, f2 = fit_and_mix(T, Zb, styles)
     T = T.assign(style=styles, style_fit=fits, style_2=s2, style_2_fit=f2)
 
     print("\n=== occupancy by role (cohort only) ===")
@@ -516,32 +638,53 @@ def main():
     y3, n3, k3 = _yoy(T[cohort], styles[cohort], T.loc[cohort, 'role'])
     ya, na, ka = _yoy(T[cohort], styles[cohort], T.loc[cohort, 'role'],
                       same_role=False)
-    print(f"  v3 YoY hard-label agreement (same role): {y3 * 100:.1f}%  "
-          f"(n={n3})")
-    print(f"  v3 YoY incl. role changes:               {ya * 100:.1f}%  (n={na})")
+    print(f"  v3.1 YoY hard-label agreement (same role, sticky): "
+          f"{y3 * 100:.1f}%  (n={n3})")
+    print(f"  v3.1 YoY incl. role changes:                       "
+          f"{ya * 100:.1f}%  (n={na})")
+    # the sticky label borrows last season's evidence, so its YoY is partly
+    # construction. The unsmoothed run of the SAME config separates real
+    # signal from smoothing: this is what the label churn would be with the
+    # margin rule alone.
+    st_flat = assign_styles(T, Z, thr, mar)
+    yf, nf, kf = _yoy(T[cohort], st_flat[cohort], T.loc[cohort, 'role'])
+    print(f"  same config, NO sticky blend (underlying signal): "
+          f"{yf * 100:.1f}%  (n={nf})")
     v2_baselines()
     print("\n  --- per-role, chance-corrected (the fair comparison) ---")
     A = per_role_stability(*_v2_frame()) if _V2.exists() else None
     B = per_role_stability(T[cohort], styles[cohort], T.loc[cohort, 'role'])
-    print(f"  {'role':<22}{'v2 obs':>8}{'v2 k':>7}{'v3 obs':>9}{'v3 k':>7}"
-          f"{'v3 n':>6}")
+    F = per_role_stability(T[cohort], st_flat[cohort], T.loc[cohort, 'role'])
+    print(f"  {'role':<22}{'v2 obs':>8}{'v2 k':>7}{'v3.1 obs':>10}{'v3.1 k':>8}"
+          f"{'flat k':>8}{'n':>6}")
     for role in ROLE_TENDENCY_MENU:
         b = B[B['role'] == role]
+        f_ = F[F['role'] == role]
         a = A[A['role'] == role] if A is not None else None
         if b.empty:
             continue
         av = (f"{a['obs'].iloc[0] * 100:>7.1f}%{a['kappa'].iloc[0]:>7.3f}"
               if a is not None and not a.empty else f"{'—':>8}{'—':>7}")
-        print(f"  {role:<22}{av}{b['obs'].iloc[0] * 100:>8.1f}%"
-              f"{b['kappa'].iloc[0]:>7.3f}{b['n'].iloc[0]:>6}")
+        fk = f"{f_['kappa'].iloc[0]:>8.3f}" if not f_.empty else f"{'—':>8}"
+        print(f"  {role:<22}{av}{b['obs'].iloc[0] * 100:>9.1f}%"
+              f"{b['kappa'].iloc[0]:>8.3f}{fk}{b['n'].iloc[0]:>6}")
     if A is not None:
         print(f"  {'WEIGHTED MEAN':<22}"
               f"{np.average(A['obs'], weights=A['n']) * 100:>7.1f}%"
               f"{np.average(A['kappa'], weights=A['n']):>7.3f}"
-              f"{np.average(B['obs'], weights=B['n']) * 100:>8.1f}%"
-              f"{np.average(B['kappa'], weights=B['n']):>7.3f}")
+              f"{np.average(B['obs'], weights=B['n']) * 100:>9.1f}%"
+              f"{np.average(B['kappa'], weights=B['n']):>8.3f}"
+              f"{np.average(F['kappa'], weights=F['n']):>8.3f}")
+
+    print("\n  --- anchors ---")
+    for nm in ['Balotelli', 'Yuk Jinyoung', 'Elias Franco', 'Tiago Morgado']:
+        for _, r in T[T['name'] == nm].sort_values('seasonId').iterrows():
+            fit = f"{r['style_fit']:.0f}" if r['style_fit'] == r['style_fit'] else '—'
+            print(f"    {nm:<15} {r['seasonId']}  {r['role']:<20} "
+                  f"{r['style']:<28} fit {fit}")
+
     if '--split-half' in sys.argv:
-        split_half(T, stats, thr, cohort)
+        split_half(T, stats, thr, mar, prior, cohort)
     else:
         print("  (split-half skipped — pass --split-half to run it)")
 
@@ -565,8 +708,8 @@ def main():
                 if f'z_{k}' in Z.columns]
         z = Z.loc[g.index, dims].mean()
         top = z.reindex(z.abs().sort_values(ascending=False).index)[:5]
-        ex = (g.sort_values('mins_played', ascending=False)['name']
-                .dropna().head(6).tolist())
+        ex = (g.sort_values('mins_played', ascending=False)
+                .drop_duplicates('playerId')['name'].dropna().head(6).tolist())
         prof.append({'role': role, 'style': nm, 'n': len(g),
                      'style_id': ids.get((role, nm), -1),
                      'top_z': '; '.join(f"{k[2:]}{v:+.2f}" for k, v in top.items()),
