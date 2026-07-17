@@ -75,9 +75,18 @@ _OUT = _HERE / 'style_assignments_season.parquet'
 _PROF = _HERE / 'style_profiles.csv'
 _V2 = _ROLES_DIR / 'style_assignments_season_v2_backup.parquet'
 
-THR_GRID = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
+THR_GRID = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75,
+            0.80, 0.85, 0.90]
 MARGIN_GRID = [0.0, 0.10, 0.20, 0.30]   # runner-up margin, tuned with thr
-CONVENTIONAL_TARGET = (0.20, 0.45)      # spec: Conventional should be 20-45%
+# v3.2 (Lucas, 2026-07-16): Conventional MINIMIZED — band lowered from the
+# spec's original 20-45% to 10-25%. Evidence behind the floor: centre size vs
+# stability is U-shaped (uniform thr 0.2-0.4 scored WORSE than either a real
+# centre or pure argmax — a thin shell maximises boundary-hopping), so the
+# tuner keeps a floor rather than chasing zero; the sticky blend carries the
+# stability the big centre used to provide. Pure argmax reference: YoY 64.6%,
+# kappa 0.513, with a 3-9% residual centre anyway (players leaning only
+# toward unnamed poles).
+CONVENTIONAL_TARGET = (0.10, 0.25)
 MAX_STYLE_SHARE = 0.60
 MIN_STYLE_SHARE = 0.08
 
@@ -512,7 +521,7 @@ def split_half(T, stats, thr, mar, prior, cohort):
         m = h0.merge(h1, on=['playerId', 'seasonId'], suffixes=('_0', '_1'))
         agree = (m['style_0'] == m['style_1']).mean()
         out[tag] = agree
-        print(f"  v3.1 split-half agreement [{tag}]: {agree * 100:.1f}%  "
+        print(f"  v3 split-half agreement [{tag}]: {agree * 100:.1f}%  "
               f"(n={len(m)})")
         per = []
         for role, g in m.merge(T[['playerId', 'seasonId', 'role']],
@@ -608,8 +617,9 @@ def main():
                    if r[0] == role and abs(r[1] - thr[role]) < 1e-9
                    and abs(r[2] - mar[role]) < 1e-9)
         ys = f"{row[4] * 100:>9.0f}%" if row[4] == row[4] else "         —"
+        ncombo = len(THR_GRID) * len(MARGIN_GRID)
         print(f"  {role:<22}{thr[role]:>6.2f}{mar[role]:>6.2f}"
-              f"{row[3] * 100:>7.0f}%{ys}{feas[role]:>7}/28")
+              f"{row[3] * 100:>7.0f}%{ys}{feas[role]:>7}/{ncombo}")
 
     print("\n[4/6] assigning…", flush=True)
     styles = assign_styles(T, Zb, thr, mar)
@@ -638,9 +648,9 @@ def main():
     y3, n3, k3 = _yoy(T[cohort], styles[cohort], T.loc[cohort, 'role'])
     ya, na, ka = _yoy(T[cohort], styles[cohort], T.loc[cohort, 'role'],
                       same_role=False)
-    print(f"  v3.1 YoY hard-label agreement (same role, sticky): "
+    print(f"  v3 sticky YoY hard-label agreement (same role)   : "
           f"{y3 * 100:.1f}%  (n={n3})")
-    print(f"  v3.1 YoY incl. role changes:                       "
+    print(f"  v3 sticky YoY incl. role changes:                  "
           f"{ya * 100:.1f}%  (n={na})")
     # the sticky label borrows last season's evidence, so its YoY is partly
     # construction. The unsmoothed run of the SAME config separates real
