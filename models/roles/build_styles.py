@@ -86,10 +86,12 @@ MARGIN_GRID = [0.0, 0.10, 0.20, 0.30]   # runner-up margin, tuned with thr
 # stability the big centre used to provide. Pure argmax reference: YoY 64.6%,
 # kappa 0.513, with a 3-9% residual centre anyway (players leaning only
 # toward unnamed poles).
-# Cap raised 0.25 -> 0.30 with the v3.3 Attacking-Fullback cut: a 3-named-
-# style panel (WD) carries a naturally bigger centre, and 0.25 left the WD
-# tuner permanently in closest-to-band fallback (0/52 feasible).
-CONVENTIONAL_TARGET = (0.10, 0.30)
+# v4: band widened to (0.10, 0.45) — with 2-3 named styles per role the
+# Conventional centre naturally carries more mass (the v3.2 minimize
+# directive is superseded by the 2026-07-17 "fewer, consistent styles"
+# directive). The tuner still prefers the most stable feasible config, so
+# smaller centres win where the data supports them.
+CONVENTIONAL_TARGET = (0.10, 0.45)
 MAX_STYLE_SHARE = 0.60
 MIN_STYLE_SHARE = 0.08
 
@@ -120,12 +122,40 @@ YEAR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024, 191782: 2025,
 # The set below is pruned to the spec's named list — every style here is one
 # futi names or one of the June v2 names the spec asked us to keep.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# v4 BOOK (2026-07-17, Lucas: "consistent and descriptive; don't need to match
+# futi; detect how many styles per role"). Book sized per role by three
+# independent measures, all in the blended tendency space, cohort only:
+#   1. GMM (diag) BIC + k-means split-half ARI (does the same cluster
+#      structure reappear in random player halves): ST k=3 (ARI 0.67 — the
+#      strongest structure), WA 2-3 (0.53/0.51), AM k=2 (0.75, emphatic),
+#      DM 2-3 (0.60/0.56), WD k=2 (0.72; k=3 collapses to 0.34), CB 2-3
+#      (0.62/0.55).
+#   2. Per-style split-half retention (odd/even matches, n=2,615 pairs —
+#      the big-sample gate the thin YoY panel can't give): keepers Defensive
+#      Fullback 62%, Aggressive 60%, Dribbler 52%, Combining 50%, both
+#      Playmakers 47%; casualties Poacher 23% (churns into Target — a box
+#      shot-diet is a CORRELATE of the target-man blob, never its own
+#      cluster), Arriving Midfielder 27% (the AM confusion hub), Stay-Home
+#      27% (top confusion = No-Nonsense BOTH ways -> one conservative
+#      persona), DLP-composite 13% (two coupled conditions shatter on half
+#      samples), Pivot 38%, Destroyer 38% (scheme axis; Lucas's earlier
+#      keep-ruling explicitly reversed with the new evidence, 2026-07-17).
+#   3. Cluster-centroid inspection to name what survives.
+# RESULT: 16 named + 6 Conventional (was 20+6). Composites pruned to Target
+# Striker alone; DLP is the plain build-up-hub pole (long-ball condition
+# dropped), Wingback is the crossing pole opposite Combining (the axis is
+# stable, YoY 0.469 — only the two-condition form was fragile).
+# History: v3.3 cut Attacking Fullback (mushy middle), renamed futi's
+# 'Defensive Stopper' -> 'Stay-Home Defender' (their name, not their
+# mechanic) before its merge here; Destroyer's 2026-07-16 keep-ruling and the
+# full v3.x evidence trail live in the branch commit messages.
+# ---------------------------------------------------------------------------
 STYLE_AXES = {
     'Striker': {
         'ground_aerial':          {'high': 'Target Striker', 'low': None},
         'come_short_run_behind':  {'high': 'Running Striker', 'low': None},
         'carry_pass':             {'high': 'Link-Up Striker', 'low': None},
-        'poacher_longrange':      {'high': None, 'low': 'Poacher'},
     },
     'Wide Attacker': {
         'create_arrive':          {'high': 'Wide Arriver',
@@ -133,47 +163,22 @@ STYLE_AXES = {
         'carry_pass':             {'high': None, 'low': 'Wide Dribbler'},
     },
     'Advanced Midfielder': {
-        'create_arrive':          {'high': 'Arriving Midfielder',
-                                   'low': 'Advanced Playmaker'},
+        'create_arrive':          {'high': None, 'low': 'Advanced Playmaker'},
         'carry_pass':             {'high': None, 'low': 'Ball Carrier'},
-        'secure_progressive':     {'high': None, 'low': 'Circulator'},
     },
-    # Midfield Destroyer rests on passive_active = DefR volume, whose YoY is
-    # only 0.374 because defensive volume is largely the coach's scheme, not
-    # the player — the same team-context lesson the DefR value-conceded ladder
-    # taught. With the three original axes alone (passive_active /
-    # passive_active_buildup / return_circulate) every DM sat at a
-    # near-identical |z| on all three (argmax split 36/34/30, kappa 0.074);
-    # carry_pass (the most reliable DM tendency, YoY 0.592) anchors the argmax.
-    # RESOLVED 2026-07-16: Lucas ruled keep Destroyer unless DM kappa stayed
-    # under ~0.3 after the v3.1 sticky retune — it came out 0.524, so it stays
-    # (same ruling covered Aggressive Defender and Defensive Fullback; CB
-    # 0.501 / WD 0.466).
     'Deep Midfielder': {
-        'passive_active':         {'high': 'Midfield Destroyer', 'low': None},
         'passive_active_buildup': {'high': 'Deep-Lying Playmaker', 'low': None},
-        'return_circulate':       {'high': None, 'low': 'Midfield Pivot'},
         'carry_pass':             {'high': None, 'low': 'Carrying Midfielder'},
     },
-    # 'Attacking Fullback' (building_attacking high) CUT per Lucas 2026-07-17:
-    # 50% YoY retention, lowest named-WD fit (~77), bidirectional confusion
-    # with Wingback/Defensive/Combining — the mushy middle of the panel. Not in
-    # futi's fullback list either (Wingback + Defensive/Combining/Conventional).
-    # building_attacking still earns a name through the Wingback composite.
     'Wide Defender': {
         'passive_active':         {'high': 'Defensive Fullback', 'low': None},
-        'combine_cross':          {'high': None, 'low': 'Combining Fullback'},
+        'combine_cross':          {'high': 'Wingback',
+                                   'low': 'Combining Fullback'},
     },
-    # 'Stay-Home Defender' renamed from futi's 'Defensive Stopper' per Lucas
-    # 2026-07-17: our mechanic is the most STATIONARY CB (never ventures
-    # forward of his station in possession), while "stopper" in scouting idiom
-    # means the front-foot step-out defender — that temperament is our
-    # Aggressive Defender. futi's name imported cleanly; their mechanic didn't.
     'Central Defender': {
         'secure_progressive':     {'high': 'Ball-Playing Defender',
                                    'low': 'No-Nonsense'},
         'passive_active':         {'high': 'Aggressive Defender', 'low': None},
-        'stationary_adventurous': {'high': None, 'low': 'Stay-Home Defender'},
     },
 }
 
@@ -185,20 +190,12 @@ COMPOSITES = {
     # A target man is aerial AND on the end of things — not merely tall. The
     # Arrive bar is the strict one so a link-up striker who happens to win
     # headers (Elias Franco: aerial 75th, arrive 65th) does NOT read Target,
-    # while Balotelli (aerial 66th, arrive 99th) does.
+    # while Balotelli (aerial 66th, arrive 99th) does. The ONLY surviving
+    # composite (v4): its half-sample retention (43%) holds where the DLP and
+    # Wingback composites shattered (13% / 33%) — those are single-pole now.
     'Striker': [
         ('Target Striker', [('ground_aerial', 'high', 0.25),
                             ('create_arrive', 'high', 0.80)]),
-    ],
-    # futi's Wingback: gets forward AND delivers from wide.
-    'Wide Defender': [
-        ('Wingback', [('combine_cross', 'high', 0.50),
-                      ('building_attacking', 'high', 0.50)]),
-    ],
-    # A deep-lying playmaker demands the ball in build-up AND ranges passes.
-    'Deep Midfielder': [
-        ('Deep-Lying Playmaker', [('passive_active_buildup', 'high', 0.70),
-                                  ('controlled_longball', 'high', 0.30)]),
     ],
 }
 
