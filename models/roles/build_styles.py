@@ -86,7 +86,10 @@ MARGIN_GRID = [0.0, 0.10, 0.20, 0.30]   # runner-up margin, tuned with thr
 # stability the big centre used to provide. Pure argmax reference: YoY 64.6%,
 # kappa 0.513, with a 3-9% residual centre anyway (players leaning only
 # toward unnamed poles).
-CONVENTIONAL_TARGET = (0.10, 0.25)
+# Cap raised 0.25 -> 0.30 with the v3.3 Attacking-Fullback cut: a 3-named-
+# style panel (WD) carries a naturally bigger centre, and 0.25 left the WD
+# tuner permanently in closest-to-band fallback (0/52 feasible).
+CONVENTIONAL_TARGET = (0.10, 0.30)
 MAX_STYLE_SHARE = 0.60
 MIN_STYLE_SHARE = 0.08
 
@@ -152,16 +155,25 @@ STYLE_AXES = {
         'return_circulate':       {'high': None, 'low': 'Midfield Pivot'},
         'carry_pass':             {'high': None, 'low': 'Carrying Midfielder'},
     },
+    # 'Attacking Fullback' (building_attacking high) CUT per Lucas 2026-07-17:
+    # 50% YoY retention, lowest named-WD fit (~77), bidirectional confusion
+    # with Wingback/Defensive/Combining — the mushy middle of the panel. Not in
+    # futi's fullback list either (Wingback + Defensive/Combining/Conventional).
+    # building_attacking still earns a name through the Wingback composite.
     'Wide Defender': {
         'passive_active':         {'high': 'Defensive Fullback', 'low': None},
-        'building_attacking':     {'high': 'Attacking Fullback', 'low': None},
         'combine_cross':          {'high': None, 'low': 'Combining Fullback'},
     },
+    # 'Stay-Home Defender' renamed from futi's 'Defensive Stopper' per Lucas
+    # 2026-07-17: our mechanic is the most STATIONARY CB (never ventures
+    # forward of his station in possession), while "stopper" in scouting idiom
+    # means the front-foot step-out defender — that temperament is our
+    # Aggressive Defender. futi's name imported cleanly; their mechanic didn't.
     'Central Defender': {
         'secure_progressive':     {'high': 'Ball-Playing Defender',
                                    'low': 'No-Nonsense'},
         'passive_active':         {'high': 'Aggressive Defender', 'low': None},
-        'stationary_adventurous': {'high': None, 'low': 'Defensive Stopper'},
+        'stationary_adventurous': {'high': None, 'low': 'Stay-Home Defender'},
     },
 }
 
