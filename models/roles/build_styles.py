@@ -176,8 +176,13 @@ STYLE_AXES = {
                                    'low': 'Combining Fullback'},
     },
     'Central Defender': {
+        # 'Conservative Defender' (Lucas, 2026-07-17 name workshop) — was
+        # June's 'No-Nonsense': accurate idiom but temperament-flavoured and
+        # the only CB label without the noun. Conservative = the measured
+        # mechanic (safe pass selection + the absorbed stay-home positioning),
+        # quality-neutral, natural mirror of Ball-Playing.
         'secure_progressive':     {'high': 'Ball-Playing Defender',
-                                   'low': 'No-Nonsense'},
+                                   'low': 'Conservative Defender'},
         'passive_active':         {'high': 'Aggressive Defender', 'low': None},
     },
 }
