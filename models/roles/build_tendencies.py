@@ -88,11 +88,16 @@ TENDENCY_META = {
     'low_high': dict(
         pole_low='Low block', pole_high='High line', confidence='high', yoy=0.262,
         desc='Height of his defensive actions (OOP map x-centroid).'),
+    # Pole labels disambiguated 2026-07-17 (Lucas): these two pairs rendered
+    # identical "Passive | Active" rows on panels that show both (DM/CB) —
+    # the defence/build-up context now lives in the label itself.
     'passive_active': dict(
-        pole_low='Passive', pole_high='Active', confidence='high', yoy=0.374,
+        pole_low='Passive defence', pole_high='Active defence',
+        confidence='high', yoy=0.374,
         desc='Defensive volume above positional expectation (DefR /90).'),
     'passive_active_buildup': dict(
-        pole_low='Passive', pole_high='Active', confidence='high', yoy=0.441,
+        pole_low='Passive build-up', pole_high='Active build-up',
+        confidence='high', yoy=0.441,
         desc='How much he demands the ball in build-up (own-half passes /90).'),
     'stationary_mobile': dict(
         pole_low='Stationary', pole_high='Mobile', confidence='high', yoy=0.556,

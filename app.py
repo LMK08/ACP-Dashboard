@@ -1355,6 +1355,34 @@ def load_styles():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=86400)
+def get_career_engine_role_map():
+    """playerId -> observed engine role, by Lucas's 2026-06-24 rule: the
+    minutes-weighted argmax over per-season role SHARES across the player's
+    ENTIRE engine history (both leagues) — mins_lineup x sh_<role> summed,
+    then argmax. The single source of truth for "what role is he" wherever a
+    player gets ONE role (role board buckets, analysis role filter/columns).
+    Deliberately NOT scope-sliced: a player is bucketed by the role he has
+    actually played most, immune to non-chronological seasonId ordering."""
+    try:
+        eng, _ = load_player_engine()
+    except Exception:
+        return {}
+    if eng is None or eng.empty or 'playerId' not in eng.columns:
+        return {}
+    sh_cols = [c for c in eng.columns if c.startswith('sh_')]
+    if not sh_cols:
+        return {}
+    gm = eng[['playerId'] + sh_cols].copy()
+    w = pd.to_numeric(eng.get('mins_lineup'), errors='coerce')
+    w = w.fillna(pd.to_numeric(eng.get('mins_played'), errors='coerce')).fillna(0.0)
+    for c in sh_cols:
+        gm[c] = pd.to_numeric(gm[c], errors='coerce').fillna(0.0) * w.values
+    tot = gm.groupby('playerId')[sh_cols].sum()
+    tot = tot[tot.sum(axis=1) > 0]
+    return {int(p): r[3:] for p, r in tot.idxmax(axis=1).items()}
+
+
 # The tendency metadata + role menus live in the builder so there is one source
 # of truth. Import them; if the builder is unavailable (e.g. a code-only deploy
 # that dropped models/roles), fall back to empty and the panel hides itself.
@@ -1467,8 +1495,12 @@ def render_tendencies_panel(player_id, season_ids, st_container=None):
         pct_hi = p
         _dom = "font-weight:700;color:#1a1a1a"
         _sub = "color:#8a8a8a"
-        left_lbl = f"<span style='{_sub if dom_hi else _dom}'>{lo}</span>"
-        right_lbl = f"<span style='{_dom if dom_hi else _sub}'>{hi}</span>"
+        # hover tooltip = what this pair actually measures (eye-test aid)
+        _desc = str(TENDENCY_META.get(key, {}).get('desc', '')).replace("'", "&#39;")
+        left_lbl = (f"<span title='{_desc}' "
+                    f"style='{_sub if dom_hi else _dom}'>{lo}</span>")
+        right_lbl = (f"<span title='{_desc}' "
+                     f"style='{_dom if dom_hi else _sub}'>{hi}</span>")
         c1, c2, c3 = tgt.columns([2.2, 5, 2.2])
         c1.markdown(f"<div style='text-align:right'>{left_lbl}</div>",
                     unsafe_allow_html=True)
@@ -11064,6 +11096,33 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                          "reliability ramp: the projection is already "
                          "evidence-weighted.",
                 )
+                # Observed role + style in the header (Lucas 2026-07-17).
+                # Scope-aware; hidden when the player has no style row (GKs
+                # never reach here, sub-300' players degrade gracefully).
+                try:
+                    _hdr_style = get_scoped_style(int(selected_player_id),
+                                                  active_season_ids)
+                except Exception:
+                    _hdr_style = None
+                if _hdr_style:
+                    bio_row3[1].metric(
+                        "Role", str(_hdr_style.get('role') or '—'),
+                        help="Observed engine role — learned from where his "
+                             "events actually happen match by match, not the "
+                             "lineup-card position.",
+                    )
+                    _stl = _hdr_style.get('style')
+                    _fit = _hdr_style.get('style_fit')
+                    bio_row3[2].metric(
+                        "Style", (str(_stl) if _stl else '—'),
+                        delta=(f"{float(_fit):.0f}% fit"
+                               if _fit is not None and pd.notna(_fit) else None),
+                        delta_color="off",
+                        help="Tendency-derived archetype — how he plays the "
+                             "role, not how well. Never part of the rating. "
+                             "Fit = how strongly he expresses the style "
+                             "(percentile vs the role cohort).",
+                    )
 
         st.divider()
 
@@ -13424,6 +13483,74 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.warning(f"No players found in age range {age_range[0]}-{age_range[1]}.")
                         st.stop()
 
+        # --- Observed role / Style filters (Lucas 2026-07-17) ------------
+        # Two scope-aware maps (playerId -> observed engine role / tendency-
+        # derived style, highest-minutes row in the selected scope). They
+        # drive sidebar filters that subset the WHOLE analysis population —
+        # every view downstream (role board, template tables, scatter,
+        # individual metric) inherits them — and Role/Style columns on the
+        # per-template tables so the dataframe search finds them. Both maps
+        # degrade to empty (filters hidden) if the parquets are missing.
+        _ANALYSIS_ROLE_ORDER = ['Striker', 'Wide Attacker', 'Advanced Midfielder',
+                                'Deep Midfielder', 'Wide Defender', 'Central Defender']
+        _scope_sids = None
+        if active_season_ids is not None:
+            _scope_sids = [int(s) for s in (active_season_ids
+                           if isinstance(active_season_ids, (list, tuple, set))
+                           else [active_season_ids])]
+        _obs_role_map, _an_style_map = {}, {}
+        try:
+            # SAME career share-weighted role the Best-Players-by-Role board
+            # buckets by — one source of truth, so filtering to "Striker"
+            # keeps exactly the players the board files under Striker.
+            _obs_role_map = get_career_engine_role_map()
+        except Exception:
+            logger.exception("observed-role filter map failed")
+        try:
+            _st_flt = load_styles()
+            if _st_flt is not None and not _st_flt.empty:
+                _sf = _st_flt
+                if _scope_sids:
+                    _sfs = _sf[_sf['seasonId'].isin(_scope_sids)]
+                    _sf = _sfs if not _sfs.empty else _sf
+                _sf = _sf.sort_values('mins_played').drop_duplicates(
+                    'playerId', keep='last')
+                _an_style_map = {int(p): s for p, s in
+                                 zip(_sf['playerId'], _sf['style']) if pd.notna(s)}
+        except Exception:
+            logger.exception("style filter map failed")
+
+        _roles_present = [r for r in _ANALYSIS_ROLE_ORDER
+                          if r in set(_obs_role_map.values())]
+        if _roles_present:
+            _sel_obs_role = st.sidebar.selectbox(
+                "Observed role:", ['All roles'] + _roles_present, index=0,
+                key="analysis_obs_role_filter",
+                help="The engine's data-derived role (where his events happen "
+                     "match by match) — not the lineup position.")
+            if _sel_obs_role != 'All roles':
+                filtered_df = filtered_df[filtered_df['playerId'].map(
+                    _obs_role_map) == _sel_obs_role]
+                if filtered_df.empty:
+                    st.warning(f"No players with observed role "
+                               f"“{_sel_obs_role}” in this scope.")
+                    st.stop()
+        _styles_present = sorted({s for s in _an_style_map.values()
+                                  if isinstance(s, str)})
+        if _styles_present:
+            _sel_an_style = st.sidebar.selectbox(
+                "Style:", ['All styles'] + _styles_present, index=0,
+                key="analysis_style_filter",
+                help="Tendency-derived archetype (descriptive, never in the "
+                     "rating). Conventional = no pronounced lean.")
+            if _sel_an_style != 'All styles':
+                filtered_df = filtered_df[filtered_df['playerId'].map(
+                    _an_style_map) == _sel_an_style]
+                if filtered_df.empty:
+                    st.warning(f"No players with style “{_sel_an_style}” "
+                               f"in this scope.")
+                    st.stop()
+
         # --- Show Only Position toggle (HIDDEN per Lucas 2026-06) ---
         # Toggle removed from the sidebar; pos-played filtering stays off.
         analysis_pos_played_filter = False
@@ -13678,6 +13805,18 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 display['Projection'] = pd.to_numeric(display['Projection'], errors='coerce').round(1)
             display['Minutes'] = display['Minutes'].astype(int)
 
+            # Observed role + style columns (full mode only — the compact
+            # Overview pivot stays narrow). Searchable via the dataframe
+            # toolbar; the sidebar filters subset the population upstream.
+            if not compact and 'Position' in display.columns:
+                _rs_idx = display.columns.get_loc('Position') + 1
+                display.insert(_rs_idx, 'Role',
+                               [(_obs_role_map.get(int(p), '—') if pd.notna(p)
+                                 else '—') for p in sorted_tdf['playerId']])
+                display.insert(_rs_idx + 1, 'Style',
+                               [(_an_style_map.get(int(p), '—') if pd.notna(p)
+                                 else '—') for p in sorted_tdf['playerId']])
+
             # Projected value: insert next to Rating in both compact
             # and full modes. EUR computed from CVI × position mult ×
             # Camp penalty, capped at €500k. In full mode also surface
@@ -13744,23 +13883,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if (_eng_role_df is not None and not _eng_role_df.empty
                     and filtered_df is not None and not filtered_df.empty):
                 # role per player = their MOST COMMON ACP engine role across ALL
-                # seasons and BOTH leagues (Lucas 2026-06-24): sum minutes-in-each-
-                # role (mins_lineup × per-season role share sh_<role>) over the
-                # player's ENTIRE engine history and take the argmax. Uses the full
-                # _eng_role_df — NOT an in-scope slice — so a player is bucketed by
-                # the role they've actually played most, regardless of the selected
-                # league (and immune to the non-chronological seasonId ordering).
-                _sh_cols = [c for c in _eng_role_df.columns if c.startswith('sh_')]
-                _gm = _eng_role_df[['playerId'] + _sh_cols].copy()
-                _w_role = pd.to_numeric(_eng_role_df.get('mins_lineup'), errors='coerce')
-                _w_role = _w_role.fillna(
-                    pd.to_numeric(_eng_role_df.get('mins_played'), errors='coerce')).fillna(0.0)
-                for _c in _sh_cols:
-                    _gm[_c] = pd.to_numeric(_gm[_c], errors='coerce').fillna(0.0) * _w_role.values
-                _role_tot = _gm.groupby('playerId')[_sh_cols].sum()
-                _role_tot = _role_tot[_role_tot.sum(axis=1) > 0]
-                _role_map = (_role_tot.idxmax(axis=1).str[3:]
-                                       .rename('role').reset_index())
+                # seasons and BOTH leagues (Lucas 2026-06-24) — computed by the
+                # shared get_career_engine_role_map() helper, which the sidebar
+                # role filter and the template-table Role column also use, so
+                # a role filter keeps exactly the players this board files
+                # under that role.
+                _role_map_d = get_career_engine_role_map()
+                _role_map = pd.DataFrame(
+                    {'playerId': list(_role_map_d.keys()),
+                     'role': list(_role_map_d.values())})
                 # join role onto the scoped, minutes-filtered stats pool — the
                 # board now inherits filtered_df's totalMinutes + ACP columns
                 _rb = filtered_df.merge(_role_map, on='playerId', how='inner')
