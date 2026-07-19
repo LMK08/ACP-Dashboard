@@ -140,8 +140,9 @@ TENDENCY_META = {
         desc='Aerial duels vs ground duels.'),
     'come_short_run_behind': dict(
         pole_low='Come short', pole_high='Run behind', confidence='high', yoy=0.445,
-        desc='How the ball reaches him: to feet vs through/over the top '
-             '(offsides count as run-behind evidence).'),
+        desc='How GROUND service reaches him: to feet vs played into space '
+             'in behind (offsides count as run-behind evidence; aerial '
+             'receptions are excluded — that appetite is Ground vs Aerial).'),
     'near_far_post': dict(
         pole_low='Near post', pole_high='Far post', confidence='low', yoy=0.220,
         desc='Box shots on the same side as the attack vs the far side. '
@@ -245,7 +246,8 @@ _EV_COLS = ['matchId', 'seasonId', 'team.id', 'player.id',
             'pass.endLocation.x', 'pass.endLocation.y', 'pass.recipient.id',
             'carry.endLocation.x', 'carry.endLocation.y',
             'groundDuel.duelType', 'aerialDuel.firstTouch',
-            'possession.attack.flank', 'competitionId']
+            'possession.attack.flank', 'competitionId',
+            'minute', 'second']
 
 _TAGS = ['long_pass', 'short_or_medium_pass', 'forward_pass', 'back_pass',
          'lateral_pass', 'progressive_pass', 'pass_to_final_third',
@@ -361,13 +363,23 @@ def build_map_scalars(ev, keys):
 
 
 def build_receptions(ev, keys):
-    """Come short <-> Run behind: how the ball ARRIVES to him.
+    """Come short <-> Run behind: how the ball ARRIVES to him — GROUND service
+    only.
 
     Keyed on pass.recipient.id, so it is about passes he receives, not passes
     he makes. 'Run behind' = the ball is played into space ahead of him
     (through ball, or a pass that gains real ground); 'come short' = it arrives
     to feet without gaining ground. Offsides are counted as run-behind evidence
-    (the classic marker of a player who attacks the space behind)."""
+    (the classic marker of a player who attacks the space behind).
+
+    AERIAL RECEPTIONS EXCLUDED (fix 2026-07-18, Lucas): the gain proxy is the
+    BALL's forward progress, not the receiver's run — so a target man chesting
+    down 50m punts read 'Run behind' while doing the opposite (measured leak:
+    ground_aerial x come_short corr +0.44 among strikers). A reception is
+    aerial when the recipient contests an aerial duel within 5s of the pass
+    near its end point (|dx|<=15, |dy|<=20); those drop out of BOTH poles —
+    a punt to the head is neither 'to feet' nor 'in behind', and the aerial
+    appetite is already the Ground<->Aerial pair's job."""
     is_pass = (ev['type.primary'] == 'pass') & ~ev['_restart']
     rid = pd.to_numeric(ev['pass.recipient.id'], errors='coerce')
     # recipient 0 is Wyscout's unattributed sentinel, not a player
@@ -375,6 +387,32 @@ def build_receptions(ev, keys):
     r['playerId'] = rid[r.index].astype('int64')
     gain = r['pass.endLocation.x'].astype(float) - r['_x']
     r['_behind'] = r['x_through_pass'] | (gain >= 15)
+
+    # --- aerial-reception detection ------------------------------------
+    _t = lambda f: (pd.to_numeric(f['minute'], errors='coerce') * 60.0
+                    + pd.to_numeric(f['second'], errors='coerce'))
+    r['_t'] = _t(r)
+    aer = ev[ev['x_aerial_duel'] & ~ev['_restart']][
+        ['matchId', 'playerId', '_x', '_y', 'minute', 'second']].copy()
+    aer['_t'] = _t(aer)
+    aer = aer.dropna(subset=['_t']).rename(
+        columns={'_x': '_ax', '_y': '_ay'})[
+        ['matchId', 'playerId', '_t', '_ax', '_ay']]
+    left = (r[['matchId', 'playerId', '_t',
+               'pass.endLocation.x', 'pass.endLocation.y']]
+            .reset_index().dropna(subset=['_t']))
+    m = pd.merge_asof(left.sort_values('_t'), aer.sort_values('_t'),
+                      on='_t', by=['matchId', 'playerId'],
+                      direction='forward', tolerance=5.0)
+    near = ((pd.to_numeric(m['pass.endLocation.x'], errors='coerce')
+             - m['_ax']).abs() <= 15) & \
+           ((pd.to_numeric(m['pass.endLocation.y'], errors='coerce')
+             - m['_ay']).abs() <= 20)
+    aerial_idx = m.loc[m['_ax'].notna() & near.fillna(False), 'index']
+    r['_aerial_rec'] = False
+    r.loc[aerial_idx, '_aerial_rec'] = True
+    r = r[~r['_aerial_rec']]
+
     g = r.groupby(keys, observed=True)['_behind'].agg(['sum', 'size'])
     out = pd.DataFrame({'rec_behind': g['sum'],
                         'rec_short': g['size'] - g['sum']}).reset_index()
