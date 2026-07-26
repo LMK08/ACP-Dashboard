@@ -1269,13 +1269,23 @@ def load_player_engine():
         # Engine projected value (EUR), computed ONCE here so the bio
         # headline and the analysis tables can never drift: perf =
         # percentile of projection_abs within the projection universe
-        # (abs scale — Camp recruit discount already applied, so NO
-        # extra Camp penalty) × career-NPV age multiplier, through the
-        # fee-calibrated CVI→EUR curve. No reliability ramp: the
-        # projection is already evidence-weighted internally.
+        # × career-NPV age multiplier, through the fee-calibrated
+        # CVI→EUR curve. No reliability ramp: the projection is
+        # already evidence-weighted internally.
+        #
+        # Camp EUR penalty (Lucas 2026-07-26): earlier versions skipped
+        # the extra Camp discount here on the theory that projection_abs
+        # already carries the recruit discount. The fee calibration pass
+        # (14 real permanent sales) said otherwise: L3 sales realize at
+        # a median 1.09× engine value (well centred) but Camp sales at
+        # only 0.67×. Applying the existing CAMP_PROJECTED_EUR_PENALTY
+        # (0.85) closes most of that gap without a new constant. Camp
+        # membership derived from seasonId (no competitionId in the
+        # engine parquet).
         _ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
                      'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',
                      'Wide Defender': 'FB', 'Central Defender': 'CB'}
+        _CAMP_SEASON_IDS = {190230, 191779}
         _pool = df['projection_abs'].dropna()
         # global price temper (Lucas 2026-06-12): the engine values read
         # a touch rich for this market — scale the whole curve down 20%
@@ -1289,8 +1299,13 @@ def load_player_engine():
                           + 0.5 * (_pool == float(pa)).mean()) * 100.0
             grp = _ROLE2CVI.get(r.get('role'))
             am = _cvi_age_value_multiplier(r.get('age'), grp)
+            try:
+                _comp = (702 if int(r.get('seasonId')) in _CAMP_SEASON_IDS
+                          else 43324)
+            except (TypeError, ValueError):
+                _comp = None
             v = cvi_to_projected_eur(perf * am, position_group=grp,
-                                       competition_id=None)
+                                       competition_id=_comp)
             return None if v is None else v * _ENGINE_VALUE_TEMPER
         df['engine_value_eur'] = df.apply(_eng_eur, axis=1)
         meta = {}
