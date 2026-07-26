@@ -87,6 +87,7 @@ playerId,player_name,from_team,to_team,transfer_type,fee_eur,add_ons_eur,sell_on
 693095,Coquinho,Oliveira do Hospital,União de Leiria,permanent,200000,,,2026-07-15,191779,,,,Camp → Segunda Liga (União de Leiria) summer 2026; pre-transfer = 25-26 Camp OdH,0
 915436,Balelo,Paredes,Bulgaria First League (TBD),permanent,100000,,,2026-07-13,191782,,,,L3 → Bulgaria First League summer 2026; pre-transfer = 25-26 L3 Paredes,0
 710097,Yuk Jinyoung,Paredes,Unknown (offer),offer,130000,,,2026-07-13,191782,,,,OFFER — €130k bid received for player summer 2026; not a completed transfer. Treated as market-price evidence; pre-transfer = 25-26 L3 Paredes,0
+575377,David Nzanza,Leça,CD Castellón (Segunda División),permanent,60000,,,2026-07-23,191779,2030-06-30,,https://www.cdcastellon.com/david-nzanza-nuevo-jugador-del-cd-castellon/,Camp → Spanish Segunda summer 2026; 14 goals in 25-26 Camp promotion season; Wyscout-registered as 'David'; pre-transfer = 25-26 Camp Leça,0
 
 # === Synthetic transfers (domain-knowledge anchors for "transfers that could have happened") ===
 # These are hypothetical fees Lucas would expect based on current Liga 3 / Camp form.
