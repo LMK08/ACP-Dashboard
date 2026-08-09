@@ -58,6 +58,12 @@ jobs:
           # streamlit is NOT in requirements.txt (the HF Space SDK provides
           # it) but Phase 3 runs `app.py --precompute`, which imports it.
           pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy streamlit
+          # The dashboard pins pandas==2.3.3 for HF Space stability, but the
+          # engine chain OOMs the 16 GB runner on 2.x (object-dtype strings).
+          # Override to pandas 3.x HERE ONLY — Arrow-backed strings cut the
+          # event-frame memory ~3x; this is what the June 2026 green runs used.
+          # The HF Space itself still installs from requirements.txt untouched.
+          pip install "pandas==3.0.3"
 
       - name: Download canonical raw_events from HF
         env:
