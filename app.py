@@ -10476,13 +10476,19 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             st.warning(f"Could not calculate set piece metrics: {e}")
 
         # --- 2. Define Team Lists (Season-dependent groups) ---
-        # Only 2025/26 has defined Group A/B; other seasons show all teams together
+        # Seasons with defined Group A/B; other seasons show all teams together
         SEASON_GROUPS = {
             191782: {
                 'Group A': ['Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
                             'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'],
                 'Group B': ['1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
                             'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
+            },
+            192831: {
+                'Group A': ['Fafe', 'Varzim', 'Paredes', 'Paços de Ferreira', 'São João Ver',
+                            'Leça', 'Vitória Guimarães II', 'Trofense', 'Vianense', 'AD Marco 09'],
+                'Group B': ['Louletano', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+                            'UD Oliveirense', 'Vitória de Sernache', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
             }
         }
 
