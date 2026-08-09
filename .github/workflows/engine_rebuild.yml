@@ -166,3 +166,14 @@ jobs:
           git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
           git push hf main --force
           echo "✅ Deployed engine rebuild to HF Space"
+
+      - name: Clean up orphaned HF LFS objects
+        # Force-push deploys orphan the previous deploy's LFS blobs, which
+        # still count against the Space's 1 GB storage cap until permanently
+        # deleted. See hf_lfs_cleanup.py in the dashboard repo.
+        working-directory: Match_Reports_API/Dashboard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          python hf_lfs_cleanup.py

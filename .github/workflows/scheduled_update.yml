@@ -145,3 +145,13 @@ jobs:
           git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
           git push hf main --force
           echo "✅ Successfully deployed to Hugging Face Space"
+
+      - name: Clean up orphaned HF LFS objects
+        # Force-push deploys orphan the previous deploy's LFS blobs, which
+        # still count against the Space's 1 GB storage cap until permanently
+        # deleted (this is what failed the 2026-08-09 deploy).
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          python hf_lfs_cleanup.py
