@@ -443,7 +443,7 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 
 # Build flat season map for backward compatibility
 SEASON_ID_MAP = all_season_id_map()
-CURRENT_SEASON_ID = 191782  # Liga 3 default
+CURRENT_SEASON_ID = 192831  # Liga 3 default (2026/27)
 STATS_CACHE_DIR = 'stats_cache'
 STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
                              # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
@@ -1285,7 +1285,7 @@ def load_player_engine():
         _ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
                      'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',
                      'Wide Defender': 'FB', 'Central Defender': 'CB'}
-        _CAMP_SEASON_IDS = {190230, 191779}
+        _CAMP_SEASON_IDS = {190230, 191779, 192925}
         _pool = df['projection_abs'].dropna()
         # global price temper (Lucas 2026-06-12): the engine values read
         # a touch rich for this market — scale the whole curve down 20%
@@ -6064,7 +6064,7 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
         # cover the expensive layers).
         _WARM_SCOPES = [(_cid, _sid) for _cid, _cfg in COMPETITIONS.items()
                         for _sid in _cfg.get('seasons', {})
-                        if _sid in (CURRENT_SEASON_ID, 191779)]
+                        if _sid == _cfg.get('current_season')]
         for _cid, _sid in _WARM_SCOPES:
                 _time.sleep(2.0)
                 try:

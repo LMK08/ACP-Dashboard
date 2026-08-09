@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-CAMP_SEASON_IDS = {190230, 191779}
+CAMP_SEASON_IDS = {190230, 191779, 192925}
 ENGINE_VALUE_TEMPER = 0.8  # mirror of _ENGINE_VALUE_TEMPER in app.py
 ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
             'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',

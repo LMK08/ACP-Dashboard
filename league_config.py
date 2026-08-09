@@ -8,26 +8,30 @@ import os
 COMPETITIONS = {
     43324: {
         "name": "Liga 3",
-        "env_user": "WYSCOUT_USER",
-        "env_pass": "WYSCOUT_PASS",
+        # The original WYSCOUT_USER account lost API access in Aug 2026 (403 on
+        # every season, including historical). The _NEW account covers Liga 3 too.
+        "env_user": "WYSCOUT_USER_NEW",
+        "env_pass": "WYSCOUT_PASS_NEW",
         "seasons": {
+            192831: "2026/27",
             191782: "2025/26",
             190090: "2024/25",
             189147: "2023/24",
             188222: "2022/23",
             188221: "2021/22",
         },
-        "current_season": 191782,
+        "current_season": 192831,
     },
     702: {
         "name": "Campeonato",
         "env_user": "WYSCOUT_USER_NEW",
         "env_pass": "WYSCOUT_PASS_NEW",
         "seasons": {
+            192925: "2026/27",
             191779: "2025/26",
             190230: "2023/24",
         },
-        "current_season": 191779,
+        "current_season": 192925,
     },
 }
 

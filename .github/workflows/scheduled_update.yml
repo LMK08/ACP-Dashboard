@@ -4,17 +4,13 @@ permissions:
   contents: write
 
 on:
-  # ⏸️ SCHEDULED RUNS PAUSED until August 2026 (off-season). The Liga 3 /
-  # Campeonato season is over, so the Wyscout API has no new matches to fetch
-  # and the nightly refresh just re-pushes unchanged data. Re-enable for the
-  # 2026/27 season by UNCOMMENTING the schedule block below.
-  # schedule:
-  #   # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
-  #   - cron: '0 5 * * 0,1'
-  #   # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
-  #   - cron: '0 6 * * 3,4'
+  schedule:
+    # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
+    - cron: '0 5 * * 0,1'
+    # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
+    - cron: '0 6 * * 3,4'
 
-  # Manual run from the GitHub "Actions" tab still works while paused
+  # Manual run from the GitHub "Actions" tab
   workflow_dispatch:
     inputs:
       test_fetch_limit:
