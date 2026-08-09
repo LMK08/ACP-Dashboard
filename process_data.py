@@ -348,8 +348,11 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
 
     # --- STEP 4: Create DataFrame ---
     if not player_stats_list:
+        # Early-season runs can land here: matches exist in the schedule but
+        # Wyscout hasn't published events/advanced stats yet. Must match the
+        # (df, lineups) shape of the normal return or the caller's unpack crashes.
         print("❌ No player minutes data retrieved.")
-        return pd.DataFrame(columns=['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes'])
+        return pd.DataFrame(columns=['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']), match_lineups
 
     total_minutes_df = pd.DataFrame(player_stats_list)
     total_minutes_df['playerId'] = total_minutes_df['playerId'].astype(int)
