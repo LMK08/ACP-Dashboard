@@ -124,9 +124,14 @@ def fetch_match_schedule(username, password, competition_id, season_id):
         print(f"   Raw Response: {raw_response}")
         return pd.DataFrame()
 
-def fetch_events(username, password, match_ids):
+def fetch_events(username, password, match_ids, required_match_ids=None):
     """Fetches all event data for a given list of match IDs with retries.
-    Processes in batches of 200 matches to avoid memory issues on CI runners."""
+    Processes in batches of 200 matches to avoid memory issues on CI runners.
+
+    required_match_ids: matches whose events MUST be accessible — a Forbidden
+    response for any of them raises instead of silently skipping (callers pass
+    current-season matches; a handful of old Campeonato matches are known to be
+    permanently Forbidden and only warn)."""
     base_url_v3 = "https://apirest.wyscout.com/v3"
     auth = HTTPBasicAuth(username, password)
     session = requests.Session()
@@ -140,6 +145,7 @@ def fetch_events(username, password, match_ids):
     batch_dfs = []
     batch_events = []
     total_events = 0
+    forbidden_ids = []
 
     for i, match_id in enumerate(tqdm(match_ids, desc="Fetching Events")):
         url = f"{base_url_v3}/matches/{match_id}/events"
@@ -151,7 +157,12 @@ def fetch_events(username, password, match_ids):
                 event['matchId'] = match_id
             batch_events.extend(events_list)
         except requests.exceptions.RequestException as e:
-            print(f"  -> ⚠️ Failed to fetch match {match_id} after multiple retries: {e}")
+            body = getattr(getattr(e, 'response', None), 'text', '') or ''
+            if 'Forbidden' in body or '"code":403' in body:
+                forbidden_ids.append(match_id)
+                print(f"  -> 🚫 Forbidden fetching events for match {match_id} (Wyscout account lacks events scope?)")
+            else:
+                print(f"  -> ⚠️ Failed to fetch match {match_id} after multiple retries: {e}")
 
         # Flush batch to DataFrame periodically to free memory
         if len(batch_events) > 0 and ((i + 1) % BATCH_SIZE == 0 or i == len(match_ids) - 1):
@@ -159,6 +170,16 @@ def fetch_events(username, password, match_ids):
             batch_dfs.append(batch_df)
             total_events += len(batch_df)
             batch_events = []  # Free raw dicts
+
+    if forbidden_ids:
+        print(f"\n🚫 {len(forbidden_ids)}/{len(match_ids)} event fetches were FORBIDDEN by the Wyscout API "
+              f"— the account is missing the match-events scope for these matches.")
+        required_forbidden = sorted(set(forbidden_ids) & set(required_match_ids or ()))
+        if required_forbidden:
+            raise RuntimeError(
+                f"Wyscout returned Forbidden for {len(required_forbidden)} current-season match(es) "
+                f"(e.g. {required_forbidden[:5]}). The API account lacks events access — fix the Wyscout "
+                f"subscription. Failing the run instead of silently shipping a refresh with no events.")
 
     if not batch_dfs:
         return pd.DataFrame()
@@ -277,6 +298,7 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
 
     player_stats_list = []
     unknown_name_pids = []  # Track players needing name resolution
+    n_forbidden = 0
 
     for pid in tqdm(unique_player_ids, desc="Fetching Player Stats"):
         url = f"{base_url_v3}/players/{pid}/advancedstats"
@@ -286,6 +308,8 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
             r = session.get(url, auth=auth, params=params, timeout=20)
 
             if r.status_code != 200:
+                if 'Forbidden' in r.text or '"code":403' in r.text:
+                    n_forbidden += 1
                 continue
 
             data = r.json()
@@ -347,6 +371,9 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
             print(f"   ✅ Resolved {len(name_lookup)} player names.")
 
     # --- STEP 4: Create DataFrame ---
+    if n_forbidden:
+        print(f"\n🚫 {n_forbidden}/{len(unique_player_ids)} advanced-stats requests were FORBIDDEN by the "
+              f"Wyscout API — the account is missing the advanced-stats scope for comp {competition_id}.")
     if not player_stats_list:
         # Early-season runs can land here: matches exist in the schedule but
         # Wyscout hasn't published events/advanced stats yet. Must match the
@@ -1651,7 +1678,11 @@ def main():
             if test_limit:
                 mids = mids[:test_limit]
             print(f"\nFetching events for {len(mids)} {comp_name} matches...")
-            comp_events = fetch_events(user, password, mids)
+            # Current-season matches must be fetchable — Forbidden there means the
+            # Wyscout account lost its events scope, and the run should fail loudly.
+            season_map = all_matches_summary_df.set_index('matchId')['seasonId'].to_dict()
+            required = {m for m in mids if season_map.get(m) in CURRENT_SEASON_IDS}
+            comp_events = fetch_events(user, password, mids, required_match_ids=required)
             if not comp_events.empty:
                 new_events_list.append(comp_events)
 
