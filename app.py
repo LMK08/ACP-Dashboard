@@ -2106,6 +2106,16 @@ def get_season_player_minutes(player_minutes_data, season_id, comp_ids=None):
     return _get_season_player_minutes_cached(player_minutes_data, season_key, comp_key)
 
 
+# Canonical minutes schema — empty results must still carry these columns or
+# downstream stats code KeyErrors on 'totalMinutes' (seen at the 2026/27 season
+# start, when the current season has matches but no minutes data yet).
+_EMPTY_MINUTES_COLS = ['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']
+
+
+def _empty_minutes_df():
+    return pd.DataFrame(columns=_EMPTY_MINUTES_COLS)
+
+
 def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
     """Get player minutes for a season. Returns DataFrame.
     player_minutes_data is {season_id: DataFrame}.
@@ -2123,7 +2133,7 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
                 if valid_sids is None or sid in valid_sids:
                     all_dfs.append(df)
         if not all_dfs:
-            return pd.DataFrame()
+            return _empty_minutes_df()
         combined = pd.concat(all_dfs)
         return combined.groupby('playerId').agg({
             'playerName': 'first',
@@ -2135,7 +2145,7 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
         dfs = [player_minutes_data.get(sid, pd.DataFrame()) for sid in season_id]
         dfs = [df for df in dfs if isinstance(df, pd.DataFrame) and not df.empty]
         if not dfs:
-            return pd.DataFrame()
+            return _empty_minutes_df()
         combined = pd.concat(dfs)
         return combined.groupby('playerId').agg({
             'playerName': 'first',
@@ -2143,7 +2153,10 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
             'primaryPosition': 'first',
             'totalMinutes': 'sum'
         }).reset_index()
-    return player_minutes_data.get(season_id, pd.DataFrame())
+    result = player_minutes_data.get(season_id)
+    if not isinstance(result, pd.DataFrame) or result.empty:
+        return _empty_minutes_df()
+    return result
 
 def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
     """Get team stats for a season. Returns {team: stats} dict.
@@ -10732,7 +10745,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             player_stats_with_scores_df = pd.DataFrame()
             
         if player_stats_df.empty or player_details_df.empty or player_stats_with_scores_df.empty:
-            st.warning("Player data not available. Please ensure all processing scripts have run and data is loaded.")
+            st.warning("Player data not available for this selection. Early in a season this is expected — "
+                       "player stats appear once Wyscout event/minutes data starts flowing. "
+                       "Try selecting a previous season, or check back after the next data refresh.")
             st.stop()
 
         # --- 2. Player Selector ---
