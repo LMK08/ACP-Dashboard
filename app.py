@@ -10088,6 +10088,68 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 except Exception as e:
                     st.caption(f"Could not render: {e}")
 
+            # =============================================================
+            # Download Match Report (PDF)
+            # =============================================================
+            st.divider()
+            st.subheader("Download Match Report")
+            _pdf_key = f"match_report_pdf_{_mid}"
+
+            def _match_fig_or_none(kind, team=None, lineup=None):
+                """Same cached renderer the page uses; None on any failure so
+                one broken figure never blocks the whole report."""
+                try:
+                    return _render_match_figure_png(
+                        kind, _mid, team, FIGURE_CACHE_VERSION,
+                        match_events_df, selected_match_info, lineup)
+                except Exception:
+                    return None
+
+            if st.button("Build match report PDF", key=f"build_{_pdf_key}"):
+                with st.spinner("Assembling match report..."):
+                    from match_report_pdf import generate_match_report_pdf
+                    _report_figures = {
+                        'shotmap_home': _match_fig_or_none('shotmap', home_team),
+                        'shotmap_away': _match_fig_or_none('shotmap', away_team),
+                        'xg_flowchart': (_match_fig_or_none('xg_flowchart')
+                                         if not match_events_df.empty else None),
+                        'avg_positions_home': _match_fig_or_none('avg_positions', home_team, home_lineup),
+                        'avg_positions_away': _match_fig_or_none('avg_positions', away_team, away_lineup),
+                        'passing_network_home': _match_fig_or_none('passing_network', home_team),
+                        'passing_network_away': _match_fig_or_none('passing_network', away_team),
+                        'defensive_duels_home': _match_fig_or_none('defensive_duels', home_team),
+                        'defensive_duels_away': _match_fig_or_none('defensive_duels', away_team),
+                        'shot_assists_home': _match_fig_or_none('shot_assists', home_team),
+                        'shot_assists_away': _match_fig_or_none('shot_assists', away_team),
+                        'recovery_map_home': _match_fig_or_none('recovery_map', home_team),
+                        'recovery_map_away': _match_fig_or_none('recovery_map', away_team),
+                        'loss_map_home': _match_fig_or_none('loss_map', home_team),
+                        'loss_map_away': _match_fig_or_none('loss_map', away_team),
+                    }
+                    try:
+                        st.session_state[_pdf_key] = generate_match_report_pdf(
+                            selected_match_info,
+                            _report_figures,
+                            team_stats=match_data.get('team_stats'),
+                            player_stats=match_data.get('player_stats'),
+                        )
+                    except Exception as e:
+                        st.error(f"Could not build the match report PDF: {e}")
+                        logger.exception("match report PDF build failed")
+
+            if st.session_state.get(_pdf_key):
+                _fname = (f"{selected_match_info['homeTeamName']}_v_"
+                          f"{selected_match_info['awayTeamName']}_"
+                          f"{selected_match_info.get('display_date', '')}"
+                          f"_match_report.pdf").replace(' ', '_').replace('/', '-')
+                st.download_button(
+                    "Download match report (PDF)",
+                    data=st.session_state[_pdf_key],
+                    file_name=_fname,
+                    mime="application/pdf",
+                    key=f"dl_{_pdf_key}",
+                )
+
         else:
              st.warning(f"No detailed match data found for Match ID {selected_match_id}.")
 
