@@ -10115,6 +10115,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                          if not match_events_df.empty else None),
                         'avg_positions_home': _match_fig_or_none('avg_positions', home_team, home_lineup),
                         'avg_positions_away': _match_fig_or_none('avg_positions', away_team, away_lineup),
+                        'avg_positions_by_subs_home': _match_fig_or_none('avg_positions_by_subs', home_team, home_lineup),
+                        'avg_positions_by_subs_away': _match_fig_or_none('avg_positions_by_subs', away_team, away_lineup),
                         'passing_network_home': _match_fig_or_none('passing_network', home_team),
                         'passing_network_away': _match_fig_or_none('passing_network', away_team),
                         'defensive_duels_home': _match_fig_or_none('defensive_duels', home_team),
@@ -10132,6 +10134,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             _report_figures,
                             team_stats=match_data.get('team_stats'),
                             player_stats=match_data.get('player_stats'),
+                            shot_details={'home': home_shots_table,
+                                          'away': away_shots_table},
                         )
                     except Exception as e:
                         st.error(f"Could not build the match report PDF: {e}")

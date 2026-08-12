@@ -15,14 +15,19 @@ from PIL import Image
 
 from generate_pdf import OppositionReportPDF
 
-# (section title, home figure key, away figure key) — one landscape page each
+# Tactical layout, in the page's display order.
+#   ('pair', title, home_key, away_key)  -> both teams side by side, one page
+#   ('full', title_suffix, key)          -> one full-width figure per page,
+#                                           title prefixed with the team name
 _TACTICAL_PAGES = [
-    ("Average Player Positions", 'avg_positions_home', 'avg_positions_away'),
-    ("Passing Networks", 'passing_network_home', 'passing_network_away'),
-    ("Defensive Duels", 'defensive_duels_home', 'defensive_duels_away'),
-    ("Shot Assists & Dribbles", 'shot_assists_home', 'shot_assists_away'),
-    ("Ball Recoveries", 'recovery_map_home', 'recovery_map_away'),
-    ("Ball Losses", 'loss_map_home', 'loss_map_away'),
+    ('pair', "Average Player Positions", 'avg_positions_home', 'avg_positions_away'),
+    ('full', "Avg Positions by Phase", 'avg_positions_by_subs_home'),
+    ('full', "Avg Positions by Phase", 'avg_positions_by_subs_away'),
+    ('pair', "Passing Networks", 'passing_network_home', 'passing_network_away'),
+    ('pair', "Defensive Duels", 'defensive_duels_home', 'defensive_duels_away'),
+    ('pair', "Shot Assists & Dribbles", 'shot_assists_home', 'shot_assists_away'),
+    ('pair', "Ball Recoveries", 'recovery_map_home', 'recovery_map_away'),
+    ('pair', "Ball Losses", 'loss_map_home', 'loss_map_away'),
 ]
 
 _MAX_TABLE_COLS = 14  # landscape A4 readability limit for player stats
@@ -74,6 +79,24 @@ def _fit_figure(pdf, tmp_files, png, max_w=None):
     tmp_files.append(pdf.add_figure(png, w=w, x=(pdf.w - w) / 2))
 
 
+def _two_tables(pdf, left_df, right_df, left_label, right_label):
+    """Two tables side by side (e.g. home/away shot details)."""
+    w_half = (pdf.w - 30) / 2
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.set_text_color(60, 60, 60)
+    pdf.cell(w_half + 10, 6, pdf._sanitize(left_label), align='C')
+    pdf.cell(w_half, 6, pdf._sanitize(right_label), align='C')
+    pdf.ln(8)
+    y0 = pdf.get_y()
+    y_ends = [y0]
+    for df, x in ((left_df, 10), (right_df, 20 + w_half)):
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            pdf.set_y(y0)
+            pdf.add_stats_table(df, max_w=w_half, x_offset=x)
+            y_ends.append(pdf.get_y())
+    pdf.set_y(max(y_ends) + 4)
+
+
 def _side_by_side(pdf, tmp_files, left_png, right_png, left_label=None, right_label=None):
     """Place up to two figures on one row; returns figure height used."""
     w_half = (pdf.w - 20) / 2
@@ -95,7 +118,8 @@ def _side_by_side(pdf, tmp_files, left_png, right_png, left_label=None, right_la
         pdf.set_y(y + (w_half - 4) * 0.75 + 4)
 
 
-def generate_match_report_pdf(match_info, figures, team_stats=None, player_stats=None):
+def generate_match_report_pdf(match_info, figures, team_stats=None, player_stats=None,
+                              shot_details=None):
     """Build the match report and return raw PDF bytes.
 
     match_info: row from season_matches_df (homeTeamName/awayTeamName/score/...)
@@ -103,6 +127,7 @@ def generate_match_report_pdf(match_info, figures, team_stats=None, player_stats
                 'shotmap_home', 'shotmap_away', 'xg_flowchart'
     team_stats: {category: DataFrame} from all_match_data[mid]['team_stats']
     player_stats: {'home': DataFrame, 'away': DataFrame}
+    shot_details: {'home': DataFrame, 'away': DataFrame} shot tables
     """
     home = str(match_info.get('homeTeamName', 'Home'))
     away = str(match_info.get('awayTeamName', 'Away'))
@@ -123,6 +148,18 @@ def generate_match_report_pdf(match_info, figures, team_stats=None, player_stats
             _side_by_side(pdf, tmp_files,
                           figures.get('shotmap_home'), figures.get('shotmap_away'),
                           home, away)
+        # ---- Shot details tables ----
+        if isinstance(shot_details, dict):
+            h_df, _ = _table_ready(shot_details.get('home', pd.DataFrame()))
+            a_df, _ = _table_ready(shot_details.get('away', pd.DataFrame()))
+            if not h_df.empty or not a_df.empty:
+                # keep with shot maps when there's room, else fresh page
+                rows = max(len(h_df), len(a_df))
+                if pdf.get_y() + 20 + 6 * rows > pdf.h - 20:
+                    pdf.add_page()
+                pdf.add_section_title("Shot Details")
+                _two_tables(pdf, h_df, a_df, home, away)
+
         if figures.get('xg_flowchart'):
             pdf.add_page()
             pdf.add_section_title("xG Flowchart")
@@ -162,12 +199,21 @@ def generate_match_report_pdf(match_info, figures, team_stats=None, player_stats
                         f"Showing first {_MAX_TABLE_COLS} columns — full stats in the dashboard."), ln=True)
 
         # ---- Tactical pages ----
-        for title, hk, ak in _TACTICAL_PAGES:
-            if figures.get(hk) or figures.get(ak):
-                pdf.add_page()
-                pdf.add_section_title(title)
-                _side_by_side(pdf, tmp_files, figures.get(hk), figures.get(ak),
-                              home, away)
+        for entry in _TACTICAL_PAGES:
+            if entry[0] == 'pair':
+                _, title, hk, ak = entry
+                if figures.get(hk) or figures.get(ak):
+                    pdf.add_page()
+                    pdf.add_section_title(title)
+                    _side_by_side(pdf, tmp_files, figures.get(hk), figures.get(ak),
+                                  home, away)
+            else:  # 'full' — one figure per page, team name in the title
+                _, suffix, key = entry
+                if figures.get(key):
+                    team = home if key.endswith('_home') else away
+                    pdf.add_page()
+                    pdf.add_section_title(f"{team} — {suffix}")
+                    _fit_figure(pdf, tmp_files, figures[key])
 
         return bytes(pdf.output())
     finally:
