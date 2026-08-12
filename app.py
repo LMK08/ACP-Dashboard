@@ -4993,7 +4993,8 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
-        if _REQUIRED_STAT_COLS.issubset(cached.columns):
+        # An empty cache must not be served (see percentiles cache) — recompute.
+        if not cached.empty and _REQUIRED_STAT_COLS.issubset(cached.columns):
             # Sanity check: goalsConceded should always be per-90 (typical
             # GK rate ≈ 0.5–1.5). Judge by the MEDIAN across keepers with
             # real minutes, not the max: a few data-gap keepers carry
@@ -5889,7 +5890,9 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
-        if _REQUIRED_PCT_COLS.issubset(cached.columns):
+        # An empty cache (written early-season when nobody met the minutes
+        # floor) must not be served — treat as invalid and recompute.
+        if not cached.empty and _REQUIRED_PCT_COLS.issubset(cached.columns):
             print(f"Loading cached player percentiles for scope {_scope_key}")
             if cached.index.name == 'playerId':
                 cached = cached.reset_index()
@@ -5902,6 +5905,15 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     data = _player_data_df.copy()
 
     data['totalMinutes'] = pd.to_numeric(data['totalMinutes'], errors='coerce')
+    # Early-season clamp: after 1-2 matchweeks nobody can reach the mid-season
+    # 500' floor, the qualifying population is empty, and the whole scores
+    # frame came back blank (2026/27 matchweek 1). Only when NO player meets
+    # the floor, drop it to half the current max so scores exist from day one;
+    # mid-season this never triggers and the floor stays as passed.
+    _max_min = data['totalMinutes'].max()
+    if pd.notna(_max_min) and _max_min < min_minutes:
+        min_minutes = max(1, int(_max_min * 0.5))
+        print(f"Early-season minutes floor: no player at requested floor; using {min_minutes}'")
     # Only include qualifying players (>= min_minutes) in percentile calculations
     _qualifying_mask = data['totalMinutes'] >= min_minutes
     if _qualifying_mask.sum() == 0:
