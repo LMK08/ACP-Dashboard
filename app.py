@@ -9449,8 +9449,7 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
                                              match_lineup=_match_lineup)
     elif kind == 'passing_network':
         fig = pv.plot_passing_network(_match_events_df, team_name,
-                                      obv_pairs=_obv.get('pairs'),
-                                      obv_players=_obv.get('players'))
+                                      obv_pairs=_obv.get('pairs'))
     elif kind == 'recovery_map':
         fig = pv.plot_recovery_map(_match_events_df, team_name)
     elif kind == 'loss_map':
@@ -9539,8 +9538,7 @@ def _render_team_figure_png(kind, team_name, season_key, comp_key, stage_key,
     elif kind == 'passing_network':
         _p = _payload if isinstance(_payload, dict) else {}
         fig = pv.plot_passing_network(_team_events_df, team_name,
-                                      obv_pairs=_p.get('pairs'),
-                                      obv_players=_p.get('players'))
+                                      obv_pairs=_p.get('pairs'))
     elif kind == 'defensive_structure':
         fig = pv.plot_defensive_structure(_team_events_df, team_name,
                                            league_events_df=_team_events_df)
@@ -9986,6 +9984,48 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if _png:
                     st.image(_png, use_container_width=True)
 
+            # ---- Merge engine OBV into the match stats tables ----
+            # Display-time COPIES (the cached all_match_data frames must not
+            # be mutated); used by both the page and the match report PDF.
+            _disp_team_stats = {k: v.copy() if isinstance(v, pd.DataFrame) else v
+                                for k, v in (match_data.get('team_stats') or {}).items()}
+            _ps_src = match_data.get('player_stats') or {}
+            _disp_player_stats = {k: v.copy() if isinstance(v, pd.DataFrame) else v
+                                  for k, v in _ps_src.items()}
+            if _obv_match['players'] is not None:
+                _id_name = (match_events_df
+                            .dropna(subset=['player.id', 'player.name'])
+                            .drop_duplicates('player.id'))
+                _id2name = dict(zip(_id_name['player.id'].astype(int),
+                                    _id_name['player.name']))
+                _pobv = _obv_match['players'].copy()
+                _pobv['name'] = _pobv['playerId'].astype(int).map(_id2name)
+                _name2obv = (_pobv.dropna(subset=['name'])
+                             .groupby('name')['obv'].sum().to_dict())
+                for _side, _df in _disp_player_stats.items():
+                    if isinstance(_df, pd.DataFrame) and not _df.empty:
+                        _vals = [_name2obv.get(nm) for nm in _df.index]
+                        _df.insert(min(1, len(_df.columns)), 'OBV',
+                                   [f'{v:+.2f}' if v is not None else '-'
+                                    for v in _vals])
+                # team totals -> a row atop the General table
+                _tid2name = (match_events_df.dropna(subset=['team.id', 'team.name'])
+                             .drop_duplicates('team.id'))
+                _tid2name = dict(zip(_tid2name['team.id'].astype(int),
+                                     _tid2name['team.name']))
+                _team_obv = (_obv_match['players'].groupby('teamId')['obv'].sum())
+                _gen = _disp_team_stats.get('General')
+                if isinstance(_gen, pd.DataFrame):
+                    _row = {c: '-' for c in _gen.columns}
+                    for _tid, _v in _team_obv.items():
+                        _nm = _tid2name.get(int(_tid))
+                        if _nm in _row:
+                            _row[_nm] = f'{_v:+.2f}'
+                    _gen.loc['On-Ball Value (engine)'] = _row
+                    _disp_team_stats['General'] = _gen.reindex(
+                        ['On-Ball Value (engine)']
+                        + [i for i in _gen.index if i != 'On-Ball Value (engine)'])
+
             with col1:
                 _show_match_png('shotmap', selected_match_info['homeTeamName'])
             with col2:
@@ -10058,20 +10098,20 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.info("No event data found for flowchart.")
 
             st.subheader("Team Stats")
-            if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict) and match_data['team_stats']:
-                for stat_category, df in match_data['team_stats'].items():
+            if _disp_team_stats:
+                for stat_category, df in _disp_team_stats.items():
                     st.markdown(f"**{stat_category}**")
                     if isinstance(df, pd.DataFrame): st.dataframe(df, column_config=auto_column_config(df))
                     else: st.warning(f"Data for '{stat_category}' is not a DataFrame.")
             else: st.warning("Team stats data not found.")
 
             st.subheader("Player Stats")
-            if 'player_stats' in match_data and isinstance(match_data['player_stats'], dict) and 'home' in match_data['player_stats'] and 'away' in match_data['player_stats']:
+            if 'home' in _disp_player_stats and 'away' in _disp_player_stats:
                 st.markdown(f"**{selected_match_info['homeTeamName']}**")
-                if isinstance(match_data['player_stats']['home'], pd.DataFrame): st.dataframe(match_data['player_stats']['home'])
+                if isinstance(_disp_player_stats['home'], pd.DataFrame): st.dataframe(_disp_player_stats['home'])
                 else: st.warning("Home player stats data not a DataFrame.")
                 st.markdown(f"**{selected_match_info['awayTeamName']}**")
-                if isinstance(match_data['player_stats']['away'], pd.DataFrame): st.dataframe(match_data['player_stats']['away'])
+                if isinstance(_disp_player_stats['away'], pd.DataFrame): st.dataframe(_disp_player_stats['away'])
                 else: st.warning("Away player stats data not a DataFrame.")
             else: st.warning("Player stats data not found.")
 
@@ -10223,8 +10263,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         st.session_state[_pdf_key] = generate_match_report_pdf(
                             selected_match_info,
                             _report_figures,
-                            team_stats=match_data.get('team_stats'),
-                            player_stats=match_data.get('player_stats'),
+                            team_stats=_disp_team_stats,
+                            player_stats=_disp_player_stats,
                             shot_details={'home': home_shots_table,
                                           'away': away_shots_table},
                         )

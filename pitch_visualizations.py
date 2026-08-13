@@ -821,15 +821,13 @@ def plot_avg_positions_by_subs(events_df, team_name, title=None, match_lineup=No
 # =========================================================================
 # 3. Passing Network
 # =========================================================================
-def plot_passing_network(events_df, team_name, title=None,
-                         obv_pairs=None, obv_players=None):
+def plot_passing_network(events_df, team_name, title=None, obv_pairs=None):
     """Pass connections between players (using possession chain).
 
     obv_pairs: optional DataFrame (passerId, recipientId, obv_sum) for this
         scope — edges are then COLORED by on-ball value added (single-hue
-        ramp) while thickness stays pass volume.
-    obv_players: optional DataFrame (playerId, obv) — nodes are then SIZED
-        by the player's on-ball value instead of touch count.
+        ramp) while thickness stays pass volume, and nodes are SIZED by each
+        player's total PASSING value (sum of their pair OBV).
     """
     te = events_df[events_df['team.name'] == team_name].copy()
     passes = te[te['type.primary'] == 'pass'].copy()
@@ -952,11 +950,12 @@ def plot_passing_network(events_df, team_name, title=None,
                 ax.plot([sx, ex], [sy, ey], color='#457b9d', linewidth=lw,
                         alpha=0.6, zorder=2)
 
-    # Nodes — sized by OBV contribution when provided, else involvement
+    # Nodes — sized by the player's PASSING value when OBV is available
+    # (it's a pass network), else by involvement
     node_metric = avg_pos['count']
-    if obv_players is not None and not obv_players.empty:
-        pobv = obv_players.groupby('playerId')['obv'].sum()
-        mapped = avg_pos['player.id'].map(pobv)
+    if obv_pairs is not None and not obv_pairs.empty:
+        pass_obv = obv_pairs.groupby('passerId')['obv_sum'].sum()
+        mapped = avg_pos['player.id'].map(pass_obv)
         if mapped.notna().any():
             node_metric = mapped.fillna(0).clip(lower=0)
     max_involvement = node_metric.max() if not avg_pos.empty else 1
@@ -968,7 +967,7 @@ def plot_passing_network(events_df, team_name, title=None,
     if edge_obv:
         ax.text(0.5, -0.035,
                 'Line width = pass volume · line color = on-ball value added (grey = negative) · '
-                'circle size = player OBV',
+                'circle size = player passing value',
                 transform=ax.transAxes, ha='center', va='top',
                 fontsize=7, color='#6b7570')
 
