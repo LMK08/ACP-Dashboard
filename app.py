@@ -518,7 +518,9 @@ def load_data():
         events_columns = [
             'id', 'matchId', 'seasonId', 'competitionId', 'minute', 'second', 'matchTimestamp',
             'type.primary', 'type.secondary', 'player.id', 'player.name', 'player.position',
-            'team.name', 'opponentTeam.name', 'location.x', 'location.y',
+            # team.id: read by the OBV visuals (momentum team mapping, stats-table
+            # augmentation) added 2026-08 — the engine aggregates key on Wyscout ids
+            'team.id', 'team.name', 'opponentTeam.name', 'location.x', 'location.y',
             'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
             'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.bodyPart', 'shot.postShotXg', 'shot.goalkeeper.id',
             'groundDuel.duelType', 'groundDuel.keptPossession', 'groundDuel.progressedWithBall',
@@ -9426,6 +9428,8 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
         minute_df = _obv.get('minute')
         if minute_df is None or minute_df.empty:
             return None
+        if 'team.id' not in _match_events_df.columns:
+            return None
         _named = _match_events_df.dropna(subset=['team.id', 'team.name'])
         name_to_id = (_named.groupby('team.name')['team.id']
                       .first().astype(int).to_dict())
@@ -9992,7 +9996,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _ps_src = match_data.get('player_stats') or {}
             _disp_player_stats = {k: v.copy() if isinstance(v, pd.DataFrame) else v
                                   for k, v in _ps_src.items()}
-            if _obv_match['players'] is not None:
+            _obv_cols_ok = {'player.id', 'player.name',
+                            'team.id', 'team.name'}.issubset(match_events_df.columns)
+            if _obv_match['players'] is not None and _obv_cols_ok:
                 _id_name = (match_events_df
                             .dropna(subset=['player.id', 'player.name'])
                             .drop_duplicates('player.id'))
