@@ -69,12 +69,14 @@ def _table_ready(df, max_cols=None):
     return out, truncated
 
 
-def _fit_figure(pdf, tmp_files, png, max_w=None):
+def _fit_figure(pdf, tmp_files, png, max_w=None, max_h=None):
     """Place a figure centered, scaled to fit the space left on the page
     (so a section title is never orphaned by an auto page break)."""
     with Image.open(io.BytesIO(png)) as im:
         aspect = im.height / im.width
     avail_h = pdf.h - 20 - pdf.get_y() - 2
+    if max_h:
+        avail_h = min(avail_h, max_h)
     w = min(max_w or (pdf.w - 40), avail_h / aspect)
     tmp_files.append(pdf.add_figure(png, w=w, x=(pdf.w - w) / 2))
 
@@ -160,10 +162,16 @@ def generate_match_report_pdf(match_info, figures, team_stats=None, player_stats
                 pdf.add_section_title("Shot Details")
                 _two_tables(pdf, h_df, a_df, home, away)
 
-        if figures.get('xg_flowchart'):
+        if figures.get('obv_momentum') or figures.get('xg_flowchart'):
             pdf.add_page()
-            pdf.add_section_title("xG Flowchart")
-            _fit_figure(pdf, tmp_files, figures['xg_flowchart'])
+            pdf.add_section_title("Match Flow")
+            if figures.get('obv_momentum'):
+                pdf.add_subtitle("Momentum (on-ball value per minute)")
+                _fit_figure(pdf, tmp_files, figures['obv_momentum'], max_h=72)
+                pdf.ln(4)
+            if figures.get('xg_flowchart'):
+                pdf.add_subtitle("xG Flowchart")
+                _fit_figure(pdf, tmp_files, figures['xg_flowchart'], max_h=72)
 
         # ---- Team stats ----
         if team_stats:

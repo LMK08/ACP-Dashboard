@@ -78,6 +78,7 @@ import io # For saving the in-memory image
 # ... after your other imports ...
 import base64
 import pitch_visualizations as pv
+import obv_viz
 
 
 # ------------------------------------------------------------------------------
@@ -450,7 +451,7 @@ STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e
                              # override). v13 percentiles cache served stale minutes
                              # because the percentiles layer early-returns its disk cache
                              # and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v1'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v2'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -847,6 +848,29 @@ def _resolve_pid(pid):
     except (TypeError, ValueError):
         return pid
     return PLAYER_ID_ALIASES.get(ipid, ipid)
+
+
+@st.cache_data(ttl=86400)
+def load_obv_viz_data():
+    """Engine OBV/phases aggregates (exported by GPA engine rebuild).
+
+    Returns {key: DataFrame or None}. Missing files (e.g. before the first
+    engine rebuild ships them) simply disable the OBV visuals.
+    """
+    files = {
+        'minute': 'obv_match_minute.parquet',
+        'pairs': 'obv_pass_pairs.parquet',
+        'players': 'obv_match_player.parquet',
+        'team_season': 'obv_team_season.parquet',
+        'phase_profile': 'team_phase_profile.parquet',
+    }
+    out = {}
+    for key, fname in files.items():
+        try:
+            out[key] = pd.read_parquet(fname) if os.path.exists(fname) else None
+        except Exception:
+            out[key] = None
+    return out
 
 
 @st.cache_data(ttl=86400)
@@ -9366,7 +9390,8 @@ def _fig_png_bytes(fig):
 # whole figure lifecycle is one critical section (see mpl_safety).
 @mpl_locked
 def _render_match_figure_png(kind, match_id, team_name, fig_ver,
-                              _match_events_df, _match_info, _match_lineup):
+                              _match_events_df, _match_info, _match_lineup,
+                              _obv=None):
     """One Match Analysis figure -> PNG bytes.
 
     KEY: (kind, match_id, team_name, FIGURE_CACHE_VERSION).
@@ -9389,11 +9414,33 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
 
     Returns PNG bytes, or None when the plotter produced no figure.
     """
+    _obv = _obv or {}
     if kind == 'shotmap':
         fig = create_match_shotmap(_match_events_df, _match_info, team_name)
     elif kind == 'xg_flowchart':
         # Whole-match figure: both teams on one axes, so team_name is None.
         fig = plot_xg_flowchart(_match_events_df, _match_info)
+    elif kind == 'obv_momentum':
+        # Whole-match figure; team ids derived from the events slice because
+        # matches_summary home/awayTeamId are unpopulated.
+        minute_df = _obv.get('minute')
+        if minute_df is None or minute_df.empty:
+            return None
+        _named = _match_events_df.dropna(subset=['team.id', 'team.name'])
+        name_to_id = (_named.groupby('team.name')['team.id']
+                      .first().astype(int).to_dict())
+        home_nm = _match_info.get('homeTeamName')
+        away_nm = _match_info.get('awayTeamName')
+        if home_nm not in name_to_id or away_nm not in name_to_id:
+            return None
+        _goal_rows = _match_events_df[
+            (_match_events_df['type.primary'] == 'shot')
+            & (_match_events_df.get('shot.isGoal') == True)]
+        goals = [{'minute': r['minute'], 'teamId': int(r['team.id'])}
+                 for _, r in _goal_rows.iterrows() if pd.notna(r.get('team.id'))]
+        fig = obv_viz.plot_obv_momentum(
+            minute_df, name_to_id[home_nm], name_to_id[away_nm],
+            home_nm, away_nm, goals)
     elif kind == 'avg_positions':
         fig = pv.plot_average_positions(_match_events_df, team_name,
                                          match_lineup=_match_lineup)
@@ -9401,7 +9448,9 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
         fig = pv.plot_avg_positions_by_subs(_match_events_df, team_name,
                                              match_lineup=_match_lineup)
     elif kind == 'passing_network':
-        fig = pv.plot_passing_network(_match_events_df, team_name)
+        fig = pv.plot_passing_network(_match_events_df, team_name,
+                                      obv_pairs=_obv.get('pairs'),
+                                      obv_players=_obv.get('players'))
     elif kind == 'recovery_map':
         fig = pv.plot_recovery_map(_match_events_df, team_name)
     elif kind == 'loss_map':
@@ -9488,10 +9537,22 @@ def _render_team_figure_png(kind, team_name, season_key, comp_key, stage_key,
         fig = pv.plot_zone_heatmap(_team_events_df, team_name, _tag,
                                     league_events_df=_team_events_df)
     elif kind == 'passing_network':
-        fig = pv.plot_passing_network(_team_events_df, team_name)
+        _p = _payload if isinstance(_payload, dict) else {}
+        fig = pv.plot_passing_network(_team_events_df, team_name,
+                                      obv_pairs=_p.get('pairs'),
+                                      obv_players=_p.get('players'))
     elif kind == 'defensive_structure':
         fig = pv.plot_defensive_structure(_team_events_df, team_name,
                                            league_events_df=_team_events_df)
+    elif kind == 'phase_profile':
+        _p = _payload if isinstance(_payload, dict) else {}
+        fig = obv_viz.plot_phase_profile(_p.get('profile'), team_name)
+    elif kind == 'obv_categories':
+        _p = _payload if isinstance(_payload, dict) else {}
+        if _p.get('team_season') is None or _p.get('team_id') is None:
+            return None
+        fig = obv_viz.plot_team_obv_categories(
+            _p['team_season'], _p['team_id'], team_name)
     else:
         raise ValueError(f"unknown team figure kind: {kind!r}")
     return _fig_png_bytes(fig) if fig is not None else None
@@ -9901,10 +9962,27 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             # matchId so a numpy int64 and a Python int can't key separately.
             _mid = int(selected_match_id)
 
+            # Engine OBV aggregates for this match (None-safe: files may not
+            # exist until the next engine rebuild ships them)
+            _obv_all = load_obv_viz_data()
+
+            def _slice_obv(df):
+                if df is None or df.empty:
+                    return None
+                s = df[df['matchId'] == _mid]
+                return s if not s.empty else None
+
+            _obv_match = {
+                'minute': _slice_obv(_obv_all.get('minute')),
+                'pairs': _slice_obv(_obv_all.get('pairs')),
+                'players': _slice_obv(_obv_all.get('players')),
+            }
+
             def _show_match_png(kind, team=None, lineup=None):
                 _png = _render_match_figure_png(
                     kind, _mid, team, FIGURE_CACHE_VERSION,
-                    match_events_df, selected_match_info, lineup)
+                    match_events_df, selected_match_info, lineup,
+                    _obv=_obv_match)
                 if _png:
                     st.image(_png, use_container_width=True)
 
@@ -9957,6 +10035,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 st.dataframe(away_shots_table, column_config=auto_column_config(away_shots_table))
             # --- END NEW SECTION ---
             
+            # --- Momentum (engine OBV) ---
+            st.subheader("Momentum")
+            if _obv_match['minute'] is not None:
+                try:
+                    _show_match_png('obv_momentum')
+                except Exception as e:
+                    st.warning(f"Could not generate momentum chart: {e}")
+            else:
+                st.caption("Momentum uses the engine's on-ball values — this match "
+                           "appears after the next engine rebuild.")
+
             # --- xG Flowchart ---
             st.subheader("xG Flowchart")
             match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
@@ -10101,7 +10190,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 try:
                     return _render_match_figure_png(
                         kind, _mid, team, FIGURE_CACHE_VERSION,
-                        match_events_df, selected_match_info, lineup)
+                        match_events_df, selected_match_info, lineup,
+                        _obv=_obv_match)
                 except Exception:
                     return None
 
@@ -10109,6 +10199,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 with st.spinner("Assembling match report..."):
                     from match_report_pdf import generate_match_report_pdf
                     _report_figures = {
+                        'obv_momentum': _match_fig_or_none('obv_momentum'),
                         'shotmap_home': _match_fig_or_none('shotmap', home_team),
                         'shotmap_away': _match_fig_or_none('shotmap', away_team),
                         'xg_flowchart': (_match_fig_or_none('xg_flowchart')
@@ -10365,6 +10456,54 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             )
 
         # Primary Formation XI Graphic
+        # =============================================================
+        # On-Ball Value & Phases (engine OBV + phases-of-play v1)
+        # =============================================================
+        st.subheader("On-Ball Value & Phases")
+        _team_obv_all = load_obv_viz_data()
+        if selected_season_id is not None:
+            _prof = _team_obv_all.get('phase_profile')
+            _tseason = _team_obv_all.get('team_season')
+            if _prof is not None:
+                _prof = _prof[(_prof['seasonId'] == selected_season_id)
+                              & (_prof['competitionId'].isin(selected_comp_ids))]
+            if _tseason is not None:
+                _tseason = _tseason[(_tseason['seasonId'] == selected_season_id)
+                                    & (_tseason['competitionId'].isin(selected_comp_ids))]
+            # team id via the phases profile (the scoped events frame drops team.id)
+            _team_obv_id = None
+            _prof_full = _team_obv_all.get('phase_profile')
+            if _prof_full is not None:
+                _tid_rows = _prof_full.loc[
+                    _prof_full['teamName'] == selected_team_t, 'teamId'].dropna()
+                if len(_tid_rows):
+                    _team_obv_id = int(_tid_rows.iloc[0])
+
+            if _tseason is not None and not _tseason.empty and _team_obv_id is not None:
+                _show_team_png('obv_categories',
+                               payload={'team_season': _tseason,
+                                        'team_id': _team_obv_id})
+            else:
+                st.caption("Team OBV for this season appears after the next engine rebuild.")
+
+            if _prof is not None and not _prof.empty:
+                _show_team_png('phase_profile', payload={'profile': _prof})
+                with st.expander("How phases are defined (v1)"):
+                    st.markdown(
+                        "- **Buildup / Progression / Finishing** — organized-possession "
+                        "segments by pitch third; success = advancing a third "
+                        "(finishing: shot or box entry)\n"
+                        "- **Fast break** — Wyscout counterattack possessions; "
+                        "success = shot or box entry\n"
+                        "- **Set piece** — corner / free-kick / penalty possessions; "
+                        "success = shot or box entry\n"
+                        "- Uncontrolled possessions (≤2 events, no shot) are excluded.\n"
+                        "- **OBV per phase** — engine action values summed over the phase.")
+            else:
+                st.caption("Phase profile for this season appears after the next engine rebuild.")
+        else:
+            st.caption("On-Ball Value & Phases are per-season views — select a single season.")
+
         st.subheader("Primary Formation")
         primary_formation = get_team_primary_formation(team_events_df, selected_team_t)
         starting_xi = get_team_starting_xi(team_events_df, selected_team_t)
@@ -10524,7 +10663,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # 3. Passing Network (Season)
         st.markdown("**Passing Network (Season)**")
         try:
-            _show_team_png('passing_network')
+            _np_payload = None
+            _np_pairs = _team_obv_all.get('pairs')
+            if (_np_pairs is not None and selected_season_id is not None
+                    and _team_obv_id is not None):
+                _np_pairs = _np_pairs[
+                    (_np_pairs['seasonId'] == selected_season_id)
+                    & (_np_pairs['competitionId'].isin(selected_comp_ids))
+                    & (_np_pairs['teamId'] == _team_obv_id)]
+                _np_players = _team_obv_all.get('players')
+                if _np_players is not None:
+                    _np_players = _np_players[
+                        (_np_players['seasonId'] == selected_season_id)
+                        & (_np_players['competitionId'].isin(selected_comp_ids))]
+                if not _np_pairs.empty:
+                    _np_payload = {'pairs': _np_pairs, 'players': _np_players}
+            _show_team_png('passing_network', payload=_np_payload)
         except Exception as e:
             st.caption(f"Could not render passing network: {e}")
 

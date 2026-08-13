@@ -821,8 +821,16 @@ def plot_avg_positions_by_subs(events_df, team_name, title=None, match_lineup=No
 # =========================================================================
 # 3. Passing Network
 # =========================================================================
-def plot_passing_network(events_df, team_name, title=None):
-    """Pass connections between players (using possession chain)."""
+def plot_passing_network(events_df, team_name, title=None,
+                         obv_pairs=None, obv_players=None):
+    """Pass connections between players (using possession chain).
+
+    obv_pairs: optional DataFrame (passerId, recipientId, obv_sum) for this
+        scope — edges are then COLORED by on-ball value added (single-hue
+        ramp) while thickness stays pass volume.
+    obv_players: optional DataFrame (playerId, obv) — nodes are then SIZED
+        by the player's on-ball value instead of touch count.
+    """
     te = events_df[events_df['team.name'] == team_name].copy()
     passes = te[te['type.primary'] == 'pass'].copy()
 
@@ -906,10 +914,27 @@ def plot_passing_network(events_df, team_name, title=None):
 
     pitch, fig, ax = _make_pitch()
 
+    # Optional OBV weighting: edge color = value added by that pass pair
+    edge_obv = {}
+    if obv_pairs is not None and not obv_pairs.empty:
+        agg = (obv_pairs.groupby(['passerId', 'recipientId'])['obv_sum']
+               .sum())
+        edge_obv = {(int(p), int(r)): float(v) for (p, r), v in agg.items()}
+
     # Lines
     pos_dict = {int(r['player.id']): (r['x'], r['y'])
                 for _, r in avg_pos.iterrows()}
     max_cnt = pair_counts['count'].max() if not pair_counts.empty else 1
+
+    if edge_obv:
+        import matplotlib.colors as mcolors
+        vals = [edge_obv.get((int(r['passer']), int(r['receiver'])), 0.0)
+                for _, r in pair_counts.iterrows()]
+        vmax = max(abs(v) for v in vals) if vals else 1.0
+        vmax = vmax or 1.0
+        # single-hue ramp: pitch-cream -> deep green; negative pairs grey
+        ramp = mcolors.LinearSegmentedColormap.from_list(
+            'obv_ramp', ['#c9d6c4', '#1a472a'])
 
     for _, row in pair_counts.iterrows():
         p = int(row['passer'])
@@ -918,15 +943,34 @@ def plot_passing_network(events_df, team_name, title=None):
             sx, sy = pos_dict[p]
             ex, ey = pos_dict[r]
             lw = 0.5 + 4 * (row['count'] / max_cnt)
-            ax.plot([sx, ex], [sy, ey], color='#457b9d', linewidth=lw,
-                    alpha=0.6, zorder=2)
+            if edge_obv:
+                v = edge_obv.get((p, r), 0.0)
+                color = ramp(min(max(v, 0.0) / vmax, 1.0)) if v >= 0 else '#b0b0a8'
+                ax.plot([sx, ex], [sy, ey], color=color, linewidth=lw,
+                        alpha=0.85, zorder=2)
+            else:
+                ax.plot([sx, ex], [sy, ey], color='#457b9d', linewidth=lw,
+                        alpha=0.6, zorder=2)
 
-    # Nodes
-    max_involvement = avg_pos['count'].max() if not avg_pos.empty else 1
-    sizes = 100 + 500 * (avg_pos['count'] / max_involvement)
+    # Nodes — sized by OBV contribution when provided, else involvement
+    node_metric = avg_pos['count']
+    if obv_players is not None and not obv_players.empty:
+        pobv = obv_players.groupby('playerId')['obv'].sum()
+        mapped = avg_pos['player.id'].map(pobv)
+        if mapped.notna().any():
+            node_metric = mapped.fillna(0).clip(lower=0)
+    max_involvement = node_metric.max() if not avg_pos.empty else 1
+    max_involvement = max_involvement if max_involvement else 1
+    sizes = 190 + 460 * (node_metric / max_involvement)
     pitch.scatter(avg_pos['x'], avg_pos['y'], s=sizes,
                   color='#1d3557', edgecolors='white', linewidth=2,
                   zorder=5, ax=ax)
+    if edge_obv:
+        ax.text(0.5, -0.035,
+                'Line width = pass volume · line color = on-ball value added (grey = negative) · '
+                'circle size = player OBV',
+                transform=ax.transAxes, ha='center', va='top',
+                fontsize=7, color='#6b7570')
 
     # Pass count inside each node
     for _, row in avg_pos.iterrows():

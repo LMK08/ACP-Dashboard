@@ -92,6 +92,8 @@ jobs:
           python src/features.py
           python src/xpass.py
           python src/action_values.py
+          python src/export_viz_aggregates.py
+          python src/phases.py
           python src/gk_shotstopping.py || echo "gk_shotstopping nonzero (continuing)"
           python src/gk_handling.py     || echo "gk_handling nonzero (continuing)"
           python src/loso_player_ratings.py
@@ -132,6 +134,9 @@ jobs:
           # could leave HF without the caches (the symptom Lucas hit). The
           # ~20MB/refresh git cost is offset by the Tier-B binary cleanup.
           git add -f gpa_player_season_values.parquet \
+                     obv_match_minute.parquet obv_pass_pairs.parquet \
+                     obv_match_player.parquet obv_team_season.parquet \
+                     possession_phases.parquet team_phase_profile.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
