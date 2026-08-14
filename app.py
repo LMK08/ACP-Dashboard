@@ -14224,13 +14224,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 # mean-shrunk projections — don't pollute the board. A purely
                 # past-season scope carries no projections, so there we fall
                 # back to rating and relabel the column honestly.
-                _proj_num = pd.to_numeric(_rb.get('ACP Projection (abs)'), errors='coerce')
+                # .get on a missing column returns None -> pd.to_numeric gives a
+                # SCALAR nan whose .notna() crashes; normalise to a Series first
+                _proj_series = _rb['ACP Projection (abs)'] \
+                    if 'ACP Projection (abs)' in _rb.columns \
+                    else pd.Series(np.nan, index=_rb.index)
+                _proj_num = pd.to_numeric(_proj_series, errors='coerce')
                 if _proj_num.notna().any():
                     _rb = _rb[_proj_num.notna()].copy()
                     _metric_label, _metric_col = 'Proj', 'ACP Projection (abs)'
                 else:
                     _metric_label, _metric_col = 'Rating', 'ACP Rating (abs)'
-                _rb['_rankval'] = pd.to_numeric(_rb[_metric_col], errors='coerce')
+                if _metric_col in _rb.columns:
+                    _rb['_rankval'] = pd.to_numeric(_rb[_metric_col], errors='coerce')
+                else:
+                    _rb['_rankval'] = np.nan
 
                 # --- style per board player (scope-aware, descriptive) ------
                 # Highest-minutes style row within the scoped seasons; falls
