@@ -9,10 +9,13 @@ on:
       - '**.parquet'
   workflow_dispatch:
 
-# Prevent concurrent deploys from stomping on each other
+# Prevent concurrent deploys from stomping on each other. QUEUE, never
+# cancel: cancel-in-progress:true killed in-flight engine rebuilds twice
+# (2026-08-09, 2026-08-16) when a code push landed mid-rebuild — the group
+# exists to serialise HF pushes, and queueing achieves that.
 concurrency:
   group: hf-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
