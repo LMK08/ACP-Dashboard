@@ -9771,6 +9771,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         import time as _t
         import gc as _gc
         print('[precompute] warming per-season stats caches...', flush=True)
+        # Current-season (and All-Seasons, which include it) disk caches go
+        # stale as matches accrue — the cache key carries no data fingerprint,
+        # so a cache written at matchweek 1 would be served all season. CI is
+        # the cache factory: delete those scopes first to force fresh computes.
+        _current_sids = {cfg['current_season'] for cfg in COMPETITIONS.values()}
         for _cid, _cfg in COMPETITIONS.items():
             # Each league's individual seasons PLUS its All-Seasons scope
             # (_sid=None). The league-aware scope key keeps the two single-league
@@ -9779,6 +9784,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 _label = 'ALL' if _sid is None else _sid
                 _t0 = _t.time()
                 _ev = _mins = None
+                if _sid in _current_sids or _sid is None:
+                    _scope = f'all_{_cid}' if _sid is None else str(_sid)
+                    _stale = [f'player_stats_{STATS_CACHE_VERSION}_{_scope}.parquet',
+                              f'player_percentiles_{STATS_CACHE_VERSION}_{_scope}.parquet']
+                    if _sid is not None:
+                        _stale.append(f'team_strength_{_sid}.parquet')
+                    for _fname in _stale:
+                        _fp = os.path.join(STATS_CACHE_DIR, _fname)
+                        if os.path.exists(_fp):
+                            os.remove(_fp)
+                            print(f'[precompute] dropped stale cache {_fname}', flush=True)
                 try:
                     _ev = get_filtered_events(raw_events_df, _sid, [_cid])
                     _mins = get_season_player_minutes(player_minutes_data, _sid, comp_ids=[_cid])
