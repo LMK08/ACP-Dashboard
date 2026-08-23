@@ -465,6 +465,33 @@ FIGURE_CACHE_VERSION = 'v2'  # Bump when any DRAWING code behind the cached-PNG 
                              # STATS_CACHE_VERSION plays for the stat caches.
 
 
+def _cache_meta_path(cache_path):
+    return cache_path + '.meta.json'
+
+
+def _write_cache_meta(cache_path, fingerprint):
+    """Sidecar stamp recording what data built a stats cache."""
+    try:
+        with open(_cache_meta_path(cache_path), 'w') as f:
+            json.dump(fingerprint, f)
+    except Exception:
+        pass
+
+
+def _cache_is_stale(cache_path, fingerprint):
+    """True when the sidecar stamp exists and disagrees with current data —
+    i.e. a data refresh landed but the cache predates it (on-demand recompute
+    covers the window until the engine rebuild redeploys warmed caches).
+    Legacy caches without a stamp are trusted, so old deploys can't trigger
+    recompute storms (the 2026-07 segfault failure mode)."""
+    try:
+        with open(_cache_meta_path(cache_path)) as f:
+            meta = json.load(f)
+    except Exception:
+        return False
+    return meta != fingerprint
+
+
 def _stats_scope_key(season_id, frame):
     """Cache-key suffix: the season_id itself, or for All-Seasons
     (season_id is None) the league(s) present in the frame, so the
@@ -5017,6 +5044,11 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     _scope_key = _stats_scope_key(season_id, _raw_events_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    _data_fp = {'n_matches': int(_raw_events_df['matchId'].nunique()),
+                'n_events': int(len(_raw_events_df))}
+    if os.path.exists(cache_path) and _cache_is_stale(cache_path, _data_fp):
+        print(f"Player-stats cache for scope {_scope_key} predates current data — recomputing")
+        os.remove(cache_path)
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
         # An empty cache must not be served (see percentiles cache) — recompute.
@@ -5870,6 +5902,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     try:
         _parquet_safe(result).to_parquet(cache_path)
+        _write_cache_meta(cache_path, _data_fp)
         print(f"  Cached player stats to {cache_path}")
     except Exception as e:
         print(f"  Warning: Could not cache player stats: {e}")
@@ -5914,6 +5947,13 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     _scope_key = _stats_scope_key(season_id, _player_data_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    _pct_fp = {'n_rows': int(len(_player_data_df)),
+               'minutes_sum': int(pd.to_numeric(
+                   _player_data_df.get('totalMinutes', pd.Series(dtype=float)),
+                   errors='coerce').fillna(0).sum())}
+    if os.path.exists(cache_path) and _cache_is_stale(cache_path, _pct_fp):
+        print(f"Percentiles cache for scope {_scope_key} predates current data — recomputing")
+        os.remove(cache_path)
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
         # An empty cache (written early-season when nobody met the minutes
@@ -5999,6 +6039,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     try:
         _parquet_safe(result).to_parquet(cache_path)
+        _write_cache_meta(cache_path, _pct_fp)
         print(f"  Cached player percentiles to {cache_path}")
     except Exception as e:
         print(f"  Warning: Could not cache percentiles: {e}")
