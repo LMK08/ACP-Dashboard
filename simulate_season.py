@@ -18,20 +18,22 @@ from league_config import COMPETITIONS
 
 N_SIMULATIONS = 10000
 
+# SEASON-SPECIFIC — update at every season turnover (must match the current
+# season's Série A/B rosters; app.py SEASON_GROUPS carries the same lists).
+# 2026/27 (seasonId 192831):
 FIRST_STAGE_GROUPS = {
-    'North': ['Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
-              'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'],
-    'South': ['1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-              'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
+    'North': ['Fafe', 'Varzim', 'Paredes', 'Paços de Ferreira', 'São João Ver',
+              'Leça', 'Vitória Guimarães II', 'Trofense', 'Vianense', 'AD Marco 09'],
+    'South': ['Louletano', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+              'UD Oliveirense', 'Vitória de Sernache', 'CF Os Belenenses',
+              'Lusitano Évora 1911', 'Atlético CP'],
 }
 
 # Head-to-head tiebreaker overrides for first-stage positions.
 # calculate_league_table uses GD, but FPF rules use head-to-head first.
-# Format: {team: correct_position} — only needed for teams where h2h differs from GD order.
-FIRST_STAGE_POSITION_OVERRIDES = {
-    'Atlético CP': 5,          # h2h winner vs Lusitano (both 22 pts)
-    'Lusitano Évora 1911': 6,
-}
+# Format: {team: correct_position} — only needed for teams where h2h differs
+# from GD order. SEASON-SPECIFIC: reset at turnover, add as ties emerge.
+FIRST_STAGE_POSITION_OVERRIDES = {}
 
 # Reserve / B teams ineligible for promotion. They keep their league standings
 # but the playoff qualification slot drops to the next eligible team.
