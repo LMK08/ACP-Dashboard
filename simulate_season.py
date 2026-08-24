@@ -812,6 +812,178 @@ def simulate_promotion_playoff(matches_df, model, scaler, team_stats,
 
 # ── Main simulation pipeline ─────────────────────────────────────────────────
 
+def _bonus_from_pos_pts(pos, pts):
+    """FPF maintenance bonus for one team (see calculate_maintenance_bonus)."""
+    classification_bonus = {5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+    if pos < 5 or pts < 10:
+        return 0
+    if pts <= 14:
+        return classification_bonus.get(pos, 0)
+    pts_bonus = 4
+    for threshold, bonus in [(15, 0), (20, 1), (25, 2), (30, 3)]:
+        if pts < threshold:
+            pts_bonus = bonus
+            break
+    return classification_bonus.get(pos, 0) + pts_bonus
+
+
+def _pairwise_probs(teams, model, scaler, team_stats, prior_season_stats, league_avg_stats):
+    """Model win/draw/loss probabilities for every ordered pairing."""
+    probs = {}
+    for home, away in product(teams, teams):
+        if home == away:
+            continue
+        home_cum = team_stats.get(home)
+        away_cum = team_stats.get(away)
+        if not home_cum or not away_cum:
+            probs[(home, away)] = np.array([0.25, 0.45, 0.30])
+            continue
+        home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
+        away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+        home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
+        away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
+        fv = build_feature_vector(home_feats, away_feats)
+        probs[(home, away)] = model.predict_proba(scaler.transform([fv]))[0]
+    return probs
+
+
+def _sim_fixtures(fixtures, cum_probs, pts, gd, gf, rng):
+    """Sample outcomes for a fixture list, mutating pts/gd/gf dicts in place.
+    cum_probs: precomputed np.cumsum rows aligned with fixtures (draw/home/away)."""
+    if not fixtures:
+        return
+    rand_vals = rng.random(len(fixtures))
+    for idx, (home, away) in enumerate(fixtures):
+        r = rand_vals[idx]
+        cp = cum_probs[idx]
+        if r < cp[0]:
+            pts[home] += 1; pts[away] += 1; gf[home] += 1; gf[away] += 1
+        elif r < cp[1]:
+            pts[home] += 3; gd[home] += 1; gd[away] -= 1; gf[home] += 2; gf[away] += 1
+        else:
+            pts[away] += 3; gd[away] += 1; gd[home] -= 1; gf[away] += 2; gf[home] += 1
+
+
+def _simulate_liga3_first_phase(first_stage_matches, model, scaler, team_stats,
+                                prior_season_stats, league_avg_stats):
+    """Liga 3 during the FIRST PHASE (two séries of 10, double round robin,
+    Aug–Feb): simulate the remaining série matches, then chain the whole
+    second phase per simulation — top 4 of each série to the Promotion
+    Series (fresh points), bottom 6 to the two Maintenance series with FPF
+    bonus points from their simulated first-phase finish. Per team we report
+    the série position probabilities plus P(reach promotion series),
+    P(promotion slot: eligible top-2 of the promotion series), and
+    P(relegation: bottom 2 of a maintenance series)."""
+    series = {
+        'Série A (North)': FIRST_STAGE_GROUPS['North'],
+        'Série B (South)': FIRST_STAGE_GROUPS['South'],
+    }
+    all_teams = [t for teams in series.values() for t in teams]
+    print("\n  First phase in progress — simulating séries + chained second phase")
+    pair_probs = _pairwise_probs(all_teams, model, scaler, team_stats,
+                                 prior_season_stats, league_avg_stats)
+
+    prep = {}
+    for name, teams in series.items():
+        current_table = calculate_league_table(first_stage_matches, teams)
+        full = [(h, a) for h, a in product(teams, teams) if h != a]
+        played = set()
+        for _, m in first_stage_matches.iterrows():
+            h, a = m['homeTeamName'], m['awayTeamName']
+            if h in teams and a in teams:
+                played.add((h, a))
+        remaining = [f for f in full if f not in played]
+        start = {r['Team']: (r['Pts'], r['GD'], r['GF'])
+                 for _, r in current_table.iterrows()}
+        prep[name] = {
+            'teams': teams,
+            'current_table': current_table,
+            'remaining': remaining,
+            'cum': np.cumsum(np.array([pair_probs[f] for f in remaining]), axis=1)
+                   if remaining else np.array([]),
+            'start': start,
+        }
+        print(f"  {name}: {len(played)} played, {len(remaining)} remaining")
+
+    pos_counts = {name: {t: np.zeros(len(p['teams']), dtype=int) for t in p['teams']}
+                  for name, p in prep.items()}
+    reach_promo = {t: 0 for t in all_teams}
+    promo_slot = {t: 0 for t in all_teams}
+    releg = {t: 0 for t in all_teams}
+
+    rng = np.random.default_rng(seed=42)
+    print(f"  Running {N_SIMULATIONS:,} chained simulations...")
+    for _ in range(N_SIMULATIONS):
+        serie_final = {}
+        serie_pts = {}
+        for name, p in prep.items():
+            pts = {t: v[0] for t, v in p['start'].items()}
+            gd = {t: v[1] for t, v in p['start'].items()}
+            gf = {t: v[2] for t, v in p['start'].items()}
+            _sim_fixtures(p['remaining'], p['cum'], pts, gd, gf, rng)
+            order = sorted(p['teams'], key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
+            for pos, team in enumerate(order):
+                pos_counts[name][team][pos] += 1
+            serie_final[name] = order
+            serie_pts[name] = pts
+
+        # ---- Promotion Series: top 4 of each série, fresh points ----
+        promo_teams = serie_final['Série A (North)'][:4] + serie_final['Série B (South)'][:4]
+        for t in promo_teams:
+            reach_promo[t] += 1
+        fixtures = [(h, a) for h, a in product(promo_teams, promo_teams) if h != a]
+        cum = np.cumsum(np.array([pair_probs[f] for f in fixtures]), axis=1)
+        pts = {t: 0 for t in promo_teams}
+        gd = {t: 0 for t in promo_teams}
+        gf = {t: 0 for t in promo_teams}
+        _sim_fixtures(fixtures, cum, pts, gd, gf, rng)
+        promo_order = sorted(promo_teams, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
+        for t in top_n_eligible(promo_order, 2):
+            promo_slot[t] += 1
+
+        # ---- Maintenance series: bottom 6 of each série, FPF bonuses ----
+        for name in series:
+            order = serie_final[name]
+            maint = order[4:]
+            pts = {t: _bonus_from_pos_pts(order.index(t) + 1, serie_pts[name][t])
+                   for t in maint}
+            gd = {t: 0 for t in maint}
+            gf = {t: 0 for t in maint}
+            fixtures = [(h, a) for h, a in product(maint, maint) if h != a]
+            cum = np.cumsum(np.array([pair_probs[f] for f in fixtures]), axis=1)
+            _sim_fixtures(fixtures, cum, pts, gd, gf, rng)
+            maint_order = sorted(maint, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
+            for t in maint_order[-2:]:
+                releg[t] += 1
+
+    results = {}
+    for name, p in prep.items():
+        teams = p['teams']
+        n_teams = len(teams)
+        pos_prob_df = pd.DataFrame(
+            {t: pos_counts[name][t] / N_SIMULATIONS for t in teams}).T
+        pos_prob_df.columns = [f'{i+1}' for i in range(n_teams)]
+        pos_prob_df.index.name = 'Team'
+        pos_prob_df['expected_pos'] = sum((i + 1) * pos_prob_df[f'{i+1}'] for i in range(n_teams))
+        pos_prob_df = pos_prob_df.sort_values('expected_pos').drop(columns='expected_pos')
+
+        print(f"\n  {name} position probabilities:")
+        print(pos_prob_df.to_string(float_format=lambda x: f'{x:.1%}'))
+
+        results[name] = {
+            'teams': teams,
+            'position_probabilities': pos_prob_df,
+            'current_standings': p['current_table'],
+            'matches_remaining': len(p['remaining']),
+            'bonus_points': {},
+            'playoff_pct': {t: reach_promo[t] / N_SIMULATIONS for t in teams},
+            'promotion_pct': {t: promo_slot[t] / N_SIMULATIONS for t in teams},
+            'releg_pct': {t: releg[t] / N_SIMULATIONS for t in teams},
+            'serie_col_labels': ('Promo Series %', 'Promo %', 'Releg %'),
+        }
+    return results
+
+
 def simulate_liga3(matches_df, model, scaler, team_stats, prior_season_stats, league_avg_stats):
     """Run Liga 3 season simulation (second-stage groups)."""
     SEASON_ID = COMPETITIONS[43324]["current_season"]
@@ -834,6 +1006,14 @@ def simulate_liga3(matches_df, model, scaler, team_stats, prior_season_stats, le
 
     first_stage_matches = season_matches[season_matches['roundId'] == first_stage_round_id]
     second_stage_matches = season_matches[season_matches['roundId'] != first_stage_round_id]
+
+    # While the FIRST PHASE is running (Aug–Feb) the season is just the two
+    # séries — simulate those (with the second phase chained inside each sim)
+    # instead of pretending today's table already decided the qualifiers.
+    if second_stage_matches.empty:
+        return _simulate_liga3_first_phase(first_stage_matches, model, scaler,
+                                           team_stats, prior_season_stats,
+                                           league_avg_stats)
 
     all_north = FIRST_STAGE_GROUPS['North']
     all_south = FIRST_STAGE_GROUPS['South']

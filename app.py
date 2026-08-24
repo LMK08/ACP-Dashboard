@@ -15642,7 +15642,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 n_sims = sim_data.get('n_simulations', 0)
                 st.caption(f"Based on {n_sims:,} Monte Carlo simulations | Updated: {sim_ts[:16].replace('T', ' ')}")
 
-                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None, playoff_pct=None, promotion_pct=None):
+                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None, playoff_pct=None, promotion_pct=None, releg_pct=None, serie_col_labels=None):
                     """Render a color-coded probability table for a second-stage group."""
                     n_teams = len(prob_df)
                     pos_cols = [str(i+1) for i in range(n_teams)]
@@ -15674,9 +15674,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         elif is_playoff_group:
                             html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
                         elif is_serie:
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Playoff %</th>'
-                            html += '<th style="padding:6px 8px;">Promo %</th>'
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
+                            _slabels = serie_col_labels or ('Playoff %', 'Promo %', 'Releg %')
+                            html += f'<th style="padding:6px 8px;border-left:2px solid #444;">{_slabels[0]}</th>'
+                            html += f'<th style="padding:6px 8px;">{_slabels[1]}</th>'
+                            html += f'<th style="padding:6px 8px;border-left:2px solid #444;">{_slabels[2]}</th>'
                         else:
                             html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
                         html += '</tr>'
@@ -15741,9 +15742,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                 team_playoff = playoff_pct.get(team, 0) if playoff_pct else 0
                                 # Promotion % = chance of top 2 in série AND top 2 in playoff group
                                 team_promo = promotion_pct.get(team, 0) if promotion_pct else 0
-                                # Relegation % = bottom 5 positions
-                                releg_positions = [str(i) for i in range(n_teams - 4, n_teams + 1)]
-                                team_releg = sum(prob_df.loc[team, p] for p in releg_positions if p in prob_df.columns)
+                                # Relegation %: chained simulation value when the
+                                # sim provides one (Liga 3 first phase), else the
+                                # positional bottom-5 heuristic (Campeonato séries)
+                                if releg_pct:
+                                    team_releg = releg_pct.get(team, 0)
+                                else:
+                                    releg_positions = [str(i) for i in range(n_teams - 4, n_teams + 1)]
+                                    team_releg = sum(prob_df.loc[team, p] for p in releg_positions if p in prob_df.columns)
 
                                 playoff_bg = f'background-color:rgba(46,204,113,{min(team_playoff * 1.2, 1.0):.2f});'
                                 promo_bg = f'background-color:rgba(46,204,113,{min(team_promo * 2.0, 1.0):.2f});'
@@ -15781,6 +15787,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         expanded = (
                             group_name == 'Promotion'
                             or group_name.startswith('Promotion Playoff')
+                            or (comp_id == 43324 and group_name.startswith('Série'))
                             or (comp_id == 702 and group_name == list(sim_groups.keys())[0])
                         )
                         render_probability_table(
@@ -15789,6 +15796,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             current_standings=g.get('current_standings'),
                             playoff_pct=g.get('playoff_pct'),
                             promotion_pct=g.get('promotion_pct'),
+                            releg_pct=g.get('releg_pct'),
+                            serie_col_labels=g.get('serie_col_labels'),
                         )
 
             # Team selection — cross-season team-season combos
