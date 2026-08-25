@@ -7892,6 +7892,35 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
     # Attach prior_stats from previous season
     sorted_sids = sorted(SEASON_ID_MAP.keys())
     sid_idx = sorted_sids.index(season_id) if season_id in sorted_sids else -1
+    # Phase-2 opponent adjustment (dormant during the first phase): once a
+    # second stage exists, unbalanced schedules bias raw totals — overwrite
+    # the aggregate goal/xG totals with SOS-adjusted ones (see schedule_adjust)
+    try:
+        from schedule_adjust import phase2_adjusted_totals
+        _rows = []
+        for _, _m in season_matches.iterrows():
+            _sc = str(_m.get('score', ''))
+            if '-' not in _sc:
+                continue
+            try:
+                _hg, _ag = map(int, _sc.split('-'))
+            except Exception:
+                continue
+            _rows.append({'matchId': _m['matchId'], 'roundId': _m.get('roundId'),
+                          'home': _m['homeTeamName'], 'away': _m['awayTeamName'],
+                          'hg': _hg, 'ag': _ag})
+        _sh = season_events[(season_events['type.primary'] == 'shot')].dropna(
+            subset=['shot.xg', 'team.name'])
+        _xg = {(int(m), t): float(v) for (m, t), v in
+               _sh.groupby(['matchId', 'team.name'])['shot.xg'].sum().items()}
+        _adj = phase2_adjusted_totals(_rows, _xg)
+        if _adj:
+            for _t, _vals in _adj.items():
+                if _t in team_stats:
+                    team_stats[_t].update(_vals)
+    except Exception as _e:
+        print(f"phase-2 adjustment skipped: {_e}")
+
     if sid_idx > 0:
         prior_sid = sorted_sids[sid_idx - 1]
         prior_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, prior_sid)
@@ -15830,12 +15859,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 home_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, home_sid)[home_team_name]
                 away_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, away_sid)[away_team_name]
 
-                home_prior = home_cum.get('prior_stats')
-                away_prior = away_cum.get('prior_stats')
+                # Tier-aware priors + calibrated Bayes blend from
+                # simulate_season — the SAME feature path the current model
+                # was trained on (the page's legacy inline blend produced
+                # train/serve drift for the simple-strength model)
+                import simulate_season as _ssim
 
-                # Calculate features with decay priors
-                home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
-                away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
+                @st.cache_resource(show_spinner=False)
+                def _predictor_tier_priors(comp_id):
+                    return _ssim.build_prior_strengths(
+                        matches_summary_df, league_avg_stats, comp_id)
+
+                _pp_comp = int(selected_comp_ids[0]) if selected_comp_ids else 43324
+                _priors = _predictor_tier_priors(_pp_comp)
+                home_feats = _ssim.calculate_prediction_features(
+                    home_cum, _priors.get(home_team_name), league_avg_stats, is_home=True)
+                away_feats = _ssim.calculate_prediction_features(
+                    away_cum, _priors.get(away_team_name), league_avg_stats, is_home=False)
 
                 if model_data.get('feature_mode') == 'simple_strength_v1':
                     _mix = model_data.get('strength_mix', 0.7)

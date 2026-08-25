@@ -151,6 +151,41 @@ for _, match in matches.iterrows():
     team_stats[away]['sot_for'] += away_sot
 
 team_stats = dict(team_stats)
+
+# ── Phase-2 opponent adjustment (dormant during the first phase) ──────────────
+# Once a season's second stage exists, its unbalanced schedules bias raw
+# totals; overwrite the aggregate goal/xG totals with SOS-adjusted versions
+# (per season, so opponents stay within their own competition). Points, wins,
+# venue splits and form windows remain raw — they are real results.
+from schedule_adjust import phase2_adjusted_totals
+for _sid in CURRENT_SEASON_IDS:
+    _f = matches[matches['seasonId'] == _sid]
+    _rows = []
+    for _, _m in _f.iterrows():
+        _sc = str(_m.get('score', ''))
+        if '-' not in _sc:
+            continue
+        try:
+            _hg, _ag = map(int, _sc.split('-'))
+        except Exception:
+            continue
+        _rows.append({'matchId': _m['matchId'], 'roundId': _m.get('roundId'),
+                      'home': _m['homeTeamName'], 'away': _m['awayTeamName'],
+                      'hg': _hg, 'ag': _ag})
+    _xg = {}
+    _sh = current_events[(current_events['seasonId'] == _sid)
+                         & (current_events['type.primary'] == 'shot')]
+    _sh = _sh.dropna(subset=['shot.xg', 'team.name'])
+    for (_mid, _tn), _v in _sh.groupby(['matchId', 'team.name'])['shot.xg'].sum().items():
+        _xg[(_mid, _tn)] = float(_v)
+    _adj = phase2_adjusted_totals(_rows, _xg)
+    if _adj:
+        _n = 0
+        for _t, _vals in _adj.items():
+            if _t in team_stats:
+                team_stats[_t].update(_vals)
+                _n += 1
+        print(f"  Phase-2 SOS adjustment applied to {_n} teams (season {_sid})")
 print(f"Processed {len(team_stats)} teams")
 
 # Calculate team ratings
