@@ -228,7 +228,7 @@ PRIOR_SEASON = {43324: 191782, 702: 191779}
 CROSS_TIER_SHRINK = 0.5  # weight on personal record for cross-tier movers
 
 
-def build_prior_strengths(matches_df, league_avg, target_comp_id):
+def build_prior_strengths(matches_df, league_avg, target_comp_id, prior_seasons=None):
     """Tier-aware per-team priors from LAST season's full record.
 
     Returns {team: {'per_game': {...}}} for calculate_prediction_features:
@@ -244,9 +244,10 @@ def build_prior_strengths(matches_df, league_avg, target_comp_id):
     stand in for xG rates (same scale at season aggregation).
     """
     other_comp = 702 if target_comp_id == 43324 else 43324
+    season_map = prior_seasons if prior_seasons is not None else PRIOR_SEASON
     frames = {}
     for cid in (target_comp_id, other_comp):
-        sid = PRIOR_SEASON.get(cid)
+        sid = season_map.get(cid)
         f = matches_df[(matches_df['seasonId'] == sid)
                        & (matches_df['status'] == 'Played')].copy() if sid else None
         if f is not None and not f.empty:
@@ -259,7 +260,7 @@ def build_prior_strengths(matches_df, league_avg, target_comp_id):
     # per-team season xG from shot events (best effort)
     team_match_xg = {}
     try:
-        sids = [PRIOR_SEASON[c] for c in frames]
+        sids = [season_map[c] for c in frames]
         ev = pd.read_parquet(
             'raw_events.parquet',
             columns=['matchId', 'seasonId', 'team.name', 'type.primary', 'shot.xg'],
@@ -287,33 +288,87 @@ def build_prior_strengths(matches_df, league_avg, target_comp_id):
         'winrate': 0.40, 'csrate': league_avg.get('csrate', 0.25) * 1.10,
     }
 
-    def team_rates(f, team):
-        home = f[f['homeTeamName'] == team]
-        away = f[f['awayTeamName'] == team]
-        n = len(home) + len(away)
-        if n < 10:  # need a meaningful sample
-            return None
-        gf = home['hg'].sum() + away['ag'].sum()
-        ga = home['ag'].sum() + away['hg'].sum()
-        wins = (home['hg'] > home['ag']).sum() + (away['ag'] > away['hg']).sum()
-        draws = (home['hg'] == home['ag']).sum() + (away['ag'] == away['hg']).sum()
-        cs = (home['ag'] == 0).sum() + (away['hg'] == 0).sum()
-        xg_for = xg_against = 0.0
-        have_xg = True
-        for _, r in pd.concat([home, away]).iterrows():
+    def frame_logs(f):
+        """Per-team match logs: list of (opp, gf, ga, xf, xa[None])."""
+        logs = {}
+        for _, r in f.iterrows():
             mid = r['matchId']
-            us = team_match_xg.get((mid, team))
-            opp_name = r['awayTeamName'] if r['homeTeamName'] == team else r['homeTeamName']
-            them = team_match_xg.get((mid, opp_name))
-            if us is None and them is None:
-                have_xg = False
-                break
-            xg_for += us or 0.0
-            xg_against += them or 0.0
+            h, a = r['homeTeamName'], r['awayTeamName']
+            hx, ax_ = team_match_xg.get((mid, h)), team_match_xg.get((mid, a))
+            logs.setdefault(h, []).append((a, r['hg'], r['ag'], hx, ax_))
+            logs.setdefault(a, []).append((h, r['ag'], r['hg'], ax_, hx))
+        return logs
+
+    def adjusted_rates(logs):
+        """Opponent-adjusted per-game rates (2-pass SOS correction).
+
+        Second-phase schedules are unbalanced (promotion-series teams face
+        the strongest opponents, maintenance the weakest), so a raw
+        full-season average mis-states strength exactly where the prior
+        matters most. Each match's for/against contribution is corrected by
+        how much the opponent's own concession/creation rate deviates from
+        the league mean; two passes so the corrections themselves use
+        adjusted opponent rates."""
+        raw = {}
+        for t, lst in logs.items():
+            n = len(lst)
+            xs = [(x, xa) for _, _, _, x, xa in lst if x is not None and xa is not None]
+            raw[t] = {
+                'n': n,
+                'gfpg': sum(g for _, g, _, _, _ in lst) / n,
+                'gapg': sum(g for _, _, g, _, _ in lst) / n,
+                'xfpg': (sum(x for x, _ in xs) / len(xs)) if len(xs) >= max(6, n - 4) else None,
+                'xapg': (sum(x for _, x in xs) / len(xs)) if len(xs) >= max(6, n - 4) else None,
+            }
+        lg_gf = np.mean([r['gfpg'] for r in raw.values()])
+        lg_xf_vals = [r['xfpg'] for r in raw.values() if r['xfpg'] is not None]
+        lg_xf = np.mean(lg_xf_vals) if lg_xf_vals else None
+        adj = {t: dict(r) for t, r in raw.items()}
+        for _pass in range(2):
+            ref = {t: dict(r) for t, r in adj.items()}
+            for t, lst in logs.items():
+                n = len(lst)
+                g_for = g_ag = x_for = x_ag = 0.0
+                x_ok = raw[t]['xfpg'] is not None
+                for opp, gf, ga, xf, xa in lst:
+                    o = ref.get(opp, raw.get(opp))
+                    # credit facing stingy defenses, debit leaky ones
+                    g_for += gf - ((o['gapg'] - lg_gf) if o else 0.0)
+                    g_ag += ga - ((o['gfpg'] - lg_gf) if o else 0.0)
+                    if x_ok and xf is not None and xa is not None:
+                        o_xa = o.get('xapg') if o else None
+                        o_xf = o.get('xfpg') if o else None
+                        x_for += xf - ((o_xa - lg_xf) if (o_xa is not None and lg_xf is not None) else 0.0)
+                        x_ag += xa - ((o_xf - lg_xf) if (o_xf is not None and lg_xf is not None) else 0.0)
+                adj[t]['gfpg'] = g_for / n
+                adj[t]['gapg'] = g_ag / n
+                if x_ok:
+                    m_x = len([1 for _, _, _, xf, xa in lst if xf is not None and xa is not None])
+                    adj[t]['xfpg'] = x_for / m_x
+                    adj[t]['xapg'] = x_ag / m_x
+        return raw, adj
+
+    _frame_cache = {}
+
+    def team_rates(f, team):
+        key = id(f)
+        if key not in _frame_cache:
+            logs = frame_logs(f)
+            _frame_cache[key] = (logs, *adjusted_rates(logs))
+        logs, raw, adj = _frame_cache[key]
+        lst = logs.get(team)
+        if lst is None or len(lst) < 10:  # need a meaningful sample
+            return None
+        n = len(lst)
+        wins = sum(1 for _, gf, ga, _, _ in lst if gf > ga)
+        draws = sum(1 for _, gf, ga, _, _ in lst if gf == ga)
+        cs = sum(1 for _, _, ga, _, _ in lst if ga == 0)
+        a = adj[team]
         return {
-            'ppg': (3 * wins + draws) / n, 'gpg': gf / n, 'gapg': ga / n,
-            'xgpg': (xg_for / n) if have_xg else gf / n,
-            'xgapg': (xg_against / n) if have_xg else ga / n,
+            'ppg': (3 * wins + draws) / n,
+            'gpg': a['gfpg'], 'gapg': a['gapg'],
+            'xgpg': a['xfpg'] if a['xfpg'] is not None else a['gfpg'],
+            'xgapg': a['xapg'] if a['xapg'] is not None else a['gapg'],
             'winrate': wins / n, 'csrate': cs / n,
         }
 

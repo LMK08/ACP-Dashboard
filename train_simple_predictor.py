@@ -61,6 +61,20 @@ def empty_stats():
             'last_5_results': [], 'last_5_xG': []}
 
 
+def priors_for(prior_season):
+    """Tier-aware, opponent-adjusted priors via the production builder —
+    train and serve share one implementation."""
+    f = ms[ms['seasonId'] == prior_season]
+    frame = pd.DataFrame({
+        'matchId': f['matchId'].values, 'seasonId': f['seasonId'].values,
+        'status': 'Played',
+        'homeTeamName': f['home'].values, 'awayTeamName': f['away'].values,
+        'score': f['hg'].astype(int).astype(str) + '-' + f['ag'].astype(int).astype(str),
+    })
+    return ss.build_prior_strengths(frame, league_avg, 43324,
+                                    prior_seasons={43324: int(prior_season)})
+
+
 def season_prior_rates(season):
     """Full-season per-game rates for the prior side of the blend."""
     f = ms[ms['seasonId'] == season]
@@ -96,7 +110,7 @@ league_avg = {'ppg': 1.35, 'gpg': 1.19, 'gapg': 1.19,
 
 X, y, season_of = [], [], []
 for i, season in enumerate(SEASONS):
-    priors = season_prior_rates(SEASONS[i - 1]) if i > 0 else {}
+    priors = priors_for(SEASONS[i - 1]) if i > 0 else {}
     cum = {}
     f = ms[ms['seasonId'] == season]
     for _, r in f.iterrows():
