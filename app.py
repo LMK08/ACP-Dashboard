@@ -5959,7 +5959,11 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     _pct_fp = {'n_rows': int(len(_player_data_df)),
                'minutes_sum': int(pd.to_numeric(
                    _player_data_df.get('totalMinutes', pd.Series(dtype=float)),
-                   errors='coerce').fillna(0).sum())}
+                   errors='coerce').fillna(0).sum()),
+               # Role scores are cached VALUES derived from the weights, so a
+               # weight tweak in config.yaml must invalidate this cache too.
+               'weights_hash': hashlib.md5(json.dumps(
+                   _weights, sort_keys=True, default=str).encode()).hexdigest()}
     if os.path.exists(cache_path) and _cache_is_stale(cache_path, _pct_fp):
         print(f"Percentiles cache for scope {_scope_key} predates current data — recomputing")
         os.remove(cache_path)
