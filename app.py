@@ -4393,6 +4393,15 @@ if _config:
 else:
     RADAR_HIDDEN_METRICS = set()
 
+# Display-name overrides for radar / distribution axis labels. The underlying
+# data column keeps its name; only the printed label changes. 'Progressive
+# Passes' is counted from accurate passes only (pass.accurate == True), so
+# label it as successful.
+METRIC_DISPLAY_NAMES = {'Progressive Passes': 'Progressive passes successful'}
+
+def _metric_display(metric):
+    return METRIC_DISPLAY_NAMES.get(metric, metric)
+
 # Formation coordinates for XI graphic (Opta 0-100 coordinate system)
 # Note: Left positions use higher x values (right side of screen) to match broadcast view
 FORMATION_COORDS = {
@@ -5944,7 +5953,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     (each low-minute player is temporarily added to the sample for their own percentile).
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
-    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP', 'Touches in penalty area_percentile'}
     _scope_key = _stats_scope_key(season_id, _player_data_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     _pct_fp = {'n_rows': int(len(_player_data_df)),
@@ -6507,7 +6516,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        ax.text(angle_rad, 115, _metric_display(metric), size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
     ax.set_rlabel_position(0)
     if radar_mode != 'raw':
@@ -6646,7 +6655,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.set_yticks([]); ax_dist.set_ylabel(""); ax_dist.set_title(""); ax_dist.set_xlabel("");
             legend = ax_dist.get_legend();
             if legend is not None: legend.remove()
-            ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
+            ax_dist.text(-0.05, 0.5, _metric_display(metric), transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
 
@@ -11868,7 +11877,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             if _op_eng_role is not None
                             else (_op_role in _ATTACK_TEMPLATE_ROLES))
 
-                        # 1) template radar (percentile mode)
+                        # 1) template radar (raw mean ± 2σ mode)
                         _op_fig_radar = None
                         try:
                             if _op_row is not None and _op_role:
@@ -11885,7 +11894,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                                         _op_pos, _op_elig, _op_pop,
                                         full_df_for_ranking=player_stats_with_scores_df,
                                         season_label=_op_season_lbl,
-                                        radar_mode='percentile')
+                                        radar_mode='raw')
                                     _op_figs.append(_op_fig_radar)
                         except Exception:
                             logger.exception("one-pager radar failed")
@@ -12220,7 +12229,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
                 # 4. Generate Chart for the Winner
                 st.caption(f"Best Template Match: **{best_role}**")
-                _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
+                _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], index=1, horizontal=True, key=f"radar_style_{player_id}")
                 _use_defr = st.toggle(
                     "Defensive metrics → DefR",
                     value=False, key=f"defr_mode_{player_id}",
@@ -15188,6 +15197,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _bulk_mode_label = st.radio(
                 "Radar style:",
                 ["Percentile", "Raw (mean ± 2σ)"],
+                index=1,
                 key="bulk_export_mode",
             )
             _bulk_min_mins = st.number_input(

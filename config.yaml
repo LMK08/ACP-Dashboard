@@ -318,6 +318,7 @@ weights:
     Progressive runs: 2
     Dribbles: 4
     Dribbles successful %: 2
+    Touches in penalty area: 2
     Dribbling Value: 14.0
     Aerial duels successful: 1.0
     Defensive duels successful: 1.0
@@ -344,6 +345,7 @@ weights:
     Progressive runs: 2
     Dribbles: 2
     Dribbles successful %: 4
+    Touches in penalty area: 2
     Dribbling Value: 12.0
     Aerial duels successful: 1.0
     Defensive duels successful: 1.0
@@ -367,6 +369,7 @@ weights:
     Progressive runs: 2
     Dribbles: 4
     Dribbles successful %: 4
+    Touches in penalty area: 2
     Dribbling Value: 10.0
     Aerial duels successful: 4
     Defensive duels successful: 1.0
@@ -392,6 +395,7 @@ weights:
     Progressive runs: 2
     Dribbles: 4
     Dribbles successful %: 4
+    Touches in penalty area: 2
     Dribbling Value: 14.0
     Aerial duels successful: 2
     Defensive duels successful: 1.0
@@ -416,6 +420,7 @@ weights:
     Progressive runs: 8
     Dribbles: 8
     Dribbles successful %: 6
+    Touches in penalty area: 2
     Dribbling Value: 20.0
     Aerial duels: 1.0
     Aerial duels successful %: 1.0
@@ -439,6 +444,7 @@ weights:
     Receiving Value: 30.0
     Progressive runs: 1.0
     Dribbles successful: 1.0
+    Touches in penalty area: 2
     Dribbling Value: 6.0
     Aerial duels: 5
     Aerial duels successful %: 5
@@ -464,6 +470,7 @@ weights:
     Progressive runs: 1.0
     Dribbles: 1.0
     Dribbles successful %: 1.0
+    Touches in penalty area: 2
     Dribbling Value: 8.0
     Aerial duels: 10
     Aerial duels successful %: 10
@@ -490,6 +497,7 @@ weights:
     Progressive runs: 2
     Dribbles: 2
     Dribbles successful %: 2
+    Touches in penalty area: 2
     Dribbling Value: 20.0
     Aerial duels: 1.0
     Aerial duels successful %: 1.0
