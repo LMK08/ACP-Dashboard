@@ -147,11 +147,12 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
     curr = team_stats
     m = curr['matches']
 
-    # League-average prior baseline. We deliberately do NOT use the team's
-    # prior_stats: at this tier the data is too unreliable (different
-    # competition, year-old, heavy roster turnover). Instead every team
-    # starts the season anchored to a slight-below-average baseline and the
-    # decay below pulls in current-season form quickly.
+    # Start-of-season anchor: slight-below-average baseline. When the team
+    # has a USABLE prior (built tier-aware by build_prior_strengths — full
+    # weight for returning clubs, discounted toward this anchor for
+    # cross-tier movers), the prior overrides the anchor per rate. Either
+    # way the exponential decay below hands over to current-season form
+    # within ~10 matches.
     prior_ppg = league_avg.get('ppg', 1.0) * 0.85
     prior_gpg = league_avg.get('gpg', 1.0) * 0.85
     prior_gapg = league_avg.get('gapg', 1.0) * 1.15
@@ -163,6 +164,16 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
     prior_sot_rate = league_avg.get('sot_rate', 0.35) * 0.95
     prior_venue_wr = 0.28
     prior_venue_gpg = prior_gpg
+    if prior_stats and prior_stats.get('per_game'):
+        pg = prior_stats['per_game']
+        prior_ppg = pg.get('ppg', prior_ppg)
+        prior_gpg = pg.get('gpg', prior_gpg)
+        prior_gapg = pg.get('gapg', prior_gapg)
+        prior_xgpg = pg.get('xgpg', prior_xgpg)
+        prior_xgapg = pg.get('xgapg', prior_xgapg)
+        prior_winrate = pg.get('winrate', prior_winrate)
+        prior_csrate = pg.get('csrate', prior_csrate)
+        prior_venue_gpg = prior_gpg
 
     decay_rate = DEFAULT_DECAY_RATE
     ppg = get_blended_stat(curr['points'], m, prior_ppg, decay_rate)
@@ -193,6 +204,133 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
         'sot_rate': sot_rate, 'gd': gd, 'xg_diff': xg_diff, 'form': form,
         'xg_form': xg_form, 'venue_wr': venue_wr, 'venue_gpg': venue_gpg,
     }
+
+
+# Sides arriving from ABOVE the target tier (no data in our lake). They get a
+# mildly-strong anchor instead of the pessimistic one. SEASON-SPECIFIC.
+RELEGATED_INTO_LIGA3 = {'Paços de Ferreira', 'UD Oliveirense'}
+
+# Prior-season ids per competition for prior building. SEASON-SPECIFIC.
+PRIOR_SEASON = {43324: 191782, 702: 191779}
+CROSS_TIER_SHRINK = 0.5  # weight on personal record for cross-tier movers
+
+
+def build_prior_strengths(matches_df, league_avg, target_comp_id):
+    """Tier-aware per-team priors from LAST season's full record.
+
+    Returns {team: {'per_game': {...}}} for calculate_prediction_features:
+      - played the SAME competition last season -> full personal rates
+      - moved UP a tier (e.g. Campeonato -> Liga 3) -> personal rates shrunk
+        50% toward the pessimistic league anchor
+      - moved DOWN a tier (e.g. Liga 3 -> Campeonato) -> personal rates
+        shrunk 50% toward an optimistic anchor
+      - arrived from ABOVE our data (Liga 2 -> Liga 3): optimistic anchor
+      - no record anywhere: no entry (caller's pessimistic anchor applies)
+
+    xG comes from shot-level raw_events when available; otherwise goal rates
+    stand in for xG rates (same scale at season aggregation).
+    """
+    other_comp = 702 if target_comp_id == 43324 else 43324
+    frames = {}
+    for cid in (target_comp_id, other_comp):
+        sid = PRIOR_SEASON.get(cid)
+        f = matches_df[(matches_df['seasonId'] == sid)
+                       & (matches_df['status'] == 'Played')].copy() if sid else None
+        if f is not None and not f.empty:
+            score = f['score'].astype(str).str.extract(r'(\d+)\s*-\s*(\d+)')
+            f['hg'] = pd.to_numeric(score[0], errors='coerce')
+            f['ag'] = pd.to_numeric(score[1], errors='coerce')
+            f = f.dropna(subset=['hg', 'ag'])
+            frames[cid] = f
+
+    # per-team season xG from shot events (best effort)
+    team_match_xg = {}
+    try:
+        sids = [PRIOR_SEASON[c] for c in frames]
+        ev = pd.read_parquet(
+            'raw_events.parquet',
+            columns=['matchId', 'seasonId', 'team.name', 'type.primary', 'shot.xg'],
+            filters=[('seasonId', 'in', sids), ('type.primary', '==', 'shot')])
+        xg = (ev.dropna(subset=['shot.xg', 'team.name'])
+              .groupby(['matchId', 'team.name'])['shot.xg'].sum())
+        team_match_xg = xg.to_dict()
+    except Exception as e:
+        print(f"  (prior xG unavailable — using goal rates: {e})")
+
+    anchor_pess = {
+        'ppg': league_avg.get('ppg', 1.0) * 0.85,
+        'gpg': league_avg.get('gpg', 1.0) * 0.85,
+        'gapg': league_avg.get('gapg', 1.0) * 1.15,
+        'xgpg': league_avg.get('xgpg', 1.0) * 0.85,
+        'xgapg': league_avg.get('xgapg', 1.0) * 1.15,
+        'winrate': 0.28, 'csrate': league_avg.get('csrate', 0.25) * 0.85,
+    }
+    anchor_opt = {
+        'ppg': league_avg.get('ppg', 1.0) * 1.15,
+        'gpg': league_avg.get('gpg', 1.0) * 1.10,
+        'gapg': league_avg.get('gapg', 1.0) * 0.90,
+        'xgpg': league_avg.get('xgpg', 1.0) * 1.10,
+        'xgapg': league_avg.get('xgapg', 1.0) * 0.90,
+        'winrate': 0.40, 'csrate': league_avg.get('csrate', 0.25) * 1.10,
+    }
+
+    def team_rates(f, team):
+        home = f[f['homeTeamName'] == team]
+        away = f[f['awayTeamName'] == team]
+        n = len(home) + len(away)
+        if n < 10:  # need a meaningful sample
+            return None
+        gf = home['hg'].sum() + away['ag'].sum()
+        ga = home['ag'].sum() + away['hg'].sum()
+        wins = (home['hg'] > home['ag']).sum() + (away['ag'] > away['hg']).sum()
+        draws = (home['hg'] == home['ag']).sum() + (away['ag'] == away['hg']).sum()
+        cs = (home['ag'] == 0).sum() + (away['hg'] == 0).sum()
+        xg_for = xg_against = 0.0
+        have_xg = True
+        for _, r in pd.concat([home, away]).iterrows():
+            mid = r['matchId']
+            us = team_match_xg.get((mid, team))
+            opp_name = r['awayTeamName'] if r['homeTeamName'] == team else r['homeTeamName']
+            them = team_match_xg.get((mid, opp_name))
+            if us is None and them is None:
+                have_xg = False
+                break
+            xg_for += us or 0.0
+            xg_against += them or 0.0
+        return {
+            'ppg': (3 * wins + draws) / n, 'gpg': gf / n, 'gapg': ga / n,
+            'xgpg': (xg_for / n) if have_xg else gf / n,
+            'xgapg': (xg_against / n) if have_xg else ga / n,
+            'winrate': wins / n, 'csrate': cs / n,
+        }
+
+    def shrink(rates, anchor, w):
+        return {k: w * rates[k] + (1 - w) * anchor[k] for k in rates}
+
+    priors = {}
+    same = frames.get(target_comp_id)
+    other = frames.get(other_comp)
+    all_current_teams = set()  # caller filters; build for any team seen
+    for f in frames.values():
+        all_current_teams |= set(f['homeTeamName']) | set(f['awayTeamName'])
+    for team in all_current_teams:
+        rates = team_rates(same, team) if same is not None else None
+        if rates is not None:
+            priors[team] = {'per_game': rates, 'source': 'same_tier'}
+            continue
+        rates = team_rates(other, team) if other is not None else None
+        if rates is not None:
+            # moved between our two tiers: shrink toward the anchor matching
+            # the direction (up a tier -> pessimistic, down -> optimistic)
+            moved_up = (target_comp_id == 43324)
+            anchor = anchor_pess if moved_up else anchor_opt
+            priors[team] = {'per_game': shrink(rates, anchor, CROSS_TIER_SHRINK),
+                            'source': 'cross_tier'}
+    if target_comp_id == 43324:
+        for team in RELEGATED_INTO_LIGA3:
+            priors.setdefault(team, {'per_game': dict(anchor_opt),
+                                     'source': 'from_above'})
+    return priors
 
 
 def calculate_maintenance_bonus(first_stage_table):
@@ -358,8 +496,8 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
                 match_probs[(home, away)] = np.array([0.25, 0.45, 0.30])
                 continue
 
-            home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
-            away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+            home_prior = prior_season_stats.get(home) or home_cum.get('prior_stats')
+            away_prior = prior_season_stats.get(away) or away_cum.get('prior_stats')
 
             home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
             away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
@@ -493,8 +631,8 @@ def simulate_campeonato(matches_df, model, scaler, team_stats, prior_season_stat
                 if not home_cum or not away_cum:
                     playoff_match_probs_cache[key] = np.array([0.25, 0.45, 0.30])
                 else:
-                    home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
-                    away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+                    home_prior = prior_season_stats.get(home) or home_cum.get('prior_stats')
+                    away_prior = prior_season_stats.get(away) or away_cum.get('prior_stats')
                     home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
                     away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
                     fv = build_feature_vector(home_feats, away_feats)
@@ -739,8 +877,8 @@ def simulate_promotion_playoff(matches_df, model, scaler, team_stats,
             if not home_cum or not away_cum:
                 match_probs[(h, a)] = np.array([0.25, 0.45, 0.30])
                 continue
-            home_prior = home_cum.get('prior_stats') or prior_season_stats.get(h)
-            away_prior = away_cum.get('prior_stats') or prior_season_stats.get(a)
+            home_prior = prior_season_stats.get(h) or home_cum.get('prior_stats')
+            away_prior = prior_season_stats.get(a) or away_cum.get('prior_stats')
             home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
             away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
             fv = build_feature_vector(home_feats, away_feats)
@@ -838,8 +976,8 @@ def _pairwise_probs(teams, model, scaler, team_stats, prior_season_stats, league
         if not home_cum or not away_cum:
             probs[(home, away)] = np.array([0.25, 0.45, 0.30])
             continue
-        home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
-        away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+        home_prior = prior_season_stats.get(home) or home_cum.get('prior_stats')
+        away_prior = prior_season_stats.get(away) or away_cum.get('prior_stats')
         home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
         away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
         fv = build_feature_vector(home_feats, away_feats)
@@ -1091,8 +1229,8 @@ def simulate_liga3(matches_df, model, scaler, team_stats, prior_season_stats, le
                 match_probs[(home, away)] = np.array([0.25, 0.45, 0.30])
                 continue
 
-            home_prior = home_cum.get('prior_stats') or prior_season_stats.get(home)
-            away_prior = away_cum.get('prior_stats') or prior_season_stats.get(away)
+            home_prior = prior_season_stats.get(home) or home_cum.get('prior_stats')
+            away_prior = prior_season_stats.get(away) or away_cum.get('prior_stats')
 
             home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
             away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
@@ -1200,6 +1338,9 @@ def main():
     model = model_data['model']
     scaler = model_data['scaler']
     team_stats = model_data['team_stats']
+    # Tier-aware priors built fresh from last season's records (the pkl's
+    # prior_season_stats is a stale training-time artifact — see
+    # build_prior_strengths). Falls back to {} on any failure.
     prior_season_stats = model_data.get('prior_season_stats', {})
     league_avg_stats = model_data.get('league_avg_stats', {
         'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0,
@@ -1208,11 +1349,20 @@ def main():
 
     matches_df = pd.read_parquet('matches_summary.parquet')
 
+    liga3_priors, camp_priors = {}, {}
+    try:
+        liga3_priors = build_prior_strengths(matches_df, league_avg_stats, 43324)
+        camp_priors = build_prior_strengths(matches_df, league_avg_stats, 702)
+        print(f"Tier-aware priors built: Liga 3 {len(liga3_priors)} teams, "
+              f"Campeonato {len(camp_priors)} teams")
+    except Exception as e:
+        print(f"⚠️ Prior build failed ({e}) — falling back to league anchors")
+
     all_results = {}
 
     # Liga 3 simulation
     try:
-        liga3_results = simulate_liga3(matches_df, model, scaler, team_stats, prior_season_stats, league_avg_stats)
+        liga3_results = simulate_liga3(matches_df, model, scaler, team_stats, liga3_priors, league_avg_stats)
         if liga3_results:
             all_results[43324] = {
                 'competition_name': 'Liga 3',
@@ -1227,7 +1377,7 @@ def main():
         camp_season_id = COMPETITIONS[702]["current_season"]
         camp_matches = matches_df[matches_df['seasonId'] == camp_season_id]
         if not camp_matches.empty:
-            camp_results = simulate_campeonato(camp_matches, model, scaler, team_stats, prior_season_stats, league_avg_stats)
+            camp_results = simulate_campeonato(camp_matches, model, scaler, team_stats, camp_priors, league_avg_stats)
             if camp_results:
                 all_results[702] = {
                     'competition_name': 'Campeonato',
