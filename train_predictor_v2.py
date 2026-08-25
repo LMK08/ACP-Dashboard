@@ -18,6 +18,15 @@ from sklearn.model_selection import cross_val_score
 from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
+import os
+from sklearn.metrics import log_loss
+
+# Experiment switches (2026-08 OBV feature experiment):
+#   OBV_FEATURES=1  -> add engine OBV-difference features (see
+#                      calibrate_strength_metrics.py for the motivating evidence)
+#   MODEL_OUT=path  -> write the trained pkl somewhere other than production
+USE_OBV_FEATURES = os.environ.get('OBV_FEATURES') == '1'
+MODEL_OUT = os.environ.get('MODEL_OUT', 'match_predictor_model.pkl')
 
 # Load data
 print("Loading data...")
@@ -25,6 +34,23 @@ historical_events = pd.read_parquet('historical_events.parquet')
 historical_matches_raw = pd.read_parquet('historical_matches.parquet')
 current_events = pd.read_parquet('raw_events.parquet')
 current_matches_raw = pd.read_parquet('matches_summary.parquet')
+
+OBV_LOOKUP = {}
+if USE_OBV_FEATURES:
+    try:
+        _obv = (pd.read_parquet('obv_match_minute.parquet')
+                .groupby(['matchId', 'teamId'])['obv'].sum().reset_index())
+        _idn = (pd.read_parquet('raw_events.parquet', columns=['team.id', 'team.name'])
+                .dropna().drop_duplicates())
+        _id2name = dict(zip(_idn['team.id'].astype('int64'), _idn['team.name']))
+        for _r in _obv.itertuples(index=False):
+            _nm = _id2name.get(int(_r.teamId))
+            if _nm:
+                OBV_LOOKUP[(int(_r.matchId), _nm)] = float(_r.obv)
+        print(f"OBV features ON — {len(OBV_LOOKUP):,} match-team OBV values")
+    except Exception as _e:
+        print(f"OBV lookup unavailable ({_e}) — OBV features disabled")
+        USE_OBV_FEATURES = False
 
 # Normalize column names
 def normalize_match_df(df):
@@ -281,7 +307,8 @@ def initialize_team_stats():
         'away_matches': 0, 'away_wins': 0, 'away_goals': 0,
         'clean_sheets': 0,
         'last_5_results': [],  # 3=win, 1=draw, 0=loss
-        'last_5_xG': []
+        'last_5_xG': [],
+        'obv_for': 0.0, 'obv_against': 0.0, 'obv_matches': 0
     }
 
 
@@ -431,8 +458,19 @@ def calculate_features(team_stats, team_name, prior_stats, is_home, league_avg_s
         'xg_form': xg_form,
         'venue_wr': venue_wr,
         'venue_gpg': venue_gpg,
+        'obvd': _blended_obvd(curr),
         'matches_played': m
     }
+
+
+def _blended_obvd(curr, decay_rate=0.1):
+    """Blended OBV-difference per game; prior is 0 (league-mean OBV diff)."""
+    om = curr.get('obv_matches', 0)
+    if om == 0:
+        return 0.0
+    per_game = (curr.get('obv_for', 0.0) - curr.get('obv_against', 0.0)) / om
+    w_prior = get_decay_weight(om, decay_rate)
+    return (1 - w_prior) * per_game
 
 
 def build_training_data(matches_df, events_df, prior_season_stats=None, league_avg_stats=None):
@@ -504,6 +542,9 @@ def build_training_data(matches_df, events_df, prior_season_stats=None, league_a
                 # Venue goals per game
                 home_feats['venue_gpg'], away_feats['venue_gpg'],
             ]
+            if USE_OBV_FEATURES:
+                features += [home_feats['obvd'], away_feats['obvd'],
+                             home_feats['obvd'] - away_feats['obvd']]
 
             X.append(features)
 
@@ -535,6 +576,17 @@ def build_training_data(matches_df, events_df, prior_season_stats=None, league_a
         team_cumulative[away]['goals_for'] += away_goals
         team_cumulative[away]['goals_against'] += home_goals
         team_cumulative[away]['away_goals'] += away_goals
+
+        if USE_OBV_FEATURES:
+            _ho = OBV_LOOKUP.get((match_id, home))
+            _ao = OBV_LOOKUP.get((match_id, away))
+            if _ho is not None and _ao is not None:
+                team_cumulative[home]['obv_for'] += _ho
+                team_cumulative[home]['obv_against'] += _ao
+                team_cumulative[home]['obv_matches'] += 1
+                team_cumulative[away]['obv_for'] += _ao
+                team_cumulative[away]['obv_against'] += _ho
+                team_cumulative[away]['obv_matches'] += 1
 
         if home_goals > away_goals:
             team_cumulative[home]['wins'] += 1
@@ -741,6 +793,11 @@ for name, model in models.items():
     model.fit(X_scaled, y)
     test_pred = model.predict(X_test_scaled)
     test_score = (test_pred == y_test).mean()
+    _proba = model.predict_proba(X_test_scaled)
+    _ll = log_loss(y_test, _proba, labels=[0, 1, 2])
+    _onehot = np.eye(3)[np.asarray(y_test, dtype=int)]
+    _brier = float(np.mean(np.sum((_proba - _onehot) ** 2, axis=1)))
+    print(f"  Held-out log-loss: {_ll:.4f} | Brier: {_brier:.4f}")
 
     print(f"{name}:")
     print(f"  CV (train): {cv_score:.3f} (+/- {scores.std()*2:.3f})")
@@ -799,10 +856,10 @@ model_data = {
     'version': 3
 }
 
-with open('match_predictor_model.pkl', 'wb') as f:
+with open(MODEL_OUT, 'wb') as f:
     pickle.dump(model_data, f)
 
-print(f"\nModel saved to match_predictor_model.pkl")
+print(f"\nModel saved to {MODEL_OUT}")
 print(f"Teams included: {len(prediction_team_stats)}")
 print(f"Returning teams with prior: {len([t for t, s in prediction_team_stats.items() if s.get('prior_stats')])}")
 print(f"New/promoted teams: {len([t for t, s in prediction_team_stats.items() if not s.get('prior_stats')])}")
@@ -842,6 +899,9 @@ for i in range(3):
         home_feats['cs_rate'], away_feats['cs_rate'],
         home_feats['venue_gpg'], away_feats['venue_gpg'],
     ]
+    if USE_OBV_FEATURES:
+        features += [home_feats['obvd'], away_feats['obvd'],
+                     home_feats['obvd'] - away_feats['obvd']]
 
     X_pred = scaler.transform([features])
     proba = best_model.predict_proba(X_pred)[0]
