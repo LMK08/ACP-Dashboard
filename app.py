@@ -15837,7 +15837,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
                 away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
 
-                feature_vector = [
+                if model_data.get('feature_mode') == 'simple_strength_v1':
+                    _mix = model_data.get('strength_mix', 0.7)
+                    def _S(f):
+                        return (_mix * (f['xgpg'] - f['xgapg'])
+                                + (1 - _mix) * (f['gpg'] - f['gapg']))
+                    feature_vector = [_S(home_feats) - _S(away_feats)]
+                else:
+                    feature_vector = [
                     home_feats['ppg'], away_feats['ppg'], home_feats['ppg'] - away_feats['ppg'],
                     home_feats['form'], away_feats['form'], home_feats['form'] - away_feats['form'],
                     home_feats['gpg'], away_feats['gpg'], home_feats['gpg'] - away_feats['gpg'],

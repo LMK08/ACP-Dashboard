@@ -33,8 +33,13 @@ except FileNotFoundError:
 
 # Helper functions
 def get_match_xg(events_df, match_id, team_name):
+    # Non-penalty xG: type 'shot' only (penalties are their own primary type).
+    # Aligned 2026-08 with the simple-strength predictor spec — NPxGD is the
+    # more predictive and less noisy signal (see calibrate_strength_metrics).
     match_events = events_df[events_df['matchId'] == match_id]
-    shots = match_events[(match_events['shot.isGoal'].notna()) & (match_events['team.name'] == team_name)]
+    shots = match_events[(match_events['shot.isGoal'].notna())
+                         & (match_events['team.name'] == team_name)
+                         & (match_events['type.primary'] == 'shot')]
     if 'shot.xg' in shots.columns:
         return shots['shot.xg'].sum()
     return 0.0

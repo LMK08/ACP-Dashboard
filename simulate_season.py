@@ -397,7 +397,22 @@ def calculate_maintenance_bonus(first_stage_table):
     return bonuses
 
 
+# Set from the loaded model artifact in main(); 'simple_strength_v1' switches
+# the feature vector to the interpretable single-strength model (0.7 NPxGD +
+# 0.3 GD, blended with priors upstream in calculate_prediction_features).
+MODEL_FEATURE_MODE = None
+MODEL_STRENGTH_MIX = 0.7
+
+
+def team_strength(feats, mix=None):
+    mix = MODEL_STRENGTH_MIX if mix is None else mix
+    return (mix * (feats['xgpg'] - feats['xgapg'])
+            + (1 - mix) * (feats['gpg'] - feats['gapg']))
+
+
 def build_feature_vector(home_feats, away_feats):
+    if MODEL_FEATURE_MODE == 'simple_strength_v1':
+        return [team_strength(home_feats) - team_strength(away_feats)]
     return [
         home_feats['ppg'], away_feats['ppg'], home_feats['ppg'] - away_feats['ppg'],
         home_feats['form'], away_feats['form'], home_feats['form'] - away_feats['form'],
@@ -1350,6 +1365,12 @@ def main():
 
     model = model_data['model']
     scaler = model_data['scaler']
+    global MODEL_FEATURE_MODE, MODEL_STRENGTH_MIX
+    MODEL_FEATURE_MODE = model_data.get('feature_mode')
+    MODEL_STRENGTH_MIX = model_data.get('strength_mix', 0.7)
+    if MODEL_FEATURE_MODE:
+        print(f"Predictor feature mode: {MODEL_FEATURE_MODE} "
+              f"(mix={MODEL_STRENGTH_MIX})")
     team_stats = model_data['team_stats']
     # Tier-aware priors built fresh from last season's records (the pkl's
     # prior_season_stats is a stale training-time artifact — see
