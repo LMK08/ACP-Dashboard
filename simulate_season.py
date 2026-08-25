@@ -119,28 +119,40 @@ def calculate_league_table(matches_df, team_list):
     return table_df
 
 
-# Decay rate for the league-average prior. At rate 0.30, prior weight drops
-# to 22% after 5 matches, 5% after 10, ~1% after 15, ~0.04% after 26. This
-# reflects that at this tier (Campeonato / Liga 3) heavy roster turnover and
-# cross-tier moves make prior-season data unreliable, so the start-of-season
-# baseline is league-average and current-season form takes over within ~10
-# matches.
-DEFAULT_DECAY_RATE = 0.30
+# ── Prior/current blending: empirical-Bayes shrinkage ────────────────────────
+# Calibrated 2026-08 two ways (see decay_backtest): (a) backtest on three Liga 3
+# season pairs — optimal current-weight for POINTS is only ~0.15 at 3 matches
+# (last season's table out-predicts the current one until ~MW13), while xGD
+# earns trust much faster (optimal k≈3); (b) literature — Dixon-Coles time
+# decay implies ~1-year half-life, FiveThirtyEight carries 67% of prior-season
+# rating across seasons, crossover studies put current-alone parity at 10-15
+# matches, and ASA/11tegen11 show xG ratio is maximally predictive from ~game
+# 4-5. The old exp(-0.30·m) decay (5% prior weight at 10 matches) was ~3x too
+# fast for points-like rates.
+#
+# Form: prior_weight = k/(k+m)  — never reaches zero (prior info still helps
+# late; Bundesliga study finds significant gains at matchday 17), with
+# metric-specific k ("effective games of prior evidence"):
+K_POINTS = 10.0   # ppg, win rate, clean sheets, venue rates
+K_GOALS = 8.0     # goals for/against per game
+K_XG = 4.0        # xG for/against per game — signal-rich early
+
+# Prior-quality multiplier on k: a fuzzy prior earns less patience (literature:
+# promoted/relegated sides get wider uncertainty and faster updating).
+K_SCALE_BY_SOURCE = {'same_tier': 1.0, 'cross_tier': 0.7, 'from_above': 0.5}
+K_SCALE_ANCHOR = 0.5  # no personal prior at all — generic league anchor
 
 
-def get_decay_weight(matches_played, decay_rate=DEFAULT_DECAY_RATE):
-    return np.exp(-decay_rate * matches_played)
-
-
-def get_blended_stat(current_value, current_matches, prior_per_game, decay_rate=DEFAULT_DECAY_RATE, default_prior=None):
+def get_blended_stat(current_value, current_matches, prior_per_game, k=K_POINTS,
+                     k_scale=1.0, default_prior=None):
     if current_matches == 0:
         return prior_per_game if prior_per_game is not None else (default_prior if default_prior else 0.0)
     current_per_game = current_value / current_matches
     if prior_per_game is None:
         return current_per_game
-    prior_weight = get_decay_weight(current_matches, decay_rate)
-    current_weight = 1 - prior_weight
-    return current_weight * current_per_game + prior_weight * prior_per_game
+    k_eff = max(k * k_scale, 1.0)
+    prior_weight = k_eff / (k_eff + current_matches)
+    return (1 - prior_weight) * current_per_game + prior_weight * prior_per_game
 
 
 def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
@@ -164,6 +176,7 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
     prior_sot_rate = league_avg.get('sot_rate', 0.35) * 0.95
     prior_venue_wr = 0.28
     prior_venue_gpg = prior_gpg
+    k_scale = K_SCALE_ANCHOR
     if prior_stats and prior_stats.get('per_game'):
         pg = prior_stats['per_game']
         prior_ppg = pg.get('ppg', prior_ppg)
@@ -174,15 +187,15 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
         prior_winrate = pg.get('winrate', prior_winrate)
         prior_csrate = pg.get('csrate', prior_csrate)
         prior_venue_gpg = prior_gpg
+        k_scale = K_SCALE_BY_SOURCE.get(prior_stats.get('source'), 1.0)
 
-    decay_rate = DEFAULT_DECAY_RATE
-    ppg = get_blended_stat(curr['points'], m, prior_ppg, decay_rate)
-    gpg = get_blended_stat(curr['goals_for'], m, prior_gpg, decay_rate)
-    gapg = get_blended_stat(curr['goals_against'], m, prior_gapg, decay_rate)
-    xgpg = get_blended_stat(curr['xG_for'], m, prior_xgpg, decay_rate)
-    xgapg = get_blended_stat(curr['xG_against'], m, prior_xgapg, decay_rate)
-    win_rate = get_blended_stat(curr['wins'], m, prior_winrate, decay_rate)
-    cs_rate = get_blended_stat(curr['clean_sheets'], m, prior_csrate, decay_rate)
+    ppg = get_blended_stat(curr['points'], m, prior_ppg, K_POINTS, k_scale)
+    gpg = get_blended_stat(curr['goals_for'], m, prior_gpg, K_GOALS, k_scale)
+    gapg = get_blended_stat(curr['goals_against'], m, prior_gapg, K_GOALS, k_scale)
+    xgpg = get_blended_stat(curr['xG_for'], m, prior_xgpg, K_XG, k_scale)
+    xgapg = get_blended_stat(curr['xG_against'], m, prior_xgapg, K_XG, k_scale)
+    win_rate = get_blended_stat(curr['wins'], m, prior_winrate, K_POINTS, k_scale)
+    cs_rate = get_blended_stat(curr['clean_sheets'], m, prior_csrate, K_POINTS, k_scale)
 
     curr_shot_conv = curr['goals_for'] / max(curr['shots_for'], 1) if m > 0 else 0
     curr_sot_rate = curr['sot_for'] / max(curr['shots_for'], 1) if m > 0 else 0
@@ -190,8 +203,8 @@ def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
     sot_rate = curr_sot_rate if m > 3 else prior_sot_rate
 
     venue_key = 'home' if is_home else 'away'
-    venue_wr = get_blended_stat(curr[f'{venue_key}_wins'], curr[f'{venue_key}_matches'], prior_venue_wr, decay_rate)
-    venue_gpg = get_blended_stat(curr[f'{venue_key}_goals'], curr[f'{venue_key}_matches'], prior_venue_gpg, decay_rate)
+    venue_wr = get_blended_stat(curr[f'{venue_key}_wins'], curr[f'{venue_key}_matches'], prior_venue_wr, K_POINTS, k_scale)
+    venue_gpg = get_blended_stat(curr[f'{venue_key}_goals'], curr[f'{venue_key}_matches'], prior_venue_gpg, K_POINTS, k_scale)
 
     gd = gpg - gapg
     xg_diff = xgpg - xgapg
