@@ -132,12 +132,14 @@ jobs:
           # cause of the 2026-06-17 failure: committed *.png plots got pushed
           # and HF declined the whole push.
           find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
-          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
+          # icons/ is exempt: team crests the app loads at runtime, shipped via LFS below.
+          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -not -path '*/icons/*' -delete 2>/dev/null || true
           cd "$DEPLOY_DIR"
           git init -b main
           git lfs install
           git lfs track "*.parquet"
           git lfs track "*.pkl"
+          git lfs track "icons/*.png"
           git add .gitattributes
           git add -A
           git -c user.name="GitHub Actions" -c user.email="actions@github.com" \

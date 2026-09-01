@@ -4,6 +4,13 @@ Own git repo (deploys via git push to the HF Space). Python 3.11 venv with
 strictly pinned deps — **pyarrow must stay 24.0.0** (25.0.0 segfaults); never
 upgrade the pins.
 
+Deploys: push to GitHub `main` triggers `.github/workflows/deploy_to_hf.yml`;
+`scheduled_update.yml` / `engine_rebuild.yml` force-push single-commit deploys.
+All three strip loose PNGs (HF's pre-receive hook rejects non-LFS binaries)
+but **exempt `icons/`** — the team-crest PNGs the scatter plots load at
+runtime, shipped via `git lfs track "icons/*.png"`. Keep any new runtime
+image assets on that LFS+exempt path or the deploy will silently drop them.
+
 ## Team Analysis ↔ Opposition Report parity (RULE)
 
 The Team Analysis page (`app.py`, `analysis_type == 'Team Analysis'`) and the

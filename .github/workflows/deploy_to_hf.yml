@@ -97,7 +97,9 @@ jobs:
           # the 2.3M-row events frame on first load of each league/season.
           # rsync --delete mirrors the dir exactly: files deleted from git are
           # deleted from HF too, and a dir dropped from git entirely is removed.
-          for d in .streamlit models valuations stats_cache; do
+          # icons: team crest PNGs for the scatter plots — LFS-tracked on HF
+          # (see the push step) so the pre-receive binary hook accepts them.
+          for d in .streamlit models valuations stats_cache icons; do
             if [ -d "$d" ]; then
               rsync -a --delete "$d/" "../hf-repo/$d/"
             elif [ -d "../hf-repo/$d" ]; then
@@ -124,9 +126,11 @@ jobs:
 
           # Strip generated image artifacts — the running app never loads
           # them, and HF's pre-receive hook rejects raw binaries (e.g. PNGs)
-          # that aren't stored via LFS/Xet. Drop any plots dirs + loose images.
+          # that aren't stored via LFS/Xet. Drop any plots dirs + loose
+          # images, EXCEPT icons/ (team crests the scatter plots load at
+          # runtime — they ship via LFS, see the push step).
           find ../hf-repo -type d -name plots -exec rm -rf {} + 2>/dev/null || true
-          find ../hf-repo -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
+          find ../hf-repo -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -not -path '*/icons/*' -delete 2>/dev/null || true
 
           echo "✅ Code files updated (deletions mirrored)"
 
@@ -136,6 +140,12 @@ jobs:
         run: |
           cd hf-repo
           git lfs install
+          # Crest PNGs must ride LFS or HF's pre-receive hook rejects the
+          # push (the 2026-06-17 failure mode). The force-push deploys
+          # (scheduled_update / engine_rebuild) track the same pattern, so
+          # .gitattributes stays consistent across deploy paths.
+          git lfs track "icons/*.png"
+          git add .gitattributes
           git add -A
 
           # Only push if there are actual changes
