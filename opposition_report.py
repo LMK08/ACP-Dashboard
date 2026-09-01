@@ -109,7 +109,7 @@ def _fig_png_pair(fig):
 # ---------------------------------------------------------------------------
 # Same fix as app.py's Match/Team pages (d428284): build the figure once, cache
 # the PNG bytes, st.image() them. This page is the biggest single surface —
-# 24 figures across 17 sites, every one of them rebuilt from scratch on every
+# ~27 figures across ~20 sites, every one of them rebuilt from scratch on every
 # rerun, including on an expander toggle or an opponent switch.
 #
 # CACHE-KEY CONTRACT — read before adding a `kind`:
@@ -156,11 +156,15 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
     a day on the figures that don't draw a date.
 
     `extra`, per kind:
-      radar         (title_suffix, params, color, values_raw, values_pct)
+      radar         (title_suffix, params, color, values_raw, values_pct,
+                     league_label, season_label)
         The plotted values ride in the KEY, not just in the scope: ~11 numbers,
         and they make the radar a pure function of its key regardless of how
         calculate_all_team_radars_stats / calculate_set_piece_metrics key
         themselves. (values_raw may hold preformatted strings like '45%'.)
+        league_label/season_label are drawn onto the image (Team Analysis
+        passes them the same way) — without them every radar stamped the
+        plotter's defaults ('Liga 3', '2025/26') even for Campeonato.
       formation     (formation, xi_key)
         xi_key is ((slot, name, id), ...) in dict order — the 11 players drawn
         and the slots they occupy, so the picture is pinned without trusting
@@ -195,9 +199,11 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
     """
     app = _get_app()
     if kind == 'radar':
-        _title, _params, _color, _values_raw, _values_pct = extra
+        (_title, _params, _color, _values_raw, _values_pct,
+         _league, _season) = extra
         fig = app.plot_radar_chart(list(_params), list(_values_raw),
-                                   list(_values_pct), team_name, _title, _color)
+                                   list(_values_pct), team_name, _title, _color,
+                                   league=_league, season=_season)
     elif kind == 'formation':
         _formation, _xi_key = extra
         fig = app.create_formation_graphic(_formation, _payload, team_name)
@@ -237,6 +243,22 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
                                    league_events_df=_events_df)
     elif kind == 'shot_assists':
         fig = pv.plot_shot_assists_and_dribbles(_events_df, team_name)
+    elif kind == 'passing_network':
+        # Mirrors Team Analysis's kind of the same name: payload carries the
+        # season/comp/team-filtered OBV pass pairs; the network itself comes
+        # from the scoped events frame, so the scope key pins it.
+        _p = _payload if isinstance(_payload, dict) else {}
+        fig = pv.plot_passing_network(_events_df, team_name,
+                                      obv_pairs=_p.get('pairs'))
+    elif kind == 'phase_profile':
+        _p = _payload if isinstance(_payload, dict) else {}
+        fig = app.obv_viz.plot_phase_profile(_p.get('profile'), team_name)
+    elif kind == 'obv_categories':
+        _p = _payload if isinstance(_payload, dict) else {}
+        if _p.get('team_season') is None or _p.get('team_id') is None:
+            return None
+        fig = app.obv_viz.plot_team_obv_categories(
+            _p['team_season'], _p['team_id'], team_name)
     else:
         raise ValueError(f"unknown opposition figure kind: {kind!r}")
     return _fig_png_pair(fig) if fig is not None else None
@@ -909,13 +931,18 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         if pdf_key:
             pdf_figures[pdf_key] = _pair[1]
 
+    _league_label = app.get_league_label(comp_ids)
+    _season_label = season_id_map.get(selected_season_id, "Unknown")
+
     def _show_opp_radar(pdf_key, title, params, values_raw, values_pct, color):
         # The plotted values go in `extra` (hashed), not in `payload`
         # (unhashed) — that is what makes the radar a pure function of its key
-        # rather than a bet on the upstream stat cache.
+        # rather than a bet on the upstream stat cache. league/season labels
+        # are drawn onto the image, so they ride in the key too.
         _show_opp_png('radar', pdf_key=pdf_key,
                       extra=(title, tuple(params), color,
-                             tuple(values_raw), tuple(values_pct)))
+                             tuple(values_raw), tuple(values_pct),
+                             _league_label, _season_label))
 
     # Initialise variables used across sections
     strengths, weaknesses, profiles = [], [], []
@@ -952,32 +979,46 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         # Row 1: Offensive + Distribution
         col1, col2 = st.columns(2)
 
-        # Offensive
+        # Offensive — title/colour match Team Analysis exactly (parity rule:
+        # these four radars are the same visual on both pages).
         off_m = [m for m in OFFENSIVE_METRICS if m in team_pct.index]
         if off_m:
             with col1:
-                _show_opp_radar('radar_offensive', "Offensive", off_m,
+                _show_opp_radar('radar_offensive', "Offensive Radar", off_m,
                                 [team_raw[m] for m in off_m],
-                                [team_pct[m] for m in off_m], '#e63946')
+                                [team_pct[m] for m in off_m], '#e60000')
 
-        # Distribution
+        # Distribution — Ball Possession formatted as % like Team Analysis
         dist_m = [m for m in DISTRIBUTION_METRICS if m in team_pct.index]
         if dist_m:
             with col2:
-                _show_opp_radar('radar_distribution', "Distribution", dist_m,
-                                [team_raw[m] for m in dist_m],
+                raw_dist_values = [team_raw[m] for m in dist_m]
+                try:
+                    _poss_idx = dist_m.index('Ball Possession')
+                    raw_dist_values[_poss_idx] = f"{raw_dist_values[_poss_idx]:.0f}%"
+                except ValueError:
+                    pass
+                _show_opp_radar('radar_distribution', "Distribution Radar", dist_m,
+                                raw_dist_values,
                                 [team_pct[m] for m in dist_m], '#0077b6')
 
         # Row 2: Defensive + Set Piece
         col3, col4 = st.columns(2)
 
-        # Defensive
+        # Defensive — duel win %s formatted like Team Analysis
         def_m = [m for m in DEFENSIVE_METRICS_TEAM if m in team_pct.index]
         if def_m:
             with col3:
-                _show_opp_radar('radar_defensive', "Defensive", def_m,
-                                [team_raw[m] for m in def_m],
-                                [team_pct[m] for m in def_m], '#2a9d8f')
+                raw_def_values = [team_raw[m] for m in def_m]
+                for _pct_name in ['Aerial Duel Win %', 'Defensive Duel Win %']:
+                    try:
+                        _idx = def_m.index(_pct_name)
+                        raw_def_values[_idx] = f"{raw_def_values[_idx]:.0f}%"
+                    except ValueError:
+                        pass
+                _show_opp_radar('radar_defensive', "Defensive Radar", def_m,
+                                raw_def_values,
+                                [team_pct[m] for m in def_m], '#52A736')
 
         # Set Piece
         if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
@@ -998,6 +1039,75 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                                     [sp_team_pct[m] for m in sp_m], '#ff8c00')
     else:
         st.warning(f"No radar data available for {selected_opponent}.")
+
+    st.divider()
+
+    # ===================================================================
+    # Step 3b: Season Report (parity with Team Analysis)
+    # ===================================================================
+    with st.expander("📊 Season Report — performance across 7 dimensions",
+                     expanded=False):
+        st.caption(
+            "Each row shows every team in the current league as a green dot, "
+            f"with **{selected_opponent}** highlighted as a white hexagon. "
+            "Values are the team's raw per-match / per-90 numbers."
+        )
+        # Same cache-key format as Team Analysis (stage 'all'), so the same
+        # league+season selection shares one computed entry across both pages.
+        _sr_cache_key = (
+            f"sr_{','.join(map(str, comp_ids or []))}_{selected_season_id}_all"
+        )
+        app.render_season_report_section(
+            season_events_df, season_matches_df, selected_opponent,
+            season_ids=selected_season_id,
+            stage=None,
+            cache_key=_sr_cache_key,
+        )
+
+    # ===================================================================
+    # Step 3c: On-Ball Value & Phases (parity with Team Analysis)
+    # ===================================================================
+    st.subheader(f"{selected_opponent} — On-Ball Value & Phases")
+    _obv_all = app.load_obv_viz_data()
+    _opp_obv_id = None
+    _prof_full = _obv_all.get('phase_profile')
+    if _prof_full is not None:
+        _tid_rows = _prof_full.loc[
+            _prof_full['teamName'] == selected_opponent, 'teamId'].dropna()
+        if len(_tid_rows):
+            _opp_obv_id = int(_tid_rows.iloc[0])
+    _prof = _prof_full
+    if _prof is not None:
+        _prof = _prof[(_prof['seasonId'] == selected_season_id)
+                      & (_prof['competitionId'].isin(_fig_comp_key))]
+    _tseason = _obv_all.get('team_season')
+    if _tseason is not None:
+        _tseason = _tseason[(_tseason['seasonId'] == selected_season_id)
+                            & (_tseason['competitionId'].isin(_fig_comp_key))]
+
+    if _tseason is not None and not _tseason.empty and _opp_obv_id is not None:
+        _show_opp_png('obv_categories', pdf_key='obv_categories',
+                      payload={'team_season': _tseason,
+                               'team_id': _opp_obv_id})
+    else:
+        st.caption("Team OBV for this season appears after the next engine rebuild.")
+
+    if _prof is not None and not _prof.empty:
+        _show_opp_png('phase_profile', pdf_key='phase_profile',
+                      payload={'profile': _prof})
+        with st.expander("How phases are defined (v1)"):
+            st.markdown(
+                "- **Buildup / Progression / Finishing** — organized-possession "
+                "segments by pitch third; success = advancing a third "
+                "(finishing: shot or box entry)\n"
+                "- **Fast break** — Wyscout counterattack possessions; "
+                "success = shot or box entry\n"
+                "- **Set piece** — corner / free-kick / penalty possessions; "
+                "success = shot or box entry\n"
+                "- Uncontrolled possessions (≤2 events, no shot) are excluded.\n"
+                "- **OBV per phase** — engine action values summed over the phase.")
+    else:
+        st.caption("Phase profile for this season appears after the next engine rebuild.")
 
     st.divider()
 
@@ -1474,6 +1584,23 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                           extra=('loss',))
         except Exception as e:
             st.caption(f"Could not render: {e}")
+
+    # Passing Network (Season) — parity with Team Analysis
+    st.markdown("**Passing Network (Season)**")
+    try:
+        _np_payload = None
+        _np_pairs = _obv_all.get('pairs')
+        if _np_pairs is not None and _opp_obv_id is not None:
+            _np_pairs = _np_pairs[
+                (_np_pairs['seasonId'] == selected_season_id)
+                & (_np_pairs['competitionId'].isin(_fig_comp_key))
+                & (_np_pairs['teamId'] == _opp_obv_id)]
+            if not _np_pairs.empty:
+                _np_payload = {'pairs': _np_pairs}
+        _show_opp_png('passing_network', pdf_key='passing_network',
+                      payload=_np_payload)
+    except Exception as e:
+        st.caption(f"Could not render passing network: {e}")
 
     # Shot Assists + Dribbles in Final Third
     st.markdown("**Shot Assists & Dribbles in Final Third**")

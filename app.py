@@ -9638,6 +9638,16 @@ def _render_team_figure_png(kind, team_name, season_key, comp_key, stage_key,
             return None
         fig = obv_viz.plot_team_obv_categories(
             _p['team_season'], _p['team_id'], team_name)
+    elif kind == 'avg_positions':
+        # Same visual as the Opposition Report's kind of this name. extra[0]
+        # is the sorted tuple of XI names (or None) — it restricts which
+        # players are drawn, so it is a real picture input.
+        _xi_names = extra[0]
+        fig = pv.plot_average_positions(
+            _team_events_df, team_name,
+            player_names=set(_xi_names) if _xi_names else None)
+    elif kind == 'shot_assists':
+        fig = pv.plot_shot_assists_and_dribbles(_team_events_df, team_name)
     else:
         raise ValueError(f"unknown team figure kind: {kind!r}")
     return _fig_png_bytes(fig) if fig is not None else None
@@ -10791,6 +10801,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # =============================================================
         st.subheader("Tactical Zone Analysis")
 
+        # 0. Average Player Positions (season) — parity with the Opposition
+        # Report: restricted to the primary XI so the map stays readable.
+        st.markdown("**Average Player Positions (Season)**")
+        try:
+            _xi_names = tuple(sorted({p['name'] for p in starting_xi.values()
+                                      if p.get('name')})) if starting_xi else None
+            _show_team_png('avg_positions', extra=(_xi_names,))
+        except Exception as e:
+            st.caption(f"Could not render average positions: {e}")
+
         # 1. Ball Recovery Zones (vs league average)
         st.markdown("**Ball Recovery Zones** (vs League Average)")
         try:
@@ -10833,6 +10853,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             _show_team_png('defensive_structure')
         except Exception as e:
             st.caption(f"Could not render defensive structure: {e}")
+
+        # 5. Shot Assists + Dribbles in Final Third — parity with the
+        # Opposition Report's section of the same name.
+        st.markdown("**Shot Assists & Dribbles in Final Third**")
+        try:
+            _show_team_png('shot_assists')
+        except Exception as e:
+            st.caption(f"Could not render shot assists & dribbles: {e}")
 
     elif analysis_type == 'League Analysis':
 
