@@ -1,0 +1,43 @@
+# Match_Reports_API/Dashboard — Streamlit club dashboard (HuggingFace Space)
+
+Own git repo (deploys via git push to the HF Space). Python 3.11 venv with
+strictly pinned deps — **pyarrow must stay 24.0.0** (25.0.0 segfaults); never
+upgrade the pins.
+
+## Team Analysis ↔ Opposition Report parity (RULE)
+
+The Team Analysis page (`app.py`, `analysis_type == 'Team Analysis'`) and the
+Opposition Report (`opposition_report.py`) are two views of the same team-level
+visuals. **Any visual or feature added/changed on one page must be applied to
+the other in the same change** (and to the PDF via `pdf_figures`/`pdf_texts`
+when it's a team-level visual). Shared visuals as of 2026-09:
+
+- 4 team radars (Offensive/Distribution/Defensive/Set Piece) — same titles,
+  colors (#e60000/#0077b6/#52A736/#ff8c00), metric lists (`OFFENSIVE_METRICS`
+  etc. in opposition_report.py mirror the inline lists in Team Analysis), and
+  %-formatting (Ball Possession, duel win %s, Short Corner/Long Throw/First
+  Contact %). Both pass real league/season labels to `plot_radar_chart`.
+- Season Report (7-dimension dot plots), On-Ball Value & Phases
+  (obv_categories + phase_profile), formation XI graphic, season shot maps
+  (for/against), rolling xG history, corner analysis (left/right), zone
+  heatmaps (recovery/loss), passing network, defensive structure, average
+  positions, shot assists & dribbles.
+
+Intentionally page-specific: Team Analysis — squad roster, stage filter,
+corner summary table; Opposition Report — projected XI/subs, key players,
+strengths/weaknesses synopsis, set-piece table + scatters, takeaways, PDF.
+
+Both pages share the actual plotters (app.py / pitch_visualizations / obv_viz),
+so drawing-code changes propagate; what drifts is call-site config (metric
+lists, colors, formatting, which sections exist). Check both call sites.
+Bump `FIGURE_CACHE_VERSION` for drawing-code changes (cache keys describe data).
+
+## Opposition Report PDF (generate_pdf.py) layout rule
+
+Every image must go through `add_figure` / `add_figure_row`, which measure the
+PNG's real aspect ratio (Pillow) and page-break or scale so nothing crosses the
+bottom margin. **Never place an image with an assumed aspect ratio or a
+hand-advanced `set_y`** — figures are saved with `bbox_inches='tight'`, so
+proportions aren't knowable in advance, and a wrong guess silently clips the
+chart. Geometry test: `test_pdf_layout.py` pattern — spy on `FPDF.image` and
+assert every placement lies within x∈[10, 287], y+h ≤ 190.
