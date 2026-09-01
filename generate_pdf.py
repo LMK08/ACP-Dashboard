@@ -3,6 +3,14 @@
 
 Uses fpdf2 (FPDF) to produce a landscape A4 report with embedded charts,
 tables, and textual analysis.
+
+LAYOUT RULE — every image goes through add_figure / add_figure_row, which
+measure the PNG's REAL pixel aspect ratio (Pillow, an fpdf2 dependency) and
+either page-break or scale so nothing crosses the bottom margin. Never place
+an image with an assumed aspect ratio: the figures come from matplotlib with
+bbox_inches='tight', so their proportions are not knowable in advance, and a
+wrong guess doesn't error — it silently clips the chart off the page (the
+old layout lost the bottom radars and the defensive-structure pitch this way).
 """
 
 import io
@@ -11,10 +19,11 @@ import tempfile
 import os
 
 from fpdf import FPDF
+from PIL import Image
 
 # A4 landscape: 297mm wide x 210mm tall
 # Usable area after margins (10mm each side): 277mm wide
-# Usable height after header/footer (~25mm top, 20mm bottom): ~165mm
+# Bottom limit: page height - 20mm auto-page-break margin = 190mm
 
 
 class OppositionReportPDF(FPDF):
@@ -22,24 +31,24 @@ class OppositionReportPDF(FPDF):
 
     # Unicode -> ASCII replacements for the built-in Helvetica font
     _UNICODE_MAP = {
-        '\u2014': '-',   # em dash
-        '\u2013': '-',   # en dash
-        '\u2022': '-',   # bullet
-        '\u2018': "'",   # left single quote
-        '\u2019': "'",   # right single quote
-        '\u201c': '"',   # left double quote
-        '\u201d': '"',   # right double quote
-        '\u2026': '...', # ellipsis
-        '\u00e9': 'e',   # e-acute
-        '\u00e1': 'a',   # a-acute
-        '\u00e3': 'a',   # a-tilde
-        '\u00f3': 'o',   # o-acute
-        '\u00fa': 'u',   # u-acute
-        '\u00e7': 'c',   # c-cedilla
-        '\u00ba': 'o',   # masculine ordinal (1º)
-        '\u00c9': 'E',   # E-acute
-        '\u00c1': 'A',   # A-acute
-        '\u2212': '-',   # minus sign
+        '—': '-',   # em dash
+        '–': '-',   # en dash
+        '•': '-',   # bullet
+        '‘': "'",   # left single quote
+        '’': "'",   # right single quote
+        '“': '"',   # left double quote
+        '”': '"',   # right double quote
+        '…': '...', # ellipsis
+        'é': 'e',   # e-acute
+        'á': 'a',   # a-acute
+        'ã': 'a',   # a-tilde
+        'ó': 'o',   # o-acute
+        'ú': 'u',   # u-acute
+        'ç': 'c',   # c-cedilla
+        'º': 'o',   # masculine ordinal (1º)
+        'É': 'E',   # E-acute
+        'Á': 'A',   # A-acute
+        '−': '-',   # minus sign
     }
 
     @classmethod
@@ -81,6 +90,23 @@ class OppositionReportPDF(FPDF):
         )
 
     # ------------------------------------------------------------------
+    # Geometry helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _png_aspect(png_bytes):
+        """height / width of the actual PNG."""
+        with Image.open(io.BytesIO(png_bytes)) as im:
+            iw, ih = im.size
+        return ih / float(iw)
+
+    def _bottom_limit(self):
+        """Lowest y content may reach (matches the auto-page-break margin)."""
+        return self.h - 20
+
+    def _avail_w(self):
+        return self.w - 20
+
+    # ------------------------------------------------------------------
     # Building blocks
     # ------------------------------------------------------------------
     def add_section_title(self, title):
@@ -95,22 +121,95 @@ class OppositionReportPDF(FPDF):
         self.cell(0, 8, self._sanitize(title), ln=True)
         self.ln(1)
 
-    def add_figure(self, png_bytes, w=None, h=None, x=None, y=None):
-        """Embed a PNG image. Returns temp file path for cleanup."""
+    def add_figure(self, png_bytes, w=None, h=None, x=None, y=None,
+                   section_title=None):
+        """Embed a PNG at its true aspect ratio, guaranteed to fit the page.
+
+        The drawn height always comes from the PNG's real pixel dimensions.
+        For flowing placements (no explicit y) the image page-breaks when it
+        doesn't fit the space left and a fresh page offers more room
+        (repeating section_title on the new page when given); whatever space
+        it ends up with, it is scaled down to fit rather than clipped. The
+        cursor advances below the image. Returns the temp file path for
+        cleanup.
+        """
+        aspect = self._png_aspect(png_bytes)
+        if w and not h:
+            h = w * aspect
+        elif h and not w:
+            w = h / aspect
+        elif not w and not h:
+            w = self._avail_w()
+            h = w * aspect
+
+        bottom = self._bottom_limit()
+        y0 = y if y is not None else self.get_y()
+
+        if y is None and y0 + h > bottom:
+            # Break only when the image would FULLY fit a fresh page and the
+            # move gains real room — an image too tall for any page just gets
+            # scaled in place (breaking would strand the title on its own
+            # page and still scale on the next one).
+            fresh_avail = bottom - 30  # ~content top after header
+            if h <= fresh_avail and fresh_avail - (bottom - y0) > 5:
+                self.add_page()
+                if section_title:
+                    self.add_section_title(section_title)
+                y0 = self.get_y()
+
+        # Whatever space we ended with: shrink to fit, keeping the aspect.
+        avail_h = bottom - y0
+        if h > avail_h:
+            scale = avail_h / h
+            h *= scale
+            w *= scale
+
+        x0 = x if x is not None else 10
+
         tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
         tmp.write(png_bytes)
         tmp.close()
-        kw = {}
-        if x is not None:
-            kw['x'] = x
-        if y is not None:
-            kw['y'] = y
-        if w:
-            kw['w'] = w
-        if h:
-            kw['h'] = h
-        self.image(tmp.name, **kw)
+        self.image(tmp.name, x=x0, y=y0, w=w, h=h)
+        if y is None:
+            self.set_y(y0 + h)
         return tmp.name
+
+    def add_figure_row(self, png_list, gap=4, section_title=None):
+        """Place PNGs side by side at equal widths, top-aligned.
+
+        Row height is the tallest image at its true aspect. Page-breaks first
+        when the row doesn't fit below the cursor (repeating section_title on
+        the new page when given), and scales the whole row down when even a
+        fresh page can't hold it. Advances the cursor below the row. Returns
+        temp file paths.
+        """
+        pngs = [p for p in png_list if p]
+        if not pngs:
+            return []
+        n = len(pngs)
+        aspects = [self._png_aspect(p) for p in pngs]
+        w_each = (self._avail_w() - gap * (n - 1)) / n
+        row_h = max(w_each * a for a in aspects)
+
+        bottom = self._bottom_limit()
+        if self.get_y() + row_h > bottom:
+            self.add_page()
+            if section_title:
+                self.add_section_title(section_title)
+        avail_h = bottom - self.get_y()
+        if row_h > avail_h:
+            scale = avail_h / row_h
+            w_each *= scale
+            row_h = avail_h
+
+        y0 = self.get_y()
+        x = 10
+        tmps = []
+        for p in pngs:
+            tmps.append(self.add_figure(p, w=w_each, x=x, y=y0))
+            x += w_each + gap
+        self.set_y(y0 + row_h)
+        return tmps
 
     def add_bullet_list(self, items, font_size=10):
         self.set_font('Helvetica', '', font_size)
@@ -170,10 +269,20 @@ class OppositionReportPDF(FPDF):
         start_y = self.get_y()
 
         if png_bytes:
-            tmp = self.add_figure(png_bytes, w=150, x=10, y=start_y)
-            text_x = 165
+            # Cap the radar to the space left on the page — add_figure
+            # derives the height from the real PNG, so the card's text
+            # placement below can trust it.
+            radar_w = 150
+            radar_h = radar_w * self._png_aspect(png_bytes)
+            avail_h = self._bottom_limit() - start_y
+            if radar_h > avail_h:
+                radar_w *= avail_h / radar_h
+                radar_h = avail_h
+            tmp = self.add_figure(png_bytes, w=radar_w, x=10, y=start_y)
+            text_x = 10 + radar_w + 5
         else:
             text_x = 10
+            radar_h = 0
             tmp = None
 
         self.set_xy(text_x, start_y)
@@ -193,9 +302,9 @@ class OppositionReportPDF(FPDF):
             self.set_x(text_x)
             self.cell(0, 5, self._sanitize(f"  - {line}"), ln=True)
 
-        # Move below the image (radar is ~75mm tall at w=150)
+        # Move below whichever is taller: the text block or the radar.
         if png_bytes:
-            self.set_y(max(self.get_y(), start_y + 75))
+            self.set_y(max(self.get_y(), start_y + radar_h))
 
         self.ln(4)
         return tmp
@@ -210,33 +319,38 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
     san = pdf._sanitize  # shorthand
 
     # ==================================================================
-    # Page 1: Team Overview (3 radars)
+    # Page 1: Team Overview (4 radars, ~square — each row of two fills a
+    # page, so the second row flows onto its own page automatically)
     # ==================================================================
     pdf.add_page()
-    pdf.add_section_title(f"{opponent_name} - Team Overview")
+    title = f"{opponent_name} - Team Overview"
+    pdf.add_section_title(title)
 
-    radar_row1 = [k for k in ['radar_offensive', 'radar_distribution'] if k in figures]
-    radar_row2 = [k for k in ['radar_defensive', 'radar_set_piece'] if k in figures]
-    w_half = (pdf.w - 20) / 2
-    if radar_row1:
-        y = pdf.get_y()
-        x = 10
-        for key in radar_row1:
-            tmp = pdf.add_figure(figures[key], w=w_half - 2, x=x, y=y)
-            tmp_files.append(tmp)
-            x += w_half
-        pdf.set_y(y + (w_half - 2) * 0.75)
-    if radar_row2:
-        y = pdf.get_y()
-        x = 10
-        for key in radar_row2:
-            tmp = pdf.add_figure(figures[key], w=w_half - 2, x=x, y=y)
-            tmp_files.append(tmp)
-            x += w_half
-        pdf.set_y(y + (w_half - 2) * 0.75)
+    radar_row1 = [figures[k] for k in ['radar_offensive', 'radar_distribution']
+                  if k in figures]
+    radar_row2 = [figures[k] for k in ['radar_defensive', 'radar_set_piece']
+                  if k in figures]
+    tmp_files += pdf.add_figure_row(radar_row1, section_title=title)
+    tmp_files += pdf.add_figure_row(radar_row2,
+                                    section_title=f"{title} (cont.)")
 
     # ==================================================================
-    # Page 2: Projected Lineup + Subs
+    # On-Ball Value & Phases (parity with Team Analysis)
+    # ==================================================================
+    if 'obv_categories' in figures or 'phase_profile' in figures:
+        pdf.add_page()
+        title = f"{opponent_name} - On-Ball Value & Phases"
+        pdf.add_section_title(title)
+        if 'obv_categories' in figures:
+            tmp_files.append(pdf.add_figure(figures['obv_categories'], w=230,
+                                            section_title=title))
+            pdf.ln(3)
+        if 'phase_profile' in figures:
+            tmp_files.append(pdf.add_figure(figures['phase_profile'], w=230,
+                                            section_title=f"{title} (cont.)"))
+
+    # ==================================================================
+    # Projected Lineup + Subs
     # ==================================================================
     pdf.add_page()
     pdf.add_section_title(f"{opponent_name} - Projected Lineup")
@@ -244,10 +358,9 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
     content_y = pdf.get_y()
 
     if 'formation' in figures:
-        # Formation is 6x8 (portrait pitch) — fit within left half of page
-        # At w=80, height ~107mm, fits comfortably in usable area
-        tmp = pdf.add_figure(figures['formation'], w=80, x=10, y=content_y)
-        tmp_files.append(tmp)
+        # Portrait pitch — fit within the left half of the page.
+        tmp_files.append(pdf.add_figure(figures['formation'], w=80,
+                                        x=10, y=content_y))
 
     subs_df = texts.get('subs')
     if subs_df is not None and hasattr(subs_df, 'iterrows'):
@@ -260,7 +373,7 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
                             x_offset=subs_x)
 
     # ==================================================================
-    # Pages 3+: Key Players  (1 per page for clean layout)
+    # Key Players  (1 per page for clean layout)
     # ==================================================================
     key_players = texts.get('key_players', [])
     for i, kp in enumerate(key_players):
@@ -348,23 +461,18 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
     # Set Piece Analysis
     # ==================================================================
     pdf.add_page()
-    pdf.add_section_title(f"{opponent_name} - Set Piece Analysis")
+    title = f"{opponent_name} - Set Piece Analysis"
+    pdf.add_section_title(title)
 
     sp_table = texts.get('set_piece_table')
     if sp_table is not None and hasattr(sp_table, 'iterrows'):
         pdf.add_stats_table(sp_table)
         pdf.ln(5)
 
-    corner_keys = ['corner_left', 'corner_right']
-    corner_present = [k for k in corner_keys if k in figures]
-    if corner_present:
-        w = (pdf.w - 20) / len(corner_present)
-        x = 10
-        y = pdf.get_y()
-        for key in corner_present:
-            tmp = pdf.add_figure(figures[key], w=w - 2, x=x, y=y)
-            tmp_files.append(tmp)
-            x += w
+    corner_row = [figures[k] for k in ['corner_left', 'corner_right']
+                  if k in figures]
+    tmp_files += pdf.add_figure_row(corner_row,
+                                    section_title=f"{title} (cont.)")
 
     # Set piece scatter plots (2 per page, side by side)
     sp_scatter_keys = [k for k in sorted(figures.keys())
@@ -373,21 +481,18 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
         page_keys = sp_scatter_keys[page_start:page_start + 2]
         if page_keys:
             pdf.add_page()
-            pdf.add_section_title(
-                f"{opponent_name} - Set Piece Efficiency")
-            w = (pdf.w - 20) / len(page_keys)
-            x = 10
-            y = pdf.get_y()
-            for key in page_keys:
-                tmp = pdf.add_figure(figures[key], w=w - 2, x=x, y=y)
-                tmp_files.append(tmp)
-                x += w
+            title = f"{opponent_name} - Set Piece Efficiency"
+            pdf.add_section_title(title)
+            tmp_files += pdf.add_figure_row(
+                [figures[k] for k in page_keys],
+                section_title=f"{title} (cont.)")
 
     # ==================================================================
     # Season Form + Shot Maps
     # ==================================================================
     pdf.add_page()
-    pdf.add_section_title(f"{opponent_name} - Season Form & Shot Maps")
+    title = f"{opponent_name} - Season Form & Shot Maps"
+    pdf.add_section_title(title)
 
     form_results = texts.get('form_results', [])
     if form_results:
@@ -400,74 +505,64 @@ def generate_opposition_report_pdf(opponent_name, match_date, gameweek,
         pdf.ln(3)
 
     if 'xg_history' in figures:
-        tmp = pdf.add_figure(figures['xg_history'], w=260)
-        tmp_files.append(tmp)
+        tmp_files.append(pdf.add_figure(figures['xg_history'], w=260,
+                                        section_title=f"{title} (cont.)"))
         pdf.ln(3)
 
-    # Shot maps on a new page (they're large square images)
-    shot_keys = ['shotmap_for', 'shotmap_against']
-    shot_present = [k for k in shot_keys if k in figures]
-    if shot_present:
+    # Shot maps on a new page (large images)
+    shot_row = [figures[k] for k in ['shotmap_for', 'shotmap_against']
+                if k in figures]
+    if shot_row:
         pdf.add_page()
-        w = (pdf.w - 20) / len(shot_present)
-        x = 10
-        y = pdf.get_y()
-        for key in shot_present:
-            tmp = pdf.add_figure(figures[key], w=w - 2, x=x, y=y)
-            tmp_files.append(tmp)
-            x += w
+        tmp_files += pdf.add_figure_row(shot_row)
 
     # ==================================================================
     # Tactical Zone Analysis
     # ==================================================================
     tac_keys = ['avg_positions', 'defensive_structure', 'zone_recovery',
-                'zone_loss', 'shot_assists_dribbles']
+                'zone_loss', 'passing_network', 'shot_assists_dribbles']
     if any(k in figures for k in tac_keys):
         # Page 1: Average Positions
         if 'avg_positions' in figures:
             pdf.add_page()
             pdf.add_section_title(f"{opponent_name} - Tactical Zone Analysis")
-            # avg_positions is ~12:8 ratio; w=200 → h≈133mm, fits after title
-            tmp = pdf.add_figure(figures['avg_positions'], w=200)
-            tmp_files.append(tmp)
+            tmp_files.append(pdf.add_figure(figures['avg_positions'], w=200))
 
-        # Defensive Structure (tall vertical pitch, give it its own page)
+        # Defensive Structure (tall vertical pitch — add_figure scales it
+        # to whatever fits under the title; a fixed width would run off
+        # the bottom of the page)
         if 'defensive_structure' in figures:
             pdf.add_page()
             pdf.add_section_title(
                 f"{opponent_name} - Defensive Structure")
-            # Vertical pitch figure (6:10 ratio); w=140 → h≈233, so cap width
-            tmp = pdf.add_figure(figures['defensive_structure'], w=140)
-            tmp_files.append(tmp)
+            tmp_files.append(pdf.add_figure(figures['defensive_structure']))
 
-        # Page 2: Recovery / Loss zones + shot assists
-        zone_keys = ['zone_recovery', 'zone_loss']
-        zone_present = [k for k in zone_keys if k in figures]
-        if zone_present or 'shot_assists_dribbles' in figures:
+        # Recovery / Loss zones side by side
+        zone_row = [figures[k] for k in ['zone_recovery', 'zone_loss']
+                    if k in figures]
+        if zone_row or 'passing_network' in figures \
+                or 'shot_assists_dribbles' in figures:
             pdf.add_page()
-            if not ('avg_positions' in figures):
-                pdf.add_section_title(
-                    f"{opponent_name} - Tactical Zone Analysis")
+            if 'avg_positions' in figures:
+                title = f"{opponent_name} - Tactical Zones (cont.)"
             else:
-                pdf.add_section_title(
-                    f"{opponent_name} - Tactical Zones (cont.)")
+                title = f"{opponent_name} - Tactical Zone Analysis"
+            pdf.add_section_title(title)
 
-            if zone_present:
-                w = (pdf.w - 20) / len(zone_present)
-                x = 10
-                y = pdf.get_y()
-                for key in zone_present:
-                    tmp = pdf.add_figure(figures[key], w=w - 2, x=x, y=y)
-                    tmp_files.append(tmp)
-                    x += w
-                # Move past the zone images (~height is w * 0.6 for landscape)
-                pdf.set_y(y + w * 0.55)
+            tmp_files += pdf.add_figure_row(zone_row,
+                                            section_title=f"{title} (cont.)")
+
+            if 'passing_network' in figures:
+                pdf.ln(3)
+                tmp_files.append(pdf.add_figure(
+                    figures['passing_network'], w=200,
+                    section_title=f"{opponent_name} - Passing Network"))
 
             if 'shot_assists_dribbles' in figures:
                 pdf.ln(3)
-                tmp = pdf.add_figure(
-                    figures['shot_assists_dribbles'], w=240)
-                tmp_files.append(tmp)
+                tmp_files.append(pdf.add_figure(
+                    figures['shot_assists_dribbles'], w=240,
+                    section_title=f"{opponent_name} - Shot Assists & Dribbles"))
 
     # ==================================================================
     # Key Takeaways
