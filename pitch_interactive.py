@@ -51,6 +51,16 @@ VAL_CMAP = mcolors.LinearSegmentedColormap.from_list(
 VAL_COLORSCALE = [[0.0, '#2166ac'], [0.5, '#b8b2a7'], [1.0, '#b2182b']]
 
 
+# Wyscout coordinates are 0-100 on BOTH axes of a 105 m x 68 m pitch, so one
+# unit along the pitch (y here, portrait) is 1.05 m and one unit across (x)
+# is 0.68 m. Drawing them 1:1 squashed every half pitch to about half its
+# true height; Y_PER_X restores the real proportions (a full-width half
+# pitch is then ~1.3:1 and ~770 px tall at 1000 px wide).
+Y_PER_X = 1.05 / 0.68
+# circle radii in units: 9.15 m -> 13.5 across, 8.7 along
+_R_X, _R_Y = 9.15 / 68 * 100, 9.15 / 105 * 100
+
+
 def _half_pitch_shapes():
     """Plotly shapes for a portrait attacking half (Wyscout dims)."""
     ln = dict(color=LINE_C, width=1.5)
@@ -64,21 +74,21 @@ def _half_pitch_shapes():
         # goal mouth
         dict(type='rect', x0=44.8, y0=100, x1=55.2, y1=102, line=ln),
         # penalty spot
-        dict(type='circle', x0=49.4, y0=89.4, x1=50.6, y1=90.6,
+        dict(type='circle', x0=49.4, y0=89.6, x1=50.6, y1=90.4,
              line=dict(color=LINE_C, width=1), fillcolor=LINE_C),
-        # the "D" — quadratic approximation of the arc outside the box
-        dict(type='path', path='M 41.5,84 Q 50,77.2 58.5,84', line=ln),
-        # center circle sliver at the halfway line
-        dict(type='circle', x0=41.3, y0=41.3, x1=58.7, y1=58.7, line=ln),
+        # the "D" — arc of the penalty-spot circle outside the box
+        dict(type='path', path='M 39.5,84 Q 50,76.6 60.5,84', line=ln),
+        # center circle at the halfway line (true radius)
+        dict(type='circle', x0=50 - _R_X, y0=50 - _R_Y, x1=50 + _R_X, y1=50 + _R_Y, line=ln),
     ]
 
 
-def _pitch_layout(fig, height=620):
+def _pitch_layout(fig, height=800):
     fig.update_layout(
         shapes=_half_pitch_shapes(),
         xaxis=dict(range=[-3, 103], visible=False, fixedrange=True),
-        yaxis=dict(range=[49.7, 104.5], visible=False, fixedrange=True,
-                   scaleanchor='x', scaleratio=1),
+        yaxis=dict(range=[49.5, 104.5], visible=False, fixedrange=True,
+                   scaleanchor='x', scaleratio=Y_PER_X),
         plot_bgcolor=PITCH_BG, paper_bgcolor=PITCH_BG,
         margin=dict(l=10, r=10, t=54, b=10), height=height,
         showlegend=False, dragmode=False,
@@ -87,7 +97,7 @@ def _pitch_layout(fig, height=620):
 
 
 def plotly_shot_map(shot_log: pd.DataFrame, player_name: str,
-                    height: int = 660) -> go.Figure:
+                    height: int = 800) -> go.Figure:
     """Interactive StatsBomb-style shot map: marker SHAPE = creating
     action, color = xG, green ring = goal. Uniform marker size, slightly
     translucent so overlapping shots stay readable; shape legend beneath
@@ -153,13 +163,13 @@ def plotly_shot_map(shot_log: pd.DataFrame, player_name: str,
     # StatsBomb-style left-aligned two-line header
     fig.add_annotation(
         text=f'<b>{player_name} — Season Shot Map</b>',
-        xref='paper', yref='paper', x=0.01, y=1.10, showarrow=False,
+        xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=26, showarrow=False,
         font=dict(size=15), align='left', xanchor='left')
     fig.add_annotation(
         text=(f'{len(df)} non-penalty shots · {goals} goals · '
               f'{df["xG"].sum():.2f} xG · shape = creating action · '
               f'color = xG · ring = goal'),
-        xref='paper', yref='paper', x=0.01, y=1.055, showarrow=False,
+        xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=7, showarrow=False,
         font=dict(size=11.5, color='#5a5a5a'), align='left',
         xanchor='left')
     _pitch_layout(fig, height=height)
@@ -171,7 +181,7 @@ def plotly_shot_map(shot_log: pd.DataFrame, player_name: str,
         coloraxis=dict(colorscale=XG_COLORSCALE, cmin=0, cmax=XG_MAX,
                        colorbar=dict(title='xG', thickness=12, len=0.5,
                                      y=0.5)),
-        margin=dict(l=10, r=10, t=58, b=42))
+        margin=dict(l=10, r=10, t=64, b=42))
     return fig
 
 

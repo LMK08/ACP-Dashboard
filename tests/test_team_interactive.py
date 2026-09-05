@@ -94,3 +94,24 @@ def test_rolling_xg_builds_and_carries_match_ids():
     assert len(line.x) == 12
     assert ti.match_id_from_rows([list(line.customdata[3])]) == 203
     assert ti.plotly_rolling_xg(hist.iloc[0:0], 'Us').layout.annotations
+
+
+def test_match_shot_map_builds_and_carries_player_ids():
+    """The match-level map uses the same builder style; customdata[0] is the
+    playerId app.open_profile_from_selection reads."""
+    import numpy as np, pandas as pd
+    ev = pd.DataFrame({
+        'matchId': [1] * 4, 'team.name': ['A', 'A', 'B', 'A'], 'type.primary': ['shot', 'penalty', 'shot', 'shot'],
+        'location.x': [88.0, 90.0, 80.0, 70.0], 'location.y': [50.0, 50.0, 40.0, 60.0],
+        'shot.xg': [0.3, 0.76, 0.05, 0.02], 'shot.isGoal': [True, False, False, False],
+        'shot.onTarget': [True, True, False, False], 'player.id': [11, 12, 21, 11],
+        'player.name': ['P11', 'P12', 'P21', 'P11'], 'minute': [12, 45, 60, 80], 'shot.bodyPart': ['right_foot'] * 4})
+    info = {'homeTeamName': 'A', 'awayTeamName': 'B', 'score': '1-0'}
+    fig = ti.plotly_match_shot_map(ev, info, 'A')
+    pts = fig.data[0]
+    assert len(pts.x) == 3 and int(pts.customdata[0][0]) == 11
+    assert ti.player_id_from_rows([list(pts.customdata[1])]) == 12
+    empty = ti.plotly_match_shot_map(ev, info, 'C')
+    assert not empty.data
+    # true pitch proportions: y units are 1.05/0.68 times x units
+    assert abs(fig.layout.yaxis.scaleratio - 1.05 / 0.68) < 1e-9

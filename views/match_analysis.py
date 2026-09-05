@@ -150,7 +150,7 @@ def render():
     match_data = all_match_data.get(selected_match_id)
     if match_data:
         st.subheader("Shot Maps")
-        col1, col2 = st.columns(2)
+        import team_interactive as ti
 
         # --- Get the match events ONCE ---
         match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
@@ -230,10 +230,14 @@ def render():
                     ['On-Ball Value (engine)']
                     + [i for i in _gen.index if i != 'On-Ball Value (engine)'])
 
-        with col1:
-            _show_match_png('shotmap', selected_match_info['homeTeamName'])
-        with col2:
-            _show_match_png('shotmap', selected_match_info['awayTeamName'])
+        # Interactive, stacked at full width (the same drawing as the team and
+        # player maps; the static PNG stays for the match-report PDF).
+        for _side, _team in (('home', selected_match_info['homeTeamName']),
+                             ('away', selected_match_info['awayTeamName'])):
+            _ev = st.plotly_chart(ti.plotly_match_shot_map(match_events_df, selected_match_info, _team),
+                                  use_container_width=True, key=f'ma_shots_{_side}', on_select='rerun',
+                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+            app.open_profile_from_selection(_ev, selected_season_id)
 
         # --- NEW: Shot Details Tables ---
         st.markdown("---") # Add a separator

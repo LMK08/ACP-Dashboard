@@ -109,7 +109,10 @@ def season_shots(season_events_df, matches_summary_df, team, mode='for'):
 # Heights follow each pitch's locked aspect at a full-width (~1000-1300 px)
 # container: the portrait half pitch is ~1.9:1 wide, the landscape pitch ~1.4:1.
 # Inside a half-width column these charts came out a few hundred px tall.
-def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for', height=600):
+SHOT_MARKER = dict(size=19, opacity=0.75)   # one look for match / team / player maps
+
+
+def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for', height=800):
     shots = season_shots(season_events_df, matches_summary_df, team, mode)
     title = f"{team} — Shots {'For' if mode == 'for' else 'Conceded'} (Non-Pen)"
     fig = go.Figure()
@@ -131,7 +134,7 @@ def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for
     custom = np.array(meta, dtype=object)
     fig.add_trace(go.Scatter(
         x=shots['location.y'], y=shots['location.x'], mode='markers',
-        marker=dict(size=19, opacity=0.75, color=shots['shot.xg'], coloraxis='coloraxis',
+        marker=dict(**SHOT_MARKER, color=shots['shot.xg'], coloraxis='coloraxis',
                     line=dict(color=np.where(is_goal, '#1a7a2e', 'rgba(0,0,0,0.45)'),
                               width=np.where(is_goal, 3, 1))),
         customdata=custom, showlegend=False,
@@ -140,17 +143,68 @@ def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for
                        'xG %{customdata[4]} · %{customdata[5]}<extra></extra>')))
     total_xg = float(shots['shot.xg'].sum())
     goals = int(is_goal.sum())
-    fig.add_annotation(text=f'<b>{title}</b>', xref='paper', yref='paper', x=0.01, y=1.10,
+    fig.add_annotation(text=f'<b>{title}</b>', xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=26,
                        showarrow=False, font=dict(size=14, color=theme.FIGURE_INK), xanchor='left')
     fig.add_annotation(text=(f'{len(shots)} shots · {goals} goals · {total_xg:.2f} '
                              f'{"xG" if mode == "for" else "xGA"} · colour = xG · ring = goal · '
                              'click a shot to open that match'),
-                       xref='paper', yref='paper', x=0.01, y=1.055, showarrow=False,
+                       xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=7, showarrow=False,
                        font=dict(size=11, color='#5a5a5a'), xanchor='left')
     _pitch_layout(fig, height=height)
     fig.update_layout(coloraxis=dict(colorscale=theme.XG_COLORSCALE, cmin=0, cmax=theme.XG_MAX,
                                      colorbar=dict(title='xG', thickness=12, len=0.5, y=0.5)),
-                      margin=dict(l=10, r=10, t=58, b=10), clickmode='event+select')
+                      margin=dict(l=10, r=10, t=64, b=10), clickmode='event+select')
+    return fig
+
+
+def plotly_match_shot_map(match_events_df, match_info, team, height=800):
+    """One team's shots (incl. penalties) in one match — the same drawing as
+    the season maps; hover has shooter, minute, xG, outcome; customdata
+    carries the playerId so a click can open the profile."""
+    ev = match_events_df
+    shots = ev[(ev.get('team.name') == team) & (ev.get('type.primary').isin(['shot', 'penalty']))].copy()
+    for c in ('location.x', 'location.y', 'shot.xg'):
+        shots[c] = pd.to_numeric(shots.get(c), errors='coerce')
+    shots = shots.dropna(subset=['location.x', 'location.y', 'shot.xg']).reset_index(drop=True)
+    home, away = match_info.get('homeTeamName', '?'), match_info.get('awayTeamName', '?')
+    opponent = away if team == home else home
+    title = f"{team} — Shots vs {opponent}"
+    fig = go.Figure()
+    if shots.empty:
+        fig.add_annotation(text='No shots for this team in this match', xref='paper', yref='paper',
+                           x=0.5, y=0.5, showarrow=False, font=dict(color='#6b7570'))
+        fig.add_annotation(text=f'<b>{title}</b>', xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=26,
+                           showarrow=False, font=dict(size=14, color=theme.FIGURE_INK), xanchor='left')
+        _pitch_layout(fig, height=height)
+        return fig
+    is_goal = (shots.get('shot.isGoal') == True)  # noqa: E712
+    minute = pd.to_numeric(shots.get('minute'), errors='coerce')
+    custom = np.array([[int(pid) if pd.notna(pid) else -1, str(n), f"{m:.0f}'" if pd.notna(m) else '',
+                        f'{x:.2f}', 'Goal' if g else ('On target' if ot else 'Off target'),
+                        'penalty' if t == 'penalty' else str(bp) if pd.notna(bp) else '']
+                       for pid, n, m, x, g, ot, t, bp in zip(
+                           pd.to_numeric(shots.get('player.id'), errors='coerce'), shots.get('player.name', '—'),
+                           minute, shots['shot.xg'], is_goal, shots.get('shot.onTarget') == True,  # noqa: E712
+                           shots.get('type.primary'), shots.get('shot.bodyPart', pd.Series('', index=shots.index)))],
+                      dtype=object)
+    fig.add_trace(go.Scatter(
+        x=shots['location.y'], y=shots['location.x'], mode='markers',
+        marker=dict(**SHOT_MARKER, color=shots['shot.xg'], coloraxis='coloraxis',
+                    line=dict(color=np.where(is_goal, '#1a7a2e', 'rgba(0,0,0,0.45)'),
+                              width=np.where(is_goal, 3, 1))),
+        customdata=custom, showlegend=False,
+        hovertemplate=('<b>%{customdata[1]}</b> %{customdata[2]}<br>'
+                       'xG %{customdata[3]} · %{customdata[4]} %{customdata[5]}<extra></extra>')))
+    fig.add_annotation(text=f'<b>{title}</b>', xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=26,
+                       showarrow=False, font=dict(size=14, color=theme.FIGURE_INK), xanchor='left')
+    fig.add_annotation(text=(f"{match_info.get('score', '?-?')} · {len(shots)} shots · {int(is_goal.sum())} goals · "
+                             f"{shots['shot.xg'].sum():.2f} xG · colour = xG · ring = goal · click a shot to open the player"),
+                       xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=7, showarrow=False,
+                       font=dict(size=11, color='#5a5a5a'), xanchor='left')
+    _pitch_layout(fig, height=height)
+    fig.update_layout(coloraxis=dict(colorscale=theme.XG_COLORSCALE, cmin=0, cmax=theme.XG_MAX,
+                                     colorbar=dict(title='xG', thickness=12, len=0.5, y=0.5)),
+                      margin=dict(l=10, r=10, t=64, b=10), clickmode='event+select')
     return fig
 
 
@@ -182,7 +236,7 @@ def _full_pitch_layout(fig, height=820):
         xaxis=dict(range=[-4, 104], visible=False, fixedrange=True),
         yaxis=dict(range=[104, -8], visible=False, fixedrange=True, scaleanchor='x', scaleratio=0.68),
         plot_bgcolor=theme.FIGURE_BG, paper_bgcolor=theme.FIGURE_BG,
-        margin=dict(l=10, r=10, t=84, b=10), height=height, showlegend=False,
+        margin=dict(l=10, r=10, t=64, b=10), height=height, showlegend=False,
         dragmode=False, clickmode='event+select')
     return fig
 
@@ -254,10 +308,10 @@ def plotly_passing_network(net, team_name, title=None, height=820):
               'circle size = passing value' if has_obv else
               'line width = pass volume · circle size = involvement')
     fig.add_annotation(text=f'<b>{title or f"{team_name} — Passing Network"}</b>',
-                       xref='paper', yref='paper', x=0.01, y=1.075, showarrow=False,
+                       xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=26, showarrow=False,
                        font=dict(size=14, color=theme.FIGURE_INK), xanchor='left')
     fig.add_annotation(text=legend + ' · click a player to open the profile',
-                       xref='paper', yref='paper', x=0.01, y=1.035, showarrow=False,
+                       xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=7, showarrow=False,
                        font=dict(size=10.5, color='#5a5a5a'), xanchor='left')
     return _full_pitch_layout(fig, height)
 
