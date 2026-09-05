@@ -28,6 +28,15 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   keep it honest when you add a helper. Views never import app.py. The
   directory is deliberately NOT called `pages/` (Streamlit would treat that
   as an auto-discovered multipage app).
+- `context_bar.py` — the League / Season choice, drawn ONCE at the top of the
+  sidebar and read by every page through `league_selector()` /
+  `season_selector()` (signatures unchanged; they no longer draw widgets).
+  "All Seasons" is always offered (stable widget options — Streamlit resets a
+  keyed widget whose options change); pages that can't use it resolve it to
+  the default season and say so. One season key per league. To preset the bar
+  from a view or bridge call `context_bar.set_context(league, season)` BEFORE
+  the bar's widgets exist in that run (Home, app.py prelude, or right before
+  `st.rerun()`), then `navigation.go_to(page)`.
 - `navigation.py` — grouped sidebar navigation (Club / Opposition / Players /
   Recruitment). ONE piece of state, `st.session_state.current_page`; each
   group is a radio mirroring it. To send a user somewhere from a view use

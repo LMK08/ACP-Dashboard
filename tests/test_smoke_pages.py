@@ -110,6 +110,72 @@ def test_club_first_defaults(app):
     assert 'Atlético CP' in player.value
 
 
+def test_context_persists_across_pages(app):
+    """League/season are chosen once in the context bar. The choice must
+    survive pages that don't draw the bar (Home) or the season (Match
+    Predictor) — Streamlit drops widget state for widgets absent from a run."""
+    _open_page(app, 'Team Analysis')
+    season_box, _ = _newest_season_label(app)
+    options = [o for o in season_box.options if o != 'All Seasons']
+    assert len(options) >= 2
+    chosen = options[1]  # not the default
+    season_box.set_value(chosen)
+    app.run()
+    for page in ('League Analysis', 'Match Predictor', 'Home', 'Player Profile', 'Team Analysis'):
+        _open_page(app, page)
+        boxes = [s for s in app.sidebar.selectbox if s.label == 'Season']
+        if boxes:
+            assert boxes[0].value == chosen, f"{page}: season reset to {boxes[0].value}"
+    # "All Seasons" stays selected everywhere (stable widget options); a page
+    # that can't show it resolves to one season and says so, without erroring.
+    _open_page(app, 'Player Profile')
+    [s for s in app.sidebar.selectbox if s.label == 'Season'][0].set_value('All Seasons')
+    app.run()
+    _open_page(app, 'Team Analysis')
+    assert [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value == 'All Seasons'
+    assert any('one season at a time' in str(c.value) for c in app.sidebar.caption)
+    assert any('Team Report' in str(h.value) for h in app.header)
+    assert not _problems(app), _problems(app)
+    # Switching league swaps to that league's own season key: a valid season
+    # is selected, the page renders, and switching back restores the choice.
+    league_box = [s for s in app.sidebar.selectbox if s.label == 'League'][0]
+    league_box.set_value('Campeonato')
+    app.run()
+    season_camp = [s for s in app.sidebar.selectbox if s.label == 'Season'][0]
+    assert season_camp.value in season_camp.options
+    assert not _problems(app), _problems(app)
+    [s for s in app.sidebar.selectbox if s.label == 'League'][0].set_value('Liga 3')
+    app.run()
+    assert [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value == 'All Seasons'
+
+
+def test_player_profile_bridge_carries_season(app):
+    """A view that selects a player (Team Analysis / Home squad table) sets
+    nav_to_profile + nav_season_id and reruns. The prelude must route to the
+    profile AND apply that season to the context bar BEFORE the bar draws its
+    widget (writing a widget key after instantiation raises)."""
+    import league_config
+    _open_page(app, 'Team Analysis')
+    player = [s for s in app.sidebar.selectbox if s.label == 'Select Player:']
+    # pick any rated player id from the profile page's own list
+    _open_page(app, 'Player Profile')
+    options = [s for s in app.sidebar.selectbox if s.label == 'Select Player:'][0].options
+    assert options
+    # drive the bridge exactly as views do
+    labels = league_config.all_season_id_map()
+    target_sid = next(sid for sid, lab in labels.items() if lab == '2025/26')
+    _open_page(app, 'Team Analysis')
+    app.session_state['nav_to_profile'] = True
+    app.session_state['nav_has_season'] = True
+    app.session_state['nav_season_id'] = target_sid
+    app.run()
+    app.run()
+    assert not _problems(app), _problems(app)
+    assert _nav_radio(app, 'Player Profile').value == 'Player Profile'
+    season = [s for s in app.sidebar.selectbox if s.label == 'Season'][0]
+    assert season.value == '2025/26'
+
+
 @pytest.mark.parametrize('page', EMPTY_SEASON_PAGES)
 def test_empty_season_degrades_gracefully(app, page):
     """Forcing the newest season (fixtures, few or no events) must give a

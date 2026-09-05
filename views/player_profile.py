@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import sys
 
+import context_bar
+
 
 def _app():
     return sys.modules['__main__']
@@ -101,18 +103,8 @@ def render():
     __file__ = app.__file__
 
 
-    # If navigating from another section, set the season selector to match
-    if st.session_state.get('nav_has_season', False):
-        nav_sid = st.session_state.nav_season_id
-        if nav_sid is None:
-            # "All Seasons" was selected
-            st.session_state['season_select_player_profile'] = "All Seasons"
-        else:
-            nav_label = SEASON_ID_MAP.get(nav_sid)
-            if nav_label:
-                st.session_state['season_select_player_profile'] = nav_label
-        st.session_state.nav_season_id = None
-        st.session_state.nav_has_season = False
+    # (The season carried by a cross-page bridge is applied in app.py's prelude,
+    #  before the context bar draws its widget — a widget key cannot be set after.)
 
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("player_profile")

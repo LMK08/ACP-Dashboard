@@ -82,6 +82,7 @@ import pitch_visualizations as pv
 import obv_viz
 import theme  # colours + figure conventions shared with every plotter
 import navigation
+import context_bar
 import views.home
 import views.opposition
 import views.shadow_team
@@ -2247,13 +2248,10 @@ def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
 # Club-first defaults and cross-page selector persistence
 # ------------------------------------------------------------------------------
 OUR_TEAM = 'Atlético CP'
-# Session keys that carry the league / season choice ACROSS pages. Each page
-# keeps its own widget key (season_select_<page>) so Streamlit's per-widget
-# state is untouched; these globals seed a page's selector the first time it
-# renders. Before this, moving Team Analysis -> League Analysis silently
-# snapped the season back to the newest one.
-GLOBAL_LEAGUE_KEY = 'global_league_label'
-GLOBAL_SEASON_KEY = 'global_season_label'
+# League / season are chosen ONCE in the sidebar context bar (context_bar.py);
+# every page resolves its scope from these two session keys.
+GLOBAL_LEAGUE_KEY = 'ctx_league'          # = context_bar.LEAGUE_KEY (the bar's widget key)
+GLOBAL_SEASON_KEY = 'ctx_season_memory'   # = context_bar.SEASON_MEMORY (last chosen season label)
 # A season needs this many matches WITH EVENTS before it is the default —
 # the newest season in the fixture list has none for its first weeks.
 MIN_MATCHES_FOR_DEFAULT_SEASON = 5
@@ -2367,29 +2365,18 @@ def _predictor_default_labels(all_season_options, season_ids_desc, matches_df):
 
 
 def league_selector(section_key):
-    """Render a league selector in the sidebar. Returns list of competition IDs."""
-    options = ["Liga 3", "Campeonato"]
-    # Guard against a stale "Both" (or any other invalid) value lingering in
-    # session_state from a previous version of this selector, which would make
-    # selectbox raise because the value is no longer a valid option.
-    state_key = f"league_select_{section_key}"
-    if st.session_state.get(state_key) not in options:
-        st.session_state.pop(state_key, None)
-    # First render on this page: inherit the league chosen elsewhere.
-    if state_key not in st.session_state:
-        _remembered = st.session_state.get(GLOBAL_LEAGUE_KEY)
-        st.session_state[state_key] = _remembered if _remembered in options else options[0]
-    selected = st.sidebar.selectbox(
-        "League",
-        options,
-        key=state_key
-    )
-    st.session_state[GLOBAL_LEAGUE_KEY] = selected
-    for comp_id, comp_config in COMPETITIONS.items():
-        if comp_config["name"] == selected:
-            return [comp_id]
-    # Fallback: first competition (single-league list).
-    return [next(iter(COMPETITIONS.keys()))]
+    """Competition ids for the league in the global context bar (context_bar.py).
+    `section_key` is kept for the call sites; the bar is drawn once in the
+    sidebar by app.py and every page reads the same choice."""
+    return context_bar.current_comp_ids()
+
+
+def season_selector(section_key, include_all_seasons=False, comp_ids=None):
+    """Season id for this page from the global context bar: None for
+    'All Seasons' (only when the page accepts it), else the chosen season,
+    else the newest season with event data (see _default_season_label)."""
+    return context_bar.current_season_id(comp_ids if comp_ids is not None else context_bar.current_comp_ids(),
+                                         include_all_seasons)
 
 
 def get_league_label(comp_ids):
@@ -2443,57 +2430,6 @@ def get_season_ids_for_selection(selected_season_id, comp_ids):
     if len(matching_ids) <= 1:
         return selected_season_id
     return matching_ids
-
-
-def season_selector(section_key, include_all_seasons=False, comp_ids=None):
-    """Render a season selector in the sidebar. Returns season_id (int) or None for 'All Seasons'.
-    If comp_ids is provided, only shows seasons for those competitions.
-    """
-    if comp_ids is not None:
-        available_seasons = {}
-        for cid in comp_ids:
-            if cid in COMPETITIONS:
-                available_seasons.update(COMPETITIONS[cid]["seasons"])
-    else:
-        available_seasons = SEASON_ID_MAP
-
-    # Deduplicate display names (e.g. both leagues have "2025/26")
-    # Use an ordered dict to preserve season order (newest first)
-    unique_labels = list(dict.fromkeys(available_seasons.values()))
-    options = unique_labels
-    if include_all_seasons:
-        options = ["All Seasons"] + options
-
-    session_key = f"season_select_{section_key}"
-    if st.session_state.get(session_key) not in options:
-        st.session_state.pop(session_key, None)
-    if session_key not in st.session_state:
-        # Seed order: the season chosen on another page (when this page offers
-        # the same label), else the newest season that actually has event
-        # data. The newest season in the fixture list is NOT a safe default:
-        # in the first weeks of 2026/27 it opened every page on an empty or
-        # crashing view while a complete 2025/26 sat one click away.
-        _remembered = st.session_state.get(GLOBAL_SEASON_KEY)
-        if _remembered in options:
-            st.session_state[session_key] = _remembered
-        else:
-            st.session_state[session_key] = _default_season_label(available_seasons, options)
-
-    selected_label = st.sidebar.selectbox(
-        "Season",
-        options,
-        key=session_key
-    )
-    st.session_state[GLOBAL_SEASON_KEY] = selected_label
-
-    if selected_label == "All Seasons":
-        return None
-    # Reverse lookup: label -> season_id (return first match from available seasons)
-    for sid, label in available_seasons.items():
-        if label == selected_label:
-            return sid
-    # Fallback
-    return list(available_seasons.keys())[0] if available_seasons else CURRENT_SEASON_ID
 
 
 # ==============================================================================
@@ -8701,13 +8637,23 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'player_profile_last_season' not in st.session_state:
         st.session_state.player_profile_last_season = None
 
-    # --- Sidebar for Navigation ---
+    # --- Sidebar: context bar (filled once the page is known), then navigation ---
+    _context_slot = st.sidebar.container()
     st.sidebar.markdown('<div style="text-align: center; padding: 1rem 0 0.5rem 0;"><h2 style="color: #ffffff; font-size: 1.3rem; font-weight: 600; margin: 0;">Navigation</h2></div>', unsafe_allow_html=True)
 
-    # Cross-page bridge: a view that selected a player asks for the profile.
+    # Cross-page bridge: a view that selected a player asks for the profile,
+    # optionally carrying the season it was looking at. The season goes into
+    # the context bar's key HERE, before the bar draws its widget (Streamlit
+    # rejects writes to a widget key after the widget exists in a run).
     if st.session_state.nav_to_profile:
         st.session_state.current_page = 'Player Profile'
         st.session_state.nav_to_profile = False
+        if st.session_state.get('nav_has_season', False):
+            _nav_sid = st.session_state.get('nav_season_id')
+            context_bar.set_context(season=(
+                context_bar.ALL_SEASONS if _nav_sid is None else SEASON_ID_MAP.get(_nav_sid, context_bar.ALL_SEASONS)))
+            st.session_state.nav_season_id = None
+            st.session_state.nav_has_season = False
 
     ANALYSIS_OPTIONS = navigation.ALL_PAGES
 
@@ -8792,6 +8738,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # Grouped navigation (Club / Opposition / Players / Recruitment); the
     # single source of truth is st.session_state.current_page — see navigation.py.
     analysis_type = navigation.render_sidebar_nav()
+    with _context_slot:
+        context_bar.render(analysis_type)
 
     # Engine freshness stamp — visible on every page (lesson from the
     # April→June staleness: nobody could see the data was 2 months old)

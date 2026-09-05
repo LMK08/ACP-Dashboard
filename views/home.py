@@ -13,6 +13,7 @@ import sys
 import pandas as pd
 import streamlit as st
 
+import context_bar
 import navigation
 import theme
 
@@ -154,9 +155,8 @@ def render():
                 else:
                     st.caption("Event data for this match not loaded yet — xG and maps appear after the next refresh.")
                 if st.button("Open match report", key="home_open_match"):
-                    navigation.go_to('Match Analysis',
-                                     season_select_match_analysis=season_label,
-                                     nav_match_id=int(mid))
+                    context_bar.set_context(league_name, season_label)
+                    navigation.go_to('Match Analysis', nav_match_id=int(mid))
             else:
                 st.caption("No matches played yet this season.")
 
@@ -175,9 +175,8 @@ def render():
                     st.markdown(f"Most recent opponent: **{last['opponent']}** ({last['home_away']})")
                     target = last['opponent']
             if target and st.button("Open Opposition Report", key="home_open_opp", type="primary"):
-                navigation.go_to('Opposition Report',
-                                 season_select_opposition_report=season_label,
-                                 opposition_report_team=target)
+                context_bar.set_context(league_name, season_label)
+                navigation.go_to('Opposition Report', opposition_report_team=target)
 
     # ------------------------------------------------------------------
     # Results this season
@@ -233,8 +232,10 @@ def render():
     st.divider()
     q1, q2, q3 = st.columns(3)
     if q1.button("Team report", use_container_width=True, key="home_q_team"):
-        navigation.go_to('Team Analysis', season_select_team_analysis=season_label)
+        context_bar.set_context(league_name, season_label)
+        navigation.go_to('Team Analysis')
     if q2.button("League table & strength", use_container_width=True, key="home_q_league"):
-        navigation.go_to('League Analysis', season_select_league_analysis=season_label)
+        context_bar.set_context(league_name, season_label)
+        navigation.go_to('League Analysis')
     if q3.button("Promotion probabilities", use_container_width=True, key="home_q_pred"):
         navigation.go_to('Match Predictor')
