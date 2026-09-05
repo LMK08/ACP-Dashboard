@@ -28,6 +28,16 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   keep it honest when you add a helper. Views never import app.py. The
   directory is deliberately NOT called `pages/` (Streamlit would treat that
   as an auto-discovered multipage app).
+- `navigation.py` — grouped sidebar navigation (Club / Opposition / Players /
+  Recruitment). ONE piece of state, `st.session_state.current_page`; each
+  group is a radio mirroring it. To send a user somewhere from a view use
+  `navigation.go_to(page, **preset_keys)` (e.g. a season selector key or the
+  opponent selectbox key) — never set radio keys by hand. Add a page by
+  appending to `NAV_GROUPS` and the `views.<page>.render()` chain in app.py;
+  the smoke test finds the right radio by page name.
+- `views/home.py` — the club's Home page (position, form, promotion odds
+  from season_simulation.pkl, last match, next opponent, squad ACP Index,
+  data freshness). Every card deep-links into the detail page.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)

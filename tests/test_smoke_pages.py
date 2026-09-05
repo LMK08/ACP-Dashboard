@@ -21,7 +21,7 @@ DASHBOARD_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REQUIRED_DATA = ['raw_events.parquet', 'matches_summary.parquet',
                  'all_match_data.pkl', 'player_details.pkl']
 
-PAGES = ['Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile',
+PAGES = ['Home', 'Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile',
          'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team',
          'Opposition Report']
 # Pages that read the player-stats engine and used to raise KeyError
@@ -55,10 +55,15 @@ def _problems(at):
             + [f"st.error: {str(e.value)[:200]}" for e in at.error])
 
 
+def _nav_radio(at, page):
+    """The sidebar navigation is one radio per group (navigation.NAV_GROUPS)."""
+    return next(r for r in at.sidebar.radio if page in r.options)
+
+
 def _open_page(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    _nav_radio(at, page).set_value(page).run()
     at.run()  # some pages rerun once on first visit (nav / session seeding)
-    assert at.sidebar.radio[0].value == page
+    assert _nav_radio(at, page).value == page
 
 
 def _newest_season_label(at):

@@ -91,6 +91,12 @@ def render():
     _default_match_idx = next(
         (i for i, mid in enumerate(season_matches_df['matchId'].tolist())
          if mid in _match_ids_with_events), 0)
+    # Deep link from Home ("Open match report"): open on that match.
+    _nav_mid = st.session_state.pop('nav_match_id', None)
+    if _nav_mid is not None:
+        _ids = season_matches_df['matchId'].tolist()
+        if _nav_mid in _ids:
+            _default_match_idx = _ids.index(_nav_mid)
     selected_match_display = st.sidebar.selectbox(
         "Select a Match", season_matches_df['display_name'], index=_default_match_idx)
     matching_matches = season_matches_df[season_matches_df['display_name'] == selected_match_display]

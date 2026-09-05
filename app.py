@@ -81,6 +81,8 @@ import base64
 import pitch_visualizations as pv
 import obv_viz
 import theme  # colours + figure conventions shared with every plotter
+import navigation
+import views.home
 import views.opposition
 import views.shadow_team
 import views.match_predictor
@@ -8689,7 +8691,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'nav_has_season' not in st.session_state:
         st.session_state.nav_has_season = False
     if 'current_page' not in st.session_state:
-        st.session_state.current_page = 'Match Analysis'
+        st.session_state.current_page = navigation.HOME
     if 'radio_key_version' not in st.session_state:
         st.session_state.radio_key_version = 0
     if 'shadow_teams' not in st.session_state:
@@ -8702,15 +8704,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # --- Sidebar for Navigation ---
     st.sidebar.markdown('<div style="text-align: center; padding: 1rem 0 0.5rem 0;"><h2 style="color: #ffffff; font-size: 1.3rem; font-weight: 600; margin: 0;">Navigation</h2></div>', unsafe_allow_html=True)
 
-    # Check if we should navigate to Player Profile
+    # Cross-page bridge: a view that selected a player asks for the profile.
     if st.session_state.nav_to_profile:
         st.session_state.current_page = 'Player Profile'
-        # Set radio value directly on the existing key instead of creating a new one
-        current_radio_key = f"analysis_type_radio_{st.session_state.radio_key_version}"
-        st.session_state[current_radio_key] = 'Player Profile'
         st.session_state.nav_to_profile = False
 
-    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team', 'Opposition Report')
+    ANALYSIS_OPTIONS = navigation.ALL_PAGES
 
     if '--precompute' in sys.argv:
         import time as _t
@@ -8790,13 +8789,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         except Exception as _pe:
             logger.warning(f"[prewarm] could not start: {_pe}")
 
-    analysis_type = st.sidebar.radio(
-        "Choose Analysis Type",
-        ANALYSIS_OPTIONS,
-        index=ANALYSIS_OPTIONS.index(st.session_state.current_page),
-        key=f"analysis_type_radio_{st.session_state.radio_key_version}"
-    )
-    st.session_state.current_page = analysis_type
+    # Grouped navigation (Club / Opposition / Players / Recruitment); the
+    # single source of truth is st.session_state.current_page — see navigation.py.
+    analysis_type = navigation.render_sidebar_nav()
 
     # Engine freshness stamp — visible on every page (lesson from the
     # April→June staleness: nobody could see the data was 2 months old)
@@ -8809,7 +8804,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     except Exception:
         pass
 
-    if analysis_type == 'Match Analysis':
+    if analysis_type == navigation.HOME:
+        views.home.render()
+
+    elif analysis_type == 'Match Analysis':
         views.match_analysis.render()
 
 
