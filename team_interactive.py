@@ -106,7 +106,10 @@ def season_shots(season_events_df, matches_summary_df, team, mode='for'):
     return shots.dropna(subset=['location.x', 'location.y', 'shot.xg']).reset_index(drop=True)
 
 
-def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for', height=560):
+# Heights follow each pitch's locked aspect at a full-width (~1000-1300 px)
+# container: the portrait half pitch is ~1.9:1 wide, the landscape pitch ~1.4:1.
+# Inside a half-width column these charts came out a few hundred px tall.
+def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for', height=600):
     shots = season_shots(season_events_df, matches_summary_df, team, mode)
     title = f"{team} — Shots {'For' if mode == 'for' else 'Conceded'} (Non-Pen)"
     fig = go.Figure()
@@ -128,7 +131,7 @@ def plotly_season_shot_map(season_events_df, matches_summary_df, team, mode='for
     custom = np.array(meta, dtype=object)
     fig.add_trace(go.Scatter(
         x=shots['location.y'], y=shots['location.x'], mode='markers',
-        marker=dict(size=16, opacity=0.75, color=shots['shot.xg'], coloraxis='coloraxis',
+        marker=dict(size=19, opacity=0.75, color=shots['shot.xg'], coloraxis='coloraxis',
                     line=dict(color=np.where(is_goal, '#1a7a2e', 'rgba(0,0,0,0.45)'),
                               width=np.where(is_goal, 3, 1))),
         customdata=custom, showlegend=False,
@@ -173,13 +176,13 @@ def _full_pitch_shapes():
     ]
 
 
-def _full_pitch_layout(fig, height=560):
+def _full_pitch_layout(fig, height=820):
     fig.update_layout(
         shapes=_full_pitch_shapes(),
         xaxis=dict(range=[-4, 104], visible=False, fixedrange=True),
         yaxis=dict(range=[104, -8], visible=False, fixedrange=True, scaleanchor='x', scaleratio=0.68),
         plot_bgcolor=theme.FIGURE_BG, paper_bgcolor=theme.FIGURE_BG,
-        margin=dict(l=10, r=10, t=54, b=10), height=height, showlegend=False,
+        margin=dict(l=10, r=10, t=84, b=10), height=height, showlegend=False,
         dragmode=False, clickmode='event+select')
     return fig
 
@@ -191,7 +194,7 @@ def _ramp(v, vmax):
     return '#%02x%02x%02x' % tuple(int(x + (y - x) * t) for x, y in zip(a, b))
 
 
-def plotly_passing_network(net, team_name, title=None, height=560):
+def plotly_passing_network(net, team_name, title=None, height=820):
     """`net` is pitch_visualizations.compute_passing_network(...)."""
     nodes, edges = net['nodes'], net['edges']
     fig = go.Figure()
@@ -237,24 +240,24 @@ def plotly_passing_network(net, team_name, title=None, height=560):
              for _, r in nodes.iterrows()]
     fig.add_trace(go.Scatter(
         x=nodes['x'], y=nodes['y'], mode='markers+text',
-        marker=dict(size=sizes, color=NODE, line=dict(color='white', width=2)),
-        text=nodes['pass_count'].astype(int).astype(str), textfont=dict(color='white', size=9),
+        marker=dict(size=sizes * 1.25, color=NODE, line=dict(color='white', width=2)),
+        text=nodes['pass_count'].astype(int).astype(str), textfont=dict(color='white', size=10),
         textposition='middle center',
         customdata=np.stack([nodes['player.id'].astype(int), nodes['name'].astype(str)], axis=1),
         hovertext=hover, hoverinfo='text', showlegend=False))
     fig.add_trace(go.Scatter(
         x=nodes['x'], y=nodes['y'] + 4.5, mode='text',
         text=[_short(n) for n in nodes['name']], textposition='bottom center',
-        textfont=dict(size=10, color=NODE), hoverinfo='skip', showlegend=False))
+        textfont=dict(size=12, color=NODE), hoverinfo='skip', showlegend=False))
 
     legend = ('line width = pass volume · line colour = on-ball value added (grey = negative) · '
               'circle size = passing value' if has_obv else
               'line width = pass volume · circle size = involvement')
     fig.add_annotation(text=f'<b>{title or f"{team_name} — Passing Network"}</b>',
-                       xref='paper', yref='paper', x=0.01, y=1.09, showarrow=False,
+                       xref='paper', yref='paper', x=0.01, y=1.075, showarrow=False,
                        font=dict(size=14, color=theme.FIGURE_INK), xanchor='left')
     fig.add_annotation(text=legend + ' · click a player to open the profile',
-                       xref='paper', yref='paper', x=0.01, y=1.045, showarrow=False,
+                       xref='paper', yref='paper', x=0.01, y=1.035, showarrow=False,
                        font=dict(size=10.5, color='#5a5a5a'), xanchor='left')
     return _full_pitch_layout(fig, height)
 
@@ -282,7 +285,7 @@ def rolling_xg_frame(all_matches_df, team, window=5):
     return df
 
 
-def plotly_rolling_xg(all_matches_df, team, matches_summary_df=None, window=5, height=420):
+def plotly_rolling_xg(all_matches_df, team, matches_summary_df=None, window=5, height=540):
     df = rolling_xg_frame(all_matches_df, team, window)
     fig = go.Figure()
     if df.empty:

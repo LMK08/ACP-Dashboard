@@ -407,14 +407,15 @@ def render():
                     st.rerun()
 
     st.subheader("Season Shot Maps (Non-Penalty)")
-    col1_shot, col2_shot = st.columns(2)
-    with col1_shot:
+    # Full width, stacked: the half-pitch locks its aspect, so in a half-width
+    # column it rendered a few hundred px tall.
+    if True:
         st.markdown(f"**Shots FOR {selected_team_t}**")
         _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'for'),
                               use_container_width=True, key='ta_shots_for', on_select='rerun',
                               selection_mode='points', config=app._PLOTLY_CFG, theme=None)
         app.open_match_from_selection(_ev)
-    with col2_shot:
+    if True:
         st.markdown(f"**Shots AGAINST {selected_team_t}**")
         _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'against'),
                               use_container_width=True, key='ta_shots_against', on_select='rerun',

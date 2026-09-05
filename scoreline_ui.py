@@ -49,14 +49,14 @@ def _score_heatmap(P, home, away, max_show=6):
         z=M, x=[str(j) for j in range(n + 1)], y=[str(i) for i in range(n + 1)],
         colorscale=[[0, theme.FIGURE_BG], [1, theme.FOCUS]], zmin=0, zmax=float(M.max()),
         text=[[f'{v:.1%}' if v >= 0.005 else '' for v in row] for row in M],
-        texttemplate='%{text}', textfont=dict(size=11),
+        texttemplate='%{text}', textfont=dict(size=13),
         hovertemplate=f'{home} %{{y}} – {away} %{{x}}<br>%{{z:.1%}}<extra></extra>',
         showscale=False))
     fig.update_layout(
         title=dict(text=f'<b>Scoreline probabilities</b>', font=dict(size=14, color=theme.FIGURE_INK), x=0.01),
         xaxis=dict(title=f'{away} goals', side='top', fixedrange=True),
         yaxis=dict(title=f'{home} goals', autorange='reversed', fixedrange=True),
-        paper_bgcolor=theme.FIGURE_BG, plot_bgcolor=theme.FIGURE_BG, height=380,
+        paper_bgcolor=theme.FIGURE_BG, plot_bgcolor=theme.FIGURE_BG, height=500,
         margin=dict(l=60, r=10, t=70, b=10), font=dict(color=theme.FIGURE_INK))
     return fig
 
@@ -78,7 +78,7 @@ def _reliability_fig(rel_rows):
                                  font=dict(size=13, color=theme.FIGURE_INK), x=0.01),
                       xaxis=dict(title='predicted probability', range=[0, 1], fixedrange=True),
                       yaxis=dict(title='observed frequency', range=[0, 1], fixedrange=True),
-                      paper_bgcolor=theme.FIGURE_BG, plot_bgcolor=theme.FIGURE_BG, height=360,
+                      paper_bgcolor=theme.FIGURE_BG, plot_bgcolor=theme.FIGURE_BG, height=440,
                       legend=dict(orientation='h', x=0, y=1.0, xanchor='left', yanchor='bottom'),
                       margin=dict(l=50, r=10, t=70, b=40), font=dict(color=theme.FIGURE_INK))
     return fig

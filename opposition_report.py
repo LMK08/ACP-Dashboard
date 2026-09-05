@@ -1520,9 +1520,9 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         st.caption(f"Could not render xG history: {e}")
 
     # Shot maps
-    col_sf, col_sa = st.columns(2)
-
-    with col_sf:
+    # Full width, stacked (parity with Team Analysis): the half-pitch locks its
+    # aspect, so in a half-width column it rendered a few hundred px tall.
+    if True:
         st.markdown("**Shots For**")
         try:
             _pdf_png('season_shotmap_for', 'shotmap_for')
@@ -1533,7 +1533,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         except Exception as e:
             st.caption(f"Could not render shot map: {e}")
 
-    with col_sa:
+    if True:
         st.markdown("**Shots Conceded**")
         try:
             _pdf_png('season_shotmap_against', 'shotmap_against')
