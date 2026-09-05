@@ -95,12 +95,15 @@ jobs:
           # on the Space and kept serving matchweek-1 data. The only artifact
           # deliberately left untouched on HF is raw_events.parquet (178MB,
           # HF-only — never committed to GitHub, explicitly protected below).
-          # README.md and .gitattributes are managed by the force-push deploys
+          # .gitattributes is managed by the force-push deploys
           # (scheduled_update / engine_rebuild) and never touched here.
+          # README.md IS shipped: its frontmatter carries the Space's
+          # sdk_version (Streamlit pin), and until 2026-09 a pin change sat
+          # on GitHub until the next data run happened to rsync it across.
           cd github-repo
 
           # Code + config files.
-          for f in *.py requirements.txt config.yaml league_config.py Dockerfile; do
+          for f in *.py requirements.txt config.yaml league_config.py Dockerfile README.md; do
             if [ -f "$f" ]; then
               cp "$f" ../hf-repo/
             fi
