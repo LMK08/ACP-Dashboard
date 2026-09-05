@@ -75,13 +75,17 @@ def render():
 
     all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
     # Our own club first, not whichever team sorts first alphabetically.
-    _default_team_idx = all_teams_t.index(OUR_TEAM) if OUR_TEAM in all_teams_t else 0
-    # A click on another team's dot in the season report asks for that team.
-    if st.session_state.get('nav_team') in all_teams_t:
-        st.session_state['team_select_tab'] = st.session_state.pop('nav_team')
-    _team_kw = {} if 'team_select_tab' in st.session_state else {'index': _default_team_idx}
+    # Default (our club) and deep links (a team's dot in the season report)
+    # both go through session state BEFORE the widget exists, and the widget
+    # takes no index=: a keyed widget whose parameters change between runs
+    # is a NEW widget to Streamlit (1.41 reset it to the first option).
+    _nav_team = st.session_state.pop('nav_team', None)
+    if _nav_team in all_teams_t:
+        st.session_state['team_select_tab'] = _nav_team
+    if st.session_state.get('team_select_tab') not in all_teams_t:
+        st.session_state['team_select_tab'] = OUR_TEAM if OUR_TEAM in all_teams_t else all_teams_t[0]
     selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t,
-                                           key="team_select_tab", **_team_kw)
+                                           key="team_select_tab")
     _stage_suffix = "" if selected_stage in (STAGE_ALL, None) else f" — {selected_stage}"
     st.header(f"Team Report: {selected_team_t}{_stage_suffix}")
     if selected_stage not in (STAGE_ALL, None):

@@ -100,7 +100,12 @@ zero-size placement when the cursor sat on the bottom margin, 2026-09).
 
 ## Tests (run before pushing; CI gates the deploy on them)
 
-`python -m pytest tests -v` — `tests/test_smoke_pages.py` boots app.py
+`python -m pytest tests -v` — run it under the PINNED Streamlit too before
+pushing (`python -m venv --system-site-packages /tmp/venv141 && /tmp/venv141/bin/pip
+install streamlit==1.41.0`, then that python): 1.41 treats a keyed widget
+whose parameters change between runs as a new widget and resets it, which
+the local 1.50 does not — seed defaults via session state, never toggle
+`index=`. `tests/test_smoke_pages.py` boots app.py
 headlessly (streamlit.testing AppTest, needs the data files incl. the
 HF-only `raw_events.parquet`; skips without them) and walks every analysis
 type on the defaults plus the fixtures-only newest season; a page fails on

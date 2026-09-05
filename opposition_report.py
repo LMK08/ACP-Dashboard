@@ -843,18 +843,18 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         if _last and _last['opponent'] in all_opponents:
             default_idx = all_opponents.index(_last['opponent'])
 
-    # A preset key (deep link from Home) wins; only pass index= when there is
-    # no preset, or Streamlit warns about a widget with two defaults. A stale
-    # preset (opponent not in this season/league) is dropped first.
-    if st.session_state.get("opposition_report_team") not in all_opponents:
-        st.session_state.pop("opposition_report_team", None)
-    # A click on another team's dot in the season report asks for that team.
-    if st.session_state.get('nav_opponent') in all_opponents:
-        st.session_state['opposition_report_team'] = st.session_state.pop('nav_opponent')
-    st.session_state.pop('nav_opponent', None)
-    _opp_kw = {} if "opposition_report_team" in st.session_state else {"index": default_idx}
+    # Default (next / last fixture), deep links from Home and a click on a
+    # team's dot in the season report all go through session state BEFORE the
+    # widget exists; the widget takes no index=, so its parameters never
+    # change between runs (a keyed widget with changing params is a NEW
+    # widget to Streamlit 1.41, which reset it to the first option).
+    _nav_opp = st.session_state.pop('nav_opponent', None)
+    if _nav_opp in all_opponents:
+        st.session_state['opposition_report_team'] = _nav_opp
+    if st.session_state.get('opposition_report_team') not in all_opponents:
+        st.session_state['opposition_report_team'] = all_opponents[default_idx]
     selected_opponent = st.selectbox(
-        "Opponent", all_opponents, key="opposition_report_team", **_opp_kw,
+        "Opponent", all_opponents, key="opposition_report_team",
     )
 
     fixture_info = None

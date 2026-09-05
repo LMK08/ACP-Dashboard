@@ -176,6 +176,20 @@ def test_player_profile_bridge_carries_season(app):
     assert season.value == '2025/26'
 
 
+@pytest.mark.parametrize('page,label', [('Team Analysis', 'Select a Team'), ('Opposition Report', 'Opponent')])
+def test_keyed_selectors_are_stable_across_reruns(app, page, label):
+    """A keyed selectbox whose parameters differ between runs is a NEW widget
+    to Streamlit 1.41 and snaps back to its first option. The team and
+    opponent selectors seed their default through session state and take no
+    index=, so a plain rerun must leave them where they were."""
+    _open_page(app, page)
+    box = [s for s in app.selectbox if s.label == label][0]
+    first = box.value
+    app.run()
+    again = [s for s in app.selectbox if s.label == label][0]
+    assert again.value == first, f"{page}: {label} moved from {first!r} to {again.value!r} on a rerun"
+
+
 @pytest.mark.parametrize('page', ['Team Analysis', 'Opposition Report'])
 def test_team_visuals_are_interactive(app, page):
     """Both team pages show the shot maps, rolling xG, passing network and
