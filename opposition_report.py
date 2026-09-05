@@ -268,55 +268,9 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
 # Data helpers
 # ---------------------------------------------------------------------------
 def _find_next_fixture(matches_df, season_id):
-    """Auto-detect the next unplayed fixture for Atletico CP."""
-    season_matches = matches_df[matches_df['seasonId'] == season_id].copy()
-    acp_matches = season_matches[
-        (season_matches['homeTeamName'] == OUR_TEAM) |
-        (season_matches['awayTeamName'] == OUR_TEAM)
-    ].copy()
-
-    if acp_matches.empty:
-        return None
-
-    def _is_unplayed(score):
-        if pd.isna(score):
-            return True
-        return '-' not in str(score)
-
-    acp_matches['_unplayed'] = acp_matches['score'].apply(_is_unplayed)
-    unplayed = acp_matches[acp_matches['_unplayed']].copy()
-
-    if unplayed.empty:
-        return None
-
-    unplayed['dateutc'] = pd.to_datetime(unplayed['dateutc'], errors='coerce')
-    unplayed = unplayed.sort_values('dateutc')
-    nxt = unplayed.iloc[0]
-
-    opponent = (nxt['awayTeamName']
-                if nxt['homeTeamName'] == OUR_TEAM
-                else nxt['homeTeamName'])
-    home_away = 'Home' if nxt['homeTeamName'] == OUR_TEAM else 'Away'
-
-    gw = nxt.get('gameweek', '?')
-    # If gameweek is NaN/None/"?", derive it from the team's fixture position
-    if pd.isna(gw) or str(gw).strip() in ('', '?', 'nan', 'None'):
-        acp_tmp = acp_matches.copy()
-        acp_tmp['_sort_date'] = pd.to_datetime(acp_tmp['dateutc'], errors='coerce')
-        acp_sorted = acp_tmp.sort_values('_sort_date')
-        match_ids = acp_sorted['matchId'].tolist()
-        try:
-            gw = match_ids.index(nxt.get('matchId')) + 1
-        except ValueError:
-            gw = '?'
-
-    return {
-        'opponent': opponent,
-        'date': nxt['dateutc'],
-        'gameweek': gw,
-        'home_away': home_away,
-        'matchId': nxt.get('matchId'),
-    }
+    """Next unplayed fixture for OUR_TEAM — shared with the Match Predictor
+    defaults, so the logic lives in app.next_fixture_for_team."""
+    return _get_app().next_fixture_for_team(matches_df, season_id, OUR_TEAM)
 
 
 def _get_team_recent_form(matches_df, team_name, season_id, n=5):
@@ -879,6 +833,13 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     default_idx = 0
     if next_fixture and next_fixture['opponent'] in all_opponents:
         default_idx = all_opponents.index(next_fixture['opponent'])
+    else:
+        # The fixture list only fills in as matches are played, so there is
+        # often no "next" fixture in the data: open on the most recent
+        # opponent instead of whichever club sorts first alphabetically.
+        _last = _get_app().last_fixture_for_team(matches_summary_df, selected_season_id, OUR_TEAM)
+        if _last and _last['opponent'] in all_opponents:
+            default_idx = all_opponents.index(_last['opponent'])
 
     selected_opponent = st.selectbox(
         "Opponent", all_opponents, index=default_idx,

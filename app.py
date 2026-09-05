@@ -451,7 +451,7 @@ STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e
                              # override). v13 percentiles cache served stale minutes
                              # because the percentiles layer early-returns its disk cache
                              # and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v2'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v3'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -2230,6 +2230,129 @@ def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
         return merged
     return season_team_stats.get(season_id, {})
 
+# ------------------------------------------------------------------------------
+# Club-first defaults and cross-page selector persistence
+# ------------------------------------------------------------------------------
+OUR_TEAM = 'Atlético CP'
+# Session keys that carry the league / season choice ACROSS pages. Each page
+# keeps its own widget key (season_select_<page>) so Streamlit's per-widget
+# state is untouched; these globals seed a page's selector the first time it
+# renders. Before this, moving Team Analysis -> League Analysis silently
+# snapped the season back to the newest one.
+GLOBAL_LEAGUE_KEY = 'global_league_label'
+GLOBAL_SEASON_KEY = 'global_season_label'
+# A season needs this many matches WITH EVENTS before it is the default —
+# the newest season in the fixture list has none for its first weeks.
+MIN_MATCHES_FOR_DEFAULT_SEASON = 5
+# {season_id: n matches with events}; filled in the main body after load_data.
+SEASON_MATCHES_WITH_EVENTS = {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _season_match_counts_cached(n_events, _events_df):
+    counts = _events_df.groupby('seasonId')['matchId'].nunique()
+    return {int(k): int(v) for k, v in counts.items()}
+
+
+def _season_match_counts(events_df):
+    """{season_id: matches with events} for the loaded events, or {} if unknown."""
+    if events_df is None or events_df.empty or 'seasonId' not in events_df.columns:
+        return {}
+    try:
+        return _season_match_counts_cached(len(events_df), events_df)
+    except Exception as e:
+        logger.warning(f"[seasons] could not count matches with events: {e}")
+        return {}
+
+
+def _default_season_label(available_seasons, options):
+    """Newest season label (options are newest-first) with event data for at
+    least MIN_MATCHES_FOR_DEFAULT_SEASON matches; else the newest label."""
+    for label in options:
+        if label == "All Seasons":
+            continue
+        sids = [sid for sid, lab in available_seasons.items() if lab == label]
+        if any(SEASON_MATCHES_WITH_EVENTS.get(int(sid), 0) >= MIN_MATCHES_FOR_DEFAULT_SEASON
+               for sid in sids):
+            return label
+    return next((o for o in options if o != "All Seasons"), options[0] if options else None)
+
+
+def _team_fixtures(matches_df, season_id, team):
+    season_matches = matches_df[matches_df['seasonId'] == season_id]
+    return season_matches[
+        (season_matches['homeTeamName'] == team) | (season_matches['awayTeamName'] == team)
+    ].copy()
+
+
+def _fixture_record(row, team, team_matches):
+    opponent = row['awayTeamName'] if row['homeTeamName'] == team else row['homeTeamName']
+    home_away = 'Home' if row['homeTeamName'] == team else 'Away'
+    gw = row.get('gameweek', '?')
+    # Gameweek missing: derive it from the team's position in its own fixture list
+    if pd.isna(gw) or str(gw).strip() in ('', '?', 'nan', 'None'):
+        ordered = team_matches.assign(
+            _d=pd.to_datetime(team_matches['dateutc'], errors='coerce')).sort_values('_d')
+        try:
+            gw = ordered['matchId'].tolist().index(row.get('matchId')) + 1
+        except ValueError:
+            gw = '?'
+    return {
+        'opponent': opponent,
+        'date': pd.to_datetime(row.get('dateutc'), errors='coerce'),
+        'gameweek': gw,
+        'home_away': home_away,
+        'matchId': row.get('matchId'),
+    }
+
+
+def _is_played(score):
+    return pd.notna(score) and '-' in str(score)
+
+
+def next_fixture_for_team(matches_df, season_id, team=None):
+    """Next unplayed fixture for `team` (default OUR_TEAM) in `season_id`, or None.
+    Returns {'opponent', 'date', 'gameweek', 'home_away', 'matchId'}."""
+    team = team or OUR_TEAM
+    team_matches = _team_fixtures(matches_df, season_id, team)
+    if team_matches.empty:
+        return None
+    unplayed = team_matches[~team_matches['score'].apply(_is_played)].copy()
+    if unplayed.empty:
+        return None
+    unplayed['_d'] = pd.to_datetime(unplayed['dateutc'], errors='coerce')
+    return _fixture_record(unplayed.sort_values('_d').iloc[0], team, team_matches)
+
+
+def last_fixture_for_team(matches_df, season_id, team=None):
+    """Most recently PLAYED fixture for `team` in `season_id`, or None."""
+    team = team or OUR_TEAM
+    team_matches = _team_fixtures(matches_df, season_id, team)
+    if team_matches.empty:
+        return None
+    played = team_matches[team_matches['score'].apply(_is_played)].copy()
+    if played.empty:
+        return None
+    played['_d'] = pd.to_datetime(played['dateutc'], errors='coerce')
+    return _fixture_record(played.sort_values('_d').iloc[-1], team, team_matches)
+
+
+def _predictor_default_labels(all_season_options, season_ids_desc, matches_df):
+    """(home_label, away_label) defaults for the Match Predictor selectors.
+    Home: OUR_TEAM in the newest season it is available in. Away: that season's
+    next fixture opponent, else its most recent opponent, else None."""
+    for sid in season_ids_desc:
+        season_label = SEASON_ID_MAP.get(sid)
+        home = f"{OUR_TEAM} ({season_label})"
+        if home not in all_season_options:
+            continue
+        fixture = (next_fixture_for_team(matches_df, sid, OUR_TEAM)
+                   or last_fixture_for_team(matches_df, sid, OUR_TEAM))
+        away = f"{fixture['opponent']} ({season_label})" if fixture else None
+        return home, (away if away in all_season_options else None)
+    return None, None
+
+
 def league_selector(section_key):
     """Render a league selector in the sidebar. Returns list of competition IDs."""
     options = ["Liga 3", "Campeonato"]
@@ -2239,12 +2362,16 @@ def league_selector(section_key):
     state_key = f"league_select_{section_key}"
     if st.session_state.get(state_key) not in options:
         st.session_state.pop(state_key, None)
+    # First render on this page: inherit the league chosen elsewhere.
+    if state_key not in st.session_state:
+        _remembered = st.session_state.get(GLOBAL_LEAGUE_KEY)
+        st.session_state[state_key] = _remembered if _remembered in options else options[0]
     selected = st.sidebar.selectbox(
         "League",
         options,
-        index=0,
         key=state_key
     )
+    st.session_state[GLOBAL_LEAGUE_KEY] = selected
     for comp_id, comp_config in COMPETITIONS.items():
         if comp_config["name"] == selected:
             return [comp_id]
@@ -2325,14 +2452,26 @@ def season_selector(section_key, include_all_seasons=False, comp_ids=None):
         options = ["All Seasons"] + options
 
     session_key = f"season_select_{section_key}"
-    default_idx = 1 if include_all_seasons else 0
+    if st.session_state.get(session_key) not in options:
+        st.session_state.pop(session_key, None)
+    if session_key not in st.session_state:
+        # Seed order: the season chosen on another page (when this page offers
+        # the same label), else the newest season that actually has event
+        # data. The newest season in the fixture list is NOT a safe default:
+        # in the first weeks of 2026/27 it opened every page on an empty or
+        # crashing view while a complete 2025/26 sat one click away.
+        _remembered = st.session_state.get(GLOBAL_SEASON_KEY)
+        if _remembered in options:
+            st.session_state[session_key] = _remembered
+        else:
+            st.session_state[session_key] = _default_season_label(available_seasons, options)
 
     selected_label = st.sidebar.selectbox(
         "Season",
         options,
-        index=default_idx,
         key=session_key
     )
+    st.session_state[GLOBAL_SEASON_KEY] = selected_label
 
     if selected_label == "All Seasons":
         return None
@@ -2652,6 +2791,17 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, se
     return match_log_df
 
 @st.cache_data
+def _next_shot_id_by_match(events_df):
+    """Series aligned to events_df.index: the id of the next shot in the same
+    match (a backfill of 'shot_event_id'). Safe on an EMPTY frame — there the
+    grouped bfill returns a Series that pandas does NOT turn into a column on
+    assignment, which surfaced as KeyError 'next_shot_id' on every player page
+    for a season whose events hadn't been ingested yet."""
+    if events_df.empty:
+        return pd.Series(index=events_df.index, dtype='float64')
+    return events_df.groupby('matchId')['shot_event_id'].bfill().reindex(events_df.index)
+
+
 def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
     """
     A new, streamlined function to calculate ONLY the key stats for player profiles.
@@ -2678,7 +2828,7 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
         npxg_totals = shots_df.groupby('player.id')['shot.xg'].sum().reset_index().rename(columns={'shot.xg': 'npxG'})
 
         events_df['shot_event_id'] = np.where(events_df['shot.xg'].notna(), events_df['id'], np.nan)
-        events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
+        events_df['next_shot_id'] = _next_shot_id_by_match(events_df)
         shot_xg_map = events_df[events_df['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
 
         assists_df = events_df[events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x)].copy()
@@ -5049,6 +5199,13 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     for the player profile page (Per 90 and Totals).
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
+    if _raw_events_df is None or _raw_events_df.empty:
+        # No events for this scope (a season whose fixtures exist but whose
+        # events haven't been ingested yet). Every step below assumes rows —
+        # the xA backfill was the first to fail — so return the empty frame
+        # the callers already handle ("Player data not available ...").
+        logger.warning("[player-stats] no events for season_id=%s — returning empty stats", season_id)
+        return pd.DataFrame()
     # Disk cache: load pre-computed results if available
     _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     _scope_key = _stats_scope_key(season_id, _raw_events_df)
@@ -5641,7 +5798,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     shots_df = events_df[(events_df['shot.xg'].notna()) & (events_df['type.primary'] != 'penalty')].copy()
     npxg_totals = shots_df.groupby('player.id')['shot.xg'].sum().reset_index().rename(columns={'shot.xg': 'npxG'})
     events_df['shot_event_id'] = np.where(events_df['shot.xg'].notna(), events_df['id'], np.nan)
-    events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
+    events_df['next_shot_id'] = _next_shot_id_by_match(events_df)
     shot_xg_map = events_df[events_df['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
     assists_df = events_df[check_secondary_list('shot_assist')].copy()
     assists_df['xA'] = assists_df['next_shot_id'].map(shot_xg_map)
@@ -6078,6 +6235,10 @@ def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_seaso
     # doesn't collide across leagues (Camp All-Seasons was getting L3's result)
     _scope = tuple(comp_ids) if isinstance(comp_ids, (list, tuple, set)) else comp_ids
     player_stats_df = calculate_all_player_stats(events_df, minutes_df, season_id=season_id, cache_scope=_scope)
+    if player_stats_df.empty:
+        # No events for this scope: nothing to merge or rank. Callers show
+        # their "Player data not available" state on an empty frame.
+        return player_stats_df, pd.DataFrame()
     player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, comp_ids)
@@ -7350,7 +7511,14 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
     return stats_df_raw, stats_df_pct
 
 # --- Radar Plotting Function (Unchanged) ---
-def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league="Liga 3", season="2025/26"):
+def _scope_label(league=None, season=None, sep=" "):
+    """'Liga 3 2025/26', 'Liga 3', '2025/26' or '' — only what the caller
+    actually passed, so a figure never claims a scope it wasn't given (the
+    old defaults stamped 'Liga 3, 2025/26' on Campeonato and 2026/27 charts)."""
+    return sep.join(str(p) for p in (league, season) if p)
+
+
+def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league=None, season=None):
     # (This is the full function from the previous step)
     num_params = len(params); angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist(); angles += angles[:1]
     plot_values_pct = values_pct + values_pct[:1]; fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
@@ -7366,11 +7534,11 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, co
     for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
          raw_display = f'{value_raw}%' if '%' in str(value_raw) else f'{value_raw}'; ax.text(angle, 95, raw_display, ha='center', va='top', size=9, weight='bold', bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
     footer_text = "@lucaskimball | Data via Wyscout | Values in parentheses are percentile rank vs. other teams in league"; fig.text(0.02, 0.02, footer_text, ha='left', va='bottom', fontsize=9, color='gray')
-    report_date = datetime.date.today().strftime("%Y-%m-%d"); full_title = f"{team_name}\n{title_suffix} | {league} {season} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
+    report_date = datetime.date.today().strftime("%Y-%m-%d"); _scope = _scope_label(league, season); full_title = f"{team_name}\n{title_suffix}{(' | ' + _scope) if _scope else ''} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
     return fig
 
 # --- Corner Analysis Plotting Function (Unchanged) ---
-def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3", season="2025/26"):
+def plot_corner_analysis(season_events_df, team_to_analyze, side, league=None, season=None):
     # (This is the full function from the previous step)
     def categorize_corner(row, side):
         end_x = row.get('pass.endLocation.x'); end_y = row.get('pass.endLocation.y'); pass_len = row.get('pass.length')
@@ -7399,7 +7567,7 @@ def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2); pitch.draw(ax=ax_pitch); zone_colors = {'Short': 'blue', 'Near Post': 'orange', 'Middle': 'red', 'Far Post': 'yellow', 'Other': 'grey'}
     for idx, corner in side_corners_df.iterrows():
          if pd.notna(corner.get('pass.endLocation.x')) and pd.notna(corner.get('pass.endLocation.y')): pitch.scatter(x=corner['pass.endLocation.x'], y=corner['pass.endLocation.y'], s=200, color=zone_colors.get(corner['zone'], 'gray'), edgecolor='black', ax=ax_pitch, zorder=3, alpha=0.7)
-    ax_pitch.set_title(f"Corners from the {side.capitalize()} Side | {league} {season}", fontsize=14); legend_elements = [Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='Short'), Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Near Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Middle'), Line2D([0], [0], marker='o', color='w', markerfacecolor='yellow', markersize=10, label='Far Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='grey', markersize=10, label='Other/Outside PA')]; ax_pitch.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.01), frameon=False, fontsize=10)
+    _scope = _scope_label(league, season); ax_pitch.set_title(f"Corners from the {side.capitalize()} Side{(' | ' + _scope) if _scope else ''}", fontsize=14); legend_elements = [Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='Short'), Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Near Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Middle'), Line2D([0], [0], marker='o', color='w', markerfacecolor='yellow', markersize=10, label='Far Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='grey', markersize=10, label='Other/Outside PA')]; ax_pitch.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.01), frameon=False, fontsize=10)
     ax_table.set_title("Corner Taker Summary", fontsize=14, weight='bold')
     if not corner_takers.empty:
         table = Table(ax_table, bbox=[0, 0, 1, 0.9], loc='center'); table.auto_set_font_size(False); table.set_fontsize(10)
@@ -7955,7 +8123,7 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
 
 
 # --- NEW FUNCTION: Plot Team Strength Scatter ---
-def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season="2025/26", icon_zoom=0.25): # <-- ADDED icon_zoom
+def plot_team_strength(stats_df, teams_to_include=None, league=None, season=None, icon_zoom=0.25): # <-- ADDED icon_zoom
     """Generates the Matplotlib figure for the team strength scatter plot."""
 
     if stats_df.empty or 'Attacking Strength' not in stats_df.columns or 'Defending Strength' not in stats_df.columns:
@@ -8012,7 +8180,8 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season=
     if logos_plotted == 0 and not texts: ax.scatter(stats_df_to_plot['Attacking Strength'], stats_df_to_plot['Defending Strength'], s=50, zorder=2)
 
     report_date = datetime.date.today().strftime("%Y-%m-%d")
-    ax.set_title(f'Team Strength Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
+    _scope = _scope_label(league, season, sep=', ')
+    ax.set_title(f'Team Strength Scatterplot{(" | " + _scope) if _scope else ""} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
     ax.set_ylabel('Defending Strength (30% NP Goals Against, 70% NPxG Against)', fontsize=12)
     # The grid and tight_layout that used to share this line stay disabled: the
@@ -8025,7 +8194,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season=
 # app.py (Add this new function)
 
 # --- NEW FUNCTION: Plot Custom Scatter Plot ---
-def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league="Liga 3", season="2025/26"):
+def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league=None, season=None):
     """Generates a dynamic Matplotlib scatter plot with logos."""
 
     # Ensure the selected metrics exist in the DataFrame
@@ -8092,7 +8261,8 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
 
     # --- 5. Styling ---
     report_date = datetime.date.today().strftime("%Y-%m-%d")
-    ax.set_title(f'League Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
+    _scope = _scope_label(league, season, sep=', ')
+    ax.set_title(f'League Scatterplot{(" | " + _scope) if _scope else ""} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel(x_metric, fontsize=12) # Dynamic X Label
     ax.set_ylabel(y_metric, fontsize=12) # Dynamic Y Label
 
@@ -9713,38 +9883,37 @@ def _render_league_figure_png(kind, values_key, extra, day_key, fig_ver, _stats_
 
     `extra` carries what is drawn but is NOT a number in the frame. This is
     the half no scope key could supply, because it is WIDGET STATE:
-      team_strength:  (teams_to_include, icon_zoom, season_label)
+      team_strength:  (teams_to_include, icon_zoom, season_label, league_label)
         teams_to_include is the subset actually plotted; the axis limits still
         come from every row, which is why values_key covers the whole frame.
-        season_label is None except on the multi-season chart (which passes
-        season="Multi-Season"); None means 'leave the plotter's default
-        alone' rather than restating that default here.
-      custom_scatter: (x_metric, y_metric, invert_x, invert_y)
+        season_label / league_label are stamped into the title (the
+        multi-season chart passes "Multi-Season"), so they must be in the key.
+      custom_scatter: (x_metric, y_metric, invert_x, invert_y,
+                       league_label, season_label)
         The metrics are the axis LABELS as well as the columns, and the invert
         flags flip the limits without moving a single value — so neither is
-        implied by values_key.
+        implied by values_key. The two labels are title text, as above.
 
     day_key is today's date. Both plotters stamp 'As of: {date}' into the
     title, so without it a figure built at 23:59 would keep serving
     yesterday's date for the rest of the 24 h TTL.
 
-    league=/season= are left at their defaults by every call site here, so
-    they are compile-time constants and FIGURE_CACHE_VERSION covers a change
-    to them. Same for icons/: adding a team's logo changes the picture
-    without moving any key component, so that is a version bump too.
+    icons/: adding a team's logo changes the picture without moving any key
+    component, so that is a FIGURE_CACHE_VERSION bump.
 
     Returns PNG bytes, or None when the plotter produced no figure.
     """
     if kind == 'team_strength':
-        _teams, _icon_zoom, _season_label = extra
-        _kw = {} if _season_label is None else {'season': _season_label}
+        _teams, _icon_zoom, _season_label, _league_label = extra
         fig = plot_team_strength(_stats_df,
                                   teams_to_include=list(_teams) if _teams else None,
-                                  icon_zoom=_icon_zoom, **_kw)
+                                  icon_zoom=_icon_zoom,
+                                  league=_league_label, season=_season_label)
     elif kind == 'custom_scatter':
-        _x_metric, _y_metric, _invert_x, _invert_y = extra
+        _x_metric, _y_metric, _invert_x, _invert_y, _league_label, _season_label = extra
         fig = plot_custom_scatter(_stats_df, _x_metric, _y_metric,
-                                   _invert_x, _invert_y)
+                                   _invert_x, _invert_y,
+                                   league=_league_label, season=_season_label)
     else:
         raise ValueError(f"unknown league figure kind: {kind!r}")
     return _fig_png_bytes(fig) if fig is not None else None
@@ -9813,6 +9982,8 @@ st.markdown('<h1 style="text-align: center; color: #1a1a1a; font-weight: 700; le
 # --- Load Data ---
 with st.spinner("Loading match data..."):
     raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups = load_data()
+    # Which seasons actually have events — drives the default season selection.
+    SEASON_MATCHES_WITH_EVENTS = _season_match_counts(raw_events_df)
 
 # RSS telemetry: boot line + 5-min daemon (singleton via cache_resource)
 try:
@@ -10009,7 +10180,16 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # Sort descending to show newest matches first
         season_matches_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
 
-        selected_match_display = st.sidebar.selectbox("Select a Match", season_matches_df['display_name'])
+        # Default to the newest match that HAS event data. The newest fixture
+        # in the list can predate its event ingest, which used to open the app
+        # on two "No shots found" panels.
+        _match_ids_with_events = set(
+            get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)['matchId'].unique())
+        _default_match_idx = next(
+            (i for i, mid in enumerate(season_matches_df['matchId'].tolist())
+             if mid in _match_ids_with_events), 0)
+        selected_match_display = st.sidebar.selectbox(
+            "Select a Match", season_matches_df['display_name'], index=_default_match_idx)
         matching_matches = season_matches_df[season_matches_df['display_name'] == selected_match_display]
         if matching_matches.empty:
             st.error("Selected match not found. Please refresh the page and try again.")
@@ -10429,7 +10609,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         team_season_stats = get_season_team_stats(season_team_stats, active_season_ids, comp_ids=selected_comp_ids)
 
         all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
-        selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
+        # Our own club first, not whichever team sorts first alphabetically.
+        _default_team_idx = all_teams_t.index(OUR_TEAM) if OUR_TEAM in all_teams_t else 0
+        selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t,
+                                               index=_default_team_idx, key="team_select_tab")
         _stage_suffix = "" if selected_stage in (STAGE_ALL, None) else f" — {selected_stage}"
         st.header(f"Team Report: {selected_team_t}{_stage_suffix}")
         if selected_stage not in (STAGE_ALL, None):
@@ -10934,20 +11117,27 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         # chart concatenated. That rides in `extra`.
         _fig_day_key = datetime.date.today().isoformat()
 
+        # Titles carry the league/season ACTUALLY selected on this page
+        # (the plotters used to default to "Liga 3, 2025/26" whatever was chosen).
+        _league_label = get_league_label(selected_comp_ids)
+        _season_label_page = SEASON_ID_MAP.get(selected_season_id, "All Seasons")
+
         def _show_strength_png(stats_df, teams=None, icon_zoom=0.25,
                                 season_label=None):
             _png = _render_league_figure_png(
                 'team_strength', _plot_values_key(stats_df, _STRENGTH_COLS),
                 (tuple(teams) if teams is not None else None, icon_zoom,
-                 season_label),
+                 season_label or _season_label_page, _league_label),
                 _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
             if _png:
                 st.image(_png, use_container_width=True)
 
-        def _show_scatter_png(stats_df, x_metric, y_metric, invert_x, invert_y):
+        def _show_scatter_png(stats_df, x_metric, y_metric, invert_x, invert_y,
+                              season_label=None):
             _png = _render_league_figure_png(
                 'custom_scatter', _plot_values_key(stats_df, (x_metric, y_metric)),
-                (x_metric, y_metric, bool(invert_x), bool(invert_y)),
+                (x_metric, y_metric, bool(invert_x), bool(invert_y),
+                 _league_label, season_label or _season_label_page),
                 _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
             if _png:
                 st.image(_png, use_container_width=True)
@@ -11101,7 +11291,8 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
             if x_metric_all and y_metric_all:
                 _show_scatter_png(combined_stats_df, x_metric_all, y_metric_all,
-                                   invert_x_all, invert_y_all)
+                                   invert_x_all, invert_y_all,
+                                   season_label=" + ".join(scatter_seasons) if scatter_seasons else None)
 
             with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
                 st.dataframe(combined_stats_df.round(2))
@@ -11183,6 +11374,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if int(pid) == int(target_id):
                     st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
                     break
+        # First visit: open on our own club's most-used player rather than
+        # whoever tops the league-wide minutes list.
+        elif ('player_profile_selector' not in st.session_state
+              and st.session_state.player_profile_current_id is None):
+            _our_rows = player_list_df[player_list_df['teamName'].astype(str) == OUR_TEAM]
+            if not _our_rows.empty:
+                st.session_state['player_profile_selector'] = _our_rows['display_name'].iloc[0]
 
         selected_player_display = st.sidebar.selectbox(
             "Select Player:",
@@ -11227,13 +11425,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 if not _p_events.empty:
                     # Per-match xA: find shot assists, map to shot xG
                     _p_events['shot_event_id'] = np.where(_p_events['shot.xg'].notna(), _p_events['id'], np.nan)
-                    _p_events['next_shot_id'] = _p_events.groupby('matchId')['shot_event_id'].bfill()
+                    _p_events['next_shot_id'] = _next_shot_id_by_match(_p_events)
                     _shot_xg_map = _p_events[_p_events['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
                     # Get all events in matches this player played (need all players for shot assists)
                     _player_match_ids = _p_events['matchId'].unique()
                     _match_events = profile_events_df[profile_events_df['matchId'].isin(_player_match_ids)].copy()
                     _match_events['shot_event_id'] = np.where(_match_events['shot.xg'].notna(), _match_events['id'], np.nan)
-                    _match_events['next_shot_id'] = _match_events.groupby('matchId')['shot_event_id'].bfill()
+                    _match_events['next_shot_id'] = _next_shot_id_by_match(_match_events)
                     _all_shot_xg = _match_events[_match_events['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
                     _assists = _match_events[
                         (_match_events['player.name'] == selected_player_name) &
@@ -13615,10 +13813,14 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
         player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
         
+        # Default Player A to our own club's most-used player (list is sorted
+        # by minutes, so the first OUR_TEAM row is that player).
+        _our_positions = np.flatnonzero(player_list_df['teamName'].astype(str).values == OUR_TEAM)
+        _default_a_idx = int(_our_positions[0]) if len(_our_positions) else 0
         selected_player_a_display = st.sidebar.selectbox(
-            "Select Player A:", 
-            player_list_df['display_name'], 
-            index=0 # Default to first player
+            "Select Player A:",
+            player_list_df['display_name'],
+            index=_default_a_idx
         )
         
         # FIX: Lookup by ID instead of Name
@@ -15888,12 +16090,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                         all_season_options[label] = (team_name, sid)
 
             sorted_options = sorted(all_season_options.keys())
+            # Defaults: our club in its newest available season, against the
+            # next (else most recent) opponent from the fixture list — not the
+            # alphabetically-first team in two different seasons.
+            _home_default, _away_default = _predictor_default_labels(
+                all_season_options, sorted(available_sids, reverse=True), pred_matches)
             col1, col2 = st.columns(2)
             with col1:
-                home_label = st.selectbox("Home Team", sorted_options, key="pred_home")
+                home_label = st.selectbox(
+                    "Home Team", sorted_options, key="pred_home",
+                    index=sorted_options.index(_home_default) if _home_default in sorted_options else 0)
             with col2:
                 away_options = [t for t in sorted_options if t != home_label]
-                away_label = st.selectbox("Away Team", away_options, key="pred_away")
+                away_label = st.selectbox(
+                    "Away Team", away_options, key="pred_away",
+                    index=away_options.index(_away_default) if _away_default in away_options else 0)
 
             if st.button("Predict Match Outcome", type="primary"):
                 home_team_name, home_sid = all_season_options[home_label]
@@ -16221,12 +16432,22 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
             if cid in COMPETITIONS:
                 opp_season_map.update(COMPETITIONS[cid]["seasons"])
         opp_current_sid = COMPETITIONS[selected_comp_ids[0]]["current_season"] if selected_comp_ids else CURRENT_SEASON_ID
-        render_opposition_report(
-            opp_events, opp_matches, all_match_data,
-            season_team_stats, player_minutes_data,
-            opp_current_sid, opp_season_map,
-            comp_ids=selected_comp_ids,
-        )
+        try:
+            render_opposition_report(
+                opp_events, opp_matches, all_match_data,
+                season_team_stats, player_minutes_data,
+                opp_current_sid, opp_season_map,
+                comp_ids=selected_comp_ids,
+            )
+        except Exception as _opp_exc:
+            # Error boundary: a failure inside the report used to print a raw
+            # Python traceback into the page. Log it for us, explain it to them.
+            logger.exception("Opposition Report failed")
+            st.error(
+                "The Opposition Report could not be built for this league and season "
+                f"({type(_opp_exc).__name__}: {_opp_exc}). Try the previous season, "
+                "or check back after the next data refresh."
+            )
 
 
 else:
