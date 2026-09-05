@@ -57,6 +57,14 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   match (`app.open_match_from_selection`), a network node opens the player
   profile (`app.open_profile_from_selection`), a dot-plot team opens that
   team's report (`on_team_select`). Add an interactive visual to BOTH pages.
+- `models/scoreline/` — the Dixon-Coles scoreline model (`dixon_coles.py`,
+  pure numpy/scipy). `build_dc.py` tunes time decay, shrinkage and the
+  goals-vs-xG blend the rates are fitted on with a monthly walk-forward
+  backtest, then writes `dc_params.json` (what the app loads) and
+  `dc_backtest.json` (metrics vs base rate and vs the strength model,
+  reliability). Runs in the engine rebuild. `scoreline_ui.py` renders it on
+  the Match Predictor page; never quote its probabilities without the
+  calibration expander next to them. Tests: `tests/test_dixon_coles.py`.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)

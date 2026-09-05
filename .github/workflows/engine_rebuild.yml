@@ -115,6 +115,8 @@ jobs:
           python models/ratings/build_projection.py
           python models/ratings/league_conversion.py
           python models/ratings/build_player_engine.py
+          # Scoreline model: Dixon-Coles fit + walk-forward backtest (seconds)
+          python models/scoreline/build_dc.py
 
       - name: Phase 3 — warm player-stats caches
         working-directory: Match_Reports_API/Dashboard

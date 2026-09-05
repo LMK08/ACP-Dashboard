@@ -426,6 +426,16 @@ def render():
                 "Away Team", away_options, key="pred_away",
                 index=away_options.index(_away_default) if _away_default in away_options else 0)
 
+        # --- Scoreline model (Dixon-Coles): always shown for the chosen fixture ---
+        try:
+            import scoreline_ui
+            _dc_home, _ = all_season_options[home_label]
+            _dc_away, _ = all_season_options[away_label]
+            scoreline_ui.render_scoreline_section(_dc_home, _dc_away, selected_comp_ids[0], SEASON_ID_MAP)
+        except Exception as _dc_exc:
+            st.caption(f"Scoreline model unavailable: {type(_dc_exc).__name__}: {_dc_exc}")
+        st.divider()
+
         if st.button("Predict Match Outcome", type="primary"):
             home_team_name, home_sid = all_season_options[home_label]
             away_team_name, away_sid = all_season_options[away_label]
