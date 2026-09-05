@@ -118,12 +118,16 @@ zero-size placement when the cursor sat on the bottom margin, 2026-09).
 
 ## Tests (run before pushing; CI gates the deploy on them)
 
-`python -m pytest tests -v` — run it under the PINNED Streamlit too before
-pushing (`python -m venv --system-site-packages /tmp/venv141 && /tmp/venv141/bin/pip
-install streamlit==1.41.0`, then that python): 1.41 treats a keyed widget
-whose parameters change between runs as a new widget and resets it, which
-the local 1.50 does not — seed defaults via session state, never toggle
-`index=`. `tests/test_smoke_pages.py` boots app.py
+`python -m pytest tests -v`. The Space pins Streamlit 1.50.0 (README
+`sdk_version`, mirrored in deploy_to_hf.yml's smoke job) — the same version
+as the local base env. It was 1.41 until 2026-09: 1.41 measured a Plotly
+chart's container once at first render and never again, leaving every
+chart ~20% narrower than the page, and it reset keyed widgets whose
+parameters changed between runs. Keep seeding widget defaults via session
+state rather than toggling `index=`. If the pin ever moves, run the suite
+under the new version first (`python -m venv --system-site-packages
+/tmp/venvX && /tmp/venvX/bin/pip install streamlit==X`, then that python).
+`tests/test_smoke_pages.py` boots app.py
 headlessly (streamlit.testing AppTest, needs the data files incl. the
 HF-only `raw_events.parquet`; skips without them) and walks every analysis
 type on the defaults plus the fixtures-only newest season; a page fails on

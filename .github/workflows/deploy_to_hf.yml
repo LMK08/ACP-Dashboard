@@ -45,7 +45,7 @@ jobs:
           pip install -r requirements.txt
           # streamlit is provided by the HF SDK in production (README
           # sdk_version) — pin the same version here.
-          pip install streamlit==1.41.0 pytest
+          pip install streamlit==1.50.0 pytest
 
       - name: Download canonical raw_events from HF
         env:
