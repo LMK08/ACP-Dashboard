@@ -15,6 +15,7 @@ import datetime
 import sys
 import io
 import pitch_visualizations as pv
+import context_bar
 import team_interactive as ti
 import theme
 
@@ -1526,7 +1527,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         st.markdown("**Shots For**")
         try:
             _pdf_png('season_shotmap_for', 'shotmap_for')
-            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'for'),
+            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'for', height=context_bar.pitch_height()),
                                   use_container_width=True, key='opp_shots_for', on_select='rerun',
                                   selection_mode='points', config=app._PLOTLY_CFG, theme=None)
             app.open_match_from_selection(_ev)
@@ -1537,7 +1538,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         st.markdown("**Shots Conceded**")
         try:
             _pdf_png('season_shotmap_against', 'shotmap_against')
-            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'against'),
+            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'against', height=context_bar.pitch_height()),
                                   use_container_width=True, key='opp_shots_against', on_select='rerun',
                                   selection_mode='points', config=app._PLOTLY_CFG, theme=None)
             app.open_match_from_selection(_ev)
@@ -1600,7 +1601,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         _net = app.cached_passing_network(_fig_season_key, _fig_comp_key, '', selected_opponent,
                                           app.FIGURE_CACHE_VERSION, season_events_df,
                                           _np_payload['pairs'] if _np_payload else None)
-        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_opponent), use_container_width=True,
+        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_opponent, height=context_bar.pitch_height()), use_container_width=True,
                               key='opp_passnet', on_select='rerun', selection_mode='points', config=app._PLOTLY_CFG, theme=None)
         app.open_profile_from_selection(_ev, selected_season_id)
     except Exception as e:

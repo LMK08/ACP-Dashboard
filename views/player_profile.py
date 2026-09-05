@@ -2332,7 +2332,7 @@ def render():
             # version kept for the PDF one-pager.
             st.plotly_chart(
                 plotly_shot_map(shot_log, selected_player_name,
-                                height=660),
+                                height=context_bar.pitch_height()),
                 use_container_width=True,
                 config={'displayModeBar': False})
 
@@ -2407,7 +2407,7 @@ def render():
                     st.info("No box passes match the current filters.")
                 else:
                     st.plotly_chart(
-                        plotly_box_passes_map(_bp_view, selected_player_name),
+                        plotly_box_passes_map(_bp_view, selected_player_name, height=context_bar.pitch_height()),
                         use_container_width=True,
                         config={'displayModeBar': False})
                     _n_bp = len(_bp_view)

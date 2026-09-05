@@ -35,6 +35,15 @@ SEASON_KEY_PREFIX = 'ctx_season__'
 LEAGUE_MEMORY = 'ctx_league_memory'
 SEASON_MEMORY = 'ctx_season_memory'
 ALL_SEASONS = 'All Seasons'
+# Chart size: a Plotly figure's height is fixed server-side while its width
+# follows the browser, so on a wide screen a pitch chart is height-limited
+# and leaves side margins. This control (kept in session state) lets the
+# user pick the height every pitch chart uses; pages call pitch_height().
+SIZE_KEY = 'ctx_chart_size'
+SIZE_MEMORY = 'ctx_chart_size_memory'
+SIZE_OPTIONS = ('Standard', 'Large', 'Huge')
+PITCH_HEIGHTS = {'Standard': 760, 'Large': 1000, 'Huge': 1300}
+SIZE_DEFAULT = 'Large'
 LEAGUE_OPTIONS = ('Liga 3', 'Campeonato')
 
 PAGES_WITHOUT_CONTEXT = {'Home'}
@@ -70,6 +79,12 @@ def set_context(league=None, season=None):
     if season:
         st.session_state[season_key(league or current_league())] = season
         st.session_state[SEASON_MEMORY] = season
+
+
+def pitch_height():
+    """Figure height (px) for every pitch chart, from the Chart size control."""
+    label = st.session_state.get(SIZE_KEY) or st.session_state.get(SIZE_MEMORY) or SIZE_DEFAULT
+    return PITCH_HEIGHTS.get(label, PITCH_HEIGHTS[SIZE_DEFAULT])
 
 
 def comp_ids_for(league_label):
@@ -132,6 +147,15 @@ def render(current_page):
         st.session_state[LEAGUE_KEY] = remembered if remembered in LEAGUE_OPTIONS else LEAGUE_OPTIONS[0]
     league = st.selectbox('League', LEAGUE_OPTIONS, key=LEAGUE_KEY)
     st.session_state[LEAGUE_MEMORY] = league
+
+    if st.session_state.get(SIZE_KEY) not in SIZE_OPTIONS:
+        st.session_state.pop(SIZE_KEY, None)
+    if SIZE_KEY not in st.session_state:
+        remembered = st.session_state.get(SIZE_MEMORY)
+        st.session_state[SIZE_KEY] = remembered if remembered in SIZE_OPTIONS else SIZE_DEFAULT
+    st.select_slider('Chart size', SIZE_OPTIONS, key=SIZE_KEY,
+                     help='Height of the pitch charts. Pick Huge on a wide monitor.')
+    st.session_state[SIZE_MEMORY] = st.session_state[SIZE_KEY]
 
     if current_page in PAGES_WITHOUT_SEASON:
         return

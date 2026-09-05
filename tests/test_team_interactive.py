@@ -115,3 +115,29 @@ def test_match_shot_map_builds_and_carries_player_ids():
     assert not empty.data
     # true pitch proportions: y units are 1.05/0.68 times x units
     assert abs(fig.layout.yaxis.scaleratio - 1.05 / 0.68) < 1e-9
+
+
+def test_all_shot_maps_share_one_drawing():
+    """Match, team-season and player maps must be the same drawing: marker
+    size/opacity, true pitch proportions and axis ranges, xG colour axis."""
+    import numpy as np, pandas as pd
+    import pitch_interactive as pi
+    ev = pd.DataFrame({'matchId': [1, 1], 'team.name': ['A', 'A'], 'type.primary': ['shot', 'shot'],
+                       'location.x': [88.0, 80.0], 'location.y': [50.0, 40.0], 'shot.xg': [0.3, 0.05],
+                       'shot.isGoal': [True, False], 'shot.onTarget': [True, False], 'player.id': [1, 2],
+                       'player.name': ['P1', 'P2'], 'minute': [10, 20], 'shot.bodyPart': ['right_foot'] * 2})
+    matches = pd.DataFrame({'matchId': [1], 'homeTeamName': ['A'], 'awayTeamName': ['B'], 'dateutc': ['2025-08-01'], 'score': ['1-0']})
+    log = pd.DataFrame({'Shot Number': [1, 2], 'Date': ['2025-08-01'] * 2, 'Opponent': ['B'] * 2, 'Result': ['Goal', 'Miss'],
+                        'xG': [0.3, 0.05], 'Body Part': ['Right foot'] * 2, 'Phase': ['Open play'] * 2, 'SCA': ['Pass'] * 2,
+                        'location.x': [88.0, 80.0], 'location.y': [50.0, 40.0], 'shot.isGoal': [True, False], 'minute': [10, 20]})
+    figs = [ti.plotly_match_shot_map(ev, {'homeTeamName': 'A', 'awayTeamName': 'B', 'score': '1-0'}, 'A', height=1000),
+            ti.plotly_season_shot_map(ev, matches, 'A', 'for', height=1000),
+            pi.plotly_shot_map(log, 'P1', height=1000)]
+    refs = None
+    for f in figs:
+        m = f.data[0].marker
+        sig = (m.size, m.opacity, f.layout.yaxis.scaleratio, tuple(f.layout.yaxis.range), tuple(f.layout.xaxis.range),
+               f.layout.height, f.layout.coloraxis.cmax, f.layout.yaxis.constraintoward)
+        refs = refs or sig
+        assert sig == refs, sig
+    assert refs[0] == pi.SHOT_MARKER['size'] and refs[5] == 1000 and refs[7] == 'top'

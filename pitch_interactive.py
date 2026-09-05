@@ -86,103 +86,88 @@ def _half_pitch_shapes():
 def _pitch_layout(fig, height=800):
     fig.update_layout(
         shapes=_half_pitch_shapes(),
-        xaxis=dict(range=[-3, 103], visible=False, fixedrange=True),
+        xaxis=dict(range=[-3, 103], visible=False, fixedrange=True,
+                   constrain='domain', constraintoward='center'),
         yaxis=dict(range=[49.5, 104.5], visible=False, fixedrange=True,
-                   scaleanchor='x', scaleratio=Y_PER_X),
+                   scaleanchor='x', scaleratio=Y_PER_X,
+                   constrain='domain', constraintoward='top'),
         plot_bgcolor=PITCH_BG, paper_bgcolor=PITCH_BG,
-        margin=dict(l=10, r=10, t=54, b=10), height=height,
+        margin=dict(l=10, r=10, t=64, b=10), height=height,
         showlegend=False, dragmode=False,
     )
     return fig
 
 
+# One look for EVERY shot map (match, team season, player): circle sized
+# SHOT_MARKER, colour = xG on theme's ramp, green ring = goal, two-line
+# left-aligned header pinned in pixels, pitch in true proportions.
+SHOT_MARKER = dict(size=19, opacity=0.75)
+
+
+def shot_map_figure(shots, title, subtitle, customdata, hovertemplate, height=800,
+                    empty_text='No shots in this scope'):
+    """`shots` needs location.x / location.y / shot.xg / shot.isGoal (already
+    numeric and NaN-free); `customdata` rows align with it."""
+    fig = go.Figure()
+    fig.add_annotation(text=f'<b>{title}</b>', xref='paper', yref='paper', x=0.01, y=1.0,
+                       yanchor='bottom', yshift=26, showarrow=False,
+                       font=dict(size=14, color=theme.FIGURE_INK), xanchor='left')
+    if shots is None or len(shots) == 0:
+        fig.add_annotation(text=empty_text, xref='paper', yref='paper', x=0.5, y=0.5,
+                           showarrow=False, font=dict(color='#6b7570'))
+        return _pitch_layout(fig, height=height)
+    is_goal = (shots['shot.isGoal'] == True)  # noqa: E712
+    fig.add_trace(go.Scatter(
+        x=shots['location.y'], y=shots['location.x'], mode='markers',
+        marker=dict(**SHOT_MARKER, color=shots['shot.xg'], coloraxis='coloraxis',
+                    line=dict(color=np.where(is_goal, '#1a7a2e', 'rgba(0,0,0,0.45)'),
+                              width=np.where(is_goal, 3, 1))),
+        customdata=customdata, showlegend=False, hovertemplate=hovertemplate))
+    fig.add_annotation(text=subtitle, xref='paper', yref='paper', x=0.01, y=1.0,
+                       yanchor='bottom', yshift=7, showarrow=False,
+                       font=dict(size=11, color='#5a5a5a'), xanchor='left')
+    _pitch_layout(fig, height=height)
+    fig.update_layout(coloraxis=dict(colorscale=XG_COLORSCALE, cmin=0, cmax=XG_MAX,
+                                     colorbar=dict(title='xG', thickness=12, len=0.5, y=0.5)),
+                      clickmode='event+select')
+    return fig
+
+
 def plotly_shot_map(shot_log: pd.DataFrame, player_name: str,
                     height: int = 800) -> go.Figure:
-    """Interactive StatsBomb-style shot map: marker SHAPE = creating
-    action, color = xG, green ring = goal. Uniform marker size, slightly
-    translucent so overlapping shots stay readable; shape legend beneath
-    the pitch. Expects the processed shot_log from the Shots section
+    """A player's season shot map — the SAME drawing as the match and team
+    maps (shot_map_figure). The creating action, phase and body part live in
+    the hover. Expects the processed shot_log from the Shots section
     (Shot Number, Date, Opponent, Result, xG, Body Part, Phase, SCA,
     location.x/y, shot.isGoal)."""
-    df = shot_log.dropna(subset=['location.x', 'location.y']).copy()
-    df['xG'] = pd.to_numeric(df.get('xG', df.get('shot.xg')),
-                             errors='coerce').fillna(0.0)
-    if 'SCA' in df.columns:
-        df['_sca'] = df['SCA'].fillna('Recovery/None').astype(str)
-        df.loc[~df['_sca'].isin(_SCA_SYMBOL_MAP), '_sca'] = 'Other'
-    else:
-        df['_sca'] = 'Other'
+    df = shot_log.copy()
+    df['shot.xg'] = pd.to_numeric(df.get('xG', df.get('shot.xg')), errors='coerce').fillna(0.0)
+    for c in ('location.x', 'location.y'):
+        df[c] = pd.to_numeric(df.get(c), errors='coerce')
+    df = df.dropna(subset=['location.x', 'location.y']).reset_index(drop=True)
+    df['shot.isGoal'] = df.get('shot.isGoal', pd.Series(False, index=df.index)) == True  # noqa: E712
+    goals = int(df['shot.isGoal'].sum())
+    title = f'{player_name} — Shots (Non-Pen)'
+    subtitle = (f'{len(df)} non-penalty shots · {goals} goals · {df["shot.xg"].sum():.2f} xG · '
+                'colour = xG · ring = goal')
+    if df.empty:
+        return shot_map_figure(df, title, subtitle, None, None, height=height,
+                               empty_text='No shots recorded for this player')
 
-    fig = go.Figure()
-    present = [lbl for lbl, _ in SCA_SYMBOLS if (df['_sca'] == lbl).any()]
-
-    # neutral legend swatches — the data traces carry per-point xG colors,
-    # which would render legend symbols in arbitrary colors
-    for lbl in present:
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode='markers',
-            marker=dict(symbol=_SCA_SYMBOL_MAP[lbl], size=11,
-                        color='#7d8a80'),
-            name=lbl, showlegend=True, hoverinfo='skip'))
-
-    for lbl in present:
-        sub = df[df['_sca'] == lbl]
-        is_goal = sub.get('shot.isGoal') == True  # noqa: E712
-        custom = np.stack([
-            sub.get('Date', pd.Series('—', index=sub.index)).astype(str),
-            sub.get('Opponent', pd.Series('—', index=sub.index)).astype(str),
-            sub.get('minute', pd.Series(np.nan, index=sub.index)).astype(str),
-            sub.get('Result', pd.Series('—', index=sub.index)).astype(str),
-            sub['xG'].round(3).astype(str),
-            sub.get('Body Part', pd.Series('—', index=sub.index)).astype(str),
-            sub.get('Phase', pd.Series('—', index=sub.index)).astype(str),
-        ], axis=1)
-        fig.add_trace(go.Scatter(
-            x=sub['location.y'], y=sub['location.x'],
-            mode='markers+text',
-            text=sub.get('Shot Number',
-                         pd.Series('', index=sub.index)).astype(str),
-            textfont=dict(color='white', size=8.5),
-            marker=dict(
-                symbol=_SCA_SYMBOL_MAP[lbl], size=20, opacity=0.75,
-                color=sub['xG'], coloraxis='coloraxis',
-                line=dict(
-                    color=np.where(is_goal, '#1a7a2e', 'rgba(0,0,0,0.45)'),
-                    width=np.where(is_goal, 3, 1)),
-            ),
-            customdata=custom, showlegend=False,
-            hovertemplate=('<b>#%{text} · %{customdata[3]}</b><br>'
-                           '%{customdata[0]} vs %{customdata[1]} · '
-                           "%{customdata[2]}'<br>"
-                           'xG %{customdata[4]} · %{customdata[5]}<br>'
-                           f'created by: {lbl} · ' + '%{customdata[6]}'
-                           '<extra></extra>'),
-        ))
-
-    goals = int((df.get('shot.isGoal') == True).sum())  # noqa: E712
-    # StatsBomb-style left-aligned two-line header
-    fig.add_annotation(
-        text=f'<b>{player_name} — Season Shot Map</b>',
-        xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=26, showarrow=False,
-        font=dict(size=15), align='left', xanchor='left')
-    fig.add_annotation(
-        text=(f'{len(df)} non-penalty shots · {goals} goals · '
-              f'{df["xG"].sum():.2f} xG · shape = creating action · '
-              f'color = xG · ring = goal'),
-        xref='paper', yref='paper', x=0.01, y=1.0, yanchor='bottom', yshift=7, showarrow=False,
-        font=dict(size=11.5, color='#5a5a5a'), align='left',
-        xanchor='left')
-    _pitch_layout(fig, height=height)
-    fig.update_layout(
-        showlegend=True,
-        legend=dict(orientation='h', x=0.5, xanchor='center',
-                    y=-0.01, yanchor='top', font=dict(size=11),
-                    itemclick=False, itemdoubleclick=False),
-        coloraxis=dict(colorscale=XG_COLORSCALE, cmin=0, cmax=XG_MAX,
-                       colorbar=dict(title='xG', thickness=12, len=0.5,
-                                     y=0.5)),
-        margin=dict(l=10, r=10, t=64, b=42))
-    return fig
+    def col(name, default='—'):
+        return df.get(name, pd.Series(default, index=df.index)).astype(str)
+    minute = pd.to_numeric(df.get('minute'), errors='coerce')
+    custom = np.stack([
+        col('Shot Number', ''), col('Date'), col('Opponent'),
+        minute.map(lambda m: f"{m:.0f}'" if pd.notna(m) else ''),
+        col('Result'), df['shot.xg'].round(2).astype(str), col('Body Part'), col('Phase'),
+        col('SCA', 'Recovery/None'),
+    ], axis=1)
+    hover = ('<b>#%{customdata[0]} · %{customdata[4]}</b><br>'
+             '%{customdata[1]} vs %{customdata[2]} %{customdata[3]}<br>'
+             'xG %{customdata[5]} · %{customdata[6]}<br>'
+             'created by: %{customdata[8]} · %{customdata[7]}<extra></extra>')
+    return shot_map_figure(df, title, subtitle, custom, hover, height=height)
 
 
 def _robust_vmax(vals: pd.Series) -> float:
@@ -213,7 +198,7 @@ def _pass_hover(df: pd.DataFrame) -> np.ndarray:
 
 
 def plotly_box_passes_map(passes: pd.DataFrame, player_name: str,
-                          max_arrows: int = 400) -> go.Figure:
+                          max_arrows: int = 400, height: int = 800) -> go.Figure:
     """Every pass into the attacking box, arrow-colored by GPA pass value."""
     df = passes.dropna(subset=['location.x', 'location.y',
                                'pass.endLocation.x',
@@ -265,10 +250,10 @@ def plotly_box_passes_map(passes: pd.DataFrame, player_name: str,
         text=(f'<b>{player_name}</b> — Passes into the Box<br>'
               f'{len(df)} passes · {acc:.0%} completed · '
               f'{total_v:+.3f} total value{note}'),
-        xref='paper', yref='paper', x=0.5, y=1.085, showarrow=False,
-        font=dict(size=13), align='center')
+        xref='paper', yref='paper', x=0.5, y=1.0, yanchor='bottom', yshift=10, showarrow=False,
+        font=dict(size=13, color=theme.FIGURE_INK), align='center')
     fig.update_layout(annotations=fig.layout.annotations + tuple(annotations))
-    return _pitch_layout(fig)
+    return _pitch_layout(fig, height=height)
 
 
 # Keep in sync with ROLE_PEAK in models/ratings/build_projection.py —

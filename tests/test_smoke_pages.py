@@ -201,6 +201,25 @@ def test_team_visuals_are_interactive(app, page):
     assert not _problems(app), _problems(app)
 
 
+def test_chart_size_control_scales_every_pitch_chart(app):
+    """The sidebar Chart size control sets the height of every pitch chart on
+    the page (shot maps + passing network) — Huge = 1300 px."""
+    import json
+    _open_page(app, 'Team Analysis')
+    sliders = [s for s in app.sidebar.select_slider if s.label == 'Chart size']
+    assert sliders, 'Chart size control missing from the context bar'
+    sliders[0].set_value('Huge')
+    app.run()
+    heights = []
+    for ch in app.get('plotly_chart'):
+        spec = json.loads(ch.spec) if isinstance(ch.spec, str) else ch.spec
+        h = (spec.get('layout') or {}).get('height')
+        if h in (760, 1000, 1300):
+            heights.append(h)
+    assert heights and all(h == 1300 for h in heights), heights
+    assert not _problems(app), _problems(app)
+
+
 @pytest.mark.parametrize('page', EMPTY_SEASON_PAGES)
 def test_empty_season_degrades_gracefully(app, page):
     """Forcing the newest season (fixtures, few or no events) must give a

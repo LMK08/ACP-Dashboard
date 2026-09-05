@@ -8,6 +8,7 @@ list: everything it reads from app.py, nothing else.
 import pandas as pd
 import streamlit as st
 import sys
+import context_bar
 import team_interactive as ti
 import theme
 
@@ -411,13 +412,13 @@ def render():
     # column it rendered a few hundred px tall.
     if True:
         st.markdown(f"**Shots FOR {selected_team_t}**")
-        _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'for'),
+        _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'for', height=context_bar.pitch_height()),
                               use_container_width=True, key='ta_shots_for', on_select='rerun',
                               selection_mode='points', config=app._PLOTLY_CFG, theme=None)
         app.open_match_from_selection(_ev)
     if True:
         st.markdown(f"**Shots AGAINST {selected_team_t}**")
-        _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'against'),
+        _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'against', height=context_bar.pitch_height()),
                               use_container_width=True, key='ta_shots_against', on_select='rerun',
                               selection_mode='points', config=app._PLOTLY_CFG, theme=None)
         app.open_match_from_selection(_ev)
@@ -518,7 +519,7 @@ def render():
         _net = app.cached_passing_network(_fig_season_key, _fig_comp_key, _fig_stage_key, selected_team_t,
                                           FIGURE_CACHE_VERSION, team_events_df,
                                           _np_payload['pairs'] if _np_payload else None)
-        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_team_t), use_container_width=True,
+        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_team_t, height=context_bar.pitch_height()), use_container_width=True,
                               key='ta_passnet', on_select='rerun', selection_mode='points', config=app._PLOTLY_CFG, theme=None)
         app.open_profile_from_selection(_ev, selected_season_id)
     except Exception as e:

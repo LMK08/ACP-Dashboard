@@ -60,8 +60,13 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   Shot maps (match / team / player) share ONE drawing: `pitch_interactive._pitch_layout`
   with true Wyscout proportions (`Y_PER_X` = 1.05/0.68 — drawn 1:1 they were
   squashed to half height), `team_interactive.SHOT_MARKER`, the xG ramp and
-  the goal ring. Pitch charts lock their aspect: never put one in a
-  half-width column; stack for/against at full width.
+  the goal ring — the ONE builder is `pitch_interactive.shot_map_figure`; do not
+  draw a shot map any other way. Pitch charts lock their aspect: never put
+  one in a half-width column; stack for/against at full width. Their height
+  comes from the sidebar "Chart size" control (`context_bar.pitch_height()`,
+  Standard/Large/Huge = 760/1000/1300 px; a figure's height is fixed
+  server-side while its width follows the browser, so wide monitors need
+  Huge to fill the width). Pass it to every pitch chart.
 - `models/scoreline/` — the Dixon-Coles scoreline model (`dixon_coles.py`,
   pure numpy/scipy). `build_dc.py` tunes time decay, shrinkage and the
   goals-vs-xG blend the rates are fitted on with a monthly walk-forward
