@@ -8,6 +8,7 @@ list: everything it reads from app.py, nothing else.
 import pandas as pd
 import streamlit as st
 import sys
+import team_interactive as ti
 import theme
 
 
@@ -75,8 +76,12 @@ def render():
     all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
     # Our own club first, not whichever team sorts first alphabetically.
     _default_team_idx = all_teams_t.index(OUR_TEAM) if OUR_TEAM in all_teams_t else 0
+    # A click on another team's dot in the season report asks for that team.
+    if st.session_state.get('nav_team') in all_teams_t:
+        st.session_state['team_select_tab'] = st.session_state.pop('nav_team')
+    _team_kw = {} if 'team_select_tab' in st.session_state else {'index': _default_team_idx}
     selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t,
-                                           index=_default_team_idx, key="team_select_tab")
+                                           key="team_select_tab", **_team_kw)
     _stage_suffix = "" if selected_stage in (STAGE_ALL, None) else f" — {selected_stage}"
     st.header(f"Team Report: {selected_team_t}{_stage_suffix}")
     if selected_stage not in (STAGE_ALL, None):
@@ -250,11 +255,16 @@ def render():
             f"_{active_season_ids if not isinstance(active_season_ids, list) else ','.join(map(str, active_season_ids))}"
             f"_{selected_stage or 'all'}"
         )
+        def _open_team(team):
+            st.session_state['nav_team'] = team
+            st.rerun()
+
         render_season_report_section(
             team_events_df, team_matches_df, selected_team_t,
             season_ids=active_season_ids,
             stage=selected_stage,
             cache_key=_sr_cache_key,
+            on_team_select=_open_team,
         )
 
     # Primary Formation XI Graphic
@@ -396,13 +406,20 @@ def render():
     col1_shot, col2_shot = st.columns(2)
     with col1_shot:
         st.markdown(f"**Shots FOR {selected_team_t}**")
-        _show_team_png('season_shotmap_for')
+        _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'for'),
+                              use_container_width=True, key='ta_shots_for', on_select='rerun',
+                              selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+        app.open_match_from_selection(_ev)
     with col2_shot:
         st.markdown(f"**Shots AGAINST {selected_team_t}**")
-        _show_team_png('season_shotmap_against')
+        _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'against'),
+                              use_container_width=True, key='ta_shots_against', on_select='rerun',
+                              selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+        app.open_match_from_selection(_ev)
 
     # --- Rolling xG History ---
-    with st.expander("Rolling xG (5-Game Average)", expanded=False):
+    st.subheader("Rolling xG (5-Game Average)")
+    if True:  # was an expander: a Plotly chart first drawn hidden keeps a collapsed height
         try:
             # Use the stage-filtered events/matches so the rolling
             # series only covers matches in the active stage. Both frames
@@ -413,7 +430,10 @@ def render():
                 team_events_df, team_matches_df,
                 scope_key=(_fig_season_key, _fig_comp_key, _fig_stage_key))
             if not rolling_xg_data_for_plot.empty:
-                _show_team_png('rolling_xg', payload=rolling_xg_data_for_plot)
+                _ev = st.plotly_chart(ti.plotly_rolling_xg(rolling_xg_data_for_plot, selected_team_t, team_matches_df),
+                                      use_container_width=True, key='ta_rolling_xg', on_select='rerun',
+                                      selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+                app.open_match_from_selection(_ev)
             else:
                 st.warning("No data available to calculate xG history.")
         except Exception as e:
@@ -490,7 +510,12 @@ def render():
                     & (_np_players['competitionId'].isin(selected_comp_ids))]
             if not _np_pairs.empty:
                 _np_payload = {'pairs': _np_pairs, 'players': _np_players}
-        _show_team_png('passing_network', payload=_np_payload)
+        _net = app.cached_passing_network(_fig_season_key, _fig_comp_key, _fig_stage_key, selected_team_t,
+                                          FIGURE_CACHE_VERSION, team_events_df,
+                                          _np_payload['pairs'] if _np_payload else None)
+        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_team_t), use_container_width=True,
+                              key='ta_passnet', on_select='rerun', selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+        app.open_profile_from_selection(_ev, selected_season_id)
     except Exception as e:
         st.caption(f"Could not render passing network: {e}")
 

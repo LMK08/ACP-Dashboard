@@ -823,13 +823,14 @@ def plot_avg_positions_by_subs(events_df, team_name, title=None, match_lineup=No
 # =========================================================================
 # 3. Passing Network
 # =========================================================================
-def plot_passing_network(events_df, team_name, title=None, obv_pairs=None):
-    """Pass connections between players (using possession chain).
+def compute_passing_network(events_df, team_name, obv_pairs=None):
+    """The passing-network DATA both renderers draw (matplotlib below for the
+    PDF, team_interactive.plotly_passing_network on screen):
 
-    obv_pairs: optional DataFrame (passerId, recipientId, obv_sum) for this
-        scope — edges are then COLORED by on-ball value added (single-hue
-        ramp) while thickness stays pass volume, and nodes are SIZED by each
-        player's total PASSING value (sum of their pair OBV).
+    nodes: player.id, x, y, count (touches), name, position, pass_count,
+           node_metric (passing OBV when obv_pairs is given, else involvement)
+    edges: passer, receiver, count, obv (0 when no OBV)
+    has_obv: whether edges/nodes carry on-ball value
     """
     te = events_df[events_df['team.name'] == team_name].copy()
     passes = te[te['type.primary'] == 'pass'].copy()
@@ -912,14 +913,47 @@ def plot_passing_network(events_df, team_name, title=None, obv_pairs=None):
     # Count total passes per player (as passer)
     player_pass_counts = passes.groupby('passer').size().to_dict()
 
-    pitch, fig, ax = _make_pitch()
-
     # Optional OBV weighting: edge color = value added by that pass pair
     edge_obv = {}
     if obv_pairs is not None and not obv_pairs.empty:
         agg = (obv_pairs.groupby(['passerId', 'recipientId'])['obv_sum']
                .sum())
         edge_obv = {(int(p), int(r)): float(v) for (p, r), v in agg.items()}
+
+    # Nodes — sized by the player's PASSING value when OBV is available
+    # (it's a pass network), else by involvement
+    node_metric = avg_pos['count']
+    if obv_pairs is not None and not obv_pairs.empty:
+        pass_obv = obv_pairs.groupby('passerId')['obv_sum'].sum()
+        mapped = avg_pos['player.id'].map(pass_obv)
+        if mapped.notna().any():
+            node_metric = mapped.fillna(0).clip(lower=0)
+    nodes = avg_pos.copy()
+    nodes['pass_count'] = nodes['player.id'].map(player_pass_counts).fillna(0).astype(int)
+    nodes['node_metric'] = node_metric.values
+    edges = pair_counts.copy()
+    edges['obv'] = [edge_obv.get((int(p), int(r)), 0.0) for p, r in zip(edges['passer'], edges['receiver'])]
+    return {'nodes': nodes.reset_index(drop=True), 'edges': edges.reset_index(drop=True),
+            'has_obv': bool(edge_obv)}
+
+
+def plot_passing_network(events_df, team_name, title=None, obv_pairs=None):
+    """Pass connections between players (using possession chain).
+
+    obv_pairs: optional DataFrame (passerId, recipientId, obv_sum) for this
+        scope — edges are then COLORED by on-ball value added (single-hue
+        ramp) while thickness stays pass volume, and nodes are SIZED by each
+        player's total PASSING value (sum of their pair OBV).
+
+    Data comes from compute_passing_network (shared with the Plotly version).
+    """
+    net = compute_passing_network(events_df, team_name, obv_pairs)
+    avg_pos, pair_counts = net['nodes'], net['edges']
+    edge_obv = {(int(p), int(r)): float(v) for p, r, v in zip(pair_counts['passer'], pair_counts['receiver'], pair_counts['obv'])} if net['has_obv'] else {}
+    player_pass_counts = dict(zip(avg_pos['player.id'].astype(int), avg_pos['pass_count']))
+    node_metric = avg_pos['node_metric']
+
+    pitch, fig, ax = _make_pitch()
 
     # Lines
     pos_dict = {int(r['player.id']): (r['x'], r['y'])
@@ -952,14 +986,6 @@ def plot_passing_network(events_df, team_name, title=None, obv_pairs=None):
                 ax.plot([sx, ex], [sy, ey], color='#457b9d', linewidth=lw,
                         alpha=0.6, zorder=2)
 
-    # Nodes — sized by the player's PASSING value when OBV is available
-    # (it's a pass network), else by involvement
-    node_metric = avg_pos['count']
-    if obv_pairs is not None and not obv_pairs.empty:
-        pass_obv = obv_pairs.groupby('passerId')['obv_sum'].sum()
-        mapped = avg_pos['player.id'].map(pass_obv)
-        if mapped.notna().any():
-            node_metric = mapped.fillna(0).clip(lower=0)
     max_involvement = node_metric.max() if not avg_pos.empty else 1
     max_involvement = max_involvement if max_involvement else 1
     sizes = 190 + 460 * (node_metric / max_involvement)

@@ -47,6 +47,16 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
 - `views/home.py` — the club's Home page (position, form, promotion odds
   from season_simulation.pkl, last match, next opponent, squad ACP Index,
   data freshness). Every card deep-links into the detail page.
+- `team_interactive.py` — Plotly versions of the team visuals both team pages
+  show on screen: season shot maps, passing network, rolling xG (the season
+  report dot plots were already Plotly). They share their DATA step with the
+  matplotlib originals (`pitch_visualizations.compute_passing_network`,
+  `team_interactive.season_shots` / `rolling_xg_frame`) so the PDF, which
+  still embeds the matplotlib PNGs via `_pdf_png` in opposition_report.py,
+  shows the same numbers. Click-through: a shot or rolling-xG point opens the
+  match (`app.open_match_from_selection`), a network node opens the player
+  profile (`app.open_profile_from_selection`), a dot-plot team opens that
+  team's report (`on_team_select`). Add an interactive visual to BOTH pages.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)

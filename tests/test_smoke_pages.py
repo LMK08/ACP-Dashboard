@@ -176,6 +176,17 @@ def test_player_profile_bridge_carries_season(app):
     assert season.value == '2025/26'
 
 
+@pytest.mark.parametrize('page', ['Team Analysis', 'Opposition Report'])
+def test_team_visuals_are_interactive(app, page):
+    """Both team pages show the shot maps, rolling xG, passing network and
+    the season-report dot plots as Plotly charts (parity rule), on top of the
+    static PNGs that remain for the other visuals / the PDF."""
+    _open_page(app, page)
+    charts = app.get('plotly_chart')
+    assert len(charts) >= 4, f"{page}: only {len(charts)} plotly charts"
+    assert not _problems(app), _problems(app)
+
+
 @pytest.mark.parametrize('page', EMPTY_SEASON_PAGES)
 def test_empty_season_degrades_gracefully(app, page):
     """Forcing the newest season (fixtures, few or no events) must give a

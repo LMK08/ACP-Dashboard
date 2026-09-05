@@ -15,6 +15,7 @@ import datetime
 import sys
 import io
 import pitch_visualizations as pv
+import team_interactive as ti
 import theme
 
 # ---------------------------------------------------------------------------
@@ -847,6 +848,10 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # preset (opponent not in this season/league) is dropped first.
     if st.session_state.get("opposition_report_team") not in all_opponents:
         st.session_state.pop("opposition_report_team", None)
+    # A click on another team's dot in the season report asks for that team.
+    if st.session_state.get('nav_opponent') in all_opponents:
+        st.session_state['opposition_report_team'] = st.session_state.pop('nav_opponent')
+    st.session_state.pop('nav_opponent', None)
     _opp_kw = {} if "opposition_report_team" in st.session_state else {"index": default_idx}
     selected_opponent = st.selectbox(
         "Opponent", all_opponents, key="opposition_report_team", **_opp_kw,
@@ -897,6 +902,20 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         st.image(_pair[0], use_container_width=True)
         if pdf_key:
             pdf_figures[pdf_key] = _pair[1]
+
+    def _pdf_png(kind, pdf_key, payload=None):
+        """Build (and cache) the matplotlib PNG for the PDF only — the screen
+        shows the interactive version of this figure."""
+        _pair = _render_opp_figure_png(
+            kind, _fig_season_key, _fig_comp_key, selected_opponent,
+            (), _fig_day_key, app.FIGURE_CACHE_VERSION,
+            season_events_df, season_matches_df, payload)
+        if _pair:
+            pdf_figures[pdf_key] = _pair[1]
+
+    def _open_team(team):
+        st.session_state['nav_opponent'] = team
+        st.rerun()
 
     _league_label = app.get_league_label(comp_ids)
     _season_label = season_id_map.get(selected_season_id, "Unknown")
@@ -1029,6 +1048,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             season_ids=selected_season_id,
             stage=None,
             cache_key=_sr_cache_key,
+            on_team_select=_open_team,
         )
 
     # ===================================================================
@@ -1491,7 +1511,11 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             scope_key=('opposition_all_seasons', _fig_comp_key),
         )
         if not xg_hist.empty:
-            _show_opp_png('xg_history', pdf_key='xg_history', payload=xg_hist)
+            _pdf_png('xg_history', 'xg_history', payload=xg_hist)
+            _ev = st.plotly_chart(ti.plotly_rolling_xg(xg_hist, selected_opponent, matches_summary_df),
+                                  use_container_width=True, key='opp_rolling_xg', on_select='rerun',
+                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+            app.open_match_from_selection(_ev)
     except Exception as e:
         st.caption(f"Could not render xG history: {e}")
 
@@ -1501,14 +1525,22 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     with col_sf:
         st.markdown("**Shots For**")
         try:
-            _show_opp_png('season_shotmap_for', pdf_key='shotmap_for')
+            _pdf_png('season_shotmap_for', 'shotmap_for')
+            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'for'),
+                                  use_container_width=True, key='opp_shots_for', on_select='rerun',
+                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+            app.open_match_from_selection(_ev)
         except Exception as e:
             st.caption(f"Could not render shot map: {e}")
 
     with col_sa:
         st.markdown("**Shots Conceded**")
         try:
-            _show_opp_png('season_shotmap_against', pdf_key='shotmap_against')
+            _pdf_png('season_shotmap_against', 'shotmap_against')
+            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'against'),
+                                  use_container_width=True, key='opp_shots_against', on_select='rerun',
+                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+            app.open_match_from_selection(_ev)
         except Exception as e:
             st.caption(f"Could not render shots against map: {e}")
 
@@ -1564,8 +1596,13 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 & (_np_pairs['teamId'] == _opp_obv_id)]
             if not _np_pairs.empty:
                 _np_payload = {'pairs': _np_pairs}
-        _show_opp_png('passing_network', pdf_key='passing_network',
-                      payload=_np_payload)
+        _pdf_png('passing_network', 'passing_network', payload=_np_payload)
+        _net = app.cached_passing_network(_fig_season_key, _fig_comp_key, '', selected_opponent,
+                                          app.FIGURE_CACHE_VERSION, season_events_df,
+                                          _np_payload['pairs'] if _np_payload else None)
+        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_opponent), use_container_width=True,
+                              key='opp_passnet', on_select='rerun', selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+        app.open_profile_from_selection(_ev, selected_season_id)
     except Exception as e:
         st.caption(f"Could not render passing network: {e}")
 

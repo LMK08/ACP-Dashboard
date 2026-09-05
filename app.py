@@ -465,7 +465,7 @@ STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e
                              # override). v13 percentiles cache served stale minutes
                              # because the percentiles layer early-returns its disk cache
                              # and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v3'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v4'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -8136,6 +8136,7 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
                              line=dict(width=1, color='#1f4f1f')),
                 hovertext=[hover_texts[j] for j in other_idx],
                 hoverinfo='text',
+                customdata=[[teams[j]] for j in other_idx],  # click -> that team
                 showlegend=False,
                 name='',
             ))
@@ -8151,6 +8152,7 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
                              line=dict(width=2, color='#0a0a0a')),
                 hovertext=[hover_texts[sel_idx]],
                 hoverinfo='text',
+                customdata=[[team_name]],
                 showlegend=False,
                 name='',
             ))
@@ -8203,8 +8205,45 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         hovermode='closest',
+        clickmode='event+select',
     )
     return fig
+
+
+# ==============================================================================
+# 6Y. INTERACTIVE TEAM VISUALS — shared plumbing for Team Analysis / Opposition
+# ==============================================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_passing_network(season_key, comp_key, stage_key, team_name, fig_ver,
+                           _events_df, _obv_pairs):
+    """pitch_visualizations.compute_passing_network for one scope, cached on
+    the same key triple the PNG renderers use (the frames are unhashed)."""
+    return pv.compute_passing_network(_events_df, team_name, obv_pairs=_obv_pairs)
+
+
+def open_match_from_selection(event, season_label=None):
+    """A click on a shot / rolling-xG point opens that match in Match Analysis
+    (customdata[-2] on shots, [-1] on rolling points carries the matchId)."""
+    import team_interactive
+    mid = team_interactive.match_id_from_rows(team_interactive.selected_customdata(event))
+    if mid is not None:
+        navigation.go_to('Match Analysis', nav_match_id=mid)
+
+
+def open_profile_from_selection(event, season_id):
+    """A click on a passing-network node opens that player's profile via the
+    same bridge the roster tables use (customdata = [playerId, name])."""
+    import team_interactive
+    pid = team_interactive.player_id_from_rows(team_interactive.selected_customdata(event))
+    if pid is not None:
+        st.session_state.selected_player_id = pid
+        st.session_state.nav_to_profile = True
+        st.session_state.nav_season_id = season_id
+        st.session_state.nav_has_season = True
+        st.rerun()
+
+
+_PLOTLY_CFG = {'displayModeBar': False, 'responsive': True}
 
 
 # ==============================================================================
@@ -8539,8 +8578,12 @@ def _render_league_figure_png(kind, values_key, extra, day_key, fig_ver, _stats_
 
 
 def render_season_report_section(team_events_df, team_matches_df, team_name,
-                                   season_ids=None, stage=None, cache_key=None):
+                                   season_ids=None, stage=None, cache_key=None,
+                                   on_team_select=None):
     """Render the 7-dimension season report for one team.
+
+    on_team_select(team_name): when given, clicking any team's dot calls it
+    (the pages use it to open that team's report).
 
     Uses Wyscout's published per-match averages as the metric source when
     no stage filter is active; falls back to events-based formulas
@@ -8585,12 +8628,19 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
         with tab:
             fig = render_dimension_dot_plot(team_metrics_df, team_name, dim_name)
             if fig is not None:
-                st.plotly_chart(
+                event = st.plotly_chart(
                     fig,
                     use_container_width=True,
                     config={'displayModeBar': False, 'responsive': True},
                     key=f"sr_dim_{team_name}_{dim_name}",
+                    on_select='rerun' if on_team_select else 'ignore',
+                    selection_mode='points',
                 )
+                if on_team_select:
+                    import team_interactive
+                    picked = [row[0] for row in team_interactive.selected_customdata(event) if row]
+                    if picked and picked[0] != team_name:
+                        on_team_select(picked[0])
 
 
 # ==============================================================================
