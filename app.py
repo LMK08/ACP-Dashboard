@@ -11366,21 +11366,31 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.session_state.player_profile_current_id = int(target_id)
                     break
             st.session_state.selected_player_id = None
-        # Persist player selection across season changes (only when season actually changed)
-        elif profile_season_changed and st.session_state.player_profile_current_id is not None:
+        # Re-seed the selector when the season changed (the stored display
+        # name may not exist in the new list) OR when the widget's state is
+        # gone because this page wasn't rendered last run — Streamlit drops
+        # widget state for widgets absent from a run, so a page round-trip
+        # used to reset the selection to the top of the league-wide list.
+        elif profile_season_changed or 'player_profile_selector' not in st.session_state:
+            _seeded = False
             target_id = st.session_state.player_profile_current_id
-            sorted_player_ids = player_list_df['playerId'].tolist()
-            for i, pid in enumerate(sorted_player_ids):
-                if int(pid) == int(target_id):
-                    st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
-                    break
-        # First visit: open on our own club's most-used player rather than
-        # whoever tops the league-wide minutes list.
-        elif ('player_profile_selector' not in st.session_state
-              and st.session_state.player_profile_current_id is None):
-            _our_rows = player_list_df[player_list_df['teamName'].astype(str) == OUR_TEAM]
-            if not _our_rows.empty:
-                st.session_state['player_profile_selector'] = _our_rows['display_name'].iloc[0]
+            if target_id is not None:
+                for i, pid in enumerate(player_list_df['playerId'].tolist()):
+                    if int(pid) == int(target_id):
+                        st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
+                        _seeded = True
+                        break
+            if not _seeded:
+                _cur = st.session_state.get('player_profile_selector')
+                if _cur is not None and _cur not in set(player_list_df['display_name']):
+                    st.session_state.pop('player_profile_selector', None)
+                # First visit (or the remembered player isn't in this scope):
+                # open on our own club's most-used player rather than whoever
+                # tops the league-wide minutes list.
+                if 'player_profile_selector' not in st.session_state:
+                    _our_rows = player_list_df[player_list_df['teamName'].astype(str) == OUR_TEAM]
+                    if not _our_rows.empty:
+                        st.session_state['player_profile_selector'] = _our_rows['display_name'].iloc[0]
 
         selected_player_display = st.sidebar.selectbox(
             "Select Player:",

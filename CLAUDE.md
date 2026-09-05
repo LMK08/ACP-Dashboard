@@ -46,5 +46,17 @@ PNG's real aspect ratio (Pillow) and page-break or scale so nothing crosses the
 bottom margin. **Never place an image with an assumed aspect ratio or a
 hand-advanced `set_y`** — figures are saved with `bbox_inches='tight'`, so
 proportions aren't knowable in advance, and a wrong guess silently clips the
-chart. Geometry test: `test_pdf_layout.py` pattern — spy on `FPDF.image` and
-assert every placement lies within x∈[10, 287], y+h ≤ 190.
+chart. Geometry test: `tests/test_pdf_layout.py` spies on `FPDF.image` and
+asserts every placement lies within x∈[10, 287], y+h ≤ 190 (it caught a
+zero-size placement when the cursor sat on the bottom margin, 2026-09).
+
+## Tests (run before pushing; CI gates the deploy on them)
+
+`python -m pytest tests -v` — `tests/test_smoke_pages.py` boots app.py
+headlessly (streamlit.testing AppTest, needs the data files incl. the
+HF-only `raw_events.parquet`; skips without them) and walks every analysis
+type on the defaults plus the fixtures-only newest season; a page fails on
+an uncaught exception or an `st.error`. `tests/test_pdf_layout.py` is
+pure-Python. `deploy_to_hf.yml` runs both as a `smoke` job the deploy job
+needs. Local runs delete stale `stats_cache/` parquets (fingerprint
+mismatch) — `git checkout -- stats_cache/` afterwards.

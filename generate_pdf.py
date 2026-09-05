@@ -146,12 +146,19 @@ class OppositionReportPDF(FPDF):
         y0 = y if y is not None else self.get_y()
 
         if y is None and y0 + h > bottom:
-            # Break only when the image would FULLY fit a fresh page and the
-            # move gains real room — an image too tall for any page just gets
-            # scaled in place (breaking would strand the title on its own
-            # page and still scale on the next one).
+            # Break when the image would FULLY fit a fresh page and the move
+            # gains real room. An image too tall for ANY page is scaled in
+            # place instead (breaking would strand the title on its own page
+            # and still scale on the next one) — unless less than half a page
+            # is left here: then the fresh page wins, because scaling into a
+            # sliver, or into NOTHING when the cursor already sits on the
+            # bottom margin (avail_h <= 0 gave w = h = 0 and the figure
+            # silently vanished — caught by tests/test_pdf_layout.py), is
+            # worse than a stranded title.
             fresh_avail = bottom - 30  # ~content top after header
-            if h <= fresh_avail and fresh_avail - (bottom - y0) > 5:
+            remaining = bottom - y0
+            gains_room = fresh_avail - remaining > 5
+            if gains_room and (h <= fresh_avail or remaining < fresh_avail / 2):
                 self.add_page()
                 if section_title:
                     self.add_section_title(section_title)
