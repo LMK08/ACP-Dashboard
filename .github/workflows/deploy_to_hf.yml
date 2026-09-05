@@ -141,7 +141,9 @@ jobs:
           # deleted from HF too, and a dir dropped from git entirely is removed.
           # icons: team crest PNGs for the scatter plots — LFS-tracked on HF
           # (see the push step) so the pre-receive binary hook accepts them.
-          for d in .streamlit models valuations stats_cache icons; do
+          # views: one module per analysis type (2026-09 split of app.py) — the
+          # app imports them at boot, so a deploy without this dir is a dead Space.
+          for d in .streamlit models valuations stats_cache icons views; do
             if [ -d "$d" ]; then
               rsync -a --delete "$d/" "../hf-repo/$d/"
             elif [ -d "../hf-repo/$d" ]; then

@@ -21,11 +21,18 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   app.py, opposition_report.py, obv_viz.py, pitch_visualizations.py and
   pitch_interactive.py. New plotters import `theme`; never re-type a hex.
   A colour change is a drawing change: bump `FIGURE_CACHE_VERSION`.
+- `views/<page>.py` — one module per analysis type; app.py's chain is now
+  nine one-line `views.<page>.render()` calls. A view reads its collaborators
+  from the running app module (`sys.modules['__main__']`) in the binding
+  block at the top of `render()` — that block IS the page's dependency list,
+  keep it honest when you add a helper. Views never import app.py. The
+  directory is deliberately NOT called `pages/` (Streamlit would treat that
+  as an auto-discovered multipage app).
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)
 
-The Team Analysis page (`app.py`, `analysis_type == 'Team Analysis'`) and the
+The Team Analysis page (`views/team_analysis.py`) and the
 Opposition Report (`opposition_report.py`) are two views of the same team-level
 visuals. **Any visual or feature added/changed on one page must be applied to
 the other in the same change** (and to the PDF via `pdf_figures`/`pdf_texts`
