@@ -11,6 +11,18 @@ but **exempt `icons/`** — the team-crest PNGs the scatter plots load at
 runtime, shipped via `git lfs track "icons/*.png"`. Keep any new runtime
 image assets on that LFS+exempt path or the deploy will silently drop them.
 
+## Where things live (2026-09 split, in progress)
+
+- `models/value/cvi.py` — the CVI / projected-EUR model (pure pandas; no
+  streamlit). app.py re-exports its `__all__` so call sites read unchanged;
+  put model logic there, never back in app.py. Tests: `tests/test_cvi_model.py`.
+- `theme.py` — every colour and figure convention. The four radar colours,
+  the cream ground, the xG ramp and the GPA value ramp are read from here by
+  app.py, opposition_report.py, obv_viz.py, pitch_visualizations.py and
+  pitch_interactive.py. New plotters import `theme`; never re-type a hex.
+  A colour change is a drawing change: bump `FIGURE_CACHE_VERSION`.
+- `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
+
 ## Team Analysis ↔ Opposition Report parity (RULE)
 
 The Team Analysis page (`app.py`, `analysis_type == 'Team Analysis'`) and the
@@ -20,7 +32,7 @@ the other in the same change** (and to the PDF via `pdf_figures`/`pdf_texts`
 when it's a team-level visual). Shared visuals as of 2026-09:
 
 - 4 team radars (Offensive/Distribution/Defensive/Set Piece) — same titles,
-  colors (#e60000/#0077b6/#52A736/#ff8c00), metric lists (`OFFENSIVE_METRICS`
+  colors (`theme.RADAR_*`), metric lists (`OFFENSIVE_METRICS`
   etc. in opposition_report.py mirror the inline lists in Team Analysis), and
   %-formatting (Ball Possession, duel win %s, Short Corner/Long Throw/First
   Contact %). Both pass real league/season labels to `plot_radar_chart`.

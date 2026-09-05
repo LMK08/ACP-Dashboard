@@ -14,12 +14,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-BG = '#f5f1e9'
-INK = '#1c2321'
-ACCENT = '#1a472a'      # focus team green
-OPP = '#a63a46'         # opponent / against
-GREY = '#8d968e'        # league context
-GRID = '#ddd8c9'
+import theme
+
+# Palette aliases kept for the plotters below; the values live in theme.py.
+BG = theme.FIGURE_BG
+INK = theme.FIGURE_INK
+ACCENT = theme.FOCUS     # focus team green
+OPP = theme.OPPONENT     # opponent / against
+GREY = theme.CONTEXT     # league context
+GRID = theme.GRID
 
 PHASE_LABELS = {
     'buildup': 'Buildup',

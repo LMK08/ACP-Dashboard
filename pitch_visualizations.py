@@ -18,8 +18,10 @@ from adjustText import adjust_text
 # ---------------------------------------------------------------------------
 # Pitch setup defaults
 # ---------------------------------------------------------------------------
-PITCH_COLOR = '#f5f1e9'
-LINE_COLOR = 'black'
+import theme
+
+PITCH_COLOR = theme.FIGURE_BG
+LINE_COLOR = theme.PITCH_LINE_MPL
 
 # Formation coordinates (mirrored from app.py to avoid circular imports)
 FORMATION_COORDS = {

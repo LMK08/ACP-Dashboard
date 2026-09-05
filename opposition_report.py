@@ -15,6 +15,7 @@ import datetime
 import sys
 import io
 import pitch_visualizations as pv
+import theme
 
 # ---------------------------------------------------------------------------
 # Helper: access functions defined in the main app module (app.py / __main__)
@@ -947,7 +948,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             with col1:
                 _show_opp_radar('radar_offensive', "Offensive Radar", off_m,
                                 [team_raw[m] for m in off_m],
-                                [team_pct[m] for m in off_m], '#e60000')
+                                [team_pct[m] for m in off_m], theme.RADAR_OFFENSIVE)
 
         # Distribution — Ball Possession formatted as % like Team Analysis
         dist_m = [m for m in DISTRIBUTION_METRICS if m in team_pct.index]
@@ -961,7 +962,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                     pass
                 _show_opp_radar('radar_distribution', "Distribution Radar", dist_m,
                                 raw_dist_values,
-                                [team_pct[m] for m in dist_m], '#0077b6')
+                                [team_pct[m] for m in dist_m], theme.RADAR_DISTRIBUTION)
 
         # Row 2: Defensive + Set Piece
         col3, col4 = st.columns(2)
@@ -979,7 +980,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                         pass
                 _show_opp_radar('radar_defensive', "Defensive Radar", def_m,
                                 raw_def_values,
-                                [team_pct[m] for m in def_m], '#52A736')
+                                [team_pct[m] for m in def_m], theme.RADAR_DEFENSIVE)
 
         # Set Piece
         if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
@@ -997,7 +998,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                 with col4:
                     _show_opp_radar('radar_set_piece', "Set Piece Radar", sp_m,
                                     raw_sp_values,
-                                    [sp_team_pct[m] for m in sp_m], '#ff8c00')
+                                    [sp_team_pct[m] for m in sp_m], theme.RADAR_SET_PIECE)
     else:
         st.warning(f"No radar data available for {selected_opponent}.")
 

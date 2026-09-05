@@ -18,13 +18,14 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-PITCH_BG = '#f5f1e9'
-LINE_C = '#5a5a5a'
+import theme
 
-# Same anchors as the static shot map (create_player_shotmap)
-XG_MAX = 0.8
-XG_COLORSCALE = [[0.0, '#03045e'], [0.125, '#ade8f4'], [0.25, '#fff3b0'],
-                 [0.5, '#ff8c00'], [0.75, '#e63946'], [1.0, '#800f2f']]
+PITCH_BG = theme.FIGURE_BG
+LINE_C = theme.PITCH_LINE_PLOTLY
+
+# Same anchors as the static shot maps (theme.XG_COLORS / XG_NODES)
+XG_MAX = theme.XG_MAX
+XG_COLORSCALE = theme.XG_COLORSCALE
 
 # StatsBomb-style shape encoding: marker symbol = the shot-creating
 # action. Labels must match label_sca() in app.py's Shots section;
@@ -46,7 +47,7 @@ _SCA_SYMBOL_MAP = dict(SCA_SYMBOLS)
 # Diverging pass-value scale with a warm-gray midpoint (visible on cream):
 # cold blue = value conceded/negative, warm red = value created
 VAL_CMAP = mcolors.LinearSegmentedColormap.from_list(
-    'gpa_div', ['#2166ac', '#b8b2a7', '#b2182b'])
+    'gpa_div', [theme.VALUE_NEG, theme.VALUE_MID, theme.VALUE_POS])
 VAL_COLORSCALE = [[0.0, '#2166ac'], [0.5, '#b8b2a7'], [1.0, '#b2182b']]
 
 
