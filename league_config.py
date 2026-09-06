@@ -83,3 +83,25 @@ def all_season_id_map():
     for comp in COMPETITIONS.values():
         result.update(comp["seasons"])
     return result
+
+
+# ============================================================================
+# PLAYER_ID_ALIASES — Wyscout sometimes splits one real-world player across
+# two playerIds (different scrapes, different sources, mistyped name, etc.).
+# Map FROM the duplicate pid → TO the canonical pid we want to keep.
+#
+# After alias resolution every downstream pipeline (GPA, raw_events,
+# player_details, valuations, reported_fees) sees only the canonical pid.
+# Player_details for the canonical pid wins the bio, so put the pid whose
+# bio you want to keep on the RIGHT side of the mapping.
+#
+# Add a new entry by appending a line like:  <wrong_pid>: <canonical_pid>,
+# with a comment naming the player + reason.
+PLAYER_ID_ALIASES = {
+    # Mamadu Camará at Brito (25-26 Camp). Wyscout has two records:
+    # pid 71835 holds the GPA stats but DOB 1991-12-31 is the wrong
+    # (older) profile; pid 1322978 has the correct DOB 2001-11-20 but
+    # no stats. Remap 71835 → 1322978 so the GPA flows under the
+    # correct younger bio.
+    71835: 1322978,
+}

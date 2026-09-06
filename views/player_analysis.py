@@ -23,6 +23,14 @@ def render():
     DEFR_DISPLAY_METRICS = app.DEFR_DISPLAY_METRICS
     DRIBBLING_METRICS = app.DRIBBLING_METRICS
     ENGINE_DISPLAY_METRICS = app.ENGINE_DISPLAY_METRICS
+    ENGINE_VALUE_TEMPER = app.ENGINE_VALUE_TEMPER
+    engine_rows_for_scope = app.engine_rows_for_scope
+    PROJECTED_EUR_COEF = app.PROJECTED_EUR_COEF
+    PROJECTED_EUR_EXP = app.PROJECTED_EUR_EXP
+    format_eur_range = app.format_eur_range
+    format_eur_short = app.format_eur_short
+    load_eur_calibration = app.load_eur_calibration
+    projected_eur_interval = app.projected_eur_interval
     GOALKEEPING_METRICS = app.GOALKEEPING_METRICS
     INVERT_METRICS = app.INVERT_METRICS
     OUTPUT_METRICS = app.OUTPUT_METRICS
@@ -380,17 +388,34 @@ def render():
     # --- CVI (Composite Value Index) toggle -----------------------
     # When ON, a CVI column is appended to the right of the Rating
     # column in Overview + per-template tables, and (optionally) the
-    # ranking re-sorts by CVI. Position-tuned age curve
-    # (see CVI_AGE_VALUE_PARAMS) calibrated off the 27 reported transfers.
+    # ranking re-sorts by the engine value (models/value/eur_intervals).
+    import eur_interval_ui
+    _eurcal = load_eur_calibration()
+    _f50 = eur_interval_ui.headline_factor(_eurcal)   # None unless the level SHIPPED
+    _k50 = ((_eurcal.get('levels') or {}).get('0.50') or {}).get('k')
+    _eur_curve_txt = eur_interval_ui.curve_text()
+    _eur_range_txt = ((f" Range in brackets = likely fee if sold: {_k50} of the "
+                       f"{_eurcal.get('n_calibration')} real sales fell within ×/÷{_f50:.1f} "
+                       f"of the model value; blank when the player sits outside the "
+                       f"calibration's support (value under €25k, too few minutes or too "
+                       f"little evidence behind the projection) and for goalkeepers.")
+                      if _f50 else "")
+    # Engine minutes for that support gate: the stats frame carries the
+    # engine's Evidence Weight but not its minutes, so read them off the SAME
+    # engine row the merge used (app.engine_rows_for_scope) — the profile
+    # gates on the row's minutes too, and the two pages must agree.
+    try:
+        _eng_scope = engine_rows_for_scope(active_season_ids)
+        _eng_mins_by_pid = ({int(p): float(m) for p, m in zip(_eng_scope['playerId'], _eng_scope['mins_played'])
+                             if pd.notna(p) and pd.notna(m)} if not _eng_scope.empty else {})
+    except Exception:
+        logger.exception("engine minutes lookup failed — likely-fee ranges withheld")
+        _eng_mins_by_pid = None   # no minutes -> no ranges at all (never a half-applied gate)
     show_cvi = st.sidebar.checkbox(
         "Show Projected value",
         value=False,
         key="player_analysis_show_cvi",
-        help="ACP engine projection → EUR: percentile of the "
-             "next-season projection (abs scale, recruit-discounted "
-             "for Camp) × career-NPV age multiplier (ST 1.30, AM/WG "
-             "1.25, CM 1.00, CB 0.90, FB 0.85), through the "
-             "fee-calibrated CVI→EUR curve, capped at €500k.",
+        help=_eur_curve_txt + _eur_range_txt,
     )
     sort_by_cvi = False
     if show_cvi:
@@ -599,20 +624,35 @@ def render():
                            [(_an_style_map.get(int(p), '—') if pd.notna(p)
                              else '—') for p in sorted_tdf['playerId']])
 
-        # Projected value: insert next to Rating in both compact
-        # and full modes. EUR computed from CVI × position mult ×
-        # Camp penalty, capped at €500k. In full mode also surface
-        # the Trajectory flag (perf - same-age-position median).
-        # Projected Value column — ENGINE value (legacy CVI→EUR
-        # removed per Lucas 2026-06-12). Computed centrally in
-        # load_player_engine(); merged in as 'Engine Value EUR'.
+        # Projected value: insert next to Rating in both compact and full
+        # modes — the ENGINE value (legacy CVI→EUR removed per Lucas
+        # 2026-06-12), computed centrally in load_player_engine() and merged
+        # in as 'Engine Value EUR'; the bracketed likely-fee range comes from
+        # the shipped fee calibration (models/value/eur_intervals).
         if show_cvi and 'Engine Value EUR' in sorted_tdf.columns:
             pv_vals = pd.Series(sorted_tdf['Engine Value EUR'].values,
                                  index=display.index)
-            pv_display = [
-                (f"€{int(v):,}" if v is not None and pd.notna(v) else '')
-                for v in pv_vals
-            ]
+            _ev_w = (pd.Series(sorted_tdf['Evidence Weight'].values, index=display.index)
+                     if 'Evidence Weight' in sorted_tdf.columns
+                     else pd.Series([None] * len(display), index=display.index))
+            _pids = pd.Series(sorted_tdf['playerId'].values, index=display.index)
+            _poss = (pd.Series(sorted_tdf['primaryPosition'].values, index=display.index)
+                     if 'primaryPosition' in sorted_tdf.columns
+                     else pd.Series([''] * len(display), index=display.index))
+
+            def _pv_text(v, w, pid, pos):
+                if v is None or pd.isna(v):
+                    return ''
+                s = f"€{int(v):,}"
+                # likely-fee range from the shipped calibration; blank outside
+                # its support (value floor / engine minutes / evidence weight),
+                # for goalkeepers, and whenever the minutes lookup failed
+                if _eng_mins_by_pid is None or str(pos).upper().startswith('GK'):
+                    return s
+                mins = _eng_mins_by_pid.get(int(pid)) if pid is not None and pd.notna(pid) else None
+                lo, hi = projected_eur_interval(v, calib=_eurcal, w_evidence=w, mins=mins)
+                return s if lo is None else f"{s} ({format_eur_short(lo)}–{format_eur_short(hi)})"
+            pv_display = [_pv_text(v, w, p, ps) for v, w, p, ps in zip(pv_vals, _ev_w, _pids, _poss)]
             _r_idx = display.columns.get_loc('Rating')
             display.insert(_r_idx + 1, 'Projected Value', pv_display)
 
@@ -881,9 +921,7 @@ def render():
             )
             if show_cvi:
                 st.caption(
-                    "🟩 Projected Value = CVI → EUR mapping "
-                    "(2.5 × CVI^2.5 × position multiplier, capped at €500k). "
-                    "Calibrated against the 27 reported transfer fees."
+                    "🟩 Projected Value = " + _eur_curve_txt + _eur_range_txt
                     + (" Sort is by Projected Value." if sort_by_cvi else "")
                 )
             st.dataframe(overview_df, use_container_width=True)
@@ -961,11 +999,27 @@ def render():
         _sx = pd.to_numeric(_sc_df[_sc_x], errors='coerce')
         _sy = pd.to_numeric(_sc_df[_sc_y], errors='coerce')
         _sc_fig = go.Figure()
+        _sc_rng = [None] * len(_sc_df)
+        if ('Engine Value EUR' in (_sc_x, _sc_y) and 'Engine Value EUR' in _sc_df.columns
+                and _eng_mins_by_pid is not None):
+            _ev_vals = pd.to_numeric(_sc_df['Engine Value EUR'], errors='coerce')
+            _ev_w = (pd.to_numeric(_sc_df['Evidence Weight'], errors='coerce')
+                     if 'Evidence Weight' in _sc_df.columns
+                     else pd.Series([None] * len(_sc_df), index=_sc_df.index))
+            _sc_pids = (_sc_df['playerId'] if 'playerId' in _sc_df.columns
+                        else pd.Series([None] * len(_sc_df), index=_sc_df.index))
+            _sc_pos = (_sc_df['primaryPosition'].astype(str) if 'primaryPosition' in _sc_df.columns
+                       else pd.Series([''] * len(_sc_df), index=_sc_df.index))
+            _sc_rng = [None if ps.upper().startswith('GK') else format_eur_range(*projected_eur_interval(
+                           v, calib=_eurcal, w_evidence=w,
+                           mins=(_eng_mins_by_pid.get(int(p)) if p is not None and pd.notna(p) else None)))
+                       for v, w, p, ps in zip(_ev_vals, _ev_w, _sc_pids, _sc_pos)]
         _sc_hover = [
             f"<b>{r.playerName}</b> · {r.teamName}<br>"
             f"{r.primaryPosition} · {int(r.totalMinutes)}'<br>"
             f"{_sc_x}: {x:.3f}<br>{_sc_y}: {y:.3f}"
-            for r, x, y in zip(_sc_df.itertuples(), _sx, _sy)]
+            + (f"<br>likely fee {rr}" if rr else '')
+            for r, x, y, rr in zip(_sc_df.itertuples(), _sx, _sy, _sc_rng)]
         _sc_fig.add_trace(go.Scatter(
             x=_sx, y=_sy, mode='markers',
             marker=dict(size=8, color='rgba(110,125,118,0.45)',
@@ -1154,12 +1208,8 @@ def render():
         if display_df is not None and not display_df.empty:
             if show_cvi:
                 st.caption(
-                    "🟩 CVI = composite scout-facing value · 'Traj vs age' = "
-                    "performance vs same-position-same-age median "
-                    "(e.g. '+25' = 25pt ahead of age peer median). "
-                    "Currently uses placeholder parameters; will be calibrated "
-                    "against scraped market values."
-                    + (" Sort is by CVI." if sort_by_cvi else "")
+                    "🟩 Projected Value = " + _eur_curve_txt + _eur_range_txt
+                    + (" Sort is by Projected Value." if sort_by_cvi else "")
                 )
             st.caption("Click on a row to view that player's profile")
             selection = st.dataframe(

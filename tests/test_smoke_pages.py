@@ -220,6 +220,46 @@ def test_chart_size_control_scales_every_pitch_chart(app):
     assert not _problems(app), _problems(app)
 
 
+def test_projected_value_ranges_render_in_player_analysis(app):
+    """'Show Projected value' is off by default, so the bracketed likely-fee
+    range path only runs here: some cells carry a range, some (outside the
+    calibration's support) do not, and the page stays clean."""
+    _open_page(app, 'Player Analysis')
+    cb = [c for c in app.sidebar.checkbox if c.label == 'Show Projected value'][0]
+    cb.set_value(True)
+    app.run()
+    cells = [str(v) for d in app.dataframe for col in d.value.columns
+             if str(col) == 'Projected Value' or (isinstance(col, tuple) and 'Proj. Value' in col)
+             for v in d.value[col].tolist()]
+    euros = [c for c in cells if c.startswith('€')]
+    assert euros, 'no projected values rendered'
+    assert any('(' in c for c in euros), 'no bracketed likely-fee range in Player Analysis'
+    assert any('(' not in c for c in euros), 'every value got a range — the support gate is not applied'
+    assert not _problems(app), _problems(app)
+    cb.set_value(False)
+    app.run()
+
+
+def test_profile_value_section_and_calibration_panel(app):
+    """The Value section and the fee-calibration toggle sit behind a section
+    radio the default walk never selects."""
+    _open_page(app, 'Player Profile')
+    section = [r for r in app.radio if r.label == 'Profile section'][0]
+    section.set_value('Value')
+    app.run()
+    toggles = [t for t in app.toggle if 'fee calibration' in t.label]
+    assert toggles, 'fee-calibration toggle missing from the Value section'
+    toggles[0].set_value(True)
+    app.run()
+    assert any(m.label == 'Real sales' for m in app.metric)
+    assert any(('Likely fee' in str(c.value)) or ('No likely-fee range' in str(c.value)) for c in app.caption)
+    assert not _problems(app), _problems(app)
+    toggles[0].set_value(False)
+    app.run()
+    section.set_value('Player Radar')
+    app.run()
+
+
 @pytest.mark.parametrize('page', EMPTY_SEASON_PAGES)
 def test_empty_season_degrades_gracefully(app, page):
     """Forcing the newest season (fixtures, few or no events) must give a

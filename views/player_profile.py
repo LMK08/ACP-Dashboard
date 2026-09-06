@@ -17,6 +17,7 @@ import streamlit as st
 import sys
 
 import context_bar
+import eur_interval_ui
 
 
 def _app():
@@ -85,6 +86,8 @@ def render():
     load_gpa_values = app.load_gpa_values
     load_player_details = app.load_player_details
     load_player_engine = app.load_player_engine
+    load_eur_calibration = app.load_eur_calibration
+    engine_rows_for_scope = app.engine_rows_for_scope
     logger = app.logger
     make_opta_team_strength_lookup = app.make_opta_team_strength_lookup
     matches_summary_df = app.matches_summary_df
@@ -427,16 +430,10 @@ def render():
     except Exception:
         pass
 
-    # Headline projected / true / Δ values for the bio row.
-    # v2.7+ — Projected value is now a direct CVI → EUR mapping,
-    # calibrated against the 27 reported transfers (mostly €25k-€450k).
-    # Power-curve fit: EUR ≈ 2.5 × CVI^2.5, capped at €500k. Anchors:
-    #   CVI 40  → €25k    (replacement-level starter)
-    #   CVI 60  → €70k
-    #   CVI 80  → €150k
-    #   CVI 100 → €260k
-    #   CVI 120 → €400k
-    #   CVI 135 → €500k   (cap — top of Yan Maranhão / Catarino tier)
+    # Legacy CVI-path value (goalkeepers' headline; outfielders use the
+    # engine value below). The curve — PROJECTED_EUR_COEF × CVI^PROJECTED_EUR_EXP
+    # × position multiplier × Camp penalty, uncapped — lives in
+    # models/value/cvi.cvi_to_projected_eur; never restate its constants here.
     _tv_projected_eur = None
     _current_cvi_for_eur = None
     if _tv_career_current is not None:
@@ -469,17 +466,24 @@ def render():
     # Engine projected value — computed centrally in
     # load_player_engine() (engine_value_eur); just look it up.
     _eng_proj_eur = None
+    _eng_w_ev = _eng_mins = None   # support inputs for the likely-fee range
     try:
         _eng_tv_df, _ = load_player_engine()
         if not _eng_tv_df.empty:
-            _p_rows = _eng_tv_df[(_eng_tv_df['playerId'] == int(selected_player_id))
-                                   ].dropna(subset=['engine_value_eur'])
+            # ONE row-pick rule for engine columns (app.engine_rows_for_scope:
+            # projection-first, then seasonId, then minutes) — the row the
+            # analysis tables merge, so the two pages can never disagree.
+            _p_rows = engine_rows_for_scope(None)
+            _p_rows = (_p_rows[_p_rows['playerId'] == int(selected_player_id)]
+                       .dropna(subset=['engine_value_eur']) if not _p_rows.empty else _p_rows)
             if not _p_rows.empty:
-                _p_row = (_p_rows[_p_rows['seasonId'] == _p_rows['seasonId'].max()]
-                            .sort_values('mins_played').iloc[-1])
+                _p_row = _p_rows.iloc[0]
                 _eng_proj_eur = float(_p_row['engine_value_eur'])
+                _eng_w_ev = _p_row.get('w_evidence')
+                _eng_mins = _p_row.get('mins_played')
     except Exception:
         logger.exception("engine projected value failed")
+    _eurcal = load_eur_calibration()
 
     col1_bio, col2_bio = st.columns([1, 3])
     with col1_bio:
@@ -519,22 +523,20 @@ def render():
             bio_row3[0].metric(
                 "Projected value",
                 ("—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}"),
-                help="Goalkeeper — legacy CVI→EUR value (the prior "
-                     "system, retained for keepers; the outfield ACP "
-                     "engine does not rate goalkeepers).",
+                help=eur_interval_ui.help_text(_eurcal, gk=True),
             )
         else:
             bio_row3[0].metric(
                 "Projected value",
                 ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
-                help="ACP engine projection → EUR. Perf = percentile of "
-                     "the next-season projection (abs scale — Camp "
-                     "recruit discount already applied, so no extra Camp "
-                     "penalty) × career-NPV age multiplier, through the "
-                     "fee-calibrated CVI→EUR curve (capped €500k). No "
-                     "reliability ramp: the projection is already "
-                     "evidence-weighted.",
+                help=eur_interval_ui.help_text(_eurcal),
             )
+            # The likely-fee range goes in a caption, NOT the metric delta:
+            # Streamlit draws an up-arrow for any non-negative delta text.
+            _rng_line = eur_interval_ui.range_sentence(
+                _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
+            if _rng_line:
+                bio_row3[0].caption(_rng_line)
             # Observed role + style in the header (Lucas 2026-07-17).
             # Scope-aware; hidden when the player has no style row (GKs
             # never reach here, sub-300' players degrade gracefully).
@@ -1042,6 +1044,11 @@ def render():
                     if _op_val is not None:
                         _op_tiles.append(("Proj. value",
                                           f"EUR {_op_val:,.0f}"))
+                        if not str(current_pos).upper().startswith('GK'):
+                            _op_rng = eur_interval_ui.pdf_range_text(
+                                _op_val, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
+                            if _op_rng:
+                                _op_tiles.append(("Likely fee (EUR)", _op_rng))
                     if _op_e is not None:
                         _op_tiles.append(
                             ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
@@ -2055,8 +2062,15 @@ def render():
         # card. CVI computation helpers stay at module level for other
         # pages.
         st.subheader("Transfer Value Detail")
-        st.caption("Projected value is computed by the ACP engine (see bio card). "
-                   "Legacy CVI breakdown retired 2026-06-12.")
+        _vt_rng = (None if _is_gk else eur_interval_ui.range_sentence(
+            _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins))
+        st.caption("Projected value is computed by the ACP engine (see bio card)."
+                   + (f" {_vt_rng}" if _vt_rng else ""))
+        # A toggle, not an expander: the panel holds a Plotly chart, which
+        # keeps its collapsed height when first drawn inside an expander.
+        if st.toggle("How reliable is the projected value? Show the fee calibration",
+                     value=False, key=f"eurcal_toggle_{player_id}"):
+            eur_interval_ui.render_eur_calibration_section(_eurcal, key=f"eurcal_{player_id}")
         try:
             with st.expander("Reported transfer fees & manual entries",
                               expanded=False):

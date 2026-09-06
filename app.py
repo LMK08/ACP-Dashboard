@@ -829,26 +829,10 @@ def load_data():
         return None, None, None, None, None, None
 
 
-# ============================================================================
-# PLAYER_ID_ALIASES — Wyscout sometimes splits one real-world player across
-# two playerIds (different scrapes, different sources, mistyped name, etc.).
-# Map FROM the duplicate pid → TO the canonical pid we want to keep.
-#
-# After alias resolution every downstream pipeline (GPA, raw_events,
-# player_details, valuations, reported_fees) sees only the canonical pid.
-# Player_details for the canonical pid wins the bio, so put the pid whose
-# bio you want to keep on the RIGHT side of the mapping.
-#
-# Add a new entry by appending a line like:  <wrong_pid>: <canonical_pid>,
-# with a comment naming the player + reason.
-PLAYER_ID_ALIASES = {
-    # Mamadu Camará at Brito (25-26 Camp). Wyscout has two records:
-    # pid 71835 holds the GPA stats but DOB 1991-12-31 is the wrong
-    # (older) profile; pid 1322978 has the correct DOB 2001-11-20 but
-    # no stats. Remap 71835 → 1322978 so the GPA flows under the
-    # correct younger bio.
-    71835: 1322978,
-}
+# PLAYER_ID_ALIASES lives in league_config.py (shared with the value
+# calibration script, which must apply the same remap to the fee join
+# without booting Streamlit). Add new aliases THERE.
+from league_config import PLAYER_ID_ALIASES  # noqa: E402
 
 # MINUTES_OVERRIDE — manual corrections for known Wyscout lineup-data errors a
 # data refresh can't fix. Keyed (playerId, seasonId) -> totalMinutes. Used when
@@ -1335,47 +1319,17 @@ def load_player_engine():
                 if p is not None and not pd.isna(p) else p
             ).astype('Int64')
         # Engine projected value (EUR), computed ONCE here so the bio
-        # headline and the analysis tables can never drift: perf =
-        # percentile of projection_abs within the projection universe
-        # × career-NPV age multiplier, through the fee-calibrated
-        # CVI→EUR curve. No reliability ramp: the projection is
-        # already evidence-weighted internally.
-        #
-        # Camp EUR penalty (Lucas 2026-07-26): earlier versions skipped
-        # the extra Camp discount here on the theory that projection_abs
-        # already carries the recruit discount. The fee calibration pass
-        # (14 real permanent sales) said otherwise: L3 sales realize at
-        # a median 1.09× engine value (well centred) but Camp sales at
-        # only 0.67×. Applying the existing CAMP_PROJECTED_EUR_PENALTY
-        # (0.85) closes most of that gap without a new constant. Camp
-        # membership derived from seasonId (no competitionId in the
-        # engine parquet).
-        _ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
-                     'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',
-                     'Wide Defender': 'FB', 'Central Defender': 'CB'}
-        _CAMP_SEASON_IDS = {190230, 191779, 192925}
-        _pool = df['projection_abs'].dropna()
-        # global price temper (Lucas 2026-06-12): the engine values read
-        # a touch rich for this market — scale the whole curve down 20%
-        _ENGINE_VALUE_TEMPER = 0.8
-
-        def _eng_eur(r):
-            pa = r.get('projection_abs')
-            if pa is None or pd.isna(pa) or len(_pool) == 0:
-                return None
-            perf = float((_pool < float(pa)).mean()
-                          + 0.5 * (_pool == float(pa)).mean()) * 100.0
-            grp = _ROLE2CVI.get(r.get('role'))
-            am = _cvi_age_value_multiplier(r.get('age'), grp)
-            try:
-                _comp = (702 if int(r.get('seasonId')) in _CAMP_SEASON_IDS
-                          else 43324)
-            except (TypeError, ValueError):
-                _comp = None
-            v = cvi_to_projected_eur(perf * am, position_group=grp,
-                                       competition_id=_comp)
-            return None if v is None else v * _ENGINE_VALUE_TEMPER
-        df['engine_value_eur'] = df.apply(_eng_eur, axis=1)
+        # headline and the analysis tables can never drift. The maths —
+        # percentile of projection_abs within the projection universe x
+        # career-NPV age multiplier, through the fee-calibrated CVI->EUR
+        # curve, x ENGINE_VALUE_TEMPER, Camp penalty by seasonId — lives in
+        # models/value/eur_intervals.engine_value_eur so the fee-calibration
+        # build runs the SAME code (it used to be a closure here that the
+        # calibration script re-typed by hand). No reliability ramp: the
+        # projection is already evidence-weighted. The interval around it
+        # (projected_eur_interval) is derived at display time from the
+        # point and the shipped calibration, so no cached column changes.
+        df['engine_value_eur'] = engine_value_eur_frame(df)
         meta = {}
         if os.path.exists(meta_path):
             with open(meta_path) as f:
@@ -1698,6 +1652,36 @@ Separate from the quality question, we describe *how* a player plays:
 """
 
 
+def engine_rows_for_scope(season_ids=None):
+    """ONE engine row per player for the active seasons — the row every
+    engine-derived column in the stats frame comes from (see the merge
+    below), and therefore the row a page must read when it needs an engine
+    column the merge does not carry (views/player_analysis.py reads
+    mins_played here for the likely-fee support gate). Keep the pick rule in
+    this one place so a page can never disagree with the merged numbers.
+
+    seasonId is NOT chronological across leagues (Camp 23/24=190230 > L3
+    24/25=190090), so a plain seasonId-max can land on an older Campeonato
+    row with no projection — e.g. M. Konaté in an All-Seasons view
+    (season_ids=None, so both leagues' rows are present). Prefer the row
+    that carries a projection (the player's chronological-latest), then
+    fall back to seasonId / minutes. (Lucas 2026-06-24)"""
+    eng, _meta = load_player_engine()
+    if eng is None or eng.empty:
+        return pd.DataFrame()
+    e = eng
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                   else [season_ids])]
+        e = e[e['seasonId'].isin(sids)]
+    if e.empty:
+        return pd.DataFrame()
+    e = e.assign(_has_proj=e['projection'].notna())
+    return (e.sort_values(['playerId', '_has_proj', 'seasonId', 'mins_played'])
+             .drop_duplicates('playerId', keep='last')
+             .drop(columns='_has_proj'))
+
+
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
     """Merge ACP engine columns (rating / projection / axis percentiles)
     into the stats DF on playerId. Scope-aware: keeps engine rows from
@@ -1705,26 +1689,9 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     Engine metrics are levels/rates — never season-totaled."""
     if player_stats_df is None or len(player_stats_df) == 0:
         return player_stats_df
-    eng, _meta = load_player_engine()
-    if eng is None or eng.empty:
+    e = engine_rows_for_scope(season_ids)
+    if e is None or e.empty:
         return player_stats_df
-    e = eng.copy()
-    if season_ids is not None:
-        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
-                                   else [season_ids])]
-        e = e[e['seasonId'].isin(sids)]
-    if e.empty:
-        return player_stats_df
-    # Pick ONE engine row per player. seasonId is NOT chronological across
-    # leagues (Camp 23/24=190230 > L3 24/25=190090), so a plain seasonId-max can
-    # land on an older Campeonato row with no projection — e.g. M. Konaté in an
-    # All-Seasons view (season_ids=None, so both leagues' rows are present).
-    # Prefer the row that carries a projection (the player's chronological-
-    # latest), then fall back to seasonId / minutes. (Lucas 2026-06-24)
-    e = e.assign(_has_proj=e['projection'].notna())
-    e = (e.sort_values(['playerId', '_has_proj', 'seasonId', 'mins_played'])
-           .drop_duplicates('playerId', keep='last')
-           .drop(columns='_has_proj'))
     out = pd.DataFrame({
         'playerId': e['playerId'],
         'ACP Rating': e['acp_rating'],
@@ -3072,7 +3039,11 @@ INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled pa
 # --- CVI / projected-value model: extracted to models/value/cvi.py (2026-09) ---
 # Every public and _private name the pages use is re-exported via __all__ so
 # the ~12 call sites below are unchanged. Keep model logic THERE, not here.
-from models.value.cvi import *  # noqa: F401,F403
+from models.value.cvi import *
+from models.value.eur_intervals import (  # engine value + fee-calibrated interval
+    ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
+    engine_value_eur_frame, projected_eur_interval,
+    load_calibration as load_eur_calibration, format_eur_short, format_eur_range)  # noqa: F401,F403
 
 
 def _role_key_stats(stats_row, template_role, cap=12):
@@ -3107,9 +3078,10 @@ def _role_key_stats(stats_row, template_role, cap=12):
 # Composite Value Index (CVI) — v1 parameters
 # ==============================================================================
 # CVI is a single 0–~150 score combining performance, age-value premium,
-# sample reliability, and league strength. Calibrated against the
-# 27 user-reported transfer fees (real + synthetic) via a CVI → EUR
-# power curve in the bio "Projected value" cell.
+# sample reliability, and league strength. Its EUR mapping
+# (models/value/cvi.cvi_to_projected_eur) is the same curve the engine
+# value rides; the fee calibration behind the likely-fee range lives in
+# models/value/eur_intervals.py (real permanent sales only).
 #
 # Formula:
 #   CVI = PerformanceQuality

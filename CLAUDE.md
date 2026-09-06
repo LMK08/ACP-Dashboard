@@ -96,6 +96,49 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   iframe with a nonce — React keeps an iframe whose srcdoc is unchanged and
   never re-runs its script) so the new page builds downward from a stable
   header. Streamlit has no way to render a page all at once.
+- `models/value/eur_intervals.py` — the ENGINE VALUE (the projected EUR
+  the app shows for outfielders; it was a closure in app.py's
+  load_player_engine and the calibration script re-typed it by hand) and
+  its fee-calibrated LIKELY-FEE RANGE: a split-conformal prediction
+  interval on log(fee ÷ value), calibrated on the real permanent sales in
+  valuations/reported_fees.csv paired with the engine row of the
+  pre-transfer season (valued at the age AT SALE — lapsed rows carry a
+  forwarded age). `python models/value/eur_intervals.py` runs in the
+  engine rebuild right after build_player_engine.py and writes
+  `models/value/eur_interval_calibration.json` (committed; the JSON is
+  what the app reads). Rules: the range is a pure function of the
+  displayed point and one scalar per level (`projected_eur_interval`) —
+  never add range columns to the stats frame (they would ride the
+  percentiles disk cache); it is shown ONLY inside the calibration's
+  support (`range_support_reason`: value ≥ €25k, minutes and evidence
+  weight at least the sold players' minima) and NEVER for goalkeepers
+  (different estimator, no keeper sales); a fee pairs only with a row at
+  the SELLING club (a row at the destination club is post-transfer
+  performance → excluded; January sales are flagged mid_season, not
+  excluded); a level ships only when its order index k ≤ n−2 (80% needs
+  14 sales, 90% needs 29); copy quotes COUNTS ('7 of 13 sales fell within
+  ×/÷1.6'), never 'half' / '8 in 10'; leave-one-out coverage is a property
+  of the construction, not a test — the prospective ledger (fees added
+  after a calibration, scored against the band live at the time) is the
+  only verification, so never present LOO as proof. Render
+  through `eur_interval_ui.py` (range sentence as a CAPTION under the
+  metric — a text delta on st.metric draws an arrow; the calibration panel
+  behind a toggle on the Value tab). Synthetic (hand-estimated) fee rows
+  and unaccepted offers are excluded by the script's own filter — the UI
+  loader treats them like real fees. `PLAYER_ID_ALIASES` moved to
+  league_config.py so the script applies the same remap as the app.
+  Pages that need an engine column the stats merge does not carry (e.g.
+  Player Analysis needs mins_played for the gate) read it from
+  `app.engine_rows_for_scope(season_ids)` — the ONE row-pick rule the
+  merge itself uses — never from a second pick of their own. After editing
+  valuations/reported_fees.csv or a curve constant, run the script and
+  commit the JSON in the same commit: tests/test_eur_intervals.py (run by
+  CI's smoke job) hard-fails when the
+  JSON's curve constants differ from the live ones and only WARNS on
+  quantile drift (the engine rebuild regenerates the JSON; a hand-committed
+  JSON that lands mid-rebuild can conflict its rebase — rerun the rebuild).
+  Tests: `tests/test_eur_intervals.py` (incl. bit-for-bit parity with the
+  old closure and the stale-artifact check against a fresh build).
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)

@@ -115,6 +115,10 @@ jobs:
           python models/ratings/build_projection.py
           python models/ratings/league_conversion.py
           python models/ratings/build_player_engine.py
+          # Projected-value interval: fee-calibrated conformal band around the
+          # engine value (seconds). Must run AFTER build_player_engine.py — it
+          # pairs the real sales with the freshly rebuilt engine rows.
+          python models/value/eur_intervals.py || echo "eur_intervals nonzero (continuing — the committed calibration stays)"
           # Scoreline model: Dixon-Coles fit + walk-forward backtest (seconds)
           python models/scoreline/build_dc.py
 
@@ -140,6 +144,7 @@ jobs:
                      obv_match_player.parquet obv_team_season.parquet \
                      possession_phases.parquet team_phase_profile.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
+                     models/value/*.json models/scoreline/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
                      models/roles/*.png

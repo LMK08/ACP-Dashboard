@@ -19,8 +19,16 @@ POSITION_GROUPS = ['GK', 'CB', 'FB', 'CM', 'AM_WG', 'ST']
 
 
 def test_module_is_streamlit_free():
-    assert 'streamlit' not in sys.modules, "importing the model must not pull in Streamlit"
-    assert len(cvi.__all__) >= 30
+    """Importing the model must not pull in Streamlit — checked in a fresh
+    interpreter, because other test modules legitimately import Streamlit
+    into this process (test order must not matter)."""
+    import subprocess
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import sys; sys.path.insert(0, %r); import models.value.cvi as c; "
+            "assert 'streamlit' not in sys.modules, 'cvi imported streamlit'; print(len(c.__all__))" % here)
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-500:]
+    assert int(out.stdout.strip()) >= 30
 
 
 def test_radar_templates_load_from_config():
