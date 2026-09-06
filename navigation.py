@@ -13,6 +13,7 @@ sidebar radios. Once views take an explicit context object, ``st.navigation``
 (real URLs per page, browser back) is a drop-in replacement for this module.
 """
 import streamlit as st
+import streamlit.components.v1 as components
 
 HOME = 'Home'
 
@@ -69,3 +70,53 @@ def go_to(page, **state):
         st.session_state[key] = value
     st.session_state.current_page = page
     st.rerun()
+
+
+_PAGE_DRAWN_KEY = '_page_drawn'
+
+
+def scroll_to_top_on_page_change(page):
+    """Scroll the main area to the top the first time a page is drawn.
+
+    Streamlit streams a page in element by element and, until the run ends,
+    keeps the PREVIOUS page's elements on screen where the new ones have not
+    arrived yet. Click a page while scrolled halfway down and the viewport
+    sits on stale content that gets replaced piece by piece for the whole
+    cold render — the "shaking". From the top, the new page simply builds
+    downward from a stable header.
+
+    Mechanics: a zero-height component iframe is emitted on EVERY run, at
+    the same tree position, so the element count of the main area never
+    changes between runs (a transient element would shift every later
+    element's slot and remount them on the next interaction). Its HTML
+    carries a nonce that only changes when the page changed: React keeps an
+    iframe whose srcdoc is unchanged and never re-runs its script, so
+    ordinary widget interactions never move the scroll position. The script
+    (same origin, so it may reach the parent document) hides its own
+    container with an injected :has() rule — no extra style element — and
+    scrolls the main area to the top.
+    """
+    if st.session_state.get(_PAGE_DRAWN_KEY) != page:
+        st.session_state[_PAGE_DRAWN_KEY] = page
+        st.session_state['_page_drawn_n'] = st.session_state.get('_page_drawn_n', 0) + 1
+    nonce = st.session_state.get('_page_drawn_n', 0)
+    components.html(_SCROLL_TOP_HTML.replace('__NONCE__', f'{nonce} {page}'), height=0)
+
+
+_SCROLL_TOP_HTML = """<!-- acp-scroll-top __NONCE__ --><script>
+(function () {
+  try {
+    var d = window.parent.document;
+    if (!d.getElementById('acp-scroll-top-style')) {
+      var s = d.createElement('style');
+      s.id = 'acp-scroll-top-style';
+      s.textContent = '[data-testid="stElementContainer"]:has(iframe[srcdoc*="acp-scroll-top"]){display:none}';
+      d.head.appendChild(s);
+    }
+    var m = d.querySelector('[data-testid="stMain"]') || d.querySelector('section.main');
+    if (m) { m.scrollTop = 0; }
+    d.documentElement.scrollTop = 0;
+    if (d.body) { d.body.scrollTop = 0; }
+  } catch (e) {}
+})();
+</script>"""

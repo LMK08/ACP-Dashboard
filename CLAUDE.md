@@ -75,6 +75,27 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   reliability). Runs in the engine rebuild. `scoreline_ui.py` renders it on
   the Match Predictor page; never quote its probabilities without the
   calibration expander next to them. Tests: `tests/test_dixon_coles.py`.
+- `event_tags.py` — `TagIndex` / `has_tag`: vectorised membership tests on
+  the `type.secondary` tag lists. NEVER write
+  `sec.apply(lambda x: tag in x)` on an events frame again: those per-row
+  lambdas cost the two team pages ~9 s of every cold render (2026-09
+  profile: Team Analysis 16 s → 7 s, Opposition Report 29 s → 19 s after
+  the switch). Several tags on one column → one TagIndex, `.has()` each.
+  Tests: `tests/test_event_tags.py` (byte-identical to the old lambdas).
+- Cold-render rules: the rest of a cold Opposition Report is matplotlib
+  rendering its ~27 cached PNG figures (screen + PDF pair) — per opponent,
+  once per day. The boot prewarm (`_prewarm_scope_caches` in app.py) warms
+  each league's LANDING season (newest with ≥ MIN_MATCHES_FOR_DEFAULT_SEASON
+  matches of events — `current_season` is fixtures-only early on and warmed
+  nothing) including `compute_team_season_metrics`, whose cache key comes
+  from `season_report_cache_key()` on both team pages and in the prewarm:
+  one format, or the pages stop sharing the entry. The "shaking" on a page
+  switch is Streamlit replacing the previous page's elements under the
+  viewport as the new ones stream in; `navigation.scroll_to_top_on_page_change`
+  scrolls to the top once per page change (hidden zero-height component
+  iframe with a nonce — React keeps an iframe whose srcdoc is unchanged and
+  never re-runs its script) so the new page builds downward from a stable
+  header. Streamlit has no way to render a page all at once.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)

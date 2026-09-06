@@ -6,6 +6,7 @@ All functions expect Wyscout-normalised coordinates (0-100 on both axes).
 
 import numpy as np
 import pandas as pd
+from event_tags import TagIndex, has_tag
 # Selects the Agg backend before pyplot is imported. Every builder here is
 # called under MPL_LOCK by its caller (app.py / opposition_report.py); the
 # figures are created via pyplot's global manager, so that is load-bearing.
@@ -132,10 +133,11 @@ FORMATION_COORDS = {
 # Helper
 # ---------------------------------------------------------------------------
 def _check_secondary(secondary_col, tag):
-    """Return boolean Series where *tag* is in the type.secondary list."""
-    return secondary_col.apply(
-        lambda x: tag in x if isinstance(x, (list, np.ndarray, set)) else False
-    )
+    """Return boolean Series where *tag* is in the type.secondary list.
+
+    Vectorised (event_tags.TagIndex); testing several tags on one column?
+    Build one TagIndex and call .has() per tag instead."""
+    return has_tag(secondary_col, tag)
 
 
 def _make_pitch(figsize=(12, 8)):
@@ -160,17 +162,17 @@ def _add_attack_direction_arrow(ax):
 def _filter_defensive_actions(df, include_recoveries=True):
     """Boolean mask for defensive action events."""
     secondary_col = df.get('type.secondary', pd.Series(dtype='object'))
+    tags = TagIndex(secondary_col)  # one explode for all five tests
     # Include aerial duels only when they are also defensive
-    is_defensive_aerial = (_check_secondary(secondary_col, 'aerial_duel')
-                           & _check_secondary(secondary_col, 'defensive_duel'))
+    is_defensive_aerial = tags.has('aerial_duel') & tags.has('defensive_duel')
     mask = (
         df['type.primary'].isin(['interception', 'clearance'])
-        | _check_secondary(secondary_col, 'defensive_duel')
-        | _check_secondary(secondary_col, 'sliding_tackle')
+        | tags.has('defensive_duel')
+        | tags.has('sliding_tackle')
         | is_defensive_aerial
     )
     if include_recoveries:
-        mask = mask | _check_secondary(secondary_col, 'recovery')
+        mask = mask | tags.has('recovery')
     return mask
 
 
@@ -1149,15 +1151,20 @@ def plot_zone_heatmap(events_df, team_name, tag, league_events_df=None,
     x_bounds = [0, 25, 50, 75, 100]
     y_bounds = [0, 33.33, 66.67, 100]
 
-    def _zone_pcts(df, team):
-        te = df[df['team.name'] == team].copy()
-        secondary_col = te.get('type.secondary', pd.Series(dtype='object'))
-        mask = _check_secondary(secondary_col, tag)
-        ev = te[mask].copy()
+    def _tagged(df):
+        """Events carrying *tag* with numeric coordinates — ONE tag pass per
+        frame (it used to run per team over the whole league frame)."""
+        if 'type.secondary' in df.columns:
+            mask = has_tag(df['type.secondary'], tag)
+        else:
+            mask = pd.Series(False, index=df.index)
+        ev = df.loc[mask, ['team.name', 'location.x', 'location.y']].copy()
         ev['location.x'] = pd.to_numeric(ev['location.x'], errors='coerce')
         ev['location.y'] = pd.to_numeric(ev['location.y'], errors='coerce')
-        ev = ev.dropna(subset=['location.x', 'location.y'])
+        return ev.dropna(subset=['location.x', 'location.y'])
 
+    def _zone_pcts(tagged, team):
+        ev = tagged[tagged['team.name'] == team]
         total = len(ev)
         grid = np.zeros((len(x_bounds) - 1, len(y_bounds) - 1))
         for i in range(len(x_bounds) - 1):
@@ -1171,16 +1178,14 @@ def plot_zone_heatmap(events_df, team_name, tag, league_events_df=None,
                 grid[i, j] = (cnt / total * 100) if total > 0 else 0
         return grid
 
-    team_grid = _zone_pcts(events_df, team_name)
+    team_grid = _zone_pcts(_tagged(events_df), team_name)
 
     # League average
     league_grid = None
     if league_events_df is not None:
         teams = league_events_df['team.name'].unique()
-        all_grids = []
-        for t in teams:
-            g = _zone_pcts(league_events_df, t)
-            all_grids.append(g)
+        _league_tagged = _tagged(league_events_df)
+        all_grids = [_zone_pcts(_league_tagged, t) for t in teams]
         if all_grids:
             league_grid = np.mean(all_grids, axis=0)
 

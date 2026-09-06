@@ -10,6 +10,7 @@ faulthandler.enable()
 import sys
 import streamlit as st
 import pandas as pd
+from event_tags import TagIndex
 import numpy as np
 import pickle
 import logging
@@ -4941,15 +4942,27 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
         # page load settle, then yield between scopes so clicks preempt.
         _time.sleep(8)
         _t0 = _time.time(); _n = 0
-        # Warm ONLY the current-season scopes (the default landing pages).
-        # The filtered-events cache is LRU-bounded at max_entries=5 (see
-        # _get_filtered_events_cached for the memory arithmetic) — keep this
-        # warm list within that bound or the loop just churns the LRU. Other
-        # scopes lazy-build in a few seconds on first visit (disk caches
-        # cover the expensive layers).
-        _WARM_SCOPES = [(_cid, _sid) for _cid, _cfg in COMPETITIONS.items()
-                        for _sid in _cfg.get('seasons', {})
-                        if _sid == _cfg.get('current_season')]
+        # Warm ONLY the landing scopes: per league, the season the context
+        # bar defaults to — the newest one with event data for at least
+        # MIN_MATCHES_FOR_DEFAULT_SEASON matches (_default_season_label).
+        # It used to warm `current_season`, which early in a season is
+        # fixtures-only (no events yet): the loop found empty frames and
+        # warmed NOTHING, so every first visit to a team page was cold
+        # (2026-09). The filtered-events cache is LRU-bounded at
+        # max_entries=5 (see _get_filtered_events_cached for the memory
+        # arithmetic) — keep this warm list within that bound or the loop
+        # just churns the LRU. Other scopes lazy-build in a few seconds on
+        # first visit (disk caches cover the expensive layers).
+        def _landing_season(_cfg):
+            _by_newest = sorted(_cfg.get('seasons', {}).items(),
+                                key=lambda kv: str(kv[1]), reverse=True)
+            for _sid, _label in _by_newest:
+                if SEASON_MATCHES_WITH_EVENTS.get(int(_sid), 0) >= MIN_MATCHES_FOR_DEFAULT_SEASON:
+                    return _sid
+            return _cfg.get('current_season')
+        _WARM_SCOPES = [(_cid, _landing_season(_cfg)) for _cid, _cfg in COMPETITIONS.items()]
+        _WARM_SCOPES = [(_c, _s) for _c, _s in _WARM_SCOPES if _s is not None]
+        logger.info(f"[prewarm] landing scopes: {_WARM_SCOPES}")
         for _cid, _sid in _WARM_SCOPES:
                 _time.sleep(2.0)
                 try:
@@ -4963,6 +4976,19 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
                             calculate_team_strength(_ev, _matches_summary_df, season_id=_sid)
                         except Exception:
                             pass
+                        # Season-report metrics: the single biggest cold cost
+                        # of BOTH team pages (~6 s), computed per scope for
+                        # every team — one warm serves any team either page
+                        # opens. Args mirror views/team_analysis.py exactly
+                        # (stage 'all', single-season scope) so this is a
+                        # direct key hit, not an approximation.
+                        try:
+                            _m = filter_by_league(get_season_matches(_matches_summary_df, _sid), [_cid])
+                            compute_team_season_metrics(
+                                _ev, _m, season_ids=(int(_sid),), use_wyscout=True,
+                                cache_key=season_report_cache_key([_cid], _sid))
+                        except Exception as _e:
+                            logger.warning(f"[prewarm] season report (comp={_cid}, season={_sid}) failed: {_e}")
                     _n += 1
                 except Exception as _e:
                     logger.warning(f"[prewarm] scope (comp={_cid}, season={_sid}) failed: {_e}")
@@ -7716,8 +7742,9 @@ def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
         return isinstance(s, (list, np.ndarray)) and tag in s
 
     sec = ev.get('type.secondary', pd.Series([[]]*len(ev)))
+    _tags = TagIndex(sec)  # one explode; the per-row lambda cost ~5.5 s here
     def _tag(name):
-        return sec.apply(lambda x: isinstance(x, (list, np.ndarray)) and name in x)
+        return _tags.has(name)
     has_recovery         = _tag('recovery')
     has_counter_press    = _tag('counterpressing_recovery')
     has_loss             = _tag('loss')
@@ -8577,6 +8604,16 @@ def _render_league_figure_png(kind, values_key, extra, day_key, fig_ver, _stats_
     return _fig_png_bytes(fig) if fig is not None else None
 
 
+def season_report_cache_key(comp_ids, season_ids, stage=None):
+    """Cache key for compute_team_season_metrics — ONE format for Team
+    Analysis, the Opposition Report and the boot prewarm, so one
+    league+season computes once and serves every team on both pages."""
+    sids = (','.join(map(str, season_ids)) if isinstance(season_ids, (list, tuple))
+            else season_ids)
+    stage_key = 'all' if stage in (STAGE_ALL, None) else stage
+    return f"sr_{','.join(map(str, comp_ids or []))}_{sids}_{stage_key}"
+
+
 def render_season_report_section(team_events_df, team_matches_df, team_name,
                                    season_ids=None, stage=None, cache_key=None,
                                    on_team_select=None):
@@ -8790,6 +8827,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     analysis_type = navigation.render_sidebar_nav()
     with _context_slot:
         context_bar.render(analysis_type)
+    navigation.scroll_to_top_on_page_change(analysis_type)
 
     # Engine freshness stamp — visible on every page (lesson from the
     # April→June staleness: nobody could see the data was 2 months old)

@@ -255,11 +255,8 @@ def render():
             f"with **{selected_team_t}** highlighted as a white hexagon. "
             "Values are the team's raw per-match / per-90 numbers."
         )
-        _sr_cache_key = (
-            f"sr_{','.join(map(str, selected_comp_ids))}"
-            f"_{active_season_ids if not isinstance(active_season_ids, list) else ','.join(map(str, active_season_ids))}"
-            f"_{selected_stage or 'all'}"
-        )
+        _sr_cache_key = app.season_report_cache_key(
+            selected_comp_ids, active_season_ids, selected_stage)
         def _open_team(team):
             st.session_state['nav_team'] = team
             st.rerun()

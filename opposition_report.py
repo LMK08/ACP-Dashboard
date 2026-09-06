@@ -1041,9 +1041,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         )
         # Same cache-key format as Team Analysis (stage 'all'), so the same
         # league+season selection shares one computed entry across both pages.
-        _sr_cache_key = (
-            f"sr_{','.join(map(str, comp_ids or []))}_{selected_season_id}_all"
-        )
+        _sr_cache_key = app.season_report_cache_key(comp_ids, selected_season_id)
         app.render_season_report_section(
             season_events_df, season_matches_df, selected_opponent,
             season_ids=selected_season_id,
