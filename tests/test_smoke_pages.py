@@ -252,7 +252,14 @@ def test_profile_value_section_and_calibration_panel(app):
     toggles[0].set_value(True)
     app.run()
     assert any(m.label == 'Real sales' for m in app.metric)
-    assert any(('Likely fee' in str(c.value)) or ('No likely-fee range' in str(c.value)) for c in app.caption)
+    assert any('Projected value is computed by the ACP engine' in str(c.value) for c in app.caption)
+    # The range line exists only for an outfielder WITH an engine value; the
+    # default player differs between the local and the canonical (CI) data.
+    position = next((str(m.value) for m in app.metric if m.label == 'Position'), '')
+    value = next((str(m.value) for m in app.metric if m.label == 'Projected value'), '')
+    if value.startswith('€') and not position.upper().startswith('GK'):
+        assert any(('Likely fee' in str(c.value)) or ('No likely-fee range' in str(c.value))
+                   for c in app.caption), 'outfielder with a value but no range line'
     assert not _problems(app), _problems(app)
     toggles[0].set_value(False)
     app.run()
