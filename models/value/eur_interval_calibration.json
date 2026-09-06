@@ -3,10 +3,10 @@
  "built": "2026-09-06",
  "method": "split-conformal-log",
  "engine_meta": {
-  "data_through": "2026-08-23",
+  "data_through": "2026-09-05",
   "rating_version": "v6.9.2",
   "projection_version": "v2.1-full",
-  "built_at": "2026-09-03 11:54"
+  "built_at": "2026-09-06 10:10"
  },
  "point_model": {
   "coef": 1.1,
@@ -53,12 +53,12 @@
   "min_mins_played": 557.65,
   "min_w_evidence": 0.3832744017761698,
   "value_range_eur": [
-   28757.88728555976,
-   482741.83120252716
+   27998.49584628844,
+   484075.0304358299
   ]
  },
  "centre_drift": {
-  "L3_median_ratio": 0.9825781730932298,
+  "L3_median_ratio": 0.9751425143273592,
   "flag": false,
   "note": "centred"
  },
@@ -67,8 +67,8 @@
   "0.50": {
    "level": 0.5,
    "k": 7,
-   "q": 0.46195373407666723,
-   "factor": 1.5871718695548378,
+   "q": 0.45451443197059205,
+   "factor": 1.5754082294124878,
    "shipped": true,
    "loo_hits": 7,
    "loo_n": 13,
@@ -78,8 +78,8 @@
   "0.80": {
    "level": 0.8,
    "k": 12,
-   "q": 1.4364582813102709,
-   "factor": 4.205773740235169,
+   "q": 1.4373954559118354,
+   "factor": 4.209717132099171,
    "shipped": false,
    "loo_hits": 11,
    "loo_n": 13,
@@ -89,8 +89,8 @@
   "0.90": {
    "level": 0.9,
    "k": 13,
-   "q": 1.5145306144114368,
-   "factor": 4.547286195224665,
+   "q": 1.5127434225540266,
+   "factor": 4.5391665801794,
    "shipped": false,
    "loo_hits": 12,
    "loo_n": 13,
@@ -102,15 +102,15 @@
  "bias": {
   "pooled": {
    "n": 13,
-   "median_ratio": 0.9388728640562393
+   "median_ratio": 0.9643375182806185
   },
   "L3": {
    "n": 9,
-   "median_ratio": 0.9825781730932298
+   "median_ratio": 0.9751425143273592
   },
   "Camp": {
    "n": 4,
-   "median_ratio": 0.7698437714248435
+   "median_ratio": 0.7717612166151767
   }
  },
  "strata": [
@@ -118,7 +118,7 @@
    "kind": "league",
    "name": "Camp",
    "n": 4,
-   "median_ratio": 0.7698437714248435,
+   "median_ratio": 0.7717612166151767,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 3,
@@ -132,7 +132,7 @@
    "kind": "league",
    "name": "L3",
    "n": 9,
-   "median_ratio": 0.9825781730932298,
+   "median_ratio": 0.9751425143273592,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 4,
@@ -146,7 +146,7 @@
    "kind": "role_group",
    "name": "AM_WG",
    "n": 7,
-   "median_ratio": 0.9388728640562393,
+   "median_ratio": 0.9643375182806185,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 5,
@@ -160,7 +160,7 @@
    "kind": "role_group",
    "name": "FB",
    "n": 1,
-   "median_ratio": 2.8024860586438787,
+   "median_ratio": 2.663040097551446,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 0,
@@ -174,7 +174,7 @@
    "kind": "role_group",
    "name": "ST",
    "n": 5,
-   "median_ratio": 0.630051489181493,
+   "median_ratio": 0.6347561104037948,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -188,7 +188,7 @@
    "kind": "value_band",
    "name": "< EUR 100k",
    "n": 4,
-   "median_ratio": 0.7844621766188662,
+   "median_ratio": 0.7995468143422066,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -202,7 +202,7 @@
    "kind": "value_band",
    "name": "> EUR 300k",
    "n": 4,
-   "median_ratio": 1.0029805819270303,
+   "median_ratio": 1.001554293202427,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 3,
@@ -229,12 +229,12 @@
  ],
  "sensitivity": {
   "n_with_synthetic": 28,
-  "q_with_synthetic_0.50": 0.7689697172784006,
-  "q_with_synthetic_0.80": 1.5145306144114368,
-  "q_with_synthetic_0.90": 3.3814158784551775,
+  "q_with_synthetic_0.50": 0.7607044047013608,
+  "q_with_synthetic_0.80": 1.5127434225540266,
+  "q_with_synthetic_0.90": 3.380465174220003,
   "asymmetric_headline_band": {
-   "m_lo": 0.630051489181493,
-   "m_hi": 1.035750307269793
+   "m_lo": 0.6347561104037948,
+   "m_hi": 1.0328977298205866
   }
  },
  "prospective": {
@@ -259,8 +259,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-01-15",
    "fee_eur": 30000.0,
-   "value_eur": 65950.33621729662,
-   "ratio": 0.4548877491868189,
+   "value_eur": 66394.30241794123,
+   "ratio": 0.45184600044676915,
    "seasons_ago": 0,
    "age_at_sale": 28.90136986301377,
    "mins_played": 1806.7833333333333,
@@ -269,8 +269,8 @@
    "to_team": "Varzim",
    "engine_team": "Atl\u00e9tico CP",
    "mid_season": true,
-   "log_error": -0.7877045955518064,
-   "score": 0.7877045955518064
+   "log_error": -0.7944138641798887,
+   "score": 0.7944138641798887
   },
   {
    "playerId": 703977,
@@ -283,8 +283,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-01-15",
    "fee_eur": 27000.0,
-   "value_eur": 28757.88728555976,
-   "ratio": 0.9388728640562393,
+   "value_eur": 27998.49584628844,
+   "ratio": 0.9643375182806185,
    "seasons_ago": 0,
    "age_at_sale": 23.567123287671166,
    "mins_played": 557.65,
@@ -293,8 +293,8 @@
    "to_team": "Atl\u00e9tico CP",
    "engine_team": "Le\u00e7a",
    "mid_season": true,
-   "log_error": -0.06307520398188891,
-   "score": 0.06307520398188891
+   "log_error": -0.03631392295250316,
+   "score": 0.03631392295250316
   },
   {
    "playerId": 489426,
@@ -307,8 +307,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-07-15",
    "fee_eur": 60000.0,
-   "value_eur": 95230.31217329028,
-   "ratio": 0.630051489181493,
+   "value_eur": 94524.49376474928,
+   "ratio": 0.6347561104037948,
    "seasons_ago": 1,
    "age_at_sale": 28.627397260273938,
    "mins_played": 2416.116666666667,
@@ -317,8 +317,8 @@
    "to_team": "CSKA 1948",
    "engine_team": "Atl\u00e9tico CP",
    "mid_season": false,
-   "log_error": -0.46195373407666723,
-   "score": 0.46195373407666723
+   "log_error": -0.45451443197059205,
+   "score": 0.45451443197059205
   },
   {
    "playerId": 709015,
@@ -331,8 +331,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2024-01-15",
    "fee_eur": 250000.0,
-   "value_eur": 254432.68214780433,
-   "ratio": 0.9825781730932298,
+   "value_eur": 256372.78277467657,
+   "ratio": 0.9751425143273592,
    "seasons_ago": 2,
    "age_at_sale": 23.1232876712329,
    "mins_played": 921.05,
@@ -341,8 +341,8 @@
    "to_team": "Portimonense",
    "engine_team": "Felgueiras 1932",
    "mid_season": true,
-   "log_error": -0.017575372914593976,
-   "score": 0.017575372914593976
+   "log_error": -0.025171650124988943,
+   "score": 0.025171650124988943
   },
   {
    "playerId": 650811,
@@ -355,8 +355,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-01-15",
    "fee_eur": 450000.0,
-   "value_eur": 194657.7340910785,
-   "ratio": 2.3117499137714677,
+   "value_eur": 192113.3226681867,
+   "ratio": 2.3423674826405905,
    "seasons_ago": 1,
    "age_at_sale": 22.298630136986276,
    "mins_played": 932.2,
@@ -365,8 +365,8 @@
    "to_team": "Moreirense",
    "engine_team": "Anadia",
    "mid_season": true,
-   "log_error": 0.838004776175499,
-   "score": 0.838004776175499
+   "log_error": 0.8511621626190785,
+   "score": 0.8511621626190785
   },
   {
    "playerId": 846557,
@@ -403,8 +403,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-07-15",
    "fee_eur": 2000000.0,
-   "value_eur": 439822.7677202946,
-   "ratio": 4.547286195224665,
+   "value_eur": 440609.51821709843,
+   "ratio": 4.5391665801794,
    "seasons_ago": 1,
    "age_at_sale": 19.78630136986294,
    "mins_played": 1469.4666666666667,
@@ -413,8 +413,8 @@
    "to_team": "Lyon (FRA L1)",
    "engine_team": "Sporting CP II",
    "mid_season": false,
-   "log_error": 1.5145306144114368,
-   "score": 1.5145306144114368
+   "log_error": 1.5127434225540266,
+   "score": 1.5127434225540266
   },
   {
    "playerId": 1038698,
@@ -427,8 +427,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 300000.0,
-   "value_eur": 361767.97073582833,
-   "ratio": 0.829260808771452,
+   "value_eur": 360102.68724868516,
+   "ratio": 0.8330956991521185,
    "seasons_ago": 0,
    "age_at_sale": 19.301369863013633,
    "mins_played": 2006.55,
@@ -437,8 +437,8 @@
    "to_team": "Santa Clara",
    "engine_team": "Vianense",
    "mid_season": false,
-   "log_error": -0.18722056684564786,
-   "score": 0.18722056684564786
+   "log_error": -0.18260675847754654,
+   "score": 0.18260675847754654
   },
   {
    "playerId": 1039596,
@@ -451,8 +451,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 500000.0,
-   "value_eur": 482741.83120252716,
-   "ratio": 1.035750307269793,
+   "value_eur": 484075.0304358299,
+   "ratio": 1.0328977298205866,
    "seasons_ago": 0,
    "age_at_sale": 18.032876712328743,
    "mins_played": 1080.6833333333334,
@@ -461,8 +461,8 @@
    "to_team": "Sporting Lisbon",
    "engine_team": "Atl\u00e9tico CP",
    "mid_season": false,
-   "log_error": 0.03512609863938313,
-   "score": 0.03512609863938313
+   "log_error": 0.03236818215852875,
+   "score": 0.03236818215852875
   },
   {
    "playerId": 873635,
@@ -475,8 +475,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 200000.0,
-   "value_eur": 71365.20782436288,
-   "ratio": 2.8024860586438787,
+   "value_eur": 75102.13615780386,
+   "ratio": 2.663040097551446,
    "seasons_ago": 0,
    "age_at_sale": 20.884931506849398,
    "mins_played": 1083.7666666666669,
@@ -485,8 +485,8 @@
    "to_team": "Ukraine Premier League (TBD)",
    "engine_team": "CF Os Belenenses",
    "mid_season": false,
-   "log_error": 1.0305069013376666,
-   "score": 1.0305069013376666
+   "log_error": 0.9794683640039953,
+   "score": 0.9794683640039953
   },
   {
    "playerId": 693095,
@@ -523,8 +523,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-13",
    "fee_eur": 100000.0,
-   "value_eur": 177180.6182161897,
-   "ratio": 0.5643958182716319,
+   "value_eur": 172387.04087068548,
+   "ratio": 0.5800900084769949,
    "seasons_ago": 0,
    "age_at_sale": 23.772602739725926,
    "mins_played": 1303.75,
@@ -533,8 +533,8 @@
    "to_team": "Bulgaria First League (TBD)",
    "engine_team": "Paredes",
    "mid_season": false,
-   "log_error": -0.5719994681882048,
-   "score": 0.5719994681882048
+   "log_error": -0.5445720004526319,
+   "score": 0.5445720004526319
   },
   {
    "playerId": 575377,
@@ -547,8 +547,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-23",
    "fee_eur": 60000.0,
-   "value_eur": 252346.4244141101,
-   "ratio": 0.23776837789283556,
+   "value_eur": 252583.0279259503,
+   "ratio": 0.2375456517909437,
    "seasons_ago": 0,
    "age_at_sale": 22.257534246575233,
    "mins_played": 1942.4166666666667,
@@ -557,8 +557,8 @@
    "to_team": "CD Castell\u00f3n (Segunda Divisi\u00f3n)",
    "engine_team": "Le\u00e7a",
    "mid_season": false,
-   "log_error": -1.4364582813102709,
-   "score": 1.4364582813102709
+   "log_error": -1.4373954559118354,
+   "score": 1.4373954559118354
   }
  ]
 }
