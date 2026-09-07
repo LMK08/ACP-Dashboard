@@ -139,6 +139,38 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   JSON that lands mid-rebuild can conflict its rebase — rerun the rebuild).
   Tests: `tests/test_eur_intervals.py` (incl. bit-for-bit parity with the
   old closure and the stale-artifact check against a fresh build).
+- `models/similarity/similar_players.py` — the like-for-like search behind
+  the profile's 'Similar Players' section (`similar_players_ui.py`) and
+  the Shadow Team 'Find players like…' buttons. One vector per
+  player-season from the per-season stats caches (36 style per-90 metrics
+  + 8 value metrics at half weight + 6 pitch-occupancy scalars from
+  models/roles/role_features_season.parquet), percentile-ranked WITHIN the
+  position bucket over the whole pool (both leagues, every cached season,
+  ≥ 500 min), weighted Euclidean inside the bucket; score = 100 − 50 ×
+  d ÷ the bucket's median pair distance. The pool is built at runtime
+  (~0.2 s, `app.load_similarity_pool` keyed on `similarity_cache_signature`
+  = cache files' mtimes + SIM_VERSION — never a STATS_CACHE_VERSION bump,
+  no artifact). Measured (`similarity_validation`, shown in the section's
+  expander): self-match top-10 37% vs 1.5% chance, engine-role agreement
+  0.80 vs 0.63, style 0.38 vs 0.19 — z-scores and other variants scored
+  the same (scratchpad eval 2026-09-06), percentiles kept for robustness
+  and the 'both high, top 20%' explanations (value words, never praise —
+  'high' ball losses is the bad end). Rules: GKs are not covered (say so,
+  never mix them in); the bucket is per season row (first position seen
+  THAT season); filters apply AFTER the distance, and in 'latest season per
+  player' mode the latest row is chosen BEFORE the filters so a current
+  own-club player never resurfaces under an old club; a 0 rating / value in
+  the caches means 'unrated' (NaN); bump SIM_VERSION when FEATURES/weights
+  change; never present rank 1 as 'the replacement' — the section shows
+  shared traits and the validation numbers; 'Compare on radar' only for a
+  neighbour in the query's own league AND season (the radars are that
+  scope's percentiles). Bridges:
+  a row click → profile (nav_to_profile keys), 'Compare on radar' →
+  `navigation.go_to('Player Comparison', compare_seed_a=, compare_seed_b=)`
+  (the Comparison selectors are keyed `player_comparison_a/_template/_b`
+  and seeded before they draw), Shadow Team → profile with
+  `profile_active_tab='Similar Players'` (settable from another page only).
+  Tests: `tests/test_similar_players.py`.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 
 ## Team Analysis ↔ Opposition Report parity (RULE)

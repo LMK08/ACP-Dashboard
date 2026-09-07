@@ -70,10 +70,27 @@ def render():
     # by minutes, so the first OUR_TEAM row is that player).
     _our_positions = np.flatnonzero(player_list_df['teamName'].astype(str).values == OUR_TEAM)
     _default_a_idx = int(_our_positions[0]) if len(_our_positions) else 0
+    # Keyed selectors seeded through session state BEFORE the widgets exist
+    # (never index=: a keyed widget whose parameters change is a new widget
+    # to Streamlit). The Similar Players section's 'Compare on radar' button
+    # sets compare_seed_a / compare_seed_b (playerIds) via navigation.go_to.
+    _a_options = player_list_df['display_name'].tolist()
+    _seed_a = st.session_state.pop('compare_seed_a', None)
+    _seed_b = st.session_state.pop('compare_seed_b', None)
+    if _seed_a is not None:
+        _m = player_list_df[player_list_df['playerId'] == int(_seed_a)]
+        if not _m.empty:
+            st.session_state['player_comparison_a'] = _m['display_name'].iloc[0]
+        else:
+            st.sidebar.warning("The player sent here is not in this league/season scope — "
+                               "showing the default comparison instead.")
+            _seed_b = None
+    if st.session_state.get('player_comparison_a') not in _a_options:
+        st.session_state['player_comparison_a'] = _a_options[_default_a_idx] if _a_options else None
     selected_player_a_display = st.sidebar.selectbox(
         "Select Player A:",
-        player_list_df['display_name'],
-        index=_default_a_idx
+        _a_options,
+        key='player_comparison_a',
     )
 
     # FIX: Lookup by ID instead of Name
@@ -97,12 +114,27 @@ def render():
             if player_score > highest_score:
                 highest_score = player_score; default_template = group
 
-    default_index = all_templates.index(default_template) if default_template in all_templates else 0
-
+    # Template: default to Player A's best-fit template on first visit / a
+    # change of Player A; a seeded Player B forces a template both fit.
+    _tpl_key = 'player_comparison_template'
+    if st.session_state.get('player_comparison_last_a') != selected_player_a_display or _seed_b is not None:
+        st.session_state[_tpl_key] = default_template
+        st.session_state['player_comparison_last_a'] = selected_player_a_display
+    if st.session_state.get(_tpl_key) not in all_templates:
+        st.session_state[_tpl_key] = default_template if default_template in all_templates else all_templates[0]
+    if _seed_b is not None:
+        _b_pos = player_stats_with_scores_df.loc[
+            player_stats_with_scores_df['playerId'] == int(_seed_b), 'primaryPosition']
+        _b_pos = str(_b_pos.iloc[0]) if len(_b_pos) else None
+        if _b_pos is not None and _b_pos not in POSITION_GROUPS.get(st.session_state[_tpl_key], []):
+            for _t in all_templates:
+                if _b_pos in POSITION_GROUPS.get(_t, []):
+                    st.session_state[_tpl_key] = _t
+                    break
     selected_template = st.sidebar.selectbox(
         "Select Comparison Template:",
         all_templates,
-        index=default_index
+        key=_tpl_key,
     )
 
     # --- Step C: Filter Player B list based on Template ---
@@ -117,16 +149,25 @@ def render():
     player_b_list_df = filtered_player_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
     player_b_list_df['display_name'] = player_b_list_df['playerName'].astype(str) + " (" + player_b_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_b_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
 
-    # Find a smart default index for Player B (e.g., the second player in the list)
-    default_b_index = 0
-    if len(player_b_list_df) > 1:
-        default_b_index = 1
+    # Player B: the seeded player when the bridge set one, else the second
+    # player of the group (or the first if the group has one)
+    _b_options = player_b_list_df['display_name'].tolist()
+    if _seed_b is not None:
+        _mb = player_b_list_df[player_b_list_df['playerId'] == int(_seed_b)]
+        if not _mb.empty:
+            st.session_state['player_comparison_b'] = _mb['display_name'].iloc[0]
+        else:
+            st.sidebar.warning("The second player sent here is not in this scope or position "
+                               "group — showing the default Player B instead.")
+    if st.session_state.get('player_comparison_b') not in _b_options:
+        st.session_state['player_comparison_b'] = (_b_options[1] if len(_b_options) > 1
+                                                   else (_b_options[0] if _b_options else None))
 
     # --- Step D: Select Player B (from filtered list) ---
     selected_player_b_display = st.sidebar.selectbox(
-        "Select Player B (Same Position Group):", 
-        player_b_list_df['display_name'],
-        index=default_b_index 
+        "Select Player B (Same Position Group):",
+        _b_options,
+        key='player_comparison_b',
     )
 
     # FIX: Lookup by ID instead of Name

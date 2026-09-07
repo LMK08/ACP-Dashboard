@@ -9,6 +9,8 @@ import io
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+
+import navigation
 import sys
 
 
@@ -246,3 +248,16 @@ def render():
                     st.dataframe(scores_df, use_container_width=True, hide_index=True, column_config=auto_column_config(scores_df))
                 else:
                     st.caption("No role scores available for this slot.")
+                # Recruitment entry point: like-for-like alternatives for
+                # this slot open the player's profile on its Similar
+                # Players section (models/similarity). The section radio's
+                # key can be preset here because that widget does not exist
+                # on this page's run.
+                if player_id is not None and pd.notna(player_id):
+                    if st.button(f"Find players like {p_name}", key=f"shadow_similar_{slot}_{p_display_key}"):
+                        navigation.go_to('Player Profile',
+                                         selected_player_id=int(player_id),
+                                         nav_to_profile=True,
+                                         nav_season_id=(selected_season_id if isinstance(selected_season_id, int) else None),
+                                         nav_has_season=True,
+                                         profile_active_tab='Similar Players')

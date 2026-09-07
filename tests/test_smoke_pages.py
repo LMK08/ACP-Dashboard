@@ -267,6 +267,60 @@ def test_profile_value_section_and_calibration_panel(app):
     app.run()
 
 
+def test_profile_similar_players_section(app):
+    """The Similar Players section (models/similarity) sits behind the
+    profile's section radio: it must render a table with a similarity column
+    (or an honest info box for a keeper / a player without a qualifying
+    season) and stay clean; a row click opens that player's profile."""
+    _open_page(app, 'Player Profile')
+    section = [r for r in app.radio if r.label == 'Profile section'][0]
+    section.set_value('Similar Players')
+    app.run()
+    assert not _problems(app), _problems(app)
+    tables = [d for d in app.dataframe if 'Similarity' in list(d.value.columns)]
+    infos = [i for i in app.info if 'qualifying season' in str(i.value) or 'Goalkeepers' in str(i.value)
+             or 'No candidates' in str(i.value)]
+    assert not any('unavailable' in str(w.value) for w in app.warning), 'the similarity pool failed to build'
+    assert not any('stats caches' in str(i.value) for i in app.info), 'no per-season caches found'
+    assert tables or infos, 'neither a similarity table nor an explanatory info box rendered'
+    if tables:
+        t = tables[0].value
+        assert t['Similarity'].between(0, 100).all()
+        assert (t['Similar because'].astype(str) != '').all()
+        assert any('How similarity is measured' in str(e.label) for e in app.expander)
+    section.set_value('Player Radar')
+    app.run()
+
+
+def test_comparison_selectors_are_keyed_and_seedable(app):
+    """The Comparison page's selectors are keyed (stable across reruns) and
+    the similar-players bridge can seed Player A before the widgets draw."""
+    import pyarrow.parquet as pq
+    _open_page(app, 'Player Comparison')
+    box_a = [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0]
+    first = box_a.value
+    app.run()
+    assert [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0].value == first
+    # seed A with a real player of the page's scope: the third-most-used
+    # player in the cache of the season the page is showing (the landing
+    # season differs between the local and the canonical data)
+    import league_config
+    season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
+    sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
+                if v == season_label), None)
+    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v14_{sid}.parquet')
+    if sid is None or not os.path.exists(cache):
+        pytest.skip(f'percentiles cache for {season_label} not present')
+    t = pq.read_table(cache, columns=['playerId', 'playerName', 'totalMinutes']).to_pandas()
+    t = t.sort_values('totalMinutes', ascending=False)
+    seed = t.iloc[2]
+    app.session_state['compare_seed_a'] = int(seed['playerId'])
+    app.run()
+    box_a = [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0]
+    assert str(box_a.value).startswith(str(seed['playerName'])), (box_a.value, seed['playerName'])
+    assert not _problems(app), _problems(app)
+
+
 @pytest.mark.parametrize('page', EMPTY_SEASON_PAGES)
 def test_empty_season_degrades_gracefully(app, page):
     """Forcing the newest season (fixtures, few or no events) must give a

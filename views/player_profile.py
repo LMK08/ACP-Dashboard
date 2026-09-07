@@ -1113,7 +1113,8 @@ def render():
     radar_stats_df = merge_defr_values_into_stats(
         player_stats_with_scores_df, active_season_ids, selected_comp_ids)
 
-    _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log"]
+    _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log",
+                         "Similar Players"]
     _active_tab = st.radio("Profile section", _profile_sections,
                             horizontal=True, label_visibility="collapsed",
                             key="profile_active_tab")
@@ -2593,3 +2594,12 @@ def render():
             st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
             with st.expander("View Full Match Log (All Stats)"):
                 st.dataframe(player_match_log_df.set_index('Date'))
+
+    elif _active_tab == "Similar Players":
+        # Like-for-like search (models/similarity); rendered lazily so the
+        # default profile render costs nothing. A row click opens that
+        # player's profile through the same bridge the tables use.
+        import similar_players_ui
+        st.subheader("Similar Players")
+        similar_players_ui.render(app, int(selected_player_id), selected_season_id, key='sim',
+                                  current_pos=current_pos)

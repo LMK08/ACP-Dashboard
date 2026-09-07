@@ -1652,6 +1652,119 @@ Separate from the quality question, we describe *how* a player plays:
 """
 
 
+# ---- Similar-player search (models/similarity/similar_players.py) ----------
+def similarity_cache_signature():
+    """Cache key for the similarity pool: the stats-cache version, the
+    feature-spec version, every per-season percentiles cache present
+    (seasonId, mtime, size) and the roles parquet's mtime — so a refreshed
+    cache or a feature change rebuilds the pool without a
+    STATS_CACHE_VERSION bump. Local test runs delete stale caches, so the
+    pool can legitimately cover fewer seasons than the Space's."""
+    base = os.path.dirname(__file__)
+    parts = []
+    for _cfg in COMPETITIONS.values():
+        for _sid in _cfg.get('seasons', {}):
+            p = os.path.join(base, STATS_CACHE_DIR,
+                             f'player_percentiles_{STATS_CACHE_VERSION}_{int(_sid)}.parquet')
+            if os.path.exists(p):
+                _st = os.stat(p)
+                parts.append((int(_sid), int(_st.st_mtime), int(_st.st_size)))
+    rf = os.path.join(base, 'models', 'roles', 'role_features_season.parquet')
+    rf_sig = int(os.stat(rf).st_mtime) if os.path.exists(rf) else 0
+    return (STATS_CACHE_VERSION, similar_players.SIM_VERSION, tuple(sorted(parts)), rf_sig)
+
+
+def _alias_pids(series):
+    if not PLAYER_ID_ALIASES:
+        return series
+    return pd.to_numeric(series, errors='coerce').map(
+        lambda x: PLAYER_ID_ALIASES.get(int(x), x) if pd.notna(x) else x)
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def load_similarity_pool(signature):
+    """The like-for-like pool: every per-season percentiles cache in the
+    signature (both leagues, all cached seasons, >= 500 minutes) plus the
+    roles layer's spatial scalars. ~0.2 s to build; one object per process."""
+    base = os.path.dirname(__file__)
+    frames = {}
+    for _sid, _m, _s in signature[2]:
+        p = os.path.join(base, STATS_CACHE_DIR,
+                         f'player_percentiles_{STATS_CACHE_VERSION}_{int(_sid)}.parquet')
+        try:
+            f = pd.read_parquet(p)
+        except Exception:
+            logger.exception(f"similarity: could not read {p}")
+            continue
+        if 'playerId' in f.columns:
+            f['playerId'] = _alias_pids(f['playerId'])
+        frames[int(_sid)] = f
+    rf = None
+    rf_path = os.path.join(base, 'models', 'roles', 'role_features_season.parquet')
+    if os.path.exists(rf_path):
+        try:
+            rf = pd.read_parquet(rf_path, columns=['playerId', 'seasonId'] + similar_players.SPATIAL_FEATURES)
+            rf['playerId'] = _alias_pids(rf['playerId'])
+        except Exception:
+            logger.exception("similarity: role_features_season.parquet unreadable — spatial block skipped")
+            rf = None
+    try:
+        return similar_players.build_pool(frames, rf)
+    except Exception as e:
+        # a renamed cache column lands here: say so on the page rather than
+        # pretending there are no caches
+        logger.exception("similarity pool build failed")
+        return similar_players.Pool(meta=pd.DataFrame(), error=f"{type(e).__name__}: {e}"[:200])
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def similarity_validation(signature):
+    """The numbers the 'How similarity is measured' panel shows: self-match
+    across seasons and engine-role / style agreement of the top-10 vs chance."""
+    pool = load_similarity_pool(signature)
+    if pool.meta.empty:
+        return {}
+    labels = None
+    try:
+        eng, _ = load_player_engine()
+        if eng is not None and not eng.empty and 'role' in eng.columns:
+            labels = eng[['playerId', 'seasonId', 'role']].copy()
+    except Exception:
+        labels = None
+    try:
+        sty = load_styles()
+        if isinstance(sty, pd.DataFrame) and {'playerId', 'seasonId', 'style'} <= set(sty.columns):
+            s2 = sty[['playerId', 'seasonId', 'style']].copy()
+            labels = s2 if labels is None else labels.merge(s2, on=['playerId', 'seasonId'], how='outer')
+    except Exception:
+        pass
+    try:
+        return similar_players.validation(pool, labels, k=10)
+    except Exception:
+        logger.exception("similarity validation failed")
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def player_ages():
+    """{playerId: age today (float)} from player_details; unknown ages absent."""
+    out = {}
+    try:
+        det = load_player_details()
+    except Exception:
+        return out
+    if det is None or len(det) == 0:
+        return out
+    for pid, row in det.iterrows():
+        try:
+            a = _calculate_age(row.get('birthDate'))
+            if a != 'N/A' and a is not None:
+                out[int(pid)] = float(a)
+        except Exception:
+            continue
+    return out
+
+
 def engine_rows_for_scope(season_ids=None):
     """ONE engine row per player for the active seasons — the row every
     engine-derived column in the stats frame comes from (see the merge
@@ -3040,6 +3153,7 @@ INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled pa
 # Every public and _private name the pages use is re-exported via __all__ so
 # the ~12 call sites below are unchanged. Keep model logic THERE, not here.
 from models.value.cvi import *
+from models.similarity import similar_players  # like-for-like search (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
     engine_value_eur_frame, projected_eur_interval,
@@ -8707,12 +8821,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if st.session_state.nav_to_profile:
         st.session_state.current_page = 'Player Profile'
         st.session_state.nav_to_profile = False
+        # nav_league: the similar-players table spans both leagues, so a
+        # Campeonato neighbour must open in Campeonato — the season label
+        # alone would land in the CURRENT league (set_context writes the
+        # season into that league's key).
+        _nav_league = st.session_state.pop('nav_league', None)
+        if _nav_league not in context_bar.LEAGUE_OPTIONS:
+            _nav_league = None
         if st.session_state.get('nav_has_season', False):
             _nav_sid = st.session_state.get('nav_season_id')
-            context_bar.set_context(season=(
+            context_bar.set_context(league=_nav_league, season=(
                 context_bar.ALL_SEASONS if _nav_sid is None else SEASON_ID_MAP.get(_nav_sid, context_bar.ALL_SEASONS)))
             st.session_state.nav_season_id = None
             st.session_state.nav_has_season = False
+        elif _nav_league:
+            context_bar.set_context(league=_nav_league)
 
     ANALYSIS_OPTIONS = navigation.ALL_PAGES
 
