@@ -214,7 +214,10 @@ zero-size placement when the cursor sat on the bottom margin, 2026-09).
 
 ## Tests (run before pushing; CI gates the deploy on them)
 
-`python -m pytest tests -v`. The Space pins Streamlit 1.50.0 (README
+`python -m pytest tests -v`. CI runs PYTHON 3.11 (the Space too) while
+the local base env is 3.13: never nest an f-string's own quote inside its
+braces (legal from 3.12 only) — `tests/test_py311_syntax.py` scans for it.
+The Space pins Streamlit 1.50.0 (README
 `sdk_version`, mirrored in deploy_to_hf.yml's smoke job) — the same version
 as the local base env. It was 1.41 until 2026-09: 1.41 measured a Plotly
 chart's container once at first render and never again, leaving every

@@ -205,6 +205,7 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
             if sa.get('top_k_share') is not None:
                 m[2].metric("Top 10 sharing the style label", f"{sa['top_k_share']:.0%}",
                             help=f"Pool share (chance) {sa.get('chance', 0):.0%}. The style label is not in the vector.")
+        _self_rate = (f"{sm['top_k_rate']:.0%}" if sm.get('top_k_rate') is not None else 'well under half')
         st.caption(
             f"Pool: {v.get('n_rows', len(pool.meta)):,} player-seasons, {v.get('n_players', 0):,} players, "
             f"{v.get('n_seasons', pool.n_seasons)} seasons; spatial scalars cover "
@@ -212,6 +213,5 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
             f"bucket is the first position a player was seen in, so a converted player sits with his "
             f"old peers; Liga 3 and Campeonato rows are pooled without a tier adjustment (use the "
             f"League filter and the rating column); neighbour sets are noisy at this sample size — a "
-            f"player's own other season makes his top 10 "
-            f"{(f'{sm['top_k_rate']:.0%}' if sm.get('top_k_rate') is not None else 'well under half')} "
+            f"player's own other season makes his top 10 {_self_rate} "
             f"of the time — so read the shared traits, not the rank.")
