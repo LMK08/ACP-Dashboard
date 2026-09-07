@@ -3154,6 +3154,7 @@ INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled pa
 # the ~12 call sites below are unchanged. Keep model logic THERE, not here.
 from models.value.cvi import *
 from models.similarity import similar_players  # like-for-like search (pure)
+from models.strength import sos as sos_model  # strength-of-schedule adjustment (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
     engine_value_eur_frame, projected_eur_interval,
@@ -6621,57 +6622,36 @@ def calculate_rolling_team_strength(season_events_df, matches_summary_df, season
 
 
 # --- NEW FUNCTION: SOS-Adjusted Team Strength ---
+SOS_CACHE_VERSION = 'v2'  # v2 (2026-09): factors credit tough schedules; v1 had them inverted
+
+
 @st.cache_data
 def calculate_sos_adjusted_strength(rolling_strength_df, team_strength_df, season_id=None):
-    """SOS-adjust team strength ratings.
+    """SOS-adjust team strength ratings (cached wrapper over models.strength.sos).
     Returns DataFrame (index=team): raw_att, raw_def, avg_opp_att, avg_opp_def,
-                                     sos_att, sos_def, sos_factor
+                                     matches_with_opp_data, sos_att_factor,
+                                     sos_def_factor, sos_att, sos_def, sos_factor
+    Direction: attack × (league conceded ÷ opponents' conceded), defence ×
+    (league scored ÷ opponents' scored) from each opponent's PRE-match
+    strength — a tough schedule is credited. sos_factor > 1 = tougher than
+    average. The disk cache is versioned (SOS_CACHE_VERSION) so parquets
+    written by the pre-2026-09 inverted formula are never served; the boot
+    precompute drops the current seasons' rolling/SOS caches alongside
+    team_strength so the SOS columns cannot go stale next to fresh raw ones.
     """
     if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'sos_strength_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'sos_strength_{SOS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
             return pd.read_parquet(cache_path)
 
-    if rolling_strength_df.empty or team_strength_df.empty:
+    result = sos_model.sos_adjust(rolling_strength_df, team_strength_df)
+    if result.empty:
         return pd.DataFrame()
-
-    # League averages from end-of-season team strength
-    league_avg_att = max(team_strength_df['Attacking Strength'].mean(), 0.01)
-    league_avg_def = max(team_strength_df['Defending Strength'].mean(), 0.01)
-
-    # For each match, find opponent's pre-match strength
-    # rolling_strength_df has one row per (matchId, team) — merge to find opponent
-    match_teams = rolling_strength_df[['matchId', 'team', 'att_strength', 'def_strength']].copy()
-    # Self-join: for each (matchId, team), find the other team in the same match
-    opp = match_teams.merge(match_teams, on='matchId', suffixes=('', '_opp'))
-    opp = opp[opp['team'] != opp['team_opp']]
-
-    # Average opponent strength faced by each team (only where opponent had prior data)
-    opp_valid = opp.dropna(subset=['att_strength_opp', 'def_strength_opp'])
-    avg_opp = opp_valid.groupby('team').agg(
-        avg_opp_att=('att_strength_opp', 'mean'),
-        avg_opp_def=('def_strength_opp', 'mean'),
-        matches_with_opp_data=('att_strength_opp', 'count')
-    )
-
-    # Build result
-    result = team_strength_df[['Attacking Strength', 'Defending Strength']].copy()
-    result.columns = ['raw_att', 'raw_def']
-    result = result.join(avg_opp, how='left')
-
-    # SOS adjustment — teams with < 3 matches with opponent data fall back to raw
-    result['sos_att_factor'] = result['avg_opp_def'] / league_avg_def
-    result['sos_def_factor'] = result['avg_opp_att'] / league_avg_att
-
-    has_enough = result['matches_with_opp_data'].fillna(0) >= 3
-    result['sos_att'] = np.where(has_enough, result['raw_att'] * result['sos_att_factor'], result['raw_att'])
-    result['sos_def'] = np.where(has_enough, result['raw_def'] * result['sos_def_factor'], result['raw_def'])
-    result['sos_factor'] = np.where(has_enough, (result['sos_att_factor'] + result['sos_def_factor']) / 2, np.nan)
 
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
         try:
-            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'sos_strength_{season_id}.parquet'))
+            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'sos_strength_{SOS_CACHE_VERSION}_{season_id}.parquet'))
         except Exception:
             pass
 
@@ -8861,7 +8841,11 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     _stale = [f'player_stats_{STATS_CACHE_VERSION}_{_scope}.parquet',
                               f'player_percentiles_{STATS_CACHE_VERSION}_{_scope}.parquet']
                     if _sid is not None:
-                        _stale.append(f'team_strength_{_sid}.parquet')
+                        # All three team-strength caches are keyed on season only
+                        # and go stale together as matches accrue.
+                        _stale += [f'team_strength_{_sid}.parquet',
+                                   f'rolling_strength_{_sid}.parquet',
+                                   f'sos_strength_{SOS_CACHE_VERSION}_{_sid}.parquet']
                     for _fname in _stale:
                         _fp = os.path.join(STATS_CACHE_DIR, _fname)
                         if os.path.exists(_fp):

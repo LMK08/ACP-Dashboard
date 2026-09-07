@@ -214,6 +214,14 @@ def render():
                 ratings_combined = ratings_combined.sort_values('Overall', ascending=False).reset_index(drop=True)
                 ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
                 st.dataframe(ratings_combined, use_container_width=True, hide_index=True, column_config=auto_column_config(ratings_combined))
+                st.caption(
+                    "Att / Def Strength = 30% goals + 70% xG per match (Def: lower is better). "
+                    "SOS columns credit a tough schedule: attack × (league conceded ÷ opponents' conceded), "
+                    "defence × (league scored ÷ opponents' scored), using each opponent's pre-match strength; "
+                    "SOS Factor > 1 = tougher-than-average schedule. Switches on after 3 matches against "
+                    "opponents with prior data, so it is noisy early in a season. "
+                    "Overall = SOS Att − SOS Def rescaled 0–100 across the rows shown."
+                )
             else:
                 st.info("No team strength data available for selected seasons.")
 
