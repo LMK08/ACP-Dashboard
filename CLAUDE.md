@@ -164,7 +164,15 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   change; never present rank 1 as 'the replacement' — the section shows
   shared traits and the validation numbers; 'Compare on radar' only for a
   neighbour in the query's own league AND season (the radars are that
-  scope's percentiles). Bridges:
+  scope's percentiles). A season below the floor (a new signing) is
+  searched through `query_vector` / `neighbours_for_row` — the page's
+  stats row placed on the bucket's percentile scale, with the spatial
+  scalars from `pool.spatial` — always behind a 'partial profile' warning,
+  and never added to the pool. 'Add to Shadow Team' queues
+  `shadow_pending_adds`; views/shadow_team.py applies the queue BEFORE its
+  multiselects draw, resolving playerIds against its own scope (an
+  out-of-scope player stays queued with a warning — a multiselect value
+  must be one of its options). Bridges:
   a row click → profile (nav_to_profile keys), 'Compare on radar' →
   `navigation.go_to('Player Comparison', compare_seed_a=, compare_seed_b=)`
   (the Comparison selectors are keyed `player_comparison_a/_template/_b`

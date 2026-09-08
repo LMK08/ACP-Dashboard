@@ -53,7 +53,40 @@ def can_compare(query, record):
         return False
 
 
-def render(app, player_id, selected_season_id, key='sim', current_pos=None):
+def queue_shadow_add(slot, record):
+    """Queue a neighbour for a Shadow Team slot. The Shadow Team page applies
+    the queue at the top of its next render, BEFORE its multiselects exist
+    (a widget key cannot be written after the widget draws), resolving the
+    playerId against its own league/season list — a player outside that
+    scope stays queued with a message rather than breaking the widget."""
+    item = {'slot': str(slot), 'playerId': int(record['playerId']),
+            'playerName': str(record.get('playerName', record['playerId'])),
+            'teamName': str(record.get('teamName', '')),
+            'seasonId': (int(record['seasonId']) if pd.notna(record.get('seasonId')) else None),
+            'competitionId': (int(record['competitionId']) if pd.notna(record.get('competitionId')) else None)}
+    queue = [q for q in (st.session_state.get('shadow_pending_adds') or [])
+             if not (q['slot'] == item['slot'] and q['playerId'] == item['playerId'])]
+    queue.append(item)
+    st.session_state['shadow_pending_adds'] = queue
+    return item
+
+
+def _partial_row(pool, stats_row, player_id, season_id):
+    """A sub-floor season as a raw feature row: the page's stats row plus
+    the roles layer's spatial scalars for that (player, season) if present."""
+    raw = dict(stats_row) if stats_row is not None else {}
+    if pool.spatial is not None and season_id is not None:
+        try:
+            sp_row = pool.spatial.loc[(int(player_id), int(season_id))]
+            for c in sp.SPATIAL_FEATURES:
+                if c in sp_row.index:
+                    raw[c] = sp_row[c]
+        except KeyError:
+            pass
+    return raw
+
+
+def render(app, player_id, selected_season_id, key='sim', current_pos=None, stats_row=None):
     sig = app.similarity_cache_signature()
     pool = app.load_similarity_pool(sig)
     if pool.meta.empty:
@@ -68,17 +101,54 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
                 "set is different from outfield players'.")
         return
     qi = query_row(pool, player_id, selected_season_id)
-    if qi is None:
+    # A season below the minutes floor (this season's new signings): the
+    # page's stats row is placed on the bucket's percentile scale and
+    # ranked against the pool — indicative, flagged as such, never a pool row.
+    _row_mins = None
+    if stats_row is not None:
+        try:
+            _row_mins = float(stats_row.get('totalMinutes'))
+        except (TypeError, ValueError):
+            _row_mins = None
+    partial_possible = (stats_row is not None and isinstance(selected_season_id, int)
+                        and _row_mins is not None and 0 < _row_mins < sp.POOL_MIN_MINUTES
+                        and sp.bucket_of(stats_row.get('primaryPosition')) is not None
+                        and (qi is None or int(pool.meta.at[qi, 'seasonId']) != int(selected_season_id)))
+    use_partial = False
+    if partial_possible and qi is not None:
+        use_partial = st.toggle(
+            f"Search on this season's partial profile ({int(_row_mins)} min, below the "
+            f"{sp.POOL_MIN_MINUTES}-minute floor) instead of his last full season",
+            value=False, key=f'{key}_partial')
+    elif partial_possible:
+        use_partial = True
+    if qi is None and not use_partial:
         st.info(f"No qualifying season for this player (needs {sp.POOL_MIN_MINUTES} minutes "
                 f"in one season) — similarity hidden.")
         return
-    q = pool.meta.iloc[qi]
-    st.caption(
-        f"Profile searched: **{_season_label(q['seasonId'])}** season "
-        f"({int(q['totalMinutes']):,} min at {q['teamName']}) · position bucket **{q['bucket']}** · "
-        f"pool: {len(pool.meta):,} player-seasons from {pool.n_seasons} cached seasons, both leagues, "
-        f"≥ {sp.POOL_MIN_MINUTES} min. Neighbours are like-for-like in what they do and how well, "
-        f"not a recommendation — open a profile before judging.")
+    pool_note = (f"pool: {len(pool.meta):,} player-seasons from {pool.n_seasons} cached seasons, both "
+                 f"leagues, ≥ {sp.POOL_MIN_MINUTES} min. Neighbours are like-for-like in what they do "
+                 f"and how well, not a recommendation — open a profile before judging.")
+    if use_partial:
+        q_bucket = sp.bucket_of(stats_row.get('primaryPosition'))
+        # the page frame is fillna(0): a 0 rating means 'unrated' (same rule
+        # as the pool), so the quality filter shows its 'ignored' caption
+        _r_abs = pd.to_numeric(pd.Series([stats_row.get('ACP Rating (abs)')]), errors='coerce').iloc[0]
+        q = {'seasonId': int(selected_season_id), 'competitionId': None, 'bucket': q_bucket,
+             'totalMinutes': int(_row_mins), 'teamName': stats_row.get('teamName', ''),
+             'ACP Rating (abs)': (None if (pd.isna(_r_abs) or float(_r_abs) == 0.0) else float(_r_abs))}
+        st.warning(
+            f"Partial profile: **{_season_label(selected_season_id)}** season, only "
+            f"{int(_row_mins)} minutes — below the {sp.POOL_MIN_MINUTES}-minute floor the pool "
+            f"uses, so his percentiles are noisy. Treat the list as indicative until he passes "
+            f"{sp.POOL_MIN_MINUTES} minutes.")
+        st.caption(f"Position bucket **{q_bucket}** · {pool_note}")
+    else:
+        q = pool.meta.iloc[qi]
+        st.caption(
+            f"Profile searched: **{_season_label(q['seasonId'])}** season "
+            f"({int(q['totalMinutes']):,} min at {q['teamName']}) · position bucket **{q['bucket']}** · "
+            + pool_note)
 
     # two control rows: seven widgets in one row wrap on a laptop width
     c = st.columns([1.0, 1.5, 1.2, 1.0])
@@ -111,16 +181,23 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
             rmin = float(_q_abs)
 
     ages = app.player_ages()
-    nb = sp.neighbours(
-        pool, int(player_id), season_id=int(q['seasonId']), k=int(k),
-        profile='latest' if profile.startswith('Latest') else 'any',
-        league=_LEAGUE_ID.get(league), min_minutes=int(min_minutes),
-        exclude_team=(app.OUR_TEAM if exclude_own else None),
-        max_age=(float(max_age) if max_age else None), ages=ages,
-        rating_abs_min=rmin, rating_abs_max=rmax)
+    _filters = dict(k=int(k), profile='latest' if profile.startswith('Latest') else 'any',
+                    league=_LEAGUE_ID.get(league), min_minutes=int(min_minutes),
+                    exclude_team=(app.OUR_TEAM if exclude_own else None),
+                    max_age=(float(max_age) if max_age else None), ages=ages,
+                    rating_abs_min=rmin, rating_abs_max=rmax)
+    q_vec = None
+    if use_partial:
+        raw = _partial_row(pool, stats_row, player_id, selected_season_id)
+        nb, q_vec = sp.neighbours_for_row(pool, raw, q['bucket'], int(player_id), **_filters)
+    else:
+        nb = sp.neighbours(pool, int(player_id), season_id=int(q['seasonId']), **_filters)
     if nb.empty:
         st.info("No candidates match these filters.")
         return
+
+    def _query_ref(r):
+        return q_vec if q_vec is not None else int(r['query_row'])
     role_map = {}
     try:
         role_map = app.get_career_engine_role_map() or {}
@@ -140,7 +217,7 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
         'Career role': [role_map.get(int(r['playerId']), '—') for r in records],
         'ACP Rating (abs)': [(round(float(r['ACP Rating (abs)']), 0) if 'ACP Rating (abs)' in r and pd.notna(r['ACP Rating (abs)']) else None) for r in records],
         'Proj. value': [(format_eur_short(r['Engine Value EUR']) if 'Engine Value EUR' in r and pd.notna(r['Engine Value EUR']) else '—') for r in records],
-        'Similar because': ['; '.join(sp.explain(pool, int(r['query_row']), int(r['_row']), n_alike=2)['alike']) or '—'
+        'Similar because': ['; '.join(sp.explain(pool, _query_ref(r), int(r['_row']), n_alike=2)['alike']) or '—'
                             for r in records],
     })
     event = st.dataframe(
@@ -163,7 +240,7 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
     sel = event.selection.rows if event and event.selection else []
     if sel:
         r = records[sel[0]]
-        ex = sp.explain(pool, int(r['query_row']), int(r['_row']), n_alike=4, n_differ=3)
+        ex = sp.explain(pool, _query_ref(r), int(r['_row']), n_alike=4, n_differ=3)
         st.markdown(f"**{r['playerName']}** ({r['teamName']}, {_season_label(r['seasonId'])}) — "
                     f"similarity {float(r['similarity']):.0f}, closer than "
                     f"{min(99.9, float(r['closer_than_pct'])):.1f}% of {q['bucket']} pairs.")
@@ -175,13 +252,25 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None):
             for k_, v_ in profile_bridge_state(r).items():
                 st.session_state[k_] = v_
             st.rerun()
-        if can_compare(q, r):
+        if not use_partial and can_compare(q, r):
             if b2.button("Compare on radar", key=f'{key}_compare'):
                 navigation.go_to('Player Comparison', compare_seed_a=int(player_id),
                                  compare_seed_b=int(r['playerId']))
         else:
             b2.caption("Compare on radar needs both players in the same league and season "
                        "(the radar percentiles are that scope's).")
+        # Send to a Shadow Team slot (queued; applied when that page draws)
+        _formations = getattr(app, 'FORMATION_COORDS', {}) or {}
+        _formation = st.session_state.get('shadow_formation') or (next(iter(_formations)) if _formations else None)
+        _slots = list((_formations.get(_formation) or {}).get('positions', []))
+        if _slots:
+            s1, s2 = st.columns([1, 1])
+            slot = s1.selectbox("Shadow Team slot", _slots, key=f'{key}_slot',
+                                help=f"Slots of the Shadow Team's current formation ({_formation}).")
+            if s2.button(f"Add to Shadow Team ({slot})", key=f'{key}_shadow_add'):
+                item = queue_shadow_add(slot, r)
+                st.success(f"Queued {item['playerName']} for the {slot} slot — open Shadow Team "
+                           f"(same league and season as his row) to see him there.")
 
     with st.expander("How similarity is measured", expanded=False):
         v = app.similarity_validation(sig) or {}

@@ -76,8 +76,42 @@ def render():
 
     # --- Sidebar Controls ---
     st.sidebar.subheader("Formation")
+    # Load Team asks for a formation from BELOW this widget; a widget key
+    # cannot be written after the widget exists in a run, so it queues the
+    # value and we apply it here, before the selectbox draws.
+    _pending_formation = st.session_state.pop('shadow_pending_formation', None)
+    if _pending_formation in FORMATION_COORDS:
+        st.session_state['shadow_formation'] = _pending_formation
     formation_key = st.sidebar.selectbox("Select Formation", list(FORMATION_COORDS.keys()), key="shadow_formation")
     formation_data = FORMATION_COORDS[formation_key]
+
+    # Players queued from the Similar Players section ('Add to Shadow Team').
+    # Applied HERE, before the slot multiselects exist in this run: a
+    # multiselect's key can only be written before the widget draws, and its
+    # value must be one of its options — so a queued player is resolved
+    # against THIS page's league/season list and stays queued (with a
+    # message) when he is not in it.
+    _queued = st.session_state.get('shadow_pending_adds') or []
+    if _queued:
+        _still = []
+        _pid_to_key = dict(zip(player_list_df['playerId'].astype(int), player_list_df['display_key']))
+        for _item in _queued:
+            _dk = _pid_to_key.get(int(_item['playerId']))
+            if _dk is None or _item['slot'] not in formation_data['positions']:
+                _still.append(_item)
+                continue
+            _k = f"shadow_players_{_item['slot']}"
+            _cur = list(st.session_state.get(_k, []))
+            if _dk not in _cur:
+                _cur.append(_dk)
+                st.session_state[_k] = _cur
+            st.sidebar.success(f"Added {_item['playerName']} to {_item['slot']}")
+        st.session_state['shadow_pending_adds'] = _still
+        if _still:
+            st.sidebar.warning(
+                "Queued but not in this league/season (or slot not in this formation): "
+                + ", ".join(f"{i['playerName']} → {i['slot']}" for i in _still)
+                + ". Switch the context bar to their season to add them.")
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("Save / Load")
@@ -111,7 +145,7 @@ def render():
         load_name = st.sidebar.selectbox("Load Saved Team", saved_names, key="shadow_load_select")
         if st.sidebar.button("Load Team", key="shadow_load_btn"):
             saved = st.session_state.shadow_teams[load_name]
-            st.session_state['shadow_formation'] = saved['formation']
+            st.session_state['shadow_pending_formation'] = saved['formation']
             for slot, player_list in saved['players'].items():
                 st.session_state[f"shadow_players_{slot}"] = player_list
             for slot, slot_tags in saved['tags'].items():

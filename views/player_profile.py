@@ -2602,4 +2602,4 @@ def render():
         import similar_players_ui
         st.subheader("Similar Players")
         similar_players_ui.render(app, int(selected_player_id), selected_season_id, key='sim',
-                                  current_pos=current_pos)
+                                  current_pos=current_pos, stats_row=player_per_90_stats)

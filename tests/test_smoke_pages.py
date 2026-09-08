@@ -321,6 +321,53 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     assert not _problems(app), _problems(app)
 
 
+def test_shadow_queue_adds_in_scope_players_and_keeps_others(app):
+    """A neighbour queued from the Similar Players section lands in the
+    Shadow Team slot's multiselect when he is in that page's scope; one
+    outside it stays queued with a warning instead of breaking the widget."""
+    import pyarrow.parquet as pq
+    import league_config
+    _open_page(app, 'Shadow Team')
+    season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
+    sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
+                if v == season_label), None)
+    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v14_{sid}.parquet')
+    if sid is None or not os.path.exists(cache):
+        pytest.skip(f'percentiles cache for {season_label} not present')
+    t = pq.read_table(cache, columns=['playerId', 'playerName', 'totalMinutes']).to_pandas()
+    top = t.sort_values('totalMinutes', ascending=False).iloc[0]
+    # first slot of the current formation, read from the page's own multiselects
+    slot = [m for m in app.multiselect if m.label == 'Players'][0].key.replace('shadow_players_', '')
+    app.session_state['shadow_pending_adds'] = [
+        {'slot': slot, 'playerId': int(top['playerId']), 'playerName': str(top['playerName']),
+         'teamName': '', 'seasonId': sid, 'competitionId': 43324},
+        {'slot': slot, 'playerId': 1, 'playerName': 'Nobody', 'teamName': '', 'seasonId': sid,
+         'competitionId': 43324},
+    ]
+    app.run()
+    assert not _problems(app), _problems(app)
+    ms = [m for m in app.multiselect if m.key == f'shadow_players_{slot}'][0]
+    assert any(str(top['playerName']) in v for v in ms.value), (ms.value, top['playerName'])
+    assert any('Nobody' in str(w.value) for w in app.sidebar.warning)
+    assert [i['playerId'] for i in app.session_state['shadow_pending_adds']] == [1]
+    app.session_state['shadow_pending_adds'] = []
+    app.session_state[f'shadow_players_{slot}'] = []
+    app.run()
+    # Load Team queues its formation (a widget key cannot be written after
+    # the widget draws): saving then loading must not raise
+    name = [t for t in app.sidebar.text_input if 'name' in t.label.lower()]
+    if name:
+        name[0].set_value('smoke-team').run()
+        save = [b for b in app.sidebar.button if 'Save' in b.label]
+        if save:
+            save[0].click().run()
+            load = [b for b in app.sidebar.button if b.label == 'Load Team']
+            if load:
+                load[0].click().run()
+                app.run()
+                assert not _problems(app), _problems(app)
+
+
 @pytest.mark.parametrize('page', EMPTY_SEASON_PAGES)
 def test_empty_season_degrades_gracefully(app, page):
     """Forcing the newest season (fixtures, few or no events) must give a

@@ -199,3 +199,55 @@ def test_ui_bridge_helpers_carry_league_and_gate_compare():
     assert not ui.can_compare(q, {'competitionId': 702, 'seasonId': 191779})
     assert not ui.can_compare(q, {'competitionId': 43324, 'seasonId': 190090})
     assert not ui.can_compare(q, {'competitionId': None, 'seasonId': 191782})
+
+
+# --- sub-floor (partial-season) queries ---------------------------------------------
+def test_query_vector_places_an_outside_row_on_the_pool_scale():
+    pool = _pool()
+    a = pool.index_of(1, 191782)
+    rows, X = pool.rows['ST'], pool.X['ST']
+    pool_vec = X[int(np.where(rows == a)[0][0])]
+    # the same raw row placed from outside lands (almost) where the pool row is
+    raw = _frame([{'pid': 1, 'vals': {'Shots': 5, 'npxG': 0.6, 'Aerial duels': 8}}], 191782).iloc[0].to_dict()
+    vec = sp.query_vector(pool, 'ST', raw)
+    assert vec.shape == pool_vec.shape
+    assert np.abs(vec - pool_vec).max() < 1.0 / len(rows)
+    # missing / non-numeric features fall to the bucket-typical 0.5
+    vec2 = sp.query_vector(pool, 'ST', {'Shots': 'x'})
+    assert np.allclose(vec2 / np.sqrt(pool.weights), 0.5)
+    assert sp.query_vector(pool, 'GK', raw) is None
+
+
+def test_neighbours_for_row_ranks_like_the_pool_and_explains_with_the_vector():
+    pool = _pool()
+    raw = _frame([{'pid': 99, 'vals': {'Shots': 4.9, 'npxG': 0.58, 'Aerial duels': 7.8}}], 192831).iloc[0].to_dict()
+    nb, vec = sp.neighbours_for_row(pool, raw, 'ST', 99, k=3)
+    assert set(nb['playerName'].tolist()[:2]) == {'A', 'B'}      # the two lookalikes first (B is nearer)
+    assert (nb['query_row'] == -1).all() and 99 not in nb['playerId'].tolist()
+    ex = sp.explain(pool, vec, int(nb['_row'].iloc[0]))
+    assert ex['alike'] and all(('high, top' in t) or ('low, bottom' in t) for t in ex['alike'])
+    # the player's OWN pool rows are excluded even for an outside query
+    nb2, _ = sp.neighbours_for_row(pool, raw, 'ST', 1, k=10)
+    assert 1 not in nb2['playerId'].tolist()
+
+
+def test_spatial_store_keeps_sub_floor_seasons():
+    s1 = _frame([{'pid': 1}, {'pid': 2, 'mins': 100}], 191782)
+    rf = pd.DataFrame({'playerId': [1, 2], 'seasonId': [191782, 191782],
+                       'def_share': [0.4, 0.6], 'x_ip': [50, 60], 'x_op': [40, 45],
+                       'yf_ip': [30, 20], 'yf_op': [30, 25], 'box_share_ip': [0.1, 0.2]})
+    pool = sp.build_pool({191782: s1}, rf)
+    assert len(pool.meta) == 1                                    # pid 2 below the floor
+    assert (2, 191782) in pool.spatial.index                      # but his scalars are kept for a partial query
+
+
+def test_queue_shadow_add_dedupes_per_slot():
+    import streamlit as st
+    import similar_players_ui as ui
+    st.session_state.clear() if hasattr(st.session_state, 'clear') else None
+    rec = {'playerId': 5, 'playerName': 'X', 'teamName': 'T', 'seasonId': 191782, 'competitionId': 43324}
+    ui.queue_shadow_add('LCB', rec)
+    ui.queue_shadow_add('LCB', rec)
+    ui.queue_shadow_add('RCB', rec)
+    q = st.session_state['shadow_pending_adds']
+    assert [(i['slot'], i['playerId']) for i in q] == [('LCB', 5), ('RCB', 5)]

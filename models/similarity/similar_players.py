@@ -55,7 +55,8 @@ from models.value.cvi import _cvi_position_group
 
 __all__ = ['SIM_VERSION', 'POOL_MIN_MINUTES', 'STYLE_FEATURES', 'QUALITY_FEATURES',
            'SPATIAL_FEATURES', 'FEATURE_LABELS', 'Pool', 'build_pool', 'neighbours',
-           'explain', 'validation', 'bucket_of', 'season_year']
+           'neighbours_for_row', 'query_vector', 'explain', 'validation', 'bucket_of',
+           'season_year']
 
 SIM_VERSION = 'sim_v1'
 POOL_MIN_MINUTES = 500
@@ -140,6 +141,8 @@ class Pool:
     weights: np.ndarray = None
     ecdf: dict = field(default_factory=dict)  # bucket -> sorted sample of pairwise distances
     median_d: dict = field(default_factory=dict)  # bucket -> median pairwise distance
+    sorted_vals: dict = field(default_factory=dict)  # bucket -> [sorted non-NaN values per feature]
+    spatial: pd.DataFrame = None                # (playerId, seasonId) -> SPATIAL scalars, ALL rows
     n_seasons: int = 0
     spatial_coverage: float = 0.0
     error: str = ''                            # set when the build failed (UI says so)
@@ -187,12 +190,17 @@ def build_pool(frames_by_season, role_features=None, min_minutes=POOL_MIN_MINUTE
     df['bucket'] = df['primaryPosition'].map(bucket_of)
     df = df[df['bucket'].notna()].drop_duplicates(['playerId', 'seasonId']).reset_index(drop=True)
     spatial_cov = 0.0
+    spatial_store = None
     if role_features is not None and len(role_features):
         rf = role_features[['playerId', 'seasonId'] + [c for c in SPATIAL_FEATURES if c in role_features.columns]].copy()
         rf['playerId'] = pd.to_numeric(rf['playerId'], errors='coerce')
         rf = rf[rf['playerId'].notna() & (rf['playerId'] > 0)]
         rf['playerId'] = rf['playerId'].astype(int)
+        rf['seasonId'] = pd.to_numeric(rf['seasonId'], errors='coerce')
+        rf = rf[rf['seasonId'].notna()]
+        rf['seasonId'] = rf['seasonId'].astype(int)
         rf = rf.drop_duplicates(['playerId', 'seasonId'])
+        spatial_store = rf.set_index(['playerId', 'seasonId'])   # every row, incl. sub-floor seasons
         df = df.merge(rf, on=['playerId', 'seasonId'], how='left')
         if SPATIAL_FEATURES[0] in df.columns:
             spatial_cov = float(df[SPATIAL_FEATURES[0]].notna().mean())
@@ -208,7 +216,8 @@ def build_pool(frames_by_season, role_features=None, min_minutes=POOL_MIN_MINUTE
         if c in meta.columns:
             meta[c] = pd.to_numeric(meta[c], errors='coerce').replace(0, np.nan)
     pool = Pool(meta=meta, features=features, weights=weights,
-                n_seasons=int(df['seasonId'].nunique()), spatial_coverage=spatial_cov)
+                n_seasons=int(df['seasonId'].nunique()), spatial_coverage=spatial_cov,
+                spatial=spatial_store)
     rng = np.random.default_rng(0)
     for b, idx in df.groupby('bucket').indices.items():
         sub = df.iloc[idx][features].apply(pd.to_numeric, errors='coerce')
@@ -216,6 +225,9 @@ def build_pool(frames_by_season, role_features=None, min_minutes=POOL_MIN_MINUTE
         X = P.values * np.sqrt(weights)
         pool.rows[b] = np.asarray(idx)
         pool.X[b] = X
+        # sorted raw values per feature: lets an OUTSIDE row (a sub-floor
+        # season) be placed on the same percentile scale (query_vector)
+        pool.sorted_vals[b] = [np.sort(sub[c].dropna().to_numpy(dtype=float)) for c in features]
         n = len(idx)
         if n >= 3:
             samp = rng.choice(n, size=min(n, ECDF_SAMPLE), replace=False)
@@ -225,6 +237,35 @@ def build_pool(frames_by_season, role_features=None, min_minutes=POOL_MIN_MINUTE
             pool.ecdf[b] = tri
             pool.median_d[b] = float(np.median(tri))
     return pool
+
+
+def query_vector(pool, bucket, raw_row):
+    """Weighted percentile vector for a row that is NOT in the pool (e.g. a
+    player's current season below the minutes floor): each feature is
+    placed on that bucket's percentile scale — share of pool values below
+    it plus half the ties, on the (n + 1) scale so an identical value lands
+    where the pool row does. Missing features -> 0.5 (bucket-typical).
+    raw_row: Mapping feature -> value (a stats-frame row; spatial scalars
+    may be added by the caller from pool.spatial)."""
+    if bucket not in pool.sorted_vals:
+        return None
+    out = np.full(len(pool.features), 0.5, dtype=float)
+    for j, f in enumerate(pool.features):
+        v = raw_row.get(f) if hasattr(raw_row, 'get') else None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(v):
+            continue
+        col = pool.sorted_vals[bucket][j]
+        n = len(col)
+        if n == 0:
+            continue
+        lo = int(np.searchsorted(col, v, side='left'))
+        hi = int(np.searchsorted(col, v, side='right'))
+        out[j] = (lo + 0.5 * (hi - lo) + 0.5) / (n + 1)
+    return out * np.sqrt(pool.weights)
 
 
 def _score(pool, bucket, d):
@@ -267,7 +308,28 @@ def neighbours(pool, player_id, season_id=None, k=10, profile='latest', league=N
     b = pool.meta.at[qi, 'bucket']
     rows, X = pool.rows[b], pool.X[b]
     qpos = int(np.where(rows == qi)[0][0])
-    d = np.sqrt(((X - X[qpos]) ** 2).sum(-1))
+    return _rank(pool, b, X[qpos], int(player_id), qi, k=k, profile=profile, league=league,
+                 min_minutes=min_minutes, min_year=min_year, exclude_team=exclude_team,
+                 max_age=max_age, ages=ages, exclude_player_ids=exclude_player_ids,
+                 rating_abs_min=rating_abs_min, rating_abs_max=rating_abs_max)
+
+
+def neighbours_for_row(pool, raw_row, bucket, player_id, **kwargs):
+    """neighbours() for a query that is not a pool row — a season below the
+    minutes floor — placed on the bucket's percentile scale by query_vector.
+    Returns (table, query_vec); the table's query_row is -1 (use the vector
+    with explain())."""
+    vec = query_vector(pool, bucket, raw_row)
+    if vec is None:
+        return pd.DataFrame(), None
+    return _rank(pool, bucket, vec, int(player_id), -1, **kwargs), vec
+
+
+def _rank(pool, b, qvec, player_id, qi, k=10, profile='latest', league=None, min_minutes=None,
+          min_year=None, exclude_team=None, max_age=None, ages=None, exclude_player_ids=(),
+          rating_abs_min=None, rating_abs_max=None):
+    rows, X = pool.rows[b], pool.X[b]
+    d = np.sqrt(((X - qvec) ** 2).sum(-1))
     cand = pool.meta.iloc[rows].copy()
     cand['distance'] = d
     cand['similarity'] = _score(pool, b, d)
@@ -311,16 +373,20 @@ def neighbours(pool, player_id, season_id=None, k=10, profile='latest', league=N
 
 
 def explain(pool, row_a, row_b, n_alike=3, n_differ=2):
-    """Plain-language shared traits and differences for two pool rows
-    (meta positions). Percentiles are the within-bucket ones the distance
-    used, so the sentence is literally what drove it."""
-    b = pool.meta.at[row_a, 'bucket']
-    if b != pool.meta.at[row_b, 'bucket']:
-        return {'alike': [], 'differs': []}
+    """Plain-language shared traits and differences between a query and a
+    pool row (meta positions). row_a may also be a weighted query vector
+    from query_vector() (a sub-floor season). Percentiles are the
+    within-bucket ones the distance used, so the sentence is literally what
+    drove it."""
+    b = pool.meta.at[row_b, 'bucket']
     rows, X = pool.rows[b], pool.X[b]
-    P = X / np.sqrt(pool.weights)     # back to raw percentiles
-    pa = P[int(np.where(rows == row_a)[0][0])]
-    pb = P[int(np.where(rows == row_b)[0][0])]
+    if isinstance(row_a, np.ndarray):
+        pa = row_a / np.sqrt(pool.weights)
+    else:
+        if b != pool.meta.at[row_a, 'bucket']:
+            return {'alike': [], 'differs': []}
+        pa = X[int(np.where(rows == row_a)[0][0])] / np.sqrt(pool.weights)
+    pb = X[int(np.where(rows == row_b)[0][0])] / np.sqrt(pool.weights)
     alike, differs = [], []
     for j, f in enumerate(pool.features):
         a, c = float(pa[j]), float(pb[j])
