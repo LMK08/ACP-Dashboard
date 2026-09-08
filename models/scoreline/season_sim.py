@@ -103,17 +103,18 @@ def load_params(path=PARAMS_PATH):
 
 def refit(matches_summary_df, params_path=PARAMS_PATH, events_path=None, asof=None):
     """Refit the Dixon-Coles model on every played match in
-    ``matches_summary_df`` with the hyperparameters (time decay xi, shrinkage
-    l2, goals-vs-xG blend mix) chosen by the last build_dc.py backtest and
-    stored in ``params_path``. xG is attached from ``events_path`` when the
-    file exists, so the blend works as tuned; without it the rates fall back
-    to goals. Returns (model, info)."""
-    prior = DixonColes.load(params_path)
+    ``matches_summary_df`` with the settings chosen by the last build_dc.py
+    backtest and stored in ``params_path`` — time decay xi, shrinkage l2,
+    goals-vs-xG blend mix, and the prior the penalty shrinks toward. xG is
+    attached from ``events_path`` when the file exists, so the blend works
+    as tuned; without it the rates fall back to goals. Returns (model, info)."""
+    committed = DixonColes.load(params_path)
     matches = matches_from_summary(matches_summary_df)
     xg_attached = bool(events_path) and os.path.exists(events_path)
     if xg_attached:
         matches = attach_xg(matches, events_path)
-    model = DixonColes.fit(matches, asof=asof, xi=prior.xi, l2=prior.l2, mix=prior.mix)
+    model = DixonColes.fit(matches, asof=asof, xi=committed.xi, l2=committed.l2, mix=committed.mix,
+                           prior=committed.prior)
     info = {
         'refit': True,
         'xg_attached': xg_attached,
@@ -129,6 +130,7 @@ def model_meta(model, info=None):
         'name': 'dixon_coles_v1', 'asof': model.asof, 'n_matches': int(model.n_matches),
         'home_adv': float(model.home_adv), 'rho': float(model.rho),
         'xi': float(model.xi), 'l2': float(model.l2), 'mix': float(model.mix),
+        'prior': getattr(model, 'prior', 'zero'),
         'refit': False, 'xg_attached': False,
     }
     if info:

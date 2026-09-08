@@ -65,9 +65,10 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   promotion-series places, 2 promotion slots, 4 relegation places) — printed
   as a check and asserted in `tests/test_season_sim.py`. Local runs:
   `--no-refit` draws from the committed dc_params.json (never commit a local
-  refit), `--sims 500` for speed. Caveat: a side the fit has barely seen
-  (relegated from Liga 2, say) starts near league average — there is no
-  cross-tier prior in the Dixon-Coles fit.
+  refit), `--sims 500` for speed. Caveat: a side new to the data (relegated
+  from Liga 2, say) starts AT the Liga 3 mean — the fit has no tier above
+  Liga 3 to learn from; a side promoted from the Campeonato starts below it
+  (league-mean prior, 2026-09-08).
 - `team_interactive.py` — Plotly versions of the team visuals both team pages
   show on screen: season shot maps, passing network, rolling xG (the season
   report dot plots were already Plotly). They share their DATA step with the
@@ -89,7 +90,16 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   server-side while its width follows the browser, so wide monitors need
   Huge to fill the width). Pass it to every pitch chart.
 - `models/scoreline/` — the Dixon-Coles scoreline model (`dixon_coles.py`,
-  pure numpy/scipy). `build_dc.py` tunes time decay, shrinkage and the
+  pure numpy/scipy). The penalty shrinks each team toward its OWN league's
+  mean (`prior='league_mean'`, persisted in dc_params.json and read back by
+  simulate_season's refit): with one shared zero centre an average
+  Campeonato side equalled an average Liga 3 side, and clubs promoted from
+  the Campeonato were over-rated by a third of a point per match in their
+  first six Liga 3 matches (2024-26 walk-forward; 0.20 with the league
+  means). The fitted tier gap and that promoted-side calibration live in
+  dc_backtest.json and the Match Predictor's backtest toggle; keep the
+  comparison there whenever the prior changes. An unseen team plays at its
+  league's mean. `build_dc.py` tunes time decay, shrinkage and the
   goals-vs-xG blend the rates are fitted on with a monthly walk-forward
   backtest, then writes `dc_params.json` (what the app loads) and
   `dc_backtest.json` (metrics vs base rate and vs the strength model,
@@ -216,9 +226,9 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   defence parameters (`DixonColes.strength_table` → `scoreline_ui.
   render_strength_table`; Scores × / Concedes × / xGD vs a league-average
   side at a neutral venue, centred on the league's own sides), read from
-  the same `dc_params.json` as the scoreline forecast (one caveat: a team
-  the fit has never seen is shown at the average, while the forecast plays
-  it at zero parameters — the caption says so). Since 2026-09 it replaced
+  the same `dc_params.json` as the scoreline forecast (a team the fit has
+  never seen is shown at the average and played at the league mean in the
+  forecast — the caption says so). Since 2026-09 it replaced
   the per-match xG rates × schedule ratio as the rating: a joint fit with
   shrinkage and time decay is the only one of the two that knows four
   games are not thirty. The per-season rates below are context, behind a

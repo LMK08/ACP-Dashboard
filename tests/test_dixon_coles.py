@@ -145,3 +145,153 @@ def test_strength_table_is_interpretable_and_neutral_for_unseen_teams():
     sub = m.strength_table(teams=m.teams[:3])
     assert set(sub['team']) == set(m.teams[:3]) and sub['xgd_vs_avg'].is_monotonic_decreasing
     assert m.strength_table(teams=[]).empty
+
+
+# ---------------------------------------------------------------------------
+# League-mean prior
+# ---------------------------------------------------------------------------
+def _two_leagues(seed=3, n_per=10, rounds=3, gap_att=0.3, gap_def=0.4, movers=4):
+    """Two leagues with a true tier gap (league 2's sides weaker by gap_att /
+    gap_def); in season 2 `movers` clubs go up and as many league-1 clubs go
+    down. Returns the matches, a DixonColes holding the true parameters, the
+    promoted clubs, the league-1 clubs that stayed, the date season 2 starts,
+    and the true gap between the leagues' season-2 MEMBERSHIP means (attack,
+    defence) — the quantity the league-mean prior estimates (the movers pull
+    the memberships' means toward each other)."""
+    rng = np.random.default_rng(seed)
+    top = [f'T{i:02d}' for i in range(n_per)]
+    low = [f'L{i:02d}' for i in range(n_per)]
+    att = {t: rng.normal(0, 0.25) for t in top + low}
+    dfn = {t: rng.normal(0, 0.25) for t in top + low}
+    for t in low:
+        att[t] -= gap_att
+        dfn[t] -= gap_def
+    rows, day = [], [0]
+
+    def play(teams, league, season):
+        for _ in range(rounds):
+            pairs = [(i, j) for i in teams for j in teams if i != j]
+            rng.shuffle(pairs)   # random fixture order: after k matches each side has played ~2k/n
+            for i, j in pairs:
+                lam = np.exp(0.2 + 0.25 + att[i] - dfn[j])
+                mu = np.exp(0.2 + att[j] - dfn[i])
+                rows.append({'match_id': len(rows), 'home': i, 'away': j, 'hg': rng.poisson(lam), 'ag': rng.poisson(mu),
+                             'date': pd.Timestamp('2024-08-01') + pd.Timedelta(days=day[0]),
+                             'league': league, 'season_id': season})
+                day[0] += 1
+    play(top, 1, 1)
+    play(low, 2, 1)
+    up, down = low[:movers], top[-movers:]
+    season2 = pd.Timestamp('2024-08-01') + pd.Timedelta(days=day[0])
+    league1 = [t for t in top if t not in down] + up
+    league2 = [t for t in low if t not in up] + down
+    play(league1, 1, 2)
+    play(league2, 2, 2)
+    truth = dc.DixonColes(teams=top + low, leagues=[1, 2], att=np.array([att[t] for t in top + low]),
+                          dfn=np.array([dfn[t] for t in top + low]), base=np.array([0.2, 0.2]), home_adv=0.25, rho=0.0)
+    true_gap = (float(np.mean([att[t] for t in league1]) - np.mean([att[t] for t in league2])),
+                float(np.mean([dfn[t] for t in league1]) - np.mean([dfn[t] for t in league2])))
+    return pd.DataFrame(rows), truth, up, [t for t in top if t not in down], season2, true_gap
+
+
+def test_objective_gradient_matches_finite_differences():
+    from scipy.optimize import approx_fprime
+    df, *_ = _two_leagues(n_per=4, rounds=1)
+    teams = sorted(set(df['home']) | set(df['away']))
+    leagues = sorted(set(df['league']))
+    t_idx = {t: i for i, t in enumerate(teams)}
+    l_idx = {l: i for i, l in enumerate(leagues)}
+    hi = df['home'].map(t_idx).values
+    ai = df['away'].map(t_idx).values
+    li = df['league'].map(l_idx).values
+    x = df['hg'].values.astype(float)
+    y = df['ag'].values.astype(float)
+    w = np.exp(-0.002 * np.arange(len(df))[::-1].astype(float))
+    n, L = len(teams), len(leagues)
+    last = dc.team_leagues(df)
+    tl = np.array([l_idx[int(last[t])] for t in teams])
+    for league_mean in (False, True):
+        k = 2 * n + 2 + L + (2 * L if league_mean else 0)
+        theta = np.random.default_rng(1).normal(0, 0.3, k)
+        theta[2 * n + 1] = -0.05
+        args = (hi, ai, li, tl, x, y, x, y, w, n, L, 1.0, league_mean)
+        _, grad = dc._objective(theta, *args)
+        numeric = approx_fprime(theta, lambda th: dc._objective(th, *args)[0], 1e-6)
+        assert np.allclose(grad, numeric, rtol=1e-4, atol=1e-4), (league_mean, np.abs(grad - numeric).max())
+
+
+def test_league_mean_prior_recovers_the_tier_gap_and_stops_over_rating_movers():
+    df, truth, up, stayers, season2, (gap_att, gap_def) = _two_leagues()
+    zero = dc.DixonColes.fit(df, xi=0.0, l2=1.0, prior='zero')
+    assert zero.tier_gap(1, 2) is None and zero.league_means == {1: (0.0, 0.0), 2: (0.0, 0.0)}
+    lm = dc.DixonColes.fit(df, xi=0.0, l2=1.0, prior='league_mean')
+    scores_x, concedes_x = lm.tier_gap(1, 2)
+    # The gap between the leagues' membership means, read off the movers' matches in both leagues
+    assert abs(np.log(scores_x) + gap_att) < 0.15, (scores_x, gap_att)
+    assert abs(np.log(concedes_x) - gap_def) < 0.15, (concedes_x, gap_def)
+    # Three matchdays into season 2 a promoted club's forecast still rests on
+    # its league-2 record. Shrunk toward one shared centre it is over-rated
+    # against league-1 stayers; toward its own league's mean it sits closer
+    # to the truth.
+    early = season2 + pd.Timedelta(days=15)
+    fits = {'zero': dc.DixonColes.fit(df, asof=early, xi=0.0, l2=1.0, prior='zero'),
+            'lm': dc.DixonColes.fit(df, asof=early, xi=0.0, l2=1.0, prior='league_mean')}
+    err = {k: [] for k in fits}
+    bias = {k: [] for k in fits}
+    for u in up:
+        for t in stayers:
+            p_true = truth.predict(u, t, 1)['p_home']
+            for name, model in fits.items():
+                p = model.predict(u, t, 1)['p_home']
+                err[name].append(abs(p - p_true))
+                bias[name].append(p - p_true)
+    assert np.mean(bias['zero']) > 0.05
+    assert np.mean(bias['lm']) < np.mean(bias['zero']) - 0.03
+    assert np.mean(err['lm']) < np.mean(err['zero'])
+
+
+def test_league_mean_prior_roundtrip_and_unseen_teams(tmp_path):
+    df, *_ = _two_leagues(n_per=5, rounds=1)
+    lm = dc.DixonColes.fit(df, xi=0.001, l2=1.0, prior='league_mean')
+    path = tmp_path / 'p.json'
+    lm.save(path)
+    back = dc.DixonColes.load(path)
+    assert back.prior == 'league_mean'
+    assert back.league_means.keys() == lm.league_means.keys()
+    for l in lm.league_means:
+        assert np.allclose(back.league_means[l], lm.league_means[l])
+    # An unseen team plays at its league's mean, in either league
+    for league in (1, 2):
+        a, d, known = back._team_params('Nobody FC', league)
+        assert not known and (a, d) == back.league_mean(league)
+    assert back.predict('T00', 'Nobody FC', 1)['p_home'] == pytest.approx(lm.predict('T00', 'Nobody FC', 1)['p_home'])
+    assert back.predict('T00', 'Nobody FC', 1)['p_home'] != pytest.approx(back.predict('T00', 'Nobody FC', 2)['p_home'])
+    # The strength table still shows an unseen side at the average of the sides shown
+    tbl = back.strength_table(teams=['T00', 'T01', 'Nobody FC'], league=1)
+    row = tbl[tbl['team'] == 'Nobody FC'].iloc[0]
+    assert not row['known'] and row['scores_x'] == pytest.approx(1.0) and row['concedes_x'] == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        dc.DixonColes.fit(df, prior='nonsense')
+
+
+def test_promoted_side_bias_table_shape():
+    df, *_ = _two_leagues(n_per=5, rounds=1)
+    # Re-label the leagues as the real ids so the category logic applies
+    df['league'] = df['league'].map({1: 43324, 2: 702})
+    cats = dc.team_season_categories(df)
+    assert cats[('L00', 2)] == 'promoted from CdP' and cats[('T04', 2)] == 'relegated to CdP'
+    assert cats[('T00', 1)] == 'new to the data' and cats[('T00', 2)] == 'stayed'
+    pred = dc.walk_forward(df, xi=0.0, start=df[df['season_id'] == 2]['date'].min(), step_days=400, l2=1.0)
+    rows = dc.promoted_side_bias(pred, df)
+    assert rows and rows[0]['matches'] == '1-6' and rows[0]['n'] > 0
+    assert {'n', 'exp_pts', 'act_pts', 'exp_gd', 'act_gd'} <= set(rows[0])
+    assert 0.0 <= rows[0]['exp_pts'] <= 3.0 and 0.0 <= rows[0]['act_pts'] <= 3.0
+
+
+def test_league_mean_prior_rejects_teams_without_matches():
+    df, *_ = _two_leagues(n_per=4, rounds=1)
+    with pytest.raises(ValueError):
+        dc.DixonColes.fit(df, prior='league_mean', teams=['Ghost FC'])
+    # the zero prior still accepts extras (they sit at zero, as before)
+    m = dc.DixonColes.fit(df, prior='zero', teams=['Ghost FC'])
+    assert 'Ghost FC' in m.teams

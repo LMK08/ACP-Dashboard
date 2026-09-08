@@ -42,6 +42,28 @@ def _mtime(path):
         return None
 
 
+def _prior_text(model):
+    if getattr(model, 'prior', 'zero') == 'league_mean':
+        return "shrinkage toward its own league's average"
+    return 'shrinkage toward one average shared by both leagues'
+
+
+def _unseen_phrase(model):
+    """Where the forecast puts a team the fit has never seen."""
+    if getattr(model, 'prior', 'zero') == 'league_mean':
+        return 'the league average'
+    return 'the shared centre of both leagues (zero parameters)'
+
+
+def _tier_gap_text(model):
+    gap = model.tier_gap(43324, 702) if hasattr(model, 'tier_gap') else None
+    if not gap:
+        return ''
+    return (f" The fit's tier gap: an average Campeonato side scores ×{gap[0]:.2f} and concedes ×{gap[1]:.2f} "
+            f"against Liga 3 opposition, so a side promoted from the Campeonato starts below the Liga 3 "
+            f"average rather than at it.")
+
+
 def _score_heatmap(P, home, away, max_show=6):
     n = min(max_show, P.shape[0] - 1)
     M = P[:n + 1, :n + 1]
@@ -136,15 +158,16 @@ def render_strength_table(league_id, teams, played=None, league_name=None, seaso
     st.caption(
         (f'{scope}. ' if scope else '')
         + 'Dixon-Coles attack / defence parameters: every team\'s attack and defence are fitted jointly, so '
-          'opponent quality is inside the fit, with shrinkage toward the league average and '
+          f'opponent quality is inside the fit, with {_prior_text(model)} and '
         + (f'a {half_life}-day half-life on older matches' if half_life else 'no time decay')
         + f'; rates fitted on {mix_txt}, {model.n_matches:,} matches through {model.asof}. '
           'Scores × / Concedes × = goals scored / conceded relative to the average of the sides shown; '
           'xGD vs avg = expected goal difference against that average side at a neutral venue; '
           'the table is ranked by it. P = matches played this season (context only). '
           'Same model as the scoreline forecast below; its walk-forward backtest is there.'
-        + (f" * {', '.join(unseen)}: not seen by the fit yet — shown at the average here; the forecast "
-           f"below plays them at zero parameters." if unseen else ''))
+        + _tier_gap_text(model)
+        + (f" * {', '.join(unseen)}: not seen by the fit yet — shown at the average here and played at "
+           f"{_unseen_phrase(model)} in the forecast below." if unseen else ''))
     return tbl
 
 
@@ -164,7 +187,7 @@ def render_scoreline_section(home, away, league_id, season_id_map, key='dc'):
     st.caption(f"Dixon-Coles, rates fitted on {mix_txt}, "
                f"{'half-life ' + str(half_life) + ' days' if half_life else 'no time decay'}, "
                f"{model.n_matches:,} matches through {model.asof} · home advantage {np.exp(model.home_adv) - 1:+.0%} goals"
-               + (f" · **{' and '.join(unknown)} not seen yet: treated as league average**" if unknown else ''))
+               + (f" · **{' and '.join(unknown)} not seen yet: played at {_unseen_phrase(model)}**" if unknown else ''))
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(f'{home} win', f"{pr['p_home']:.0%}")
@@ -216,7 +239,19 @@ def render_scoreline_section(home, away, league_id, season_id_map, key='dc'):
                          'Log loss': round(r['log_loss'], 3), 'Base rate': round(r['base_rate']['log_loss'], 3),
                          'Brier': round(r['brier'], 3), 'Accuracy': f"{r['accuracy']:.0%}"})
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        psc = bt.get('promoted_side_calibration') or {}
+        chosen, zero = psc.get('chosen') or [], psc.get('zero_prior') or []
+        if chosen:
+            # The comparison line only makes sense when the chosen fit is the league-mean one
+            first, z = chosen[0], (zero[0] if zero and psc.get('prior') == 'league_mean' else None)
+            st.markdown(
+                f"Sides promoted from the Campeonato, their first {first['matches']} Liga 3 matches "
+                f"({first['n']} side-matches): expected **{first['exp_pts']:.2f}** points per match, took "
+                f"**{first['act_pts']:.2f}**"
+                + (f" — shrunk toward one shared average instead of the league's own, the same settings "
+                   f"expected {z['exp_pts']:.2f}." if z else '.'))
         st.plotly_chart(_reliability_fig(bt['reliability']), use_container_width=True,
                         config={'displayModeBar': False}, theme=None, key=f'{key}_rel')
         st.caption(f"Settings chosen on this backtest: decay xi={bt['xi']}, shrinkage l2={bt['l2']}, "
-                   f"goals share of the fitted target={bt['mix']}. Built {bt.get('built', '?')}.")
+                   f"goals share of the fitted target={bt['mix']}, prior={bt.get('prior', 'zero')}. "
+                   f"Built {bt.get('built', '?')}.")

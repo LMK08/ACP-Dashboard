@@ -142,11 +142,12 @@ def test_refit_keeps_the_tuned_hyperparameters():
     matches = pd.read_parquet(MATCHES)
     prior = dc.DixonColes.load(PARAMS)
     model, info = season_sim.refit(matches, params_path=PARAMS, events_path=None)
-    assert (model.xi, model.l2, model.mix) == (prior.xi, prior.l2, prior.mix)
+    assert (model.xi, model.l2, model.mix, model.prior) == (prior.xi, prior.l2, prior.mix, prior.prior)
     assert model.n_matches == len(dc.matches_from_summary(matches))
     assert set(prior.teams) <= set(model.teams)
     meta = season_sim.model_meta(model, info)
     assert meta['name'] == 'dixon_coles_v1' and meta['refit'] is True and meta['xg_attached'] is False
+    assert meta['prior'] == prior.prior
     assert meta['asof'] == model.asof and meta['n_matches'] == model.n_matches
     committed = season_sim.model_meta(prior)
     assert committed['refit'] is False and committed['asof'] == prior.asof
