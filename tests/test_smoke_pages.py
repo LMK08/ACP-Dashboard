@@ -377,3 +377,23 @@ def test_empty_season_degrades_gracefully(app, page):
     season_box.set_value(newest)
     app.run()
     assert not _problems(app), _problems(app)
+
+
+def test_promotion_odds_cite_the_scoreline_model(app):
+    """Home's promotion tile and the Match Predictor's promotion tables rest
+    on the Dixon-Coles fit recorded in season_simulation.pkl (simulate_season.py);
+    both pages say so next to the numbers."""
+    import pickle
+    with open(os.path.join(DASHBOARD_DIR, 'season_simulation.pkl'), 'rb') as fh:
+        sim = pickle.load(fh)
+    model = sim.get('model') or {}
+    if not str(model.get('name', '')).startswith('dixon_coles'):
+        pytest.skip('season_simulation.pkl predates the Dixon-Coles simulation')
+    _open_page(app, 'Match Predictor')
+    captions = ' '.join(str(c.value) for c in app.caption)
+    assert 'Dixon-Coles' in captions and f"{sim['n_simulations']:,} Monte Carlo" in captions
+    assert not _problems(app), _problems(app)
+    _open_page(app, 'Home')
+    captions = ' '.join(str(c.value) for c in app.caption)
+    assert f"Dixon-Coles fit through {model.get('asof')}" in captions
+    assert not _problems(app), _problems(app)

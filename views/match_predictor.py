@@ -261,9 +261,19 @@ def render():
             st.subheader("Promotion & Relegation Probabilities")
             sim_ts = sim_data.get('timestamp', '')
             n_sims = sim_data.get('n_simulations', 0)
-            st.caption(f"Based on {n_sims:,} Monte Carlo simulations | Updated: {sim_ts[:16].replace('T', ' ')}")
+            _mm = sim_data.get('model') or {}
+            if str(_mm.get('name', '')).startswith('dixon_coles'):
+                _src = (f"every remaining fixture drawn as a scoreline from the Dixon-Coles model "
+                        f"({_mm.get('n_matches', 0):,} matches through {_mm.get('asof', '?')}"
+                        f"{', refitted at this data refresh' if _mm.get('refit') else ''}) — the same model "
+                        f"as the scoreline forecast and Team Strength Ratings on this page; xPts = expected "
+                        f"final points")
+            else:
+                _src = "match outcomes from the simple predictor (older simulation format)"
+            st.caption(f"{n_sims:,} Monte Carlo simulations of the rest of the season, {_src} | "
+                       f"Updated: {sim_ts[:16].replace('T', ' ')}")
 
-            def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None, playoff_pct=None, promotion_pct=None, releg_pct=None, serie_col_labels=None):
+            def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None, playoff_pct=None, promotion_pct=None, releg_pct=None, serie_col_labels=None, expected_pts=None):
                 """Render a color-coded probability table for a second-stage group."""
                 n_teams = len(prob_df)
                 pos_cols = [str(i+1) for i in range(n_teams)]
@@ -285,6 +295,8 @@ def render():
                     html += '<th style="text-align:left;padding:6px 10px;">Team</th>'
                     html += '<th style="padding:6px 8px;">P</th>'
                     html += '<th style="padding:6px 8px;">Pts</th>'
+                    if expected_pts:
+                        html += '<th style="padding:6px 8px;" title="Expected final points over the simulations">xPts</th>'
                     for p in pos_cols:
                         html += f'<th style="padding:6px 8px;">{p}</th>'
 
@@ -311,6 +323,10 @@ def render():
                         html += f'<td style="padding:6px 8px;color:#888;">{team_info["P"]}</td>'
                         total_pts = team_info["Pts"] + (bonus_points.get(team, 0) if bonus_points else 0)
                         html += f'<td style="padding:6px 8px;font-weight:bold;">{total_pts}</td>'
+                        if expected_pts:
+                            _xp = expected_pts.get(team)
+                            html += (f'<td style="padding:6px 8px;color:#888;">{_xp:.1f}</td>'
+                                     if _xp is not None else '<td></td>')
 
                         for p in pos_cols:
                             val = prob_df.loc[team, p]
@@ -419,6 +435,7 @@ def render():
                         promotion_pct=g.get('promotion_pct'),
                         releg_pct=g.get('releg_pct'),
                         serie_col_labels=g.get('serie_col_labels'),
+                        expected_pts=g.get('expected_pts'),
                     )
 
         # Team selection — cross-season team-season combos
@@ -518,6 +535,9 @@ def render():
 
             # Display results
             st.subheader(f"{home_label} vs {away_label}")
+            st.caption("Head-to-head from the simple predictor (season stats blended with priors). "
+                       "The season simulation and the strength ratings use the scoreline model above, "
+                       "so the two forecasts can differ.")
 
             # Show team strength ratings
             if team_ratings:

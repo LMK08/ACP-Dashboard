@@ -121,6 +121,10 @@ jobs:
           python models/value/eur_intervals.py || echo "eur_intervals nonzero (continuing — the committed calibration stays)"
           # Scoreline model: Dixon-Coles fit + walk-forward backtest (seconds)
           python models/scoreline/build_dc.py
+          # Season simulation on that fit (seconds), so a re-tuned
+          # dc_params.json never leaves the promotion odds and the scoreline
+          # forecast on different parameters until the next data refresh.
+          python simulate_season.py --no-refit || echo "simulate_season nonzero (continuing — the committed pickle stays)"
 
       - name: Phase 3 — warm player-stats caches
         working-directory: Match_Reports_API/Dashboard
@@ -147,7 +151,7 @@ jobs:
                      models/value/*.json models/scoreline/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
-                     models/roles/*.png
+                     models/roles/*.png season_simulation.pkl
           git add -f stats_cache/ 2>/dev/null || true
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: automated engine rebuild (ratings/projections)"

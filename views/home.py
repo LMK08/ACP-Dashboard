@@ -105,7 +105,10 @@ def render():
     if engine_meta:
         fresh_bits.append(f"engine {engine_meta.get('rating_version', '?')} through {engine_meta.get('data_through', '?')}")
     if sim:
-        fresh_bits.append(f"simulation {str(sim.get('timestamp', ''))[:10]}")
+        _mm = sim.get('model') or {}
+        fresh_bits.append(f"simulation {str(sim.get('timestamp', ''))[:10]}"
+                          + (f" (Dixon-Coles fit through {_mm.get('asof', '?')})"
+                             if str(_mm.get('name', '')).startswith('dixon_coles') else ''))
     st.caption(" · ".join(fresh_bits))
 
     # ------------------------------------------------------------------
@@ -126,7 +129,12 @@ def render():
         if promo is not None:
             promo_txt = f"{promo:.0%}"
             promo_help = (f"{playoff:.0%} to reach the promotion series" if playoff is not None else "")
-            promo_help += f" · {sim.get('n_simulations', 0):,} simulations"
+            promo_help += f" · {sim.get('n_simulations', 0):,} simulations of the remaining fixtures"
+            _mm = sim.get('model') or {}
+            if str(_mm.get('name', '')).startswith('dixon_coles'):
+                promo_help += (f", each scoreline drawn from the Dixon-Coles model fitted through "
+                               f"{_mm.get('asof', '?')} — the same model as the Match Predictor's "
+                               f"scoreline forecast and strength ratings")
 
     t1, t2, t3, t4 = st.columns(4)
     t1.metric("League position", pos_txt, help="Current standing in our série")

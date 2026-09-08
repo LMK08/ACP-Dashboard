@@ -96,7 +96,11 @@ jobs:
         run: python update_model.py
 
       - name: Simulate season probabilities
-        run: python simulate_season.py
+        # Every remaining fixture is drawn from the Dixon-Coles scoreline
+        # model, refitted here on today's matches with the hyperparameters
+        # build_dc.py chose; --write-params saves that fit to dc_params.json
+        # so the app's scoreline forecast reads the parameters the odds rest on.
+        run: python simulate_season.py --write-params
 
       - name: Commit and push new data to GitHub
         run: |
@@ -105,6 +109,7 @@ jobs:
 
           # Add all data files EXCEPT raw_events.parquet (too large for GitHub, lives on HF only)
           git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet opta_ratings.parquet
+          git add -f models/scoreline/dc_params.json
           git add -f *.pkl
 
           if [ -n "$(git status --porcelain)" ]; then

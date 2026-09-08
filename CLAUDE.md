@@ -47,6 +47,27 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
 - `views/home.py` — the club's Home page (position, form, promotion odds
   from season_simulation.pkl, last match, next opponent, squad ACP Index,
   data freshness). Every card deep-links into the detail page.
+- `simulate_season.py` — the Monte Carlo season simulation behind Home's
+  promotion tile and the Match Predictor's promotion / relegation tables
+  (runs in scheduled_update.yml, writes season_simulation.pkl). Since
+  2026-09 every remaining fixture is drawn as a full SCORELINE from the
+  Dixon-Coles model (`models/scoreline/season_sim.py`: ScorelineSampler,
+  sample_scores, apply_results) — never from the simple predictor, whose
+  W/D/L draws with invented 2-1 / 1-1 goals it replaced. The refresh refits
+  the model on today's matches with the hyperparameters build_dc.py chose
+  and `--write-params` saves that fit to dc_params.json, so the tables,
+  Home and the scoreline forecast read ONE fit (the engine rebuild re-runs
+  the simulation with `--no-refit` right after build_dc.py, so a re-tune
+  never leaves the pickle and the forecast on different parameters); the
+  pickle records the fit under 'model' and both pages cite it. The
+  league-format logic (séries, chained promotion + maintenance phases, FPF
+  bonuses, reserve-team eligibility) stays in simulate_season.py; the format fixes the slot counts (8
+  promotion-series places, 2 promotion slots, 4 relegation places) — printed
+  as a check and asserted in `tests/test_season_sim.py`. Local runs:
+  `--no-refit` draws from the committed dc_params.json (never commit a local
+  refit), `--sims 500` for speed. Caveat: a side the fit has barely seen
+  (relegated from Liga 2, say) starts near league average — there is no
+  cross-tier prior in the Dixon-Coles fit.
 - `team_interactive.py` — Plotly versions of the team visuals both team pages
   show on screen: season shot maps, passing network, rolling xG (the season
   report dot plots were already Plotly). They share their DATA step with the
@@ -72,9 +93,13 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   goals-vs-xG blend the rates are fitted on with a monthly walk-forward
   backtest, then writes `dc_params.json` (what the app loads) and
   `dc_backtest.json` (metrics vs base rate and vs the strength model,
-  reliability). Runs in the engine rebuild. `scoreline_ui.py` renders it on
-  the Match Predictor page; never quote its probabilities without the
-  calibration expander next to them. Tests: `tests/test_dixon_coles.py`.
+  reliability). Runs in the engine rebuild; the scheduled refresh also
+  rewrites `dc_params.json` (simulate_season.py `--write-params`: same
+  hyperparameters, today's matches). `season_sim.py` is the scoreline
+  sampler the season simulation draws from. `scoreline_ui.py` renders the
+  model on the Match Predictor page; never quote its probabilities without
+  the calibration expander next to them. Tests: `tests/test_dixon_coles.py`,
+  `tests/test_season_sim.py`.
 - `event_tags.py` — `TagIndex` / `has_tag`: vectorised membership tests on
   the `type.secondary` tag lists. NEVER write
   `sec.apply(lambda x: tag in x)` on an events frame again: those per-row
