@@ -58,6 +58,12 @@ jobs:
           # streamlit is NOT in requirements.txt (the HF Space SDK provides
           # it) but Phase 3 runs `app.py --precompute`, which imports it.
           pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy streamlit
+          # The dashboard pins pandas==2.3.3 for HF Space stability, but the
+          # engine chain OOMs the 16 GB runner on 2.x (object-dtype strings).
+          # Override to pandas 3.x HERE ONLY — Arrow-backed strings cut the
+          # event-frame memory ~3x; this is what the June 2026 green runs used.
+          # The HF Space itself still installs from requirements.txt untouched.
+          pip install "pandas==3.0.3"
 
       - name: Download canonical raw_events from HF
         env:
@@ -86,6 +92,8 @@ jobs:
           python src/features.py
           python src/xpass.py
           python src/action_values.py
+          python src/export_viz_aggregates.py
+          python src/phases.py
           python src/gk_shotstopping.py || echo "gk_shotstopping nonzero (continuing)"
           python src/gk_handling.py     || echo "gk_handling nonzero (continuing)"
           python src/loso_player_ratings.py
@@ -107,6 +115,12 @@ jobs:
           python models/ratings/build_projection.py
           python models/ratings/league_conversion.py
           python models/ratings/build_player_engine.py
+          # Projected-value interval: fee-calibrated conformal band around the
+          # engine value (seconds). Must run AFTER build_player_engine.py — it
+          # pairs the real sales with the freshly rebuilt engine rows.
+          python models/value/eur_intervals.py || echo "eur_intervals nonzero (continuing — the committed calibration stays)"
+          # Scoreline model: Dixon-Coles fit + walk-forward backtest (seconds)
+          python models/scoreline/build_dc.py
 
       - name: Phase 3 — warm player-stats caches
         working-directory: Match_Reports_API/Dashboard
@@ -126,7 +140,11 @@ jobs:
           # could leave HF without the caches (the symptom Lucas hit). The
           # ~20MB/refresh git cost is offset by the Tier-B binary cleanup.
           git add -f gpa_player_season_values.parquet \
+                     obv_match_minute.parquet obv_pass_pairs.parquet \
+                     obv_match_player.parquet obv_team_season.parquet \
+                     possession_phases.parquet team_phase_profile.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
+                     models/value/*.json models/scoreline/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/*.parquet models/roles/*.joblib \
                      models/roles/*.png
@@ -153,12 +171,14 @@ jobs:
           # plots + all images before the push (same as deploy_to_hf.yml — the
           # app renders charts in-process and tolerates missing image files).
           find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
-          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
+          # icons/ is exempt: team crests the app loads at runtime, shipped via LFS below.
+          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -not -path '*/icons/*' -delete 2>/dev/null || true
           cd "$DEPLOY_DIR"
           git init -b main
           git lfs install
           git lfs track "*.parquet"
           git lfs track "*.pkl"
+          git lfs track "icons/*.png"
           git add .gitattributes
           git add -A
           git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
@@ -166,3 +186,14 @@ jobs:
           git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
           git push hf main --force
           echo "✅ Deployed engine rebuild to HF Space"
+
+      - name: Clean up orphaned HF LFS objects
+        # Force-push deploys orphan the previous deploy's LFS blobs, which
+        # still count against the Space's 1 GB storage cap until permanently
+        # deleted. See hf_lfs_cleanup.py in the dashboard repo.
+        working-directory: Match_Reports_API/Dashboard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          python hf_lfs_cleanup.py

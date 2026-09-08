@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 DASH = HERE.parent.parent
 GPA_PROJECT = DASH.parent.parent / 'GPA Model Project v2'
 
-# Keep in sync with PLAYER_ID_ALIASES in app.py (canonical pid mapping)
+# Keep in sync with PLAYER_ID_ALIASES in league_config.py (canonical pid mapping)
 PLAYER_ID_ALIASES = {71835: 1322978}
 
 BOX_X = 84.0

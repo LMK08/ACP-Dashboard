@@ -10,6 +10,7 @@ faulthandler.enable()
 import sys
 import streamlit as st
 import pandas as pd
+from event_tags import TagIndex
 import numpy as np
 import pickle
 import logging
@@ -75,9 +76,24 @@ import plotly.graph_objects as go
 from pitch_interactive import (plotly_shot_map, plotly_box_passes_map,
                                 mpl_box_passes_map)
 import io # For saving the in-memory image
+from pathlib import Path  # used by the Player Profile manual-entries path (was an unimported name)
 # ... after your other imports ...
 import base64
 import pitch_visualizations as pv
+import obv_viz
+import theme  # colours + figure conventions shared with every plotter
+import navigation
+import context_bar
+import views.home
+import views.opposition
+import views.shadow_team
+import views.match_predictor
+import views.player_analysis
+import views.player_comparison
+import views.player_profile
+import views.league_analysis
+import views.team_analysis
+import views.match_analysis
 
 
 # ------------------------------------------------------------------------------
@@ -443,14 +459,14 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 
 # Build flat season map for backward compatibility
 SEASON_ID_MAP = all_season_id_map()
-CURRENT_SEASON_ID = 191782  # Liga 3 default
+CURRENT_SEASON_ID = 192831  # Liga 3 default (2026/27)
 STATS_CACHE_DIR = 'stats_cache'
 STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
                              # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
                              # override). v13 percentiles cache served stale minutes
                              # because the percentiles layer early-returns its disk cache
                              # and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v1'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v4'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -462,6 +478,33 @@ FIGURE_CACHE_VERSION = 'v1'  # Bump when any DRAWING code behind the cached-PNG 
                              # label, marker size) is invisible to the key and would keep
                              # serving the old PNG until the 24 h TTL expires. Same role
                              # STATS_CACHE_VERSION plays for the stat caches.
+
+
+def _cache_meta_path(cache_path):
+    return cache_path + '.meta.json'
+
+
+def _write_cache_meta(cache_path, fingerprint):
+    """Sidecar stamp recording what data built a stats cache."""
+    try:
+        with open(_cache_meta_path(cache_path), 'w') as f:
+            json.dump(fingerprint, f)
+    except Exception:
+        pass
+
+
+def _cache_is_stale(cache_path, fingerprint):
+    """True when the sidecar stamp exists and disagrees with current data —
+    i.e. a data refresh landed but the cache predates it (on-demand recompute
+    covers the window until the engine rebuild redeploys warmed caches).
+    Legacy caches without a stamp are trusted, so old deploys can't trigger
+    recompute storms (the 2026-07 segfault failure mode)."""
+    try:
+        with open(_cache_meta_path(cache_path)) as f:
+            meta = json.load(f)
+    except Exception:
+        return False
+    return meta != fingerprint
 
 
 def _stats_scope_key(season_id, frame):
@@ -517,7 +560,9 @@ def load_data():
         events_columns = [
             'id', 'matchId', 'seasonId', 'competitionId', 'minute', 'second', 'matchTimestamp',
             'type.primary', 'type.secondary', 'player.id', 'player.name', 'player.position',
-            'team.name', 'opponentTeam.name', 'location.x', 'location.y',
+            # team.id: read by the OBV visuals (momentum team mapping, stats-table
+            # augmentation) added 2026-08 — the engine aggregates key on Wyscout ids
+            'team.id', 'team.name', 'opponentTeam.name', 'location.x', 'location.y',
             'pass.accurate', 'pass.endLocation.x', 'pass.endLocation.y', 'pass.length',
             'shot.xg', 'shot.isGoal', 'shot.onTarget', 'shot.bodyPart', 'shot.postShotXg', 'shot.goalkeeper.id',
             'groundDuel.duelType', 'groundDuel.keptPossession', 'groundDuel.progressedWithBall',
@@ -784,26 +829,10 @@ def load_data():
         return None, None, None, None, None, None
 
 
-# ============================================================================
-# PLAYER_ID_ALIASES — Wyscout sometimes splits one real-world player across
-# two playerIds (different scrapes, different sources, mistyped name, etc.).
-# Map FROM the duplicate pid → TO the canonical pid we want to keep.
-#
-# After alias resolution every downstream pipeline (GPA, raw_events,
-# player_details, valuations, reported_fees) sees only the canonical pid.
-# Player_details for the canonical pid wins the bio, so put the pid whose
-# bio you want to keep on the RIGHT side of the mapping.
-#
-# Add a new entry by appending a line like:  <wrong_pid>: <canonical_pid>,
-# with a comment naming the player + reason.
-PLAYER_ID_ALIASES = {
-    # Mamadu Camará at Brito (25-26 Camp). Wyscout has two records:
-    # pid 71835 holds the GPA stats but DOB 1991-12-31 is the wrong
-    # (older) profile; pid 1322978 has the correct DOB 2001-11-20 but
-    # no stats. Remap 71835 → 1322978 so the GPA flows under the
-    # correct younger bio.
-    71835: 1322978,
-}
+# PLAYER_ID_ALIASES lives in league_config.py (shared with the value
+# calibration script, which must apply the same remap to the fee join
+# without booting Streamlit). Add new aliases THERE.
+from league_config import PLAYER_ID_ALIASES  # noqa: E402
 
 # MINUTES_OVERRIDE — manual corrections for known Wyscout lineup-data errors a
 # data refresh can't fix. Keyed (playerId, seasonId) -> totalMinutes. Used when
@@ -847,6 +876,29 @@ def _resolve_pid(pid):
     except (TypeError, ValueError):
         return pid
     return PLAYER_ID_ALIASES.get(ipid, ipid)
+
+
+@st.cache_data(ttl=86400)
+def load_obv_viz_data():
+    """Engine OBV/phases aggregates (exported by GPA engine rebuild).
+
+    Returns {key: DataFrame or None}. Missing files (e.g. before the first
+    engine rebuild ships them) simply disable the OBV visuals.
+    """
+    files = {
+        'minute': 'obv_match_minute.parquet',
+        'pairs': 'obv_pass_pairs.parquet',
+        'players': 'obv_match_player.parquet',
+        'team_season': 'obv_team_season.parquet',
+        'phase_profile': 'team_phase_profile.parquet',
+    }
+    out = {}
+    for key, fname in files.items():
+        try:
+            out[key] = pd.read_parquet(fname) if os.path.exists(fname) else None
+        except Exception:
+            out[key] = None
+    return out
 
 
 @st.cache_data(ttl=86400)
@@ -1267,32 +1319,17 @@ def load_player_engine():
                 if p is not None and not pd.isna(p) else p
             ).astype('Int64')
         # Engine projected value (EUR), computed ONCE here so the bio
-        # headline and the analysis tables can never drift: perf =
-        # percentile of projection_abs within the projection universe
-        # (abs scale — Camp recruit discount already applied, so NO
-        # extra Camp penalty) × career-NPV age multiplier, through the
-        # fee-calibrated CVI→EUR curve. No reliability ramp: the
-        # projection is already evidence-weighted internally.
-        _ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
-                     'Advanced Midfielder': 'AM_WG', 'Deep Midfielder': 'CM',
-                     'Wide Defender': 'FB', 'Central Defender': 'CB'}
-        _pool = df['projection_abs'].dropna()
-        # global price temper (Lucas 2026-06-12): the engine values read
-        # a touch rich for this market — scale the whole curve down 20%
-        _ENGINE_VALUE_TEMPER = 0.8
-
-        def _eng_eur(r):
-            pa = r.get('projection_abs')
-            if pa is None or pd.isna(pa) or len(_pool) == 0:
-                return None
-            perf = float((_pool < float(pa)).mean()
-                          + 0.5 * (_pool == float(pa)).mean()) * 100.0
-            grp = _ROLE2CVI.get(r.get('role'))
-            am = _cvi_age_value_multiplier(r.get('age'), grp)
-            v = cvi_to_projected_eur(perf * am, position_group=grp,
-                                       competition_id=None)
-            return None if v is None else v * _ENGINE_VALUE_TEMPER
-        df['engine_value_eur'] = df.apply(_eng_eur, axis=1)
+        # headline and the analysis tables can never drift. The maths —
+        # percentile of projection_abs within the projection universe x
+        # career-NPV age multiplier, through the fee-calibrated CVI->EUR
+        # curve, x ENGINE_VALUE_TEMPER, Camp penalty by seasonId — lives in
+        # models/value/eur_intervals.engine_value_eur so the fee-calibration
+        # build runs the SAME code (it used to be a closure here that the
+        # calibration script re-typed by hand). No reliability ramp: the
+        # projection is already evidence-weighted. The interval around it
+        # (projected_eur_interval) is derived at display time from the
+        # point and the shipped calibration, so no cached column changes.
+        df['engine_value_eur'] = engine_value_eur_frame(df)
         meta = {}
         if os.path.exists(meta_path):
             with open(meta_path) as f:
@@ -1615,6 +1652,149 @@ Separate from the quality question, we describe *how* a player plays:
 """
 
 
+# ---- Similar-player search (models/similarity/similar_players.py) ----------
+def similarity_cache_signature():
+    """Cache key for the similarity pool: the stats-cache version, the
+    feature-spec version, every per-season percentiles cache present
+    (seasonId, mtime, size) and the roles parquet's mtime — so a refreshed
+    cache or a feature change rebuilds the pool without a
+    STATS_CACHE_VERSION bump. Local test runs delete stale caches, so the
+    pool can legitimately cover fewer seasons than the Space's."""
+    base = os.path.dirname(__file__)
+    parts = []
+    for _cfg in COMPETITIONS.values():
+        for _sid in _cfg.get('seasons', {}):
+            p = os.path.join(base, STATS_CACHE_DIR,
+                             f'player_percentiles_{STATS_CACHE_VERSION}_{int(_sid)}.parquet')
+            if os.path.exists(p):
+                _st = os.stat(p)
+                parts.append((int(_sid), int(_st.st_mtime), int(_st.st_size)))
+    rf = os.path.join(base, 'models', 'roles', 'role_features_season.parquet')
+    rf_sig = int(os.stat(rf).st_mtime) if os.path.exists(rf) else 0
+    return (STATS_CACHE_VERSION, similar_players.SIM_VERSION, tuple(sorted(parts)), rf_sig)
+
+
+def _alias_pids(series):
+    if not PLAYER_ID_ALIASES:
+        return series
+    return pd.to_numeric(series, errors='coerce').map(
+        lambda x: PLAYER_ID_ALIASES.get(int(x), x) if pd.notna(x) else x)
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def load_similarity_pool(signature):
+    """The like-for-like pool: every per-season percentiles cache in the
+    signature (both leagues, all cached seasons, >= 500 minutes) plus the
+    roles layer's spatial scalars. ~0.2 s to build; one object per process."""
+    base = os.path.dirname(__file__)
+    frames = {}
+    for _sid, _m, _s in signature[2]:
+        p = os.path.join(base, STATS_CACHE_DIR,
+                         f'player_percentiles_{STATS_CACHE_VERSION}_{int(_sid)}.parquet')
+        try:
+            f = pd.read_parquet(p)
+        except Exception:
+            logger.exception(f"similarity: could not read {p}")
+            continue
+        if 'playerId' in f.columns:
+            f['playerId'] = _alias_pids(f['playerId'])
+        frames[int(_sid)] = f
+    rf = None
+    rf_path = os.path.join(base, 'models', 'roles', 'role_features_season.parquet')
+    if os.path.exists(rf_path):
+        try:
+            rf = pd.read_parquet(rf_path, columns=['playerId', 'seasonId'] + similar_players.SPATIAL_FEATURES)
+            rf['playerId'] = _alias_pids(rf['playerId'])
+        except Exception:
+            logger.exception("similarity: role_features_season.parquet unreadable — spatial block skipped")
+            rf = None
+    try:
+        return similar_players.build_pool(frames, rf)
+    except Exception as e:
+        # a renamed cache column lands here: say so on the page rather than
+        # pretending there are no caches
+        logger.exception("similarity pool build failed")
+        return similar_players.Pool(meta=pd.DataFrame(), error=f"{type(e).__name__}: {e}"[:200])
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def similarity_validation(signature):
+    """The numbers the 'How similarity is measured' panel shows: self-match
+    across seasons and engine-role / style agreement of the top-10 vs chance."""
+    pool = load_similarity_pool(signature)
+    if pool.meta.empty:
+        return {}
+    labels = None
+    try:
+        eng, _ = load_player_engine()
+        if eng is not None and not eng.empty and 'role' in eng.columns:
+            labels = eng[['playerId', 'seasonId', 'role']].copy()
+    except Exception:
+        labels = None
+    try:
+        sty = load_styles()
+        if isinstance(sty, pd.DataFrame) and {'playerId', 'seasonId', 'style'} <= set(sty.columns):
+            s2 = sty[['playerId', 'seasonId', 'style']].copy()
+            labels = s2 if labels is None else labels.merge(s2, on=['playerId', 'seasonId'], how='outer')
+    except Exception:
+        pass
+    try:
+        return similar_players.validation(pool, labels, k=10)
+    except Exception:
+        logger.exception("similarity validation failed")
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def player_ages():
+    """{playerId: age today (float)} from player_details; unknown ages absent."""
+    out = {}
+    try:
+        det = load_player_details()
+    except Exception:
+        return out
+    if det is None or len(det) == 0:
+        return out
+    for pid, row in det.iterrows():
+        try:
+            a = _calculate_age(row.get('birthDate'))
+            if a != 'N/A' and a is not None:
+                out[int(pid)] = float(a)
+        except Exception:
+            continue
+    return out
+
+
+def engine_rows_for_scope(season_ids=None):
+    """ONE engine row per player for the active seasons — the row every
+    engine-derived column in the stats frame comes from (see the merge
+    below), and therefore the row a page must read when it needs an engine
+    column the merge does not carry (views/player_analysis.py reads
+    mins_played here for the likely-fee support gate). Keep the pick rule in
+    this one place so a page can never disagree with the merged numbers.
+
+    seasonId is NOT chronological across leagues (Camp 23/24=190230 > L3
+    24/25=190090), so a plain seasonId-max can land on an older Campeonato
+    row with no projection — e.g. M. Konaté in an All-Seasons view
+    (season_ids=None, so both leagues' rows are present). Prefer the row
+    that carries a projection (the player's chronological-latest), then
+    fall back to seasonId / minutes. (Lucas 2026-06-24)"""
+    eng, _meta = load_player_engine()
+    if eng is None or eng.empty:
+        return pd.DataFrame()
+    e = eng
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                   else [season_ids])]
+        e = e[e['seasonId'].isin(sids)]
+    if e.empty:
+        return pd.DataFrame()
+    e = e.assign(_has_proj=e['projection'].notna())
+    return (e.sort_values(['playerId', '_has_proj', 'seasonId', 'mins_played'])
+             .drop_duplicates('playerId', keep='last')
+             .drop(columns='_has_proj'))
+
+
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
     """Merge ACP engine columns (rating / projection / axis percentiles)
     into the stats DF on playerId. Scope-aware: keeps engine rows from
@@ -1622,26 +1802,9 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     Engine metrics are levels/rates — never season-totaled."""
     if player_stats_df is None or len(player_stats_df) == 0:
         return player_stats_df
-    eng, _meta = load_player_engine()
-    if eng is None or eng.empty:
+    e = engine_rows_for_scope(season_ids)
+    if e is None or e.empty:
         return player_stats_df
-    e = eng.copy()
-    if season_ids is not None:
-        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
-                                   else [season_ids])]
-        e = e[e['seasonId'].isin(sids)]
-    if e.empty:
-        return player_stats_df
-    # Pick ONE engine row per player. seasonId is NOT chronological across
-    # leagues (Camp 23/24=190230 > L3 24/25=190090), so a plain seasonId-max can
-    # land on an older Campeonato row with no projection — e.g. M. Konaté in an
-    # All-Seasons view (season_ids=None, so both leagues' rows are present).
-    # Prefer the row that carries a projection (the player's chronological-
-    # latest), then fall back to seasonId / minutes. (Lucas 2026-06-24)
-    e = e.assign(_has_proj=e['projection'].notna())
-    e = (e.sort_values(['playerId', '_has_proj', 'seasonId', 'mins_played'])
-           .drop_duplicates('playerId', keep='last')
-           .drop(columns='_has_proj'))
     out = pd.DataFrame({
         'playerId': e['playerId'],
         'ACP Rating': e['acp_rating'],
@@ -2091,6 +2254,16 @@ def get_season_player_minutes(player_minutes_data, season_id, comp_ids=None):
     return _get_season_player_minutes_cached(player_minutes_data, season_key, comp_key)
 
 
+# Canonical minutes schema — empty results must still carry these columns or
+# downstream stats code KeyErrors on 'totalMinutes' (seen at the 2026/27 season
+# start, when the current season has matches but no minutes data yet).
+_EMPTY_MINUTES_COLS = ['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']
+
+
+def _empty_minutes_df():
+    return pd.DataFrame(columns=_EMPTY_MINUTES_COLS)
+
+
 def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
     """Get player minutes for a season. Returns DataFrame.
     player_minutes_data is {season_id: DataFrame}.
@@ -2108,7 +2281,7 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
                 if valid_sids is None or sid in valid_sids:
                     all_dfs.append(df)
         if not all_dfs:
-            return pd.DataFrame()
+            return _empty_minutes_df()
         combined = pd.concat(all_dfs)
         return combined.groupby('playerId').agg({
             'playerName': 'first',
@@ -2120,7 +2293,7 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
         dfs = [player_minutes_data.get(sid, pd.DataFrame()) for sid in season_id]
         dfs = [df for df in dfs if isinstance(df, pd.DataFrame) and not df.empty]
         if not dfs:
-            return pd.DataFrame()
+            return _empty_minutes_df()
         combined = pd.concat(dfs)
         return combined.groupby('playerId').agg({
             'playerName': 'first',
@@ -2128,7 +2301,10 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
             'primaryPosition': 'first',
             'totalMinutes': 'sum'
         }).reset_index()
-    return player_minutes_data.get(season_id, pd.DataFrame())
+    result = player_minutes_data.get(season_id)
+    if not isinstance(result, pd.DataFrame) or result.empty:
+        return _empty_minutes_df()
+    return result
 
 def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
     """Get team stats for a season. Returns {team: stats} dict.
@@ -2149,26 +2325,139 @@ def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
         return merged
     return season_team_stats.get(season_id, {})
 
+# ------------------------------------------------------------------------------
+# Club-first defaults and cross-page selector persistence
+# ------------------------------------------------------------------------------
+OUR_TEAM = 'Atlético CP'
+# League / season are chosen ONCE in the sidebar context bar (context_bar.py);
+# every page resolves its scope from these two session keys.
+GLOBAL_LEAGUE_KEY = 'ctx_league'          # = context_bar.LEAGUE_KEY (the bar's widget key)
+GLOBAL_SEASON_KEY = 'ctx_season_memory'   # = context_bar.SEASON_MEMORY (last chosen season label)
+# A season needs this many matches WITH EVENTS before it is the default —
+# the newest season in the fixture list has none for its first weeks.
+MIN_MATCHES_FOR_DEFAULT_SEASON = 5
+# {season_id: n matches with events}; filled in the main body after load_data.
+SEASON_MATCHES_WITH_EVENTS = {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _season_match_counts_cached(n_events, _events_df):
+    counts = _events_df.groupby('seasonId')['matchId'].nunique()
+    return {int(k): int(v) for k, v in counts.items()}
+
+
+def _season_match_counts(events_df):
+    """{season_id: matches with events} for the loaded events, or {} if unknown."""
+    if events_df is None or events_df.empty or 'seasonId' not in events_df.columns:
+        return {}
+    try:
+        return _season_match_counts_cached(len(events_df), events_df)
+    except Exception as e:
+        logger.warning(f"[seasons] could not count matches with events: {e}")
+        return {}
+
+
+def _default_season_label(available_seasons, options):
+    """Newest season label (options are newest-first) with event data for at
+    least MIN_MATCHES_FOR_DEFAULT_SEASON matches; else the newest label."""
+    for label in options:
+        if label == "All Seasons":
+            continue
+        sids = [sid for sid, lab in available_seasons.items() if lab == label]
+        if any(SEASON_MATCHES_WITH_EVENTS.get(int(sid), 0) >= MIN_MATCHES_FOR_DEFAULT_SEASON
+               for sid in sids):
+            return label
+    return next((o for o in options if o != "All Seasons"), options[0] if options else None)
+
+
+def _team_fixtures(matches_df, season_id, team):
+    season_matches = matches_df[matches_df['seasonId'] == season_id]
+    return season_matches[
+        (season_matches['homeTeamName'] == team) | (season_matches['awayTeamName'] == team)
+    ].copy()
+
+
+def _fixture_record(row, team, team_matches):
+    opponent = row['awayTeamName'] if row['homeTeamName'] == team else row['homeTeamName']
+    home_away = 'Home' if row['homeTeamName'] == team else 'Away'
+    gw = row.get('gameweek', '?')
+    # Gameweek missing: derive it from the team's position in its own fixture list
+    if pd.isna(gw) or str(gw).strip() in ('', '?', 'nan', 'None'):
+        ordered = team_matches.assign(
+            _d=pd.to_datetime(team_matches['dateutc'], errors='coerce')).sort_values('_d')
+        try:
+            gw = ordered['matchId'].tolist().index(row.get('matchId')) + 1
+        except ValueError:
+            gw = '?'
+    return {
+        'opponent': opponent,
+        'date': pd.to_datetime(row.get('dateutc'), errors='coerce'),
+        'gameweek': gw,
+        'home_away': home_away,
+        'matchId': row.get('matchId'),
+    }
+
+
+def _is_played(score):
+    return pd.notna(score) and '-' in str(score)
+
+
+def next_fixture_for_team(matches_df, season_id, team=None):
+    """Next unplayed fixture for `team` (default OUR_TEAM) in `season_id`, or None.
+    Returns {'opponent', 'date', 'gameweek', 'home_away', 'matchId'}."""
+    team = team or OUR_TEAM
+    team_matches = _team_fixtures(matches_df, season_id, team)
+    if team_matches.empty:
+        return None
+    unplayed = team_matches[~team_matches['score'].apply(_is_played)].copy()
+    if unplayed.empty:
+        return None
+    unplayed['_d'] = pd.to_datetime(unplayed['dateutc'], errors='coerce')
+    return _fixture_record(unplayed.sort_values('_d').iloc[0], team, team_matches)
+
+
+def last_fixture_for_team(matches_df, season_id, team=None):
+    """Most recently PLAYED fixture for `team` in `season_id`, or None."""
+    team = team or OUR_TEAM
+    team_matches = _team_fixtures(matches_df, season_id, team)
+    if team_matches.empty:
+        return None
+    played = team_matches[team_matches['score'].apply(_is_played)].copy()
+    if played.empty:
+        return None
+    played['_d'] = pd.to_datetime(played['dateutc'], errors='coerce')
+    return _fixture_record(played.sort_values('_d').iloc[-1], team, team_matches)
+
+
+def _predictor_default_labels(all_season_options, season_ids_desc, matches_df):
+    """(home_label, away_label) defaults for the Match Predictor selectors.
+    Home: OUR_TEAM in the newest season it is available in. Away: that season's
+    next fixture opponent, else its most recent opponent, else None."""
+    for sid in season_ids_desc:
+        season_label = SEASON_ID_MAP.get(sid)
+        home = f"{OUR_TEAM} ({season_label})"
+        if home not in all_season_options:
+            continue
+        fixture = (next_fixture_for_team(matches_df, sid, OUR_TEAM)
+                   or last_fixture_for_team(matches_df, sid, OUR_TEAM))
+        away = f"{fixture['opponent']} ({season_label})" if fixture else None
+        return home, (away if away in all_season_options else None)
+    return None, None
+
+
 def league_selector(section_key):
-    """Render a league selector in the sidebar. Returns list of competition IDs."""
-    options = ["Liga 3", "Campeonato"]
-    # Guard against a stale "Both" (or any other invalid) value lingering in
-    # session_state from a previous version of this selector, which would make
-    # selectbox raise because the value is no longer a valid option.
-    state_key = f"league_select_{section_key}"
-    if st.session_state.get(state_key) not in options:
-        st.session_state.pop(state_key, None)
-    selected = st.sidebar.selectbox(
-        "League",
-        options,
-        index=0,
-        key=state_key
-    )
-    for comp_id, comp_config in COMPETITIONS.items():
-        if comp_config["name"] == selected:
-            return [comp_id]
-    # Fallback: first competition (single-league list).
-    return [next(iter(COMPETITIONS.keys()))]
+    """Competition ids for the league in the global context bar (context_bar.py).
+    `section_key` is kept for the call sites; the bar is drawn once in the
+    sidebar by app.py and every page reads the same choice."""
+    return context_bar.current_comp_ids()
+
+
+def season_selector(section_key, include_all_seasons=False, comp_ids=None):
+    """Season id for this page from the global context bar: None for
+    'All Seasons' (only when the page accepts it), else the chosen season,
+    else the newest season with event data (see _default_season_label)."""
+    return context_bar.current_season_id(comp_ids if comp_ids is not None else context_bar.current_comp_ids(),
+                                         include_all_seasons)
 
 
 def get_league_label(comp_ids):
@@ -2222,45 +2511,6 @@ def get_season_ids_for_selection(selected_season_id, comp_ids):
     if len(matching_ids) <= 1:
         return selected_season_id
     return matching_ids
-
-
-def season_selector(section_key, include_all_seasons=False, comp_ids=None):
-    """Render a season selector in the sidebar. Returns season_id (int) or None for 'All Seasons'.
-    If comp_ids is provided, only shows seasons for those competitions.
-    """
-    if comp_ids is not None:
-        available_seasons = {}
-        for cid in comp_ids:
-            if cid in COMPETITIONS:
-                available_seasons.update(COMPETITIONS[cid]["seasons"])
-    else:
-        available_seasons = SEASON_ID_MAP
-
-    # Deduplicate display names (e.g. both leagues have "2025/26")
-    # Use an ordered dict to preserve season order (newest first)
-    unique_labels = list(dict.fromkeys(available_seasons.values()))
-    options = unique_labels
-    if include_all_seasons:
-        options = ["All Seasons"] + options
-
-    session_key = f"season_select_{section_key}"
-    default_idx = 1 if include_all_seasons else 0
-
-    selected_label = st.sidebar.selectbox(
-        "Season",
-        options,
-        index=default_idx,
-        key=session_key
-    )
-
-    if selected_label == "All Seasons":
-        return None
-    # Reverse lookup: label -> season_id (return first match from available seasons)
-    for sid, label in available_seasons.items():
-        if label == selected_label:
-            return sid
-    # Fallback
-    return list(available_seasons.keys())[0] if available_seasons else CURRENT_SEASON_ID
 
 
 # ==============================================================================
@@ -2571,6 +2821,17 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, se
     return match_log_df
 
 @st.cache_data
+def _next_shot_id_by_match(events_df):
+    """Series aligned to events_df.index: the id of the next shot in the same
+    match (a backfill of 'shot_event_id'). Safe on an EMPTY frame — there the
+    grouped bfill returns a Series that pandas does NOT turn into a column on
+    assignment, which surfaced as KeyError 'next_shot_id' on every player page
+    for a season whose events hadn't been ingested yet."""
+    if events_df.empty:
+        return pd.Series(index=events_df.index, dtype='float64')
+    return events_df.groupby('matchId')['shot_event_id'].bfill().reindex(events_df.index)
+
+
 def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
     """
     A new, streamlined function to calculate ONLY the key stats for player profiles.
@@ -2597,7 +2858,7 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
         npxg_totals = shots_df.groupby('player.id')['shot.xg'].sum().reset_index().rename(columns={'shot.xg': 'npxG'})
 
         events_df['shot_event_id'] = np.where(events_df['shot.xg'].notna(), events_df['id'], np.nan)
-        events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
+        events_df['next_shot_id'] = _next_shot_id_by_match(events_df)
         shot_xg_map = events_df[events_df['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
 
         assists_df = events_df[events_df.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x)].copy()
@@ -2888,52 +3149,16 @@ WEIGHTS = {
 }
 INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled past % (proj)', 'DefR Value Conceded']
 
-# --- Player one-pager: engine-role helpers -----------------------------------
-# The six canonical engine roles (player_engine.parquet's `role`). The PDF
-# branches on these, not on the raw position or the config template names:
-# Lucas asked for the split by engine role (Central Defender / Wide Defender /
-# Advanced Midfielder / ...). The three "attacking" roles get shot + creation
-# maps; the three others get the defensive heatmap.
-_ENGINE_ATTACK_ROLES = {'Striker', 'Wide Attacker', 'Advanced Midfielder'}
-_ENGINE_DEF_ROLES = {'Deep Midfielder', 'Wide Defender', 'Central Defender'}
-# Config-template fallback for players with no engine row (keepers, mostly).
-# An ALLOWLIST, not a denylist: only these template roles get the attacking
-# layout (shot + creation maps); everything else — GK templates, centre-backs,
-# full-backs, holding mids — gets the defensive heatmap, which is the safe
-# default for any position. A denylist silently routed keepers to the
-# attacking branch, because the GK templates were not in it.
-_ATTACK_TEMPLATE_ROLES = {
-    'Mobile Striker', 'Shadow Striker', 'Poacher', 'Target Man',
-    'Pressing Forward',                                    # CF / SS
-    'Advanced Playmaker', 'Wide Winger', 'Creative Winger',
-    'Inside Forward',                                      # wingers / AM
-}
-# A handful of legacy rows carry dirty variants (STRIKER, WINGER, CB, CM);
-# normalise them so the split is total.
-_ENGINE_ROLE_ALIASES = {
-    'STRIKER': 'Striker', 'WINGER': 'Wide Attacker',
-    'CB': 'Central Defender', 'CM': 'Deep Midfielder',
-}
-
-
-def _canonical_engine_role(raw):
-    """Map a raw engine `role` value to one of the six canonical roles, or
-    None when it is missing/unrecognised (e.g. keepers, whom the engine
-    does not rate)."""
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    if s in _ENGINE_ATTACK_ROLES or s in _ENGINE_DEF_ROLES:
-        return s
-    return _ENGINE_ROLE_ALIASES.get(s.upper())
-
-
-def _engine_role_is_attacking(role):
-    """True for Striker / Wide Attacker / Advanced Midfielder. Keepers and
-    anything unclassified fall through to the defensive layout, which is the
-    safe default — a defensive heatmap is meaningful for every position, a
-    shot map is not."""
-    return _canonical_engine_role(role) in _ENGINE_ATTACK_ROLES
+# --- CVI / projected-value model: extracted to models/value/cvi.py (2026-09) ---
+# Every public and _private name the pages use is re-exported via __all__ so
+# the ~12 call sites below are unchanged. Keep model logic THERE, not here.
+from models.value.cvi import *
+from models.similarity import similar_players  # like-for-like search (pure)
+from models.strength import sos as sos_model  # strength-of-schedule adjustment (pure)
+from models.value.eur_intervals import (  # engine value + fee-calibrated interval
+    ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
+    engine_value_eur_frame, projected_eur_interval,
+    load_calibration as load_eur_calibration, format_eur_short, format_eur_range)  # noqa: F401,F403
 
 
 def _role_key_stats(stats_row, template_role, cap=12):
@@ -2968,9 +3193,10 @@ def _role_key_stats(stats_row, template_role, cap=12):
 # Composite Value Index (CVI) — v1 parameters
 # ==============================================================================
 # CVI is a single 0–~150 score combining performance, age-value premium,
-# sample reliability, and league strength. Calibrated against the
-# 27 user-reported transfer fees (real + synthetic) via a CVI → EUR
-# power curve in the bio "Projected value" cell.
+# sample reliability, and league strength. Its EUR mapping
+# (models/value/cvi.cvi_to_projected_eur) is the same curve the engine
+# value rides; the fee calibration behind the likely-fee range lives in
+# models/value/eur_intervals.py (real permanent sales only).
 #
 # Formula:
 #   CVI = PerformanceQuality
@@ -2979,1288 +3205,6 @@ def _role_key_stats(stats_row, template_role, cap=12):
 #       × LeagueMultiplier
 #
 # Each component is documented inline below.
-
-# Position-tuned blend of Role_Score percentile and Action V percentile
-# for PerformanceQuality.
-#
-# v1.8 rebalance — the old 50-80% role weights underestimated the
-# overlap between Role_Score and Action V. Role_Score's underlying
-# metric weights already include heavy contributions from the same
-# signals that build Total Value/90:
-#   - npxG → Shooting Value           (r ≈ 0.95 per GPA explainer)
-#   - xAOP → Passing/Receiving Value
-#   - xTOP → Passing/Receiving Value
-#   - Progressive Passes → Passing Value
-#   - Dribbles successful → Dribbling Value
-# So weighting Action V at 40-50% (the old ST/AM_WG weights) was
-# largely double-counting the same chance-creation/progression signal.
-# The new weights keep Action V as a sanity-check cross-validator but
-# make Role_Score the dominant input — which is what role-fit
-# scouting at the lower-division level actually rewards.
-#
-# GK still gets the most extreme tilt because the GPA explainer
-# (Part VI) shows Action V is a particularly weak signal for keepers
-# (Shot-Stopping Value within-pos r ≈ 0.03 within a single season).
-CVI_PERF_WEIGHTS = {
-    'GK':    (0.90, 0.10),   # (role, action_v)
-    'CB':    (0.85, 0.15),
-    'FB':    (0.80, 0.20),
-    'CM':    (0.80, 0.20),
-    'AM_WG': (0.75, 0.25),
-    'ST':    (0.75, 0.25),
-}
-
-# AgeValueMultiplier(age, position) — NPV of remaining career value
-# (v2.5).
-#
-# Model: a player's age multiplier = the sum of expected future
-# performance years from their current age until career end. The
-# multiplier strictly decreases with age because every year you age,
-# you lose one year of remaining career.
-#
-# Captures the four mechanisms the user identified:
-#   1. Projected rate of perf IMPROVEMENT  → youth_baseline → 1.0 by peak_age
-#   2. Years REMAINING before decline      → peak_age → decline_start
-#   3. Projected rate of perf DECLINE      → decline_start → career_end
-#   4. Total career value                  → integral of the above
-#
-# Three-phase performance trajectory at any future age:
-#   age < peak_age:        linear growth from youth_baseline at 16 to 1.0
-#   peak_age ≤ age < decline_start: flat at 1.0
-#   decline_start ≤ age < career_end: linear decline from 1.0 to 0
-#   age ≥ career_end:      0
-#
-# Remaining career value at age A = ∫ perf(t) dt from t=A to career_end
-# (approximated by sum across integer year boundaries, linearly
-# interpolated for fractional ages).
-#
-# Final multiplier:
-#   m(A) = old_floor + (max_mult − old_floor) × (rcv(A) / rcv(16))
-#
-# Anchored to rcv(16) so the multiplier hits max_mult at age 16 and
-# old_floor at career_end. Strictly monotone non-increasing across
-# all ages.
-#
-# Per-position trajectory parameters (best evidence from CIES +
-# market analyses):
-#   GK     peak 28, decline 33, end 39  — longest career, latest decline
-#   CB     peak 27, decline 31, end 36
-#   CM     peak 26, decline 30, end 35
-#   FB     peak 25, decline 29, end 33
-#   ST     peak 25, decline 28, end 33
-#   AM_WG  peak 24, decline 27, end 32  — pace-dependent, earliest end
-#
-# Sample multipliers for ST (peak 25, decline 28, end 33):
-#   16yo → 1.80  ~17 years of remaining perf; wonderkid premium
-#   21yo → 1.38  Approaching peak, still 12 years
-#   25yo → 0.92  At perf peak, 8 years left
-#   28yo → 0.51  Decline starts now, 5 years
-#   30yo → 0.26  Mid-decline, 3 years
-#   33yo → 0.10  Floor
-#
-# Same perf=70:
-#   16yo CVI 126 vs 25yo CVI 65   → 2× premium for the wonderkid
-#   16yo CVI 126 vs 30yo CVI 18   → 7× premium
-CVI_AGE_VALUE_PARAMS = {
-    # v2.7 — further compressed. v2.6 still felt too age-heavy in
-    # practice. Tightened the range from max~1.55 / floor~0.40
-    # (~4× spread) to max~1.30 / floor~0.55 (~2.4× spread). Performance
-    # now strongly dominates the final CVI; age is a meaningful but
-    # subordinate modifier. Career-NPV shape unchanged.
-    'GK':    {'peak_age': 28, 'decline_start': 33, 'career_end': 39,
-              'max_mult': 1.20, 'old_floor': 0.60, 'youth_baseline': 0.55},
-    'CB':    {'peak_age': 27, 'decline_start': 31, 'career_end': 36,
-              'max_mult': 1.28, 'old_floor': 0.55, 'youth_baseline': 0.50},
-    'CM':    {'peak_age': 26, 'decline_start': 30, 'career_end': 35,
-              'max_mult': 1.28, 'old_floor': 0.55, 'youth_baseline': 0.50},
-    'FB':    {'peak_age': 25, 'decline_start': 29, 'career_end': 33,
-              'max_mult': 1.30, 'old_floor': 0.55, 'youth_baseline': 0.50},
-    'ST':    {'peak_age': 25, 'decline_start': 28, 'career_end': 33,
-              'max_mult': 1.32, 'old_floor': 0.55, 'youth_baseline': 0.50},
-    'AM_WG': {'peak_age': 24, 'decline_start': 27, 'career_end': 32,
-              'max_mult': 1.35, 'old_floor': 0.55, 'youth_baseline': 0.50},
-}
-
-
-def _cvi_expected_perf_at(age, params):
-    """Expected normalized performance at given age (0..1).
-    Three-phase: youth growth → peak plateau → linear decline → 0."""
-    if age < 16:
-        return params['youth_baseline']
-    if age >= params['career_end']:
-        return 0.0
-    if age < params['peak_age']:
-        yb = params['youth_baseline']
-        return yb + (1.0 - yb) * (age - 16) / (params['peak_age'] - 16)
-    if age < params['decline_start']:
-        return 1.0
-    decline_yrs = params['career_end'] - params['decline_start']
-    if decline_yrs <= 0:
-        return 0.0
-    return max(1.0 - (age - params['decline_start']) / decline_yrs, 0.0)
-
-
-def _cvi_cum_remaining_career(age_int, params):
-    """Sum of expected perf from int(age) up to career_end−1
-    (integer-year boundaries)."""
-    ce = int(params['career_end'])
-    if age_int >= ce:
-        return 0.0
-    start = max(int(age_int), 16)
-    return sum(_cvi_expected_perf_at(t, params) for t in range(start, ce))
-
-
-# Pre-compute max remaining career value at age 16 per position so
-# the multiplier hits max_mult exactly at age 16. Computed at module
-# load time; safe because CVI_AGE_VALUE_PARAMS is fixed.
-_CVI_MAX_CAREER_VALUE = {
-    pos: _cvi_cum_remaining_career(16, p)
-    for pos, p in CVI_AGE_VALUE_PARAMS.items()
-}
-
-# ---- ReliabilityWeight ----
-# Replaces the naive `min(mins/1800, 1.0)` ramp from CVI v1.
-#
-# Grounded in the empirical per-position stability table from the GPA
-# v2 explainer (reports/gpa_explainer.pdf, Part VI; raw data at
-# models/validation/stability_by_minutes.csv). The headline finding:
-# within-position YoY r for Total Value differs by ~5× across positions
-# at the same sample size:
-#
-#   pos      within-pos YoY r @ 900 min (Total Value)
-#   ─────    ────────────────────────────────────────
-#   CM       0.64    ← most stable outfield position
-#   FB       0.41
-#   STRIKER  0.32
-#   AM_WG    ~0.20   (winger 0.13, attmid sparse sample)
-#   CB       0.19
-#   GK       0.12    ← V-metrics need ~2 seasons per explainer Part VII
-#
-# Two implications a single linear ramp can't capture:
-#  1. ASYMPTOTIC CEILING differs by position. A CB rated on event-only V
-#     metrics has a structural noise floor (defensive valuation is hard
-#     per Visual 4). No amount of minutes makes CB Total Value as
-#     reliable as CM Total Value. The ceiling reflects that.
-#  2. TIME-TO-CEILING differs by position. GK needs ~2 full seasons
-#     for shot-stopping / handling / sweeping to stabilize. Outfielders
-#     reach near-ceiling around 1500-1800 min.
-#
-# These ceilings ARE NOT raw YoY r values — they're translated into
-# 0-1 weights via the psychometric convention also used in the explainer:
-#   r ≥ 0.7 ≈ trustworthy standalone (weight = 1.0)
-#   r ≈ 0.5 ≈ useful as composite input (weight ≈ 0.7)
-#   r < 0.3 ≈ noise floor (weight ≈ 0.2)
-# Then bumped upward by the Spearman-Brown effect of CVI being a
-# composite (Role_Score blends 15-25 weighted metrics; n_eff ≈ 3
-# accounting for inter-metric correlation), which lifts a within-pos
-# r=0.45 composite-input into an effective ~0.71 — putting a typical
-# outfielder near ceiling=0.95 once they have full minutes.
-CVI_RELIAB_CEILING_BY_POS = {
-    'GK':    0.70,   # event-V can't fully measure shot-stopping; need 2 seasons
-    'CB':    0.85,   # defensive valuation hard (explainer Visual 4 hybrid)
-    'AM_WG': 0.90,
-    'FB':    0.92,
-    'ST':    0.92,
-    'CM':    0.95,   # most metrics in the role composite are stable
-}
-CVI_RELIAB_CEILING_DEFAULT = 0.85
-
-# Minutes at which we approximately reach the position's ceiling
-# (≈95% there; the curve smoothly saturates above this).
-CVI_RELIAB_MINS_TO_CEILING = {
-    'GK':    3600,   # ~2 full seasons per explainer Part VII
-    'CB':    2100,
-    'AM_WG': 1800,
-    'FB':    1800,
-    'ST':    1800,
-    'CM':    1500,
-}
-CVI_RELIAB_MINS_TO_CEILING_DEFAULT = 1800
-
-# NOTE on the (now-removed) very-short-sample floor:
-# v1 had a linear floor below 270 min so small-sample players didn't
-# collapse to reliab=0 (which would have killed their CVI via
-# multiplication). With v2.0's empirical-Bayes shrinkage the
-# justification went away — even a 0-reliability player gets shrunk
-# to a sensible prior (their career mean if known, 40 if not), never
-# to 0. The floor was also creating a JUMP of ~25 percentage points
-# at the 270-min boundary where the floor formula and the saturating
-# curve didn't meet smoothly. Removed in v2.1.
-
-# ---- Shrinkage prior ----
-# When reliability is low, we don't shrink the rating to ZERO — we
-# shrink it toward a "replacement-level" prior (the freely-available
-# player a club could sign tomorrow). Statistically this is empirical
-# Bayes: with low sample, weight the prior more; with high sample,
-# weight the observation more.
-#
-#   shrunk_perf = reliab × raw_perf + (1 − reliab) × replacement_perf
-#
-# Why 40 on the 0-100 scale? PerformanceQuality is a within-position
-# percentile blend, so "40" literally means "≈40th-percentile player
-# within this position group" — a marginal starter / quality bench
-# player at this tier. That's the conventional sabermetric definition
-# of replacement level (the worst player a competitive team would
-# field), borrowed from Baseball Prospectus's VORP and FanGraphs' WAR.
-#
-# Effect on the math:
-#   • A 70-rated CB with 300 min (reliab=0.27):
-#       shrunk = 0.27×70 + 0.73×40 = 48.1
-#       (vs old: CVI_perf×reliab = 70×0.27 = 18.9 — punished too hard)
-#   • A 70-rated CB with 1800 min (reliab=0.79):
-#       shrunk = 0.79×70 + 0.21×40 = 63.7
-#       (already close to the observed rating)
-#   • A 25-rated player with 300 min (reliab=0.27):
-#       shrunk = 0.27×25 + 0.73×40 = 35.9
-#       (low ratings ALSO pulled toward replacement — we don't
-#       overreact to a small sample of bad performances either)
-CVI_REPLACEMENT_PERF = 40.0
-
-# Pure tier-level league multipliers, anchored to the empirical
-# mover-based cross-tier ratio from the cross-tier analysis (see
-# git history around 2026-05: 41 Camp→L3 movers showed ~0.80×
-# V/90 in L3 vs Camp; 271 L3→Camp movers showed ~0.89× L3/Camp;
-# the all-movers median of 0.88 weighted by sample sizes lands
-# at ~0.85 once selection bias on the upward-mover side is folded
-# in). We deliberately do NOT layer team-strength-within-tier on
-# top — GPA Total Value already encodes team context per action,
-# so a team multiplier would double-count it.
-#
-# Reference frame: Liga 3 = 1.0 (baseline).
-CVI_LEAGUE_MULTIPLIER = {
-    43324: 1.00,    # Liga 3
-    702:   0.85,    # Campeonato de Portugal
-}
-# Fallback for any competition not in the dict (won't normally fire
-# since the dashboard's data scope is Liga 3 + Camp only).
-CVI_LEAGUE_DEFAULT = 1.0
-
-
-# v2.8 — position-specific multiplier applied to the CVI→EUR mapping
-# (bio "Projected value" cell). Literature-grounded priors compressed
-# toward 1.0 for Liga 3 reality.
-#
-# Sources informing the magnitudes:
-#   • CIES (Poli, Besson & Ravenel 2022, Economies 10/1/4) — standardized
-#     experience betas: forwards 0.934 > mid 0.793 > CB 0.749 > FB 0.606
-#     > GK 0.407. Ratio GK/FW ≈ 0.44 in Big-5.
-#   • Müller, Simons & Weinmann (2017, EJOR) — position random-effect SD
-#     0.050 on log-MV (~±5% spread once age/perf/club/league controlled).
-#   • Franceschi, Brocard, Follert & Gouguet (2024, JoES 38(3)) — review
-#     of 29 papers / 111 specs: directional ordering ST > AM/WG > CM >
-#     CB > FB > GK is robust; FB shows the most-negative coef vs CF.
-#   • Frick (2007, SJPE) — GK pay penalty mechanism (low role flexibility).
-#   • Garcia-del-Barrio & Pujol (2007, MDE) — attacker premium driven by
-#     crowd-pulling capacity — a mechanism MUCH weaker in Liga 3, so we
-#     deliberately compress the GK discount toward 0.70 (not Big-5's ~0.50).
-POSITION_EUR_MULTIPLIER = {
-    'ST':    1.30,
-    'AM_WG': 1.25,
-    'CM':    1.00,
-    'CB':    0.90,
-    'FB':    0.85,
-    'GK':    0.70,
-}
-
-# v2.9 — extra Campeonato discount on the EUR side. CVI already uses
-# league_factor 0.85 for Camp inside the score itself, but the user wants
-# Camp projected prices nudged down further to reflect that even an
-# "equivalent CVI" Camp player commands a lower real fee at sale (smaller
-# scout footprint, less liquid market, lower buyer competition). Combined
-# with the in-CVI 0.85, a Camp player at the same raw inputs as a Liga 3
-# player ends up at ~0.85 × 0.85 ≈ 72% of the Liga 3 projected EUR.
-CAMP_PROJECTED_EUR_PENALTY = 0.85
-
-# v2.10 — steeper top + lower mid/bottom. User: "top line should stay
-# similar while the middle and bottom drop off a little." Higher
-# exponent (2.55 → 2.70) widens the spread between bottom and top;
-# coefficient anchored (1.10) so CVI 110 stays at ~€355k (matches v2.9).
-# Effect vs v2.9 (CM, Liga 3):
-#   CVI 40   €27k → €23k   (−14%)
-#   CVI 60   €76k → €69k   (−9%)
-#   CVI 80   €159k → €151k (−5%)
-#   CVI 100  €281k → €275k (−2%)
-#   CVI 110  €358k → €355k (anchor)
-#   CVI 120  €447k → €450k (+1%)
-PROJECTED_EUR_COEF = 1.10
-PROJECTED_EUR_EXP  = 2.70
-PROJECTED_EUR_CAP  = None   # cap removed 2026-06-23 (Lucas) — was 500_000. Only
-                            # 1 rated player was pinned at it (max uncapped ~€431k),
-                            # so it was a near-inert safety rail. Set back to a number
-                            # (e.g. 500_000) to re-enable the min() clamp.
-
-
-def cvi_to_projected_eur(cvi, position_group=None, competition_id=None):
-    """Convert a CVI score to a projected EUR figure: power curve +
-    position multiplier + Camp penalty. Cap removed 2026-06-23 (the
-    €500k clamp is now opt-in via PROJECTED_EUR_CAP). Returns None if
-    cvi is None/<=0."""
-    try:
-        v = float(cvi)
-    except (TypeError, ValueError):
-        return None
-    if not (v > 0):
-        return None
-    pos_mult = POSITION_EUR_MULTIPLIER.get(position_group, 1.00)
-    camp_mult = (CAMP_PROJECTED_EUR_PENALTY
-                  if competition_id is not None
-                  and not (isinstance(competition_id, float) and pd.isna(competition_id))
-                  and int(competition_id) == 702
-                  else 1.00)
-    val = (PROJECTED_EUR_COEF * (v ** PROJECTED_EUR_EXP)
-            * pos_mult * camp_mult)
-    return val if PROJECTED_EUR_CAP is None else min(val, PROJECTED_EUR_CAP)
-
-
-def _cvi_position_group(primary_position):
-    """Map Wyscout primaryPosition to a CVI position-group key
-    (matches keys in CVI_PERF_WEIGHTS / CVI_AGE_VALUE_PARAMS)."""
-    if primary_position is None:
-        return None
-    try:
-        if pd.isna(primary_position):
-            return None
-    except (TypeError, ValueError):
-        pass
-    p = str(primary_position)
-    if p == 'GK': return 'GK'
-    if p in ('CB', 'LCB', 'RCB', 'LCB3', 'RCB3'): return 'CB'
-    if p in ('LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'): return 'FB'
-    if p in ('CMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3',
-             'DMF', 'LDMF', 'RDMF'): return 'CM'
-    if p in ('AMF', 'LAMF', 'RAMF', 'LMF', 'RMF',
-             'LW', 'RW', 'LWF', 'RWF'): return 'AM_WG'
-    if p in ('CF', 'SS'): return 'ST'
-    return None
-
-
-def _cvi_reliability_weight(mins, position_group):
-    """Position-aware reliability weight grounded in within-position
-    YoY r data from the GPA explainer (Part VI).
-
-    Shape:
-      mins < 270:        linear ramp 0 → FLOOR (0.15)
-      mins ≥ 270:        ceiling(pos) × (1 − exp(−3 × mins / mins_to_ceiling(pos)))
-                          which reaches ~95% of ceiling at mins_to_ceiling
-                          and asymptotes toward ceiling above that
-
-    Returns a tuple (weight, breakdown_dict) where breakdown_dict has the
-    raw ceiling, sample_factor (the 0..1 saturating curve value before
-    multiplying by ceiling), and mins_to_ceiling — for surfacing in the
-    UI so users can audit why a player got 0.65 vs 1.0.
-    """
-    import math
-    if mins is None:
-        return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
-    try:
-        if pd.isna(mins):
-            return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
-        mins = float(mins)
-    except Exception:
-        return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
-    if mins <= 0:
-        return 0.0, {'ceiling': None, 'sample_factor': 0.0, 'mins_to_ceiling': None}
-    ceiling = CVI_RELIAB_CEILING_BY_POS.get(position_group, CVI_RELIAB_CEILING_DEFAULT)
-    mins_full = CVI_RELIAB_MINS_TO_CEILING.get(position_group,
-                                                  CVI_RELIAB_MINS_TO_CEILING_DEFAULT)
-    # Smooth saturating curve from 0 — no discontinuity. Combined with
-    # the v2.0 empirical-Bayes prior, a very-low-sample player no longer
-    # collapses to 0; they're shrunk toward their career prior (or 40
-    # for a debutant). At mins=100 the weight is ~0.17, at 270 it's
-    # ~0.40, at mins_full it's ~0.95 — continuous everywhere.
-    sample_factor = 1.0 - math.exp(-3.0 * mins / mins_full)
-    weight = ceiling * sample_factor
-    return weight, {'ceiling': ceiling, 'sample_factor': sample_factor,
-                     'mins_to_ceiling': mins_full}
-
-
-def _cvi_age_value_multiplier(age, position_group):
-    """NPV-of-remaining-career age multiplier. Returns 1.0 if inputs
-    can't be evaluated (so missing age doesn't tank the CVI).
-
-    Sums the player's expected future performance from current age to
-    career_end, normalizes against the value at age 16. Result is
-    strictly non-increasing in age — same raw_perf, younger always
-    wins, with the magnitude reflecting how many productive years
-    they have left.
-
-    Captures: rate of perf improvement (youth → peak), years before
-    decline, rate of perf decline, and total career horizon. See
-    CVI_AGE_VALUE_PARAMS docstring for parameters.
-
-    For fractional ages, linearly interpolates between integer-year
-    cumulative values so the curve is smooth (no step jumps).
-    """
-    import math
-    if age is None or position_group not in CVI_AGE_VALUE_PARAMS:
-        return 1.0
-    try:
-        a = float(age)
-        if pd.isna(a):
-            return 1.0
-    except (TypeError, ValueError):
-        return 1.0
-    p = CVI_AGE_VALUE_PARAMS[position_group]
-    if a >= p['career_end']:
-        return p['old_floor']
-    lo = int(math.floor(a))
-    hi = lo + 1
-    f = a - lo
-    rcv_lo = _cvi_cum_remaining_career(lo, p)
-    rcv_hi = _cvi_cum_remaining_career(hi, p)
-    rcv = rcv_lo * (1.0 - f) + rcv_hi * f
-    max_rcv = _CVI_MAX_CAREER_VALUE.get(position_group, 1.0)
-    if max_rcv <= 0:
-        return p['old_floor']
-    norm = max(0.0, min(rcv / max_rcv, 1.0))
-    return p['old_floor'] + (p['max_mult'] - p['old_floor']) * norm
-
-
-def compute_cvi_columns(player_stats_df, *, age_lookup,
-                         comp_id_lookup=None,
-                         opta_team_strength_lookup=None,   # deprecated, kept for compat
-                         team_col='teamName',
-                         prior_lookup=None):
-    """Compute CVI + its components for every row in player_stats_df.
-
-    Args:
-        player_stats_df: DataFrame from calculate_player_percentiles_and_scores
-            (must have primaryPosition, totalMinutes, all {role}_Score
-            columns, and 'Total Value' from GPA merge).
-        age_lookup: callable playerId -> age in years (or None).
-        comp_id_lookup: callable playerId -> competitionId (43324 or 702).
-            If None, falls back to the player_stats_df's competitionId
-            column if present, else assumes Liga 3 (1.0×).
-        opta_team_strength_lookup: deprecated. Earlier versions used team
-            Opta strength to scale LeagueMultiplier within a tier; we
-            dropped that to avoid double-counting team context which is
-            already encoded in GPA Total Value per action. Argument
-            kept so call sites don't break.
-        team_col: column in player_stats_df with the team name (still
-            used for joining / display, but not for CVI math anymore).
-
-    Returns:
-        DataFrame with the same index as input plus columns:
-            _CVI            — final composite (0–~150 typical)
-            _CVI_perf       — raw PerformanceQuality (0-100)
-            _CVI_perf_shrunk — shrunk toward replacement-level prior
-                              (this is what actually feeds into CVI)
-            _CVI_age        — AgeValueMultiplier (0.4-1.6)
-            _CVI_reliab     — ReliabilityWeight (0-1), position-aware;
-                              this is the *shrinkage weight*, not a
-                              multiplier on perf anymore
-            _CVI_reliab_ceiling          — asymptotic max for this pos
-            _CVI_reliab_sample_factor    — 0..1 sample-driven curve value
-            _CVI_reliab_mins_to_ceiling  — min count for ~95% of ceiling
-            _CVI_league     — LeagueMultiplier (0.85 or 1.0)
-            _CVI_trajectory — shrunk_perf - same-age-position-median
-                              (a "+30 flag" surfaced separately, NOT
-                              applied to CVI)
-    """
-    if player_stats_df is None or player_stats_df.empty:
-        return pd.DataFrame()
-
-    df = player_stats_df.copy()
-
-    # ---- BULLETPROOF DTYPE COERCION AT ENTRY ----
-    # The dashboard's upstream pipelines (especially the cross-tier Liga 3
-    # + Campeonato merges) can leak object-dtype columns containing
-    # sentinel strings like '—', '-', 'N/A', or even mixed int/str
-    # values. Any of those would later blow up a sort/rank/between/clip
-    # comparison with the cryptic "'>=' not supported between str and
-    # float" TypeError. Coerce every column we will compare/sort here.
-    #
-    # primaryPosition: leave as object (string-keyed map below) but force
-    # to string so int values from a broken merge don't trip _cvi_position_group.
-    if 'primaryPosition' in df.columns:
-        df['primaryPosition'] = df['primaryPosition'].apply(
-            lambda v: str(v) if v is not None and not pd.isna(v) else None
-        )
-    # Total Value (the V/90 column we rank): force numeric.
-    if 'Total Value' in df.columns:
-        df['Total Value'] = pd.to_numeric(df['Total Value'], errors='coerce')
-    # totalMinutes drives reliability — same defensive coercion.
-    if 'totalMinutes' in df.columns:
-        df['totalMinutes'] = pd.to_numeric(df['totalMinutes'], errors='coerce')
-    # All <Role>_Score columns we read in _best_role_score.
-    for _sc in [c for c in df.columns if c.endswith('_Score')]:
-        df[_sc] = pd.to_numeric(df[_sc], errors='coerce')
-
-    # Map position to CVI group + age. Coerce age to numeric — for some
-    # Campeonato player-seasons the age lookup may return a string
-    # (e.g. an unparsed birthDate) which would later blow up the
-    # df['_cvi_age'].between(a-2, a+2) call inside _expected_perf with
-    # "TypeError: '>=' not supported between str and float".
-    df['_cvi_group'] = df['primaryPosition'].map(_cvi_position_group)
-    df['_cvi_age'] = pd.to_numeric(df['playerId'].map(age_lookup),
-                                     errors='coerce')
-
-    # ---- PerformanceQuality (Role component) ----
-    # v1.9 — versatility-aware aggregation. Pure max threw away the
-    # signal that a player good across multiple eligible roles is
-    # more flexible (and hence more valuable in the transfer market)
-    # than a one-role specialist at the same peak.
-    #
-    # Formula:
-    #   role_score = α × max(eligible_role_scores)
-    #              + (1 − α) × mean(eligible_role_scores)
-    #
-    # α = 0.6 → 60% best role + 40% mean across all eligible roles.
-    # Worked examples (a CF/SS eligible for 5 striker roles):
-    #
-    #   Player type            scores              old (max)  new (0.6/0.4)
-    #   ────────────────────── ──────────────────  ─────────  ──────────────
-    #   Specialist Poacher     [80, 30, 30, 30, 30]   80        64
-    #   Versatile #9           [70, 65, 60, 50, 40]   70        64.8
-    #   Compleat striker       [70, 70, 70, 70, 70]   70        70
-    #
-    # The compleat striker now wins — what scouts intuit. The
-    # specialist takes a bigger hit because their non-Poacher numbers
-    # really are weak (and a Mourinho would pay for an all-rounder
-    # over a one-trick pony at the same headline). α=0.6 is a starting
-    # point; can be tuned off the reported transfer fees.
-    CVI_ROLE_VERSATILITY_ALPHA = 0.6  # weight on max vs mean
-
-    def _role_score_blend(row):
-        pos = row.get('primaryPosition')
-        eligible = [r for r in WEIGHTS if pos in POSITION_GROUPS.get(r, [])]
-        vals = []
-        for r in eligible:
-            v = row.get(f"{r}_Score")
-            try:
-                if v is not None and not pd.isna(v):
-                    vals.append(float(v))
-            except Exception:
-                pass
-        if not vals:
-            return None
-        if len(vals) == 1:
-            return vals[0]   # single-role case → no blending needed
-        a = CVI_ROLE_VERSATILITY_ALPHA
-        return a * max(vals) + (1.0 - a) * (sum(vals) / len(vals))
-
-    df['_cvi_role_score'] = df.apply(_role_score_blend, axis=1)
-
-    # Action V percentile within position group — rank Total Value
-    # within same _cvi_group so a 0.05 V/90 striker isn't compared
-    # against a 0.005 V/90 CB.
-    # Defensive coercion: in cross-tier merges the 'Total Value' column
-    # can come in as object dtype (string '—' for missing Camp rows
-    # alongside floats for matched rows). rank() then raises
-    # "'>=' not supported between str and float". Force numeric first.
-    val_col = 'Total Value' if 'Total Value' in df.columns else None
-    if val_col:
-        df[val_col] = pd.to_numeric(df[val_col], errors='coerce')
-        df['_cvi_av_pct'] = (df.groupby('_cvi_group')[val_col]
-                              .rank(pct=True, method='average') * 100.0)
-    else:
-        df['_cvi_av_pct'] = None
-
-    # Same risk for totalMinutes (some pipelines stash it as object).
-    if 'totalMinutes' in df.columns:
-        df['totalMinutes'] = pd.to_numeric(df['totalMinutes'], errors='coerce')
-
-    def _perf_quality(row):
-        g = row.get('_cvi_group')
-        if g not in CVI_PERF_WEIGHTS:
-            return None
-        w_role, w_av = CVI_PERF_WEIGHTS[g]
-        role = row.get('_cvi_role_score')
-        av = row.get('_cvi_av_pct')
-        # Coerce both to float (or None) up-front so we can't return a
-        # weird type that breaks downstream sorts/comparisons.
-        try:
-            role_f = (float(role) if role is not None
-                       and not pd.isna(role) else None)
-        except Exception:
-            role_f = None
-        try:
-            av_f = (float(av) if av is not None
-                     and not pd.isna(av) else None)
-        except Exception:
-            av_f = None
-        # Fall back gracefully when one side is missing — re-weight
-        # so the score still uses the other side at full weight.
-        if av_f is None and role_f is None:
-            return None
-        if av_f is None:
-            return role_f
-        if role_f is None:
-            return av_f
-        return w_role * role_f + w_av * av_f
-
-    df['_CVI_perf'] = pd.to_numeric(df.apply(_perf_quality, axis=1),
-                                      errors='coerce')
-
-    # ---- AgeValueMultiplier ----
-    df['_CVI_age'] = df.apply(
-        lambda r: _cvi_age_value_multiplier(r.get('_cvi_age'), r.get('_cvi_group')),
-        axis=1,
-    )
-
-    # ---- ReliabilityWeight ----
-    # Position-aware empirical curve (see CVI_RELIAB_* constants above).
-    if 'totalMinutes' in df.columns:
-        _reliab_results = df.apply(
-            lambda r: _cvi_reliability_weight(r.get('totalMinutes'), r.get('_cvi_group')),
-            axis=1,
-        )
-        df['_CVI_reliab'] = _reliab_results.apply(lambda t: t[0])
-        df['_CVI_reliab_ceiling'] = _reliab_results.apply(
-            lambda t: t[1].get('ceiling'))
-        df['_CVI_reliab_sample_factor'] = _reliab_results.apply(
-            lambda t: t[1].get('sample_factor'))
-        df['_CVI_reliab_mins_to_ceiling'] = _reliab_results.apply(
-            lambda t: t[1].get('mins_to_ceiling'))
-    else:
-        df['_CVI_reliab'] = 1.0
-        df['_CVI_reliab_ceiling'] = None
-        df['_CVI_reliab_sample_factor'] = None
-        df['_CVI_reliab_mins_to_ceiling'] = None
-
-    # ---- LeagueMultiplier ----
-    # Pure tier-level: 1.0 for Liga 3, 0.85 for Campeonato. The
-    # comp_id_lookup callable wins if provided; otherwise we use
-    # competitionId from the player_stats_df if present; otherwise
-    # the conservative default of 1.0 (we'd rather not penalize a
-    # player if we can't classify their tier).
-    if comp_id_lookup is not None and 'playerId' in df.columns:
-        comps = df['playerId'].map(comp_id_lookup)
-    elif 'competitionId' in df.columns:
-        comps = df['competitionId']
-    else:
-        comps = pd.Series([None] * len(df), index=df.index)
-    df['_CVI_league'] = comps.map(
-        lambda c: CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
-                   if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT
-    )
-
-    # ---- Empirical-Bayes shrinkage toward player-specific prior ----
-    # v2.0 — instead of always shrinking toward the generic
-    # replacement-level (40), shrink toward THIS PLAYER's career prior
-    # when we have rich prior-season data. A 1350-min season from a
-    # player with 2400 effective prior minutes shouldn't be discounted
-    # toward generic replacement — we know who he is.
-    #
-    # Formula:
-    #   prior_strength  = min(prior_mins_eff / 1500, 1.0)
-    #   effective_prior = prior_strength × player_career_perf
-    #                     + (1 − prior_strength) × CVI_REPLACEMENT_PERF
-    #   shrunk_perf     = season_reliability × raw_perf
-    #                     + (1 − season_reliability) × effective_prior
-    #
-    # With no prior data: effective_prior = 40 (falls back to v1.7
-    # behavior — debutants get the generic replacement target).
-    # With strong prior data: effective_prior = player's own career
-    # mean → the shrinkage just regresses toward what we already
-    # believe about the player, not toward a generic floor.
-    def _shrink_perf(raw_perf, reliab, prior_info):
-        if raw_perf is None or pd.isna(raw_perf):
-            return None
-        if reliab is None or pd.isna(reliab):
-            return float(raw_perf)
-        # Resolve effective prior using player-specific info if present.
-        if prior_info is None:
-            effective_prior = CVI_REPLACEMENT_PERF
-        else:
-            p_perf = prior_info.get('prior_perf')
-            p_strength = prior_info.get('prior_strength', 0.0) or 0.0
-            if p_perf is None or pd.isna(p_perf):
-                effective_prior = CVI_REPLACEMENT_PERF
-            else:
-                effective_prior = (p_strength * float(p_perf)
-                                    + (1.0 - p_strength) * CVI_REPLACEMENT_PERF)
-        w = float(reliab)
-        return w * float(raw_perf) + (1.0 - w) * effective_prior
-
-    df['_CVI_perf_shrunk'] = df.apply(
-        lambda r: _shrink_perf(
-            r.get('_CVI_perf'),
-            r.get('_CVI_reliab'),
-            prior_lookup(r.get('playerId')) if callable(prior_lookup) else None,
-        ),
-        axis=1,
-    )
-    # Expose the prior used so the UI can surface "shrunk toward 70"
-    # vs "shrunk toward 40 (debutant)" instead of always saying 40.
-    if callable(prior_lookup):
-        _prior_resolved = df['playerId'].apply(
-            lambda pid: prior_lookup(pid) if pid is not None else None
-        )
-        df['_CVI_prior_perf'] = _prior_resolved.apply(
-            lambda x: x.get('prior_perf') if isinstance(x, dict) else None
-        )
-        df['_CVI_prior_strength'] = _prior_resolved.apply(
-            lambda x: x.get('prior_strength') if isinstance(x, dict) else None
-        )
-        df['_CVI_prior_mins_eff'] = _prior_resolved.apply(
-            lambda x: x.get('prior_mins_eff') if isinstance(x, dict) else None
-        )
-        # Effective shrinkage target = blended prior actually used.
-        def _effective_prior_for_row(info):
-            if not isinstance(info, dict) or info.get('prior_perf') is None:
-                return CVI_REPLACEMENT_PERF
-            s = info.get('prior_strength', 0.0) or 0.0
-            return s * float(info['prior_perf']) + (1 - s) * CVI_REPLACEMENT_PERF
-        df['_CVI_effective_prior'] = _prior_resolved.apply(_effective_prior_for_row)
-    else:
-        df['_CVI_prior_perf'] = None
-        df['_CVI_prior_strength'] = None
-        df['_CVI_prior_mins_eff'] = None
-        df['_CVI_effective_prior'] = CVI_REPLACEMENT_PERF
-
-    # ---- Final composite ----
-    # Note: _CVI_reliab is now BAKED INTO _CVI_perf_shrunk (it's the
-    # shrinkage weight); we no longer multiply by it again.
-    df['_CVI'] = (df['_CVI_perf_shrunk']
-                   * df['_CVI_age']
-                   * df['_CVI_league'])
-
-    # ---- Trajectory flag (separate, NOT multiplied into CVI) ----
-    # Median shrunk PerformanceQuality among same-position-group
-    # same-age-band players. Using shrunk perf (not raw) keeps the
-    # comparison apples-to-apples — both numerator and denominator
-    # reflect the same sample-discount treatment.
-    def _expected_perf(row):
-        g = row.get('_cvi_group')
-        a = row.get('_cvi_age')
-        if g is None or a is None or pd.isna(a):
-            return None
-        peers = df[
-            (df['_cvi_group'] == g)
-            & (df['_cvi_age'].between(a - 2, a + 2))
-            & df['_CVI_perf_shrunk'].notna()
-        ]
-        if len(peers) < 10:
-            return None
-        return float(peers['_CVI_perf_shrunk'].median())
-
-    df['_cvi_expected_perf'] = df.apply(_expected_perf, axis=1)
-    df['_CVI_trajectory'] = df['_CVI_perf_shrunk'] - df['_cvi_expected_perf']
-
-    return df[['_CVI', '_CVI_perf', '_CVI_perf_shrunk', '_CVI_age',
-                '_CVI_reliab', '_CVI_reliab_ceiling',
-                '_CVI_reliab_sample_factor', '_CVI_reliab_mins_to_ceiling',
-                '_CVI_prior_perf', '_CVI_prior_strength',
-                '_CVI_prior_mins_eff', '_CVI_effective_prior',
-                '_CVI_league', '_CVI_trajectory']]
-
-
-# ==============================================================================
-# Career CVI (cross-season + cross-league aggregation)
-# ------------------------------------------------------------------------------
-# Single-season CVI answers "how good was this player in 2024/25?".
-# Career CVI answers "what's the durable estimate combining everything we
-# know about this player up to and including season X?".
-#
-# Aggregation rules (anchored to chosen season; never uses future seasons):
-#   1. For each prior season i (counting backwards from anchor):
-#        decay_factor_i = CVI_CAREER_DECAY ** seasons_back_i
-#        league_factor_i = CVI_LEAGUE_MULTIPLIER[comp_at_season_i]
-#                          (translates Camp perf to Liga 3 equivalent;
-#                           anchor-season league is applied AT THE END)
-#        weight_i        = decay_factor_i × mins_i
-#        contribution_i  = perf_i × league_factor_i × weight_i
-#   2. career_perf_raw_l3 = Σ contribution_i / Σ weight_i
-#   3. effective_mins     = Σ weight_i        (drives reliability shrinkage)
-#   4. shrunk_perf        = reliab × career_perf_raw_l3
-#                            + (1 − reliab) × CVI_REPLACEMENT_PERF
-#      (reliab computed at the anchor season's position group + effective_mins)
-#   5. age_at_anchor      = player_age at anchor season's start (Aug of year)
-#   6. career_CVI = shrunk_perf × AgeValueMultiplier(age_at_anchor, pos)
-#                                × CVI_LEAGUE_MULTIPLIER[league_at_anchor]
-#
-# Why "anchor at anchor season's league"?
-#   The career_perf is now in Liga-3-equivalent units (we translated each
-#   season's contribution). To finish in the right scale, we re-apply the
-#   anchor season's league multiplier. So a career CVI anchored to a Camp
-#   season gets the 0.85 final discount; anchored to a Liga 3 season does
-#   not. This keeps Current CVI commensurate with the player's current
-#   league context.
-#
-# Anchored never INCLUDES future seasons (we don't peek). When called for
-# "Current CVI", anchor = the player's most recent season; for "Season
-# CVI" inside a historical season's view, anchor = that selected season.
-CVI_CAREER_DECAY = 0.5           # weighting per season back (steeper than v2.7's 0.6 — current season counts relatively more)
-CVI_CAREER_MAX_LOOKBACK = 4      # seasons back included (0..4 = up to 5 seasons)
-# v2.8 — current season gets an explicit bonus multiplier on top of decay.
-# User: "weight the current season a little bit more". With CURRENT_BONUS=1.5
-# and DECAY=0.5, the current season's recency weight is 3× the prior season's
-# (1.5 vs 0.5). The per-season MINUTES weighting (mins_played × recency)
-# already keeps small-sample seasons from dragging the avg down — this just
-# tilts further toward "what they're doing RIGHT NOW".
-CVI_CAREER_CURRENT_BONUS = 1.5
-
-
-def _build_player_season_perf_table(gpa_values_df, player_minutes_df=None):
-    """One row per (playerId, seasonId, competitionId) with:
-       playerId, seasonId, competitionId, position_group, mins_played, perf_pct
-
-    perf_pct is the player's Total Value /90 percentile WITHIN the same
-    (seasonId × position_group) cohort — a sensible historical proxy for
-    PerformanceQuality that doesn't require re-running the full role-score
-    pipeline for every season.
-
-    Returns empty DataFrame if GPA data is unavailable.
-    """
-    if gpa_values_df is None or gpa_values_df.empty:
-        return pd.DataFrame()
-    g = gpa_values_df.copy()
-    # Pick the per-90 Total Value column (name varies between snapshots)
-    val_col = next((c for c in ('Total Value', 'total_v_per_90',
-                                  'Total Value_per_90')
-                     if c in g.columns), None)
-    if val_col is None:
-        return pd.DataFrame()
-    # Map raw position to CVI position group
-    pos_col = next((c for c in ('position', 'primaryPosition')
-                     if c in g.columns), None)
-    if pos_col is None:
-        return pd.DataFrame()
-    g['_cvi_group'] = g[pos_col].map(_cvi_position_group)
-    # Defensive numeric coercion (Camp/L3 cross-tier merges sometimes
-    # leave val_col as object dtype which breaks rank() with the
-    # str/float comparison error).
-    g[val_col] = pd.to_numeric(g[val_col], errors='coerce')
-    g = g.dropna(subset=['_cvi_group', val_col, 'seasonId', 'playerId'])
-    # Within (seasonId, position_group), percentile-rank Total Value/90
-    g['_perf_pct'] = (g.groupby(['seasonId', '_cvi_group'])[val_col]
-                        .rank(pct=True, method='average') * 100.0)
-    mins_col = next((c for c in ('mins_played', 'totalMinutes', 'Minutes')
-                      if c in g.columns), None)
-    if mins_col is None:
-        # Fall back to player_minutes_df if provided
-        if player_minutes_df is not None and not player_minutes_df.empty:
-            pm = player_minutes_df[['playerId', 'totalMinutes']].rename(
-                columns={'totalMinutes': '_mins_filled'}
-            )
-            g = g.merge(pm, on='playerId', how='left')
-            mins_col = '_mins_filled'
-        else:
-            return pd.DataFrame()
-    out = g[['playerId', 'seasonId', '_cvi_group', mins_col, '_perf_pct']].copy()
-    out = out.rename(columns={mins_col: 'mins_played',
-                                '_cvi_group': 'position_group',
-                                '_perf_pct': 'perf_pct'})
-    if 'competitionId' in g.columns:
-        out['competitionId'] = g['competitionId'].values
-    else:
-        out['competitionId'] = out['seasonId'].map(competition_for_season)
-    return out
-
-
-def _season_year(season_id):
-    """Numeric chronology key from SEASON_ID_MAP labels like '2024/25' → 2024.
-    Used to order seasons and compute 'seasons back' from an anchor.
-    """
-    label = SEASON_ID_MAP.get(int(season_id)) if season_id is not None else None
-    if not label:
-        return None
-    try:
-        return int(str(label).split('/')[0])
-    except (ValueError, IndexError):
-        return None
-
-
-def compute_career_cvi(player_id, anchor_season_id, *,
-                        perf_table, dob_lookup,
-                        decay=CVI_CAREER_DECAY,
-                        max_lookback=CVI_CAREER_MAX_LOOKBACK):
-    """Career-aggregated CVI anchored to anchor_season_id, including that
-    season + up to `max_lookback` prior seasons (whichever the player has
-    data for). Never peeks at seasons AFTER the anchor.
-
-    Returns dict with:
-        career_cvi, career_perf_raw (L3-equivalent), career_perf_shrunk,
-        reliability, effective_mins, age_at_anchor, league_at_anchor,
-        position_group, n_seasons_used, breakdown (list of per-season dicts)
-
-    Returns None if the player has no GPA seasons at-or-before the anchor.
-    """
-    if perf_table is None or perf_table.empty or anchor_season_id is None:
-        return None
-    anchor_year = _season_year(anchor_season_id)
-    if anchor_year is None:
-        return None
-
-    rows = perf_table[perf_table['playerId'] == player_id].copy()
-    if rows.empty:
-        return None
-    rows['_season_year'] = rows['seasonId'].map(_season_year)
-    rows = rows.dropna(subset=['_season_year'])
-    rows['_season_year'] = rows['_season_year'].astype(int)
-    # Only the anchor season + prior seasons, up to max_lookback back
-    rows = rows[(rows['_season_year'] <= anchor_year)
-                 & (rows['_season_year'] >= anchor_year - max_lookback)]
-    if rows.empty:
-        return None
-    rows = rows.copy()   # slice of perf_table — write on a copy
-    rows['_seasons_back'] = anchor_year - rows['_season_year']
-    rows['_decay'] = decay ** rows['_seasons_back']
-    # v2.8 — current season (seasons_back==0) gets an explicit recency bonus
-    # on top of the decay-to-the-zero (which is 1.0). Prior seasons unaffected.
-    rows['_recency'] = rows['_decay'].copy()
-    rows.loc[rows['_seasons_back'] == 0, '_recency'] *= CVI_CAREER_CURRENT_BONUS
-    rows['_league_factor'] = rows['competitionId'].map(
-        lambda c: (CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
-                    if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT)
-    )
-    rows['_weight'] = rows['_recency'] * rows['mins_played'].fillna(0).clip(lower=0)
-    rows['_contribution'] = rows['perf_pct'] * rows['_league_factor'] * rows['_weight']
-
-    total_w = float(rows['_weight'].sum())
-    if total_w <= 0:
-        return None
-    career_perf_raw_l3 = float(rows['_contribution'].sum() / total_w)
-    effective_mins = total_w   # decay-weighted effective minutes
-
-    # Resolve the anchor row to lock down position group + league for the
-    # final shrinkage/multiplier step. Use the most-recent matching season
-    # ≤ anchor (handles the case where the player skipped the anchor year).
-    anchor_row_candidates = rows.sort_values('_season_year', ascending=False)
-    anchor_row = anchor_row_candidates.iloc[0]
-    pos_group = anchor_row['position_group']
-    league_at_anchor = (CVI_LEAGUE_MULTIPLIER.get(int(anchor_row['competitionId']),
-                                                     CVI_LEAGUE_DEFAULT)
-                         if anchor_row.get('competitionId') is not None
-                         and not pd.isna(anchor_row.get('competitionId'))
-                         else CVI_LEAGUE_DEFAULT)
-
-    # Reliability from effective_mins under the anchor-position curve
-    reliab, reliab_breakdown = _cvi_reliability_weight(effective_mins, pos_group)
-
-    # Shrinkage toward replacement-level
-    shrunk_perf = (reliab * career_perf_raw_l3
-                    + (1 - reliab) * CVI_REPLACEMENT_PERF)
-
-    # Age at anchor season (Aug 1 of anchor_year used as a reference date
-    # so a player born in March looks "the right age" for that season)
-    age_at_anchor = None
-    try:
-        dob = dob_lookup(player_id) if callable(dob_lookup) else None
-        if dob is not None and not pd.isna(dob):
-            from datetime import date as _date_cls
-            anchor_ref = _date_cls(anchor_year, 8, 1)
-            if hasattr(dob, 'date'):
-                dob_d = dob.date()
-            else:
-                dob_d = dob
-            age_at_anchor = (anchor_ref - dob_d).days / 365.25
-    except Exception:
-        age_at_anchor = None
-    age_mult = _cvi_age_value_multiplier(age_at_anchor, pos_group)
-
-    career_cvi = shrunk_perf * age_mult * league_at_anchor
-
-    breakdown = (rows.sort_values('_season_year', ascending=False)
-                       [['seasonId', '_season_year', '_seasons_back',
-                          'competitionId', 'position_group', 'mins_played',
-                          'perf_pct', '_league_factor', '_decay', '_weight']]
-                       .rename(columns={'_season_year': 'season_year',
-                                          '_seasons_back': 'seasons_back',
-                                          '_league_factor': 'league_factor',
-                                          '_decay': 'decay_factor',
-                                          '_weight': 'weight'})
-                       .to_dict('records'))
-
-    return {
-        'career_cvi': career_cvi,
-        'career_perf_raw_l3': career_perf_raw_l3,
-        'career_perf_shrunk': shrunk_perf,
-        'reliability': reliab,
-        'reliability_ceiling': reliab_breakdown.get('ceiling'),
-        'reliability_sample_factor': reliab_breakdown.get('sample_factor'),
-        'effective_mins': effective_mins,
-        'age_at_anchor': age_at_anchor,
-        'age_multiplier': age_mult,
-        'league_at_anchor': league_at_anchor,
-        'position_group': pos_group,
-        'anchor_season_id': int(anchor_season_id),
-        'n_seasons_used': int(len(rows)),
-        'breakdown': breakdown,
-    }
-
-
-def build_player_priors_lookup(perf_table, anchor_season_id,
-                                  decay=CVI_CAREER_DECAY,
-                                  max_lookback=CVI_CAREER_MAX_LOOKBACK,
-                                  full_strength_mins=1500):
-    """Pre-compute the empirical-Bayes prior for every player relative
-    to an anchor season. Returns a dict:
-        {playerId: {'prior_perf': float, 'prior_strength': float (0..1),
-                     'prior_mins_eff': float}}
-
-    Used by compute_cvi_columns to shrink each player's season perf
-    toward THEIR OWN career mean (when we have enough prior data)
-    rather than the generic replacement-level (40). Implements the
-    empirical-Bayes pattern: with rich prior data the shrinkage
-    target IS the player's career; with no prior data we fall back
-    to the league-replacement default.
-
-    Strictly uses seasons PRIOR to anchor_season_id (excludes the
-    anchor season itself) to avoid leakage: when judging Caleb's
-    2024/25 perf, the prior is built from his 2021/22 + 2022/23 +
-    2023/24 data only — never from 2024/25 itself or anything later.
-    """
-    if perf_table is None or perf_table.empty or anchor_season_id is None:
-        return {}
-    anchor_year = _season_year(anchor_season_id)
-    if anchor_year is None:
-        return {}
-    anchor_comp = competition_for_season(anchor_season_id)
-    pt = perf_table.copy()
-    pt['_year'] = pt['seasonId'].map(_season_year)
-    pt = pt.dropna(subset=['_year'])
-    pt['_year'] = pt['_year'].astype(int)
-    # Eligible prior rows:
-    #   - STRICTLY prior years (year < anchor_year), up to lookback
-    #   - SAME year + DIFFERENT competition — cross-league concurrent
-    #     play (e.g. Santi Guzman 23/24 played for Leça in Camp AND
-    #     for Atlético CP in Liga 3; Dedé 24/25 Dezembro/Camp +
-    #     Sintrense/Liga 3). When rating the Liga 3 portion, the
-    #     concurrent Camp portion is real evidence about current
-    #     level and should inform the prior.
-    pt = pt[
-        ((pt['_year'] < anchor_year) & (pt['_year'] >= anchor_year - max_lookback))
-        | ((pt['_year'] == anchor_year)
-            & (pt['competitionId'].fillna(-1).astype(int) != (anchor_comp or -1)))
-    ]
-    if pt.empty:
-        return {}
-    # seasons_back ≥ 0; same-year cross-league gets decay=1.0 (full
-    # weight) since it's contemporary evidence.
-    pt['_seasons_back'] = (anchor_year - pt['_year']).clip(lower=0)
-    pt['_decay'] = decay ** pt['_seasons_back']
-    pt['_league_factor'] = pt['competitionId'].map(
-        lambda c: (CVI_LEAGUE_MULTIPLIER.get(int(c), CVI_LEAGUE_DEFAULT)
-                    if c is not None and not pd.isna(c) else CVI_LEAGUE_DEFAULT)
-    )
-    pt['_weight'] = pt['_decay'] * pt['mins_played'].fillna(0).clip(lower=0)
-    pt['_contrib'] = pt['perf_pct'] * pt['_league_factor'] * pt['_weight']
-    grouped = pt.groupby('playerId').agg(
-        _sum_w=('_weight', 'sum'),
-        _sum_c=('_contrib', 'sum'),
-    )
-    out = {}
-    for pid, r in grouped.iterrows():
-        w = float(r['_sum_w'])
-        if w <= 0:
-            continue
-        prior_perf = float(r['_sum_c'] / w)
-        # Prior strength ramps linearly from 0 (no prior) to 1.0 (at or
-        # above full_strength_mins of decay-weighted prior minutes).
-        strength = min(w / float(full_strength_mins), 1.0)
-        out[int(pid)] = {
-            'prior_perf': prior_perf,
-            'prior_strength': strength,
-            'prior_mins_eff': w,
-        }
-    return out
-
-
-def most_recent_season_for_player(perf_table, player_id):
-    """Return the most recent seasonId this player has GPA data for,
-    or None if they have none. Used to anchor 'Current CVI' in the
-    bio row.
-
-    Tiebreaker for players with two same-year league rows (e.g. Santi
-    Guzman 23/24 Leça-Camp + Atlético-CP-Liga-3): pick the seasonId
-    where the player logged MORE MINUTES. The other league's data
-    still contributes via Career CVI's same-year cross-league
-    aggregation; this choice only affects which league_at_anchor
-    multiplier is applied to the final composite (so a player who
-    played mostly in Liga 3 gets a Liga-3-framed Current CVI).
-    """
-    if perf_table is None or perf_table.empty:
-        return None
-    rows = perf_table[perf_table['playerId'] == player_id].copy()
-    if rows.empty:
-        return None
-    rows['_y'] = rows['seasonId'].map(_season_year)
-    rows = rows.dropna(subset=['_y'])
-    if rows.empty:
-        return None
-    rows['_mins'] = pd.to_numeric(rows.get('mins_played', 0),
-                                     errors='coerce').fillna(0)
-    rows = rows.sort_values(['_y', '_mins'], ascending=[False, False])
-    return int(rows.iloc[0]['seasonId'])
-
-
-# ==============================================================================
-# Market-context features (consumed by the v2 EUR regression)
-# ==============================================================================
-# These are NOT inputs to CVI — they're signals that shift how the MARKET
-# prices a player at a given quality level. Nationality drives sell-on
-# premiums, team success drives visibility, xG over/underperformance
-# captures finishing skill the market rewards/discounts. Computed
-# per-(player, season) and surfaced alongside CVI in the Player Profile.
-def compute_market_features(player_id, season_id, *,
-                              raw_events_df, matches_summary_df,
-                              player_details_df,
-                              player_minutes_data,
-                              team_name=None,
-                              opta_team_lookup=None):
-    """Per-(player, season) bundle of market-context features for the
-    v2 transfer-value regression.
-
-    Returns dict with:
-        xg_residual_season        goals - xG, non-pen, this season
-        xg_residual_career        goals - xG, non-pen, all seasons
-        xg_residual_per90_season  same /90
-        ass_residual_season       assists - xA proxy
-        ass_residual_career       same career-cumulative
-        passport_nationality      str (e.g. 'Portugal', 'Brazil')
-        birth_nationality         str
-        team_opta_rating          float (current team strength)
-        team_ppm_season           team's points-per-match this season
-        team_league_position      1-N rank within the season (NaN if unknown)
-        positions_played_career   count of distinct primaryPositions across career
-        seasons_played            count of distinct seasons in our data
-    """
-    out = {
-        'xg_residual_season': None, 'xg_residual_career': None,
-        'xg_residual_per90_season': None,
-        'ass_residual_season': None, 'ass_residual_career': None,
-        'passport_nationality': None, 'birth_nationality': None,
-        'team_opta_rating': None, 'team_ppm_season': None,
-        'team_league_position': None,
-        'positions_played_career': None, 'seasons_played': None,
-    }
-
-    # ---- xG over/under (non-penalty) ----
-    try:
-        ev = raw_events_df[
-            (raw_events_df['player.id'] == player_id)
-            & raw_events_df['shot.xg'].notna()
-            & (raw_events_df['type.primary'] != 'penalty')
-        ]
-        if not ev.empty:
-            goals_c = ev['shot.isGoal'].fillna(False).astype(bool).sum()
-            xg_c = float(ev['shot.xg'].sum())
-            out['xg_residual_career'] = float(goals_c) - xg_c
-            ev_s = ev[ev['seasonId'] == season_id] if 'seasonId' in ev.columns else ev
-            if not ev_s.empty:
-                goals_s = ev_s['shot.isGoal'].fillna(False).astype(bool).sum()
-                xg_s = float(ev_s['shot.xg'].sum())
-                out['xg_residual_season'] = float(goals_s) - xg_s
-                # Use the player's totalMinutes for the season for /90
-                pm = player_minutes_data.get(season_id) if isinstance(player_minutes_data, dict) else None
-                mins = None
-                if pm is not None and 'playerId' in pm.columns:
-                    sub = pm[pm['playerId'] == player_id]
-                    if not sub.empty:
-                        mins = float(sub['totalMinutes'].sum())
-                if mins and mins > 0:
-                    out['xg_residual_per90_season'] = (out['xg_residual_season']
-                                                         / mins * 90.0)
-    except Exception:
-        pass
-
-    # ---- xA proxy: count of 'shot_assist'-tagged passes by player → xG of the shot they assisted ----
-    try:
-        # Player's shot-assist events
-        sa_mask = (raw_events_df['player.id'] == player_id) & (
-            raw_events_df.get('type.secondary', pd.Series(dtype='object'))
-                          .apply(lambda x: isinstance(x, (list, np.ndarray))
-                                  and 'shot_assist' in x)
-        )
-        sa = raw_events_df[sa_mask]
-        # Approximate: next event in same match with non-null shot.xg = shot they assisted
-        if not sa.empty and 'matchId' in raw_events_df.columns:
-            # Lookup shot xG of the next event in the same match for each assist event
-            ev_sorted = (raw_events_df[['matchId', 'matchTimestamp',
-                                          'shot.xg', 'shot.isGoal', 'player.id']]
-                          .sort_values(['matchId', 'matchTimestamp'])
-                          .reset_index(drop=True))
-            ev_sorted['next_xg'] = ev_sorted.groupby('matchId')['shot.xg'].shift(-1)
-            ev_sorted['next_goal'] = ev_sorted.groupby('matchId')['shot.isGoal'].shift(-1)
-            joined = sa.reset_index().merge(
-                ev_sorted[['matchId', 'matchTimestamp', 'next_xg', 'next_goal']],
-                on=['matchId', 'matchTimestamp'], how='left',
-            )
-            xa_c = joined['next_xg'].dropna().sum()
-            assists_c = joined['next_goal'].fillna(False).sum()
-            out['ass_residual_career'] = float(assists_c) - float(xa_c)
-            jl_s = joined[joined.get('seasonId') == season_id] if 'seasonId' in joined.columns else joined
-            if not jl_s.empty:
-                xa_s = jl_s['next_xg'].dropna().sum()
-                assists_s = jl_s['next_goal'].fillna(False).sum()
-                out['ass_residual_season'] = float(assists_s) - float(xa_s)
-    except Exception:
-        pass
-
-    # ---- Nationality ----
-    try:
-        if (player_details_df is not None and not player_details_df.empty
-                and player_id in player_details_df.index):
-            row = player_details_df.loc[player_id]
-            out['passport_nationality'] = row.get('passportArea')
-            out['birth_nationality'] = row.get('birthArea')
-    except Exception:
-        pass
-
-    # ---- Team Opta rating ----
-    try:
-        if opta_team_lookup and team_name:
-            out['team_opta_rating'] = opta_team_lookup(team_name)
-    except Exception:
-        pass
-
-    # ---- Team PPM + league position this season ----
-    try:
-        if team_name and matches_summary_df is not None and season_id is not None:
-            sm = matches_summary_df[matches_summary_df['seasonId'] == season_id].copy()
-            # Parse scores
-            def _parse_score(s):
-                try:
-                    if pd.isna(s) or '-' not in str(s): return (None, None)
-                    h, a = str(s).split('-')
-                    return (int(h.strip()), int(a.strip()))
-                except Exception:
-                    return (None, None)
-            sm[['h_g','a_g']] = sm['score'].apply(_parse_score).apply(pd.Series)
-            sm = sm.dropna(subset=['h_g','a_g'])
-            # Points per team
-            from collections import defaultdict
-            pts = defaultdict(int); games = defaultdict(int)
-            for _, m in sm.iterrows():
-                h, a = m['homeTeamName'], m['awayTeamName']
-                hg, ag = m['h_g'], m['a_g']
-                games[h] += 1; games[a] += 1
-                if hg > ag: pts[h] += 3
-                elif ag > hg: pts[a] += 3
-                else: pts[h] += 1; pts[a] += 1
-            if team_name in games and games[team_name] > 0:
-                out['team_ppm_season'] = pts[team_name] / games[team_name]
-                # League position
-                ppm_all = {t: pts[t]/games[t] for t in games if games[t] > 0}
-                ranked = sorted(ppm_all.items(), key=lambda kv: -kv[1])
-                for rank, (t, _) in enumerate(ranked, start=1):
-                    if t == team_name:
-                        out['team_league_position'] = rank
-                        break
-    except Exception:
-        pass
-
-    # ---- Position versatility + seasons played (career) ----
-    try:
-        if isinstance(player_minutes_data, dict):
-            pos_set = set(); seasons_set = set()
-            for sid, _pm in player_minutes_data.items():
-                if not isinstance(_pm, pd.DataFrame) or 'playerId' not in _pm.columns:
-                    continue
-                sub = _pm[_pm['playerId'] == player_id]
-                if sub.empty: continue
-                seasons_set.add(sid)
-                if 'primaryPosition' in sub.columns:
-                    pos_set.update(p for p in sub['primaryPosition'].dropna().unique())
-            out['positions_played_career'] = len(pos_set) if pos_set else None
-            out['seasons_played'] = len(seasons_set) if seasons_set else None
-    except Exception:
-        pass
-
-    return out
-
 
 OUTPUT_METRICS = ['Goals', 'Assists', 'xG', 'npxG', 'xA', 'xAOP', 'xASP', 'xT', 'xTOP', 'xTSP', 'Second assists', 'Shots', 'xG per Shot']
 PASSING_METRICS = ['Creating Value', 'Linking Value', 'Passes', 'Passes successful', 'Passes successful %', 'Long passes', 'Long passes successful', 'Long passes successful %', 'Crosses', 'Crosses successful', 'Crosses successful %', 'Through passes', 'Through passes successful', 'Progressive Passes', 'Passes to final third', 'Passes to final third successful', 'Forward passes', 'Forward passes successful', 'Back passes', 'Back passes successful', 'Passes to penalty area', 'Passes to penalty area successful', 'Deep Completions', 'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance']
@@ -4311,6 +3255,15 @@ if _config:
     logger.info("Configuration loaded from config.yaml")
 else:
     RADAR_HIDDEN_METRICS = set()
+
+# Display-name overrides for radar / distribution axis labels. The underlying
+# data column keeps its name; only the printed label changes. 'Progressive
+# Passes' is counted from accurate passes only (pass.accurate == True), so
+# label it as successful.
+METRIC_DISPLAY_NAMES = {'Progressive Passes': 'Progressive passes successful'}
+
+def _metric_display(metric):
+    return METRIC_DISPLAY_NAMES.get(metric, metric)
 
 # Formation coordinates for XI graphic (Opta 0-100 coordinate system)
 # Note: Left positions use higher x values (right side of screen) to match broadcast view
@@ -4418,13 +3371,7 @@ FORMATION_COORDS = {
 }
 
 # Shadow Team tag categories with hex colors
-SHADOW_TAG_CATEGORIES = {
-    'A - No Brainer': '#2ecc71',
-    'B - Possible Starter': '#3498db',
-    'C - Quality Depth Squad': '#f1c40f',
-    'D - Quality but Injury Prone': '#e74c3c',
-    'E - Depth from Lisbon': '#9b59b6',
-}
+SHADOW_TAG_CATEGORIES = theme.SHADOW_TAG_COLORS
 
 # Maps each formation slot to relevant role names whose _Score columns to display
 POSITION_SLOT_TO_ROLES = {
@@ -4959,13 +3906,26 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     for the player profile page (Per 90 and Totals).
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
+    if _raw_events_df is None or _raw_events_df.empty:
+        # No events for this scope (a season whose fixtures exist but whose
+        # events haven't been ingested yet). Every step below assumes rows —
+        # the xA backfill was the first to fail — so return the empty frame
+        # the callers already handle ("Player data not available ...").
+        logger.warning("[player-stats] no events for season_id=%s — returning empty stats", season_id)
+        return pd.DataFrame()
     # Disk cache: load pre-computed results if available
     _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     _scope_key = _stats_scope_key(season_id, _raw_events_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    _data_fp = {'n_matches': int(_raw_events_df['matchId'].nunique()),
+                'n_events': int(len(_raw_events_df))}
+    if os.path.exists(cache_path) and _cache_is_stale(cache_path, _data_fp):
+        print(f"Player-stats cache for scope {_scope_key} predates current data — recomputing")
+        os.remove(cache_path)
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
-        if _REQUIRED_STAT_COLS.issubset(cached.columns):
+        # An empty cache must not be served (see percentiles cache) — recompute.
+        if not cached.empty and _REQUIRED_STAT_COLS.issubset(cached.columns):
             # Sanity check: goalsConceded should always be per-90 (typical
             # GK rate ≈ 0.5–1.5). Judge by the MEDIAN across keepers with
             # real minutes, not the max: a few data-gap keepers carry
@@ -5545,7 +4505,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     shots_df = events_df[(events_df['shot.xg'].notna()) & (events_df['type.primary'] != 'penalty')].copy()
     npxg_totals = shots_df.groupby('player.id')['shot.xg'].sum().reset_index().rename(columns={'shot.xg': 'npxG'})
     events_df['shot_event_id'] = np.where(events_df['shot.xg'].notna(), events_df['id'], np.nan)
-    events_df['next_shot_id'] = events_df.groupby('matchId')['shot_event_id'].bfill()
+    events_df['next_shot_id'] = _next_shot_id_by_match(events_df)
     shot_xg_map = events_df[events_df['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
     assists_df = events_df[check_secondary_list('shot_assist')].copy()
     assists_df['xA'] = assists_df['next_shot_id'].map(shot_xg_map)
@@ -5815,6 +4775,7 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     try:
         _parquet_safe(result).to_parquet(cache_path)
+        _write_cache_meta(cache_path, _data_fp)
         print(f"  Cached player stats to {cache_path}")
     except Exception as e:
         print(f"  Warning: Could not cache player stats: {e}")
@@ -5856,12 +4817,25 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     (each low-minute player is temporarily added to the sample for their own percentile).
     season_id is used as a cache key so Streamlit recomputes when the season changes."""
     # Disk cache: load pre-computed results if available
-    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
+    _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP', 'Touches in penalty area_percentile'}
     _scope_key = _stats_scope_key(season_id, _player_data_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    _pct_fp = {'n_rows': int(len(_player_data_df)),
+               'minutes_sum': int(pd.to_numeric(
+                   _player_data_df.get('totalMinutes', pd.Series(dtype=float)),
+                   errors='coerce').fillna(0).sum()),
+               # Role scores are cached VALUES derived from the weights, so a
+               # weight tweak in config.yaml must invalidate this cache too.
+               'weights_hash': hashlib.md5(json.dumps(
+                   _weights, sort_keys=True, default=str).encode()).hexdigest()}
+    if os.path.exists(cache_path) and _cache_is_stale(cache_path, _pct_fp):
+        print(f"Percentiles cache for scope {_scope_key} predates current data — recomputing")
+        os.remove(cache_path)
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
-        if _REQUIRED_PCT_COLS.issubset(cached.columns):
+        # An empty cache (written early-season when nobody met the minutes
+        # floor) must not be served — treat as invalid and recompute.
+        if not cached.empty and _REQUIRED_PCT_COLS.issubset(cached.columns):
             print(f"Loading cached player percentiles for scope {_scope_key}")
             if cached.index.name == 'playerId':
                 cached = cached.reset_index()
@@ -5874,6 +4848,15 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     data = _player_data_df.copy()
 
     data['totalMinutes'] = pd.to_numeric(data['totalMinutes'], errors='coerce')
+    # Early-season clamp: after 1-2 matchweeks nobody can reach the mid-season
+    # 500' floor, the qualifying population is empty, and the whole scores
+    # frame came back blank (2026/27 matchweek 1). Only when NO player meets
+    # the floor, drop it to half the current max so scores exist from day one;
+    # mid-season this never triggers and the floor stays as passed.
+    _max_min = data['totalMinutes'].max()
+    if pd.notna(_max_min) and _max_min < min_minutes:
+        min_minutes = max(1, int(_max_min * 0.5))
+        print(f"Early-season minutes floor: no player at requested floor; using {min_minutes}'")
     # Only include qualifying players (>= min_minutes) in percentile calculations
     _qualifying_mask = data['totalMinutes'] >= min_minutes
     if _qualifying_mask.sum() == 0:
@@ -5933,6 +4916,7 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     try:
         _parquet_safe(result).to_parquet(cache_path)
+        _write_cache_meta(cache_path, _pct_fp)
         print(f"  Cached player percentiles to {cache_path}")
     except Exception as e:
         print(f"  Warning: Could not cache percentiles: {e}")
@@ -5958,6 +4942,10 @@ def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_seaso
     # doesn't collide across leagues (Camp All-Seasons was getting L3's result)
     _scope = tuple(comp_ids) if isinstance(comp_ids, (list, tuple, set)) else comp_ids
     player_stats_df = calculate_all_player_stats(events_df, minutes_df, season_id=season_id, cache_scope=_scope)
+    if player_stats_df.empty:
+        # No events for this scope: nothing to merge or rank. Callers show
+        # their "Player data not available" state on an empty frame.
+        return player_stats_df, pd.DataFrame()
     player_stats_df = merge_gpa_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, comp_ids)
@@ -6041,15 +5029,27 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
         # page load settle, then yield between scopes so clicks preempt.
         _time.sleep(8)
         _t0 = _time.time(); _n = 0
-        # Warm ONLY the current-season scopes (the default landing pages).
-        # The filtered-events cache is LRU-bounded at max_entries=5 (see
-        # _get_filtered_events_cached for the memory arithmetic) — keep this
-        # warm list within that bound or the loop just churns the LRU. Other
-        # scopes lazy-build in a few seconds on first visit (disk caches
-        # cover the expensive layers).
-        _WARM_SCOPES = [(_cid, _sid) for _cid, _cfg in COMPETITIONS.items()
-                        for _sid in _cfg.get('seasons', {})
-                        if _sid in (CURRENT_SEASON_ID, 191779)]
+        # Warm ONLY the landing scopes: per league, the season the context
+        # bar defaults to — the newest one with event data for at least
+        # MIN_MATCHES_FOR_DEFAULT_SEASON matches (_default_season_label).
+        # It used to warm `current_season`, which early in a season is
+        # fixtures-only (no events yet): the loop found empty frames and
+        # warmed NOTHING, so every first visit to a team page was cold
+        # (2026-09). The filtered-events cache is LRU-bounded at
+        # max_entries=5 (see _get_filtered_events_cached for the memory
+        # arithmetic) — keep this warm list within that bound or the loop
+        # just churns the LRU. Other scopes lazy-build in a few seconds on
+        # first visit (disk caches cover the expensive layers).
+        def _landing_season(_cfg):
+            _by_newest = sorted(_cfg.get('seasons', {}).items(),
+                                key=lambda kv: str(kv[1]), reverse=True)
+            for _sid, _label in _by_newest:
+                if SEASON_MATCHES_WITH_EVENTS.get(int(_sid), 0) >= MIN_MATCHES_FOR_DEFAULT_SEASON:
+                    return _sid
+            return _cfg.get('current_season')
+        _WARM_SCOPES = [(_cid, _landing_season(_cfg)) for _cid, _cfg in COMPETITIONS.items()]
+        _WARM_SCOPES = [(_c, _s) for _c, _s in _WARM_SCOPES if _s is not None]
+        logger.info(f"[prewarm] landing scopes: {_WARM_SCOPES}")
         for _cid, _sid in _WARM_SCOPES:
                 _time.sleep(2.0)
                 try:
@@ -6063,6 +5063,19 @@ def _prewarm_scope_caches(_raw_events_df, _player_minutes_data, _matches_summary
                             calculate_team_strength(_ev, _matches_summary_df, season_id=_sid)
                         except Exception:
                             pass
+                        # Season-report metrics: the single biggest cold cost
+                        # of BOTH team pages (~6 s), computed per scope for
+                        # every team — one warm serves any team either page
+                        # opens. Args mirror views/team_analysis.py exactly
+                        # (stage 'all', single-season scope) so this is a
+                        # direct key hit, not an approximation.
+                        try:
+                            _m = filter_by_league(get_season_matches(_matches_summary_df, _sid), [_cid])
+                            compute_team_season_metrics(
+                                _ev, _m, season_ids=(int(_sid),), use_wyscout=True,
+                                cache_key=season_report_cache_key([_cid], _sid))
+                        except Exception as _e:
+                            logger.warning(f"[prewarm] season report (comp={_cid}, season={_sid}) failed: {_e}")
                     _n += 1
                 except Exception as _e:
                     logger.warning(f"[prewarm] scope (comp={_cid}, season={_sid}) failed: {_e}")
@@ -6400,7 +5413,7 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        ax.text(angle_rad, 115, metric, size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        ax.text(angle_rad, 115, _metric_display(metric), size=8, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
     ax.set_rlabel_position(0)
     if radar_mode != 'raw':
@@ -6539,7 +5552,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
             ax_dist.set_yticks([]); ax_dist.set_ylabel(""); ax_dist.set_title(""); ax_dist.set_xlabel("");
             legend = ax_dist.get_legend();
             if legend is not None: legend.remove()
-            ax_dist.text(-0.05, 0.5, metric, transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
+            ax_dist.text(-0.05, 0.5, _metric_display(metric), transform=ax_dist.transAxes, fontsize=9, fontweight='bold', va='center', ha='right')
 
     return fig
 
@@ -7230,7 +6243,14 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
     return stats_df_raw, stats_df_pct
 
 # --- Radar Plotting Function (Unchanged) ---
-def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league="Liga 3", season="2025/26"):
+def _scope_label(league=None, season=None, sep=" "):
+    """'Liga 3 2025/26', 'Liga 3', '2025/26' or '' — only what the caller
+    actually passed, so a figure never claims a scope it wasn't given (the
+    old defaults stamped 'Liga 3, 2025/26' on Campeonato and 2026/27 charts)."""
+    return sep.join(str(p) for p in (league, season) if p)
+
+
+def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league=None, season=None):
     # (This is the full function from the previous step)
     num_params = len(params); angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist(); angles += angles[:1]
     plot_values_pct = values_pct + values_pct[:1]; fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
@@ -7246,11 +6266,11 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, co
     for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
          raw_display = f'{value_raw}%' if '%' in str(value_raw) else f'{value_raw}'; ax.text(angle, 95, raw_display, ha='center', va='top', size=9, weight='bold', bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
     footer_text = "@lucaskimball | Data via Wyscout | Values in parentheses are percentile rank vs. other teams in league"; fig.text(0.02, 0.02, footer_text, ha='left', va='bottom', fontsize=9, color='gray')
-    report_date = datetime.date.today().strftime("%Y-%m-%d"); full_title = f"{team_name}\n{title_suffix} | {league} {season} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
+    report_date = datetime.date.today().strftime("%Y-%m-%d"); _scope = _scope_label(league, season); full_title = f"{team_name}\n{title_suffix}{(' | ' + _scope) if _scope else ''} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
     return fig
 
 # --- Corner Analysis Plotting Function (Unchanged) ---
-def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3", season="2025/26"):
+def plot_corner_analysis(season_events_df, team_to_analyze, side, league=None, season=None):
     # (This is the full function from the previous step)
     def categorize_corner(row, side):
         end_x = row.get('pass.endLocation.x'); end_y = row.get('pass.endLocation.y'); pass_len = row.get('pass.length')
@@ -7279,7 +6299,7 @@ def plot_corner_analysis(season_events_df, team_to_analyze, side, league="Liga 3
     pitch = Pitch(pitch_type='wyscout', pitch_color='#f5f1e9', line_color='black', line_zorder=2); pitch.draw(ax=ax_pitch); zone_colors = {'Short': 'blue', 'Near Post': 'orange', 'Middle': 'red', 'Far Post': 'yellow', 'Other': 'grey'}
     for idx, corner in side_corners_df.iterrows():
          if pd.notna(corner.get('pass.endLocation.x')) and pd.notna(corner.get('pass.endLocation.y')): pitch.scatter(x=corner['pass.endLocation.x'], y=corner['pass.endLocation.y'], s=200, color=zone_colors.get(corner['zone'], 'gray'), edgecolor='black', ax=ax_pitch, zorder=3, alpha=0.7)
-    ax_pitch.set_title(f"Corners from the {side.capitalize()} Side | {league} {season}", fontsize=14); legend_elements = [Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='Short'), Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Near Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Middle'), Line2D([0], [0], marker='o', color='w', markerfacecolor='yellow', markersize=10, label='Far Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='grey', markersize=10, label='Other/Outside PA')]; ax_pitch.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.01), frameon=False, fontsize=10)
+    _scope = _scope_label(league, season); ax_pitch.set_title(f"Corners from the {side.capitalize()} Side{(' | ' + _scope) if _scope else ''}", fontsize=14); legend_elements = [Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='Short'), Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Near Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Middle'), Line2D([0], [0], marker='o', color='w', markerfacecolor='yellow', markersize=10, label='Far Post'), Line2D([0], [0], marker='o', color='w', markerfacecolor='grey', markersize=10, label='Other/Outside PA')]; ax_pitch.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.01), frameon=False, fontsize=10)
     ax_table.set_title("Corner Taker Summary", fontsize=14, weight='bold')
     if not corner_takers.empty:
         table = Table(ax_table, bbox=[0, 0, 1, 0.9], loc='center'); table.auto_set_font_size(False); table.set_fontsize(10)
@@ -7306,7 +6326,7 @@ def create_match_shotmap(match_events_df, match_info, team_to_analyze):
     ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
     pitch.draw(ax=ax_pitch)
 
-    XG_MAX = 0.8; colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]; nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
+    XG_MAX = theme.XG_MAX; colors = theme.XG_COLORS; nodes = theme.XG_NODES; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
 
     for index, shot in team_shots_df.iterrows():
         x = shot.get('location.x'); y = shot.get('location.y'); xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
@@ -7337,7 +6357,7 @@ def create_season_shotmap(season_events_df, team_to_analyze):
     ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
     pitch.draw(ax=ax_pitch)
 
-    XG_MAX = 0.8; colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]; nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
+    XG_MAX = theme.XG_MAX; colors = theme.XG_COLORS; nodes = theme.XG_NODES; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
 
     for index, shot in team_shots_df.iterrows():
         x = shot.get('location.x'); y = shot.get('location.y'); xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce')
@@ -7364,7 +6384,7 @@ def create_season_shots_against_shotmap(season_events_df, matches_summary_df, te
     ax_pitch = fig.add_axes([0.02, 0.02, 0.96, 0.82])
     pitch.draw(ax=ax_pitch)
 
-    XG_MAX = 0.8; colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]; nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
+    XG_MAX = theme.XG_MAX; colors = theme.XG_COLORS; nodes = theme.XG_NODES; cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
 
     for index, shot in opponent_shots_df.iterrows():
         x = shot.get('location.x'); y = shot.get('location.y'); xg = pd.to_numeric(shot.get('shot.xg'), errors='coerce'); is_goal = shot.get('shot.isGoal') == True
@@ -7397,7 +6417,7 @@ def create_player_shotmap(player_shots_df, player_name):
     
     # Colormap for xG
     XG_MAX = 0.8
-    colors = ["#03045e", "#ade8f4", "#fff3b0", "#ff8c00", "#e63946", "#800f2f"]
+    colors = theme.XG_COLORS
     nodes = [0.0, 0.1 / XG_MAX, 0.2 / XG_MAX, 0.4 / XG_MAX, 0.6 / XG_MAX, 1.0]
     cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", list(zip(nodes, colors)))
     
@@ -7602,57 +6622,36 @@ def calculate_rolling_team_strength(season_events_df, matches_summary_df, season
 
 
 # --- NEW FUNCTION: SOS-Adjusted Team Strength ---
+SOS_CACHE_VERSION = 'v2'  # v2 (2026-09): factors credit tough schedules; v1 had them inverted
+
+
 @st.cache_data
 def calculate_sos_adjusted_strength(rolling_strength_df, team_strength_df, season_id=None):
-    """SOS-adjust team strength ratings.
+    """SOS-adjust team strength ratings (cached wrapper over models.strength.sos).
     Returns DataFrame (index=team): raw_att, raw_def, avg_opp_att, avg_opp_def,
-                                     sos_att, sos_def, sos_factor
+                                     matches_with_opp_data, sos_att_factor,
+                                     sos_def_factor, sos_att, sos_def, sos_factor
+    Direction: attack × (league conceded ÷ opponents' conceded), defence ×
+    (league scored ÷ opponents' scored) from each opponent's PRE-match
+    strength — a tough schedule is credited. sos_factor > 1 = tougher than
+    average. The disk cache is versioned (SOS_CACHE_VERSION) so parquets
+    written by the pre-2026-09 inverted formula are never served; the boot
+    precompute drops the current seasons' rolling/SOS caches alongside
+    team_strength so the SOS columns cannot go stale next to fresh raw ones.
     """
     if season_id is not None:
-        cache_path = os.path.join(STATS_CACHE_DIR, f'sos_strength_{season_id}.parquet')
+        cache_path = os.path.join(STATS_CACHE_DIR, f'sos_strength_{SOS_CACHE_VERSION}_{season_id}.parquet')
         if os.path.exists(cache_path):
             return pd.read_parquet(cache_path)
 
-    if rolling_strength_df.empty or team_strength_df.empty:
+    result = sos_model.sos_adjust(rolling_strength_df, team_strength_df)
+    if result.empty:
         return pd.DataFrame()
-
-    # League averages from end-of-season team strength
-    league_avg_att = max(team_strength_df['Attacking Strength'].mean(), 0.01)
-    league_avg_def = max(team_strength_df['Defending Strength'].mean(), 0.01)
-
-    # For each match, find opponent's pre-match strength
-    # rolling_strength_df has one row per (matchId, team) — merge to find opponent
-    match_teams = rolling_strength_df[['matchId', 'team', 'att_strength', 'def_strength']].copy()
-    # Self-join: for each (matchId, team), find the other team in the same match
-    opp = match_teams.merge(match_teams, on='matchId', suffixes=('', '_opp'))
-    opp = opp[opp['team'] != opp['team_opp']]
-
-    # Average opponent strength faced by each team (only where opponent had prior data)
-    opp_valid = opp.dropna(subset=['att_strength_opp', 'def_strength_opp'])
-    avg_opp = opp_valid.groupby('team').agg(
-        avg_opp_att=('att_strength_opp', 'mean'),
-        avg_opp_def=('def_strength_opp', 'mean'),
-        matches_with_opp_data=('att_strength_opp', 'count')
-    )
-
-    # Build result
-    result = team_strength_df[['Attacking Strength', 'Defending Strength']].copy()
-    result.columns = ['raw_att', 'raw_def']
-    result = result.join(avg_opp, how='left')
-
-    # SOS adjustment — teams with < 3 matches with opponent data fall back to raw
-    result['sos_att_factor'] = result['avg_opp_def'] / league_avg_def
-    result['sos_def_factor'] = result['avg_opp_att'] / league_avg_att
-
-    has_enough = result['matches_with_opp_data'].fillna(0) >= 3
-    result['sos_att'] = np.where(has_enough, result['raw_att'] * result['sos_att_factor'], result['raw_att'])
-    result['sos_def'] = np.where(has_enough, result['raw_def'] * result['sos_def_factor'], result['raw_def'])
-    result['sos_factor'] = np.where(has_enough, (result['sos_att_factor'] + result['sos_def_factor']) / 2, np.nan)
 
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
         try:
-            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'sos_strength_{season_id}.parquet'))
+            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'sos_strength_{SOS_CACHE_VERSION}_{season_id}.parquet'))
         except Exception:
             pass
 
@@ -7785,6 +6784,35 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
     # Attach prior_stats from previous season
     sorted_sids = sorted(SEASON_ID_MAP.keys())
     sid_idx = sorted_sids.index(season_id) if season_id in sorted_sids else -1
+    # Phase-2 opponent adjustment (dormant during the first phase): once a
+    # second stage exists, unbalanced schedules bias raw totals — overwrite
+    # the aggregate goal/xG totals with SOS-adjusted ones (see schedule_adjust)
+    try:
+        from schedule_adjust import phase2_adjusted_totals
+        _rows = []
+        for _, _m in season_matches.iterrows():
+            _sc = str(_m.get('score', ''))
+            if '-' not in _sc:
+                continue
+            try:
+                _hg, _ag = map(int, _sc.split('-'))
+            except Exception:
+                continue
+            _rows.append({'matchId': _m['matchId'], 'roundId': _m.get('roundId'),
+                          'home': _m['homeTeamName'], 'away': _m['awayTeamName'],
+                          'hg': _hg, 'ag': _ag})
+        _sh = season_events[(season_events['type.primary'] == 'shot')].dropna(
+            subset=['shot.xg', 'team.name'])
+        _xg = {(int(m), t): float(v) for (m, t), v in
+               _sh.groupby(['matchId', 'team.name'])['shot.xg'].sum().items()}
+        _adj = phase2_adjusted_totals(_rows, _xg)
+        if _adj:
+            for _t, _vals in _adj.items():
+                if _t in team_stats:
+                    team_stats[_t].update(_vals)
+    except Exception as _e:
+        print(f"phase-2 adjustment skipped: {_e}")
+
     if sid_idx > 0:
         prior_sid = sorted_sids[sid_idx - 1]
         prior_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, prior_sid)
@@ -7806,7 +6834,7 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
 
 
 # --- NEW FUNCTION: Plot Team Strength Scatter ---
-def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season="2025/26", icon_zoom=0.25): # <-- ADDED icon_zoom
+def plot_team_strength(stats_df, teams_to_include=None, league=None, season=None, icon_zoom=0.25): # <-- ADDED icon_zoom
     """Generates the Matplotlib figure for the team strength scatter plot."""
 
     if stats_df.empty or 'Attacking Strength' not in stats_df.columns or 'Defending Strength' not in stats_df.columns:
@@ -7863,7 +6891,8 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season=
     if logos_plotted == 0 and not texts: ax.scatter(stats_df_to_plot['Attacking Strength'], stats_df_to_plot['Defending Strength'], s=50, zorder=2)
 
     report_date = datetime.date.today().strftime("%Y-%m-%d")
-    ax.set_title(f'Team Strength Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
+    _scope = _scope_label(league, season, sep=', ')
+    ax.set_title(f'Team Strength Scatterplot{(" | " + _scope) if _scope else ""} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
     ax.set_ylabel('Defending Strength (30% NP Goals Against, 70% NPxG Against)', fontsize=12)
     # The grid and tight_layout that used to share this line stay disabled: the
@@ -7876,7 +6905,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league="Liga 3", season=
 # app.py (Add this new function)
 
 # --- NEW FUNCTION: Plot Custom Scatter Plot ---
-def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league="Liga 3", season="2025/26"):
+def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=False, league=None, season=None):
     """Generates a dynamic Matplotlib scatter plot with logos."""
 
     # Ensure the selected metrics exist in the DataFrame
@@ -7943,7 +6972,8 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
 
     # --- 5. Styling ---
     report_date = datetime.date.today().strftime("%Y-%m-%d")
-    ax.set_title(f'League Scatterplot | {league}, {season} (As of: {report_date})', fontsize=18, weight='bold')
+    _scope = _scope_label(league, season, sep=', ')
+    ax.set_title(f'League Scatterplot{(" | " + _scope) if _scope else ""} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel(x_metric, fontsize=12) # Dynamic X Label
     ax.set_ylabel(y_metric, fontsize=12) # Dynamic Y Label
 
@@ -8778,8 +7808,9 @@ def compute_team_season_metrics(_events_df, _matches_df, season_ids=None,
         return isinstance(s, (list, np.ndarray)) and tag in s
 
     sec = ev.get('type.secondary', pd.Series([[]]*len(ev)))
+    _tags = TagIndex(sec)  # one explode; the per-row lambda cost ~5.5 s here
     def _tag(name):
-        return sec.apply(lambda x: isinstance(x, (list, np.ndarray)) and name in x)
+        return _tags.has(name)
     has_recovery         = _tag('recovery')
     has_counter_press    = _tag('counterpressing_recovery')
     has_loss             = _tag('loss')
@@ -9198,6 +8229,7 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
                              line=dict(width=1, color='#1f4f1f')),
                 hovertext=[hover_texts[j] for j in other_idx],
                 hoverinfo='text',
+                customdata=[[teams[j]] for j in other_idx],  # click -> that team
                 showlegend=False,
                 name='',
             ))
@@ -9213,6 +8245,7 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
                              line=dict(width=2, color='#0a0a0a')),
                 hovertext=[hover_texts[sel_idx]],
                 hoverinfo='text',
+                customdata=[[team_name]],
                 showlegend=False,
                 name='',
             ))
@@ -9265,8 +8298,45 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         hovermode='closest',
+        clickmode='event+select',
     )
     return fig
+
+
+# ==============================================================================
+# 6Y. INTERACTIVE TEAM VISUALS — shared plumbing for Team Analysis / Opposition
+# ==============================================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_passing_network(season_key, comp_key, stage_key, team_name, fig_ver,
+                           _events_df, _obv_pairs):
+    """pitch_visualizations.compute_passing_network for one scope, cached on
+    the same key triple the PNG renderers use (the frames are unhashed)."""
+    return pv.compute_passing_network(_events_df, team_name, obv_pairs=_obv_pairs)
+
+
+def open_match_from_selection(event, season_label=None):
+    """A click on a shot / rolling-xG point opens that match in Match Analysis
+    (customdata[-2] on shots, [-1] on rolling points carries the matchId)."""
+    import team_interactive
+    mid = team_interactive.match_id_from_rows(team_interactive.selected_customdata(event))
+    if mid is not None:
+        navigation.go_to('Match Analysis', nav_match_id=mid)
+
+
+def open_profile_from_selection(event, season_id):
+    """A click on a passing-network node opens that player's profile via the
+    same bridge the roster tables use (customdata = [playerId, name])."""
+    import team_interactive
+    pid = team_interactive.player_id_from_rows(team_interactive.selected_customdata(event))
+    if pid is not None:
+        st.session_state.selected_player_id = pid
+        st.session_state.nav_to_profile = True
+        st.session_state.nav_season_id = season_id
+        st.session_state.nav_has_season = True
+        st.rerun()
+
+
+_PLOTLY_CFG = {'displayModeBar': False, 'responsive': True}
 
 
 # ==============================================================================
@@ -9326,7 +8396,8 @@ def _fig_png_bytes(fig):
 # whole figure lifecycle is one critical section (see mpl_safety).
 @mpl_locked
 def _render_match_figure_png(kind, match_id, team_name, fig_ver,
-                              _match_events_df, _match_info, _match_lineup):
+                              _match_events_df, _match_info, _match_lineup,
+                              _obv=None):
     """One Match Analysis figure -> PNG bytes.
 
     KEY: (kind, match_id, team_name, FIGURE_CACHE_VERSION).
@@ -9349,11 +8420,35 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
 
     Returns PNG bytes, or None when the plotter produced no figure.
     """
+    _obv = _obv or {}
     if kind == 'shotmap':
         fig = create_match_shotmap(_match_events_df, _match_info, team_name)
     elif kind == 'xg_flowchart':
         # Whole-match figure: both teams on one axes, so team_name is None.
         fig = plot_xg_flowchart(_match_events_df, _match_info)
+    elif kind == 'obv_momentum':
+        # Whole-match figure; team ids derived from the events slice because
+        # matches_summary home/awayTeamId are unpopulated.
+        minute_df = _obv.get('minute')
+        if minute_df is None or minute_df.empty:
+            return None
+        if 'team.id' not in _match_events_df.columns:
+            return None
+        _named = _match_events_df.dropna(subset=['team.id', 'team.name'])
+        name_to_id = (_named.groupby('team.name')['team.id']
+                      .first().astype(int).to_dict())
+        home_nm = _match_info.get('homeTeamName')
+        away_nm = _match_info.get('awayTeamName')
+        if home_nm not in name_to_id or away_nm not in name_to_id:
+            return None
+        _goal_rows = _match_events_df[
+            (_match_events_df['type.primary'] == 'shot')
+            & (_match_events_df.get('shot.isGoal') == True)]
+        goals = [{'minute': r['minute'], 'teamId': int(r['team.id'])}
+                 for _, r in _goal_rows.iterrows() if pd.notna(r.get('team.id'))]
+        fig = obv_viz.plot_obv_momentum(
+            minute_df, name_to_id[home_nm], name_to_id[away_nm],
+            home_nm, away_nm, goals)
     elif kind == 'avg_positions':
         fig = pv.plot_average_positions(_match_events_df, team_name,
                                          match_lineup=_match_lineup)
@@ -9361,7 +8456,8 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
         fig = pv.plot_avg_positions_by_subs(_match_events_df, team_name,
                                              match_lineup=_match_lineup)
     elif kind == 'passing_network':
-        fig = pv.plot_passing_network(_match_events_df, team_name)
+        fig = pv.plot_passing_network(_match_events_df, team_name,
+                                      obv_pairs=_obv.get('pairs'))
     elif kind == 'recovery_map':
         fig = pv.plot_recovery_map(_match_events_df, team_name)
     elif kind == 'loss_map':
@@ -9448,10 +8544,31 @@ def _render_team_figure_png(kind, team_name, season_key, comp_key, stage_key,
         fig = pv.plot_zone_heatmap(_team_events_df, team_name, _tag,
                                     league_events_df=_team_events_df)
     elif kind == 'passing_network':
-        fig = pv.plot_passing_network(_team_events_df, team_name)
+        _p = _payload if isinstance(_payload, dict) else {}
+        fig = pv.plot_passing_network(_team_events_df, team_name,
+                                      obv_pairs=_p.get('pairs'))
     elif kind == 'defensive_structure':
         fig = pv.plot_defensive_structure(_team_events_df, team_name,
                                            league_events_df=_team_events_df)
+    elif kind == 'phase_profile':
+        _p = _payload if isinstance(_payload, dict) else {}
+        fig = obv_viz.plot_phase_profile(_p.get('profile'), team_name)
+    elif kind == 'obv_categories':
+        _p = _payload if isinstance(_payload, dict) else {}
+        if _p.get('team_season') is None or _p.get('team_id') is None:
+            return None
+        fig = obv_viz.plot_team_obv_categories(
+            _p['team_season'], _p['team_id'], team_name)
+    elif kind == 'avg_positions':
+        # Same visual as the Opposition Report's kind of this name. extra[0]
+        # is the sorted tuple of XI names (or None) — it restricts which
+        # players are drawn, so it is a real picture input.
+        _xi_names = extra[0]
+        fig = pv.plot_average_positions(
+            _team_events_df, team_name,
+            player_names=set(_xi_names) if _xi_names else None)
+    elif kind == 'shot_assists':
+        fig = pv.plot_shot_assists_and_dribbles(_team_events_df, team_name)
     else:
         raise ValueError(f"unknown team figure kind: {kind!r}")
     return _fig_png_bytes(fig) if fig is not None else None
@@ -9517,46 +8634,59 @@ def _render_league_figure_png(kind, values_key, extra, day_key, fig_ver, _stats_
 
     `extra` carries what is drawn but is NOT a number in the frame. This is
     the half no scope key could supply, because it is WIDGET STATE:
-      team_strength:  (teams_to_include, icon_zoom, season_label)
+      team_strength:  (teams_to_include, icon_zoom, season_label, league_label)
         teams_to_include is the subset actually plotted; the axis limits still
         come from every row, which is why values_key covers the whole frame.
-        season_label is None except on the multi-season chart (which passes
-        season="Multi-Season"); None means 'leave the plotter's default
-        alone' rather than restating that default here.
-      custom_scatter: (x_metric, y_metric, invert_x, invert_y)
+        season_label / league_label are stamped into the title (the
+        multi-season chart passes "Multi-Season"), so they must be in the key.
+      custom_scatter: (x_metric, y_metric, invert_x, invert_y,
+                       league_label, season_label)
         The metrics are the axis LABELS as well as the columns, and the invert
         flags flip the limits without moving a single value — so neither is
-        implied by values_key.
+        implied by values_key. The two labels are title text, as above.
 
     day_key is today's date. Both plotters stamp 'As of: {date}' into the
     title, so without it a figure built at 23:59 would keep serving
     yesterday's date for the rest of the 24 h TTL.
 
-    league=/season= are left at their defaults by every call site here, so
-    they are compile-time constants and FIGURE_CACHE_VERSION covers a change
-    to them. Same for icons/: adding a team's logo changes the picture
-    without moving any key component, so that is a version bump too.
+    icons/: adding a team's logo changes the picture without moving any key
+    component, so that is a FIGURE_CACHE_VERSION bump.
 
     Returns PNG bytes, or None when the plotter produced no figure.
     """
     if kind == 'team_strength':
-        _teams, _icon_zoom, _season_label = extra
-        _kw = {} if _season_label is None else {'season': _season_label}
+        _teams, _icon_zoom, _season_label, _league_label = extra
         fig = plot_team_strength(_stats_df,
                                   teams_to_include=list(_teams) if _teams else None,
-                                  icon_zoom=_icon_zoom, **_kw)
+                                  icon_zoom=_icon_zoom,
+                                  league=_league_label, season=_season_label)
     elif kind == 'custom_scatter':
-        _x_metric, _y_metric, _invert_x, _invert_y = extra
+        _x_metric, _y_metric, _invert_x, _invert_y, _league_label, _season_label = extra
         fig = plot_custom_scatter(_stats_df, _x_metric, _y_metric,
-                                   _invert_x, _invert_y)
+                                   _invert_x, _invert_y,
+                                   league=_league_label, season=_season_label)
     else:
         raise ValueError(f"unknown league figure kind: {kind!r}")
     return _fig_png_bytes(fig) if fig is not None else None
 
 
+def season_report_cache_key(comp_ids, season_ids, stage=None):
+    """Cache key for compute_team_season_metrics — ONE format for Team
+    Analysis, the Opposition Report and the boot prewarm, so one
+    league+season computes once and serves every team on both pages."""
+    sids = (','.join(map(str, season_ids)) if isinstance(season_ids, (list, tuple))
+            else season_ids)
+    stage_key = 'all' if stage in (STAGE_ALL, None) else stage
+    return f"sr_{','.join(map(str, comp_ids or []))}_{sids}_{stage_key}"
+
+
 def render_season_report_section(team_events_df, team_matches_df, team_name,
-                                   season_ids=None, stage=None, cache_key=None):
+                                   season_ids=None, stage=None, cache_key=None,
+                                   on_team_select=None):
     """Render the 7-dimension season report for one team.
+
+    on_team_select(team_name): when given, clicking any team's dot calls it
+    (the pages use it to open that team's report).
 
     Uses Wyscout's published per-match averages as the metric source when
     no stage filter is active; falls back to events-based formulas
@@ -9601,12 +8731,19 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
         with tab:
             fig = render_dimension_dot_plot(team_metrics_df, team_name, dim_name)
             if fig is not None:
-                st.plotly_chart(
+                event = st.plotly_chart(
                     fig,
                     use_container_width=True,
                     config={'displayModeBar': False, 'responsive': True},
                     key=f"sr_dim_{team_name}_{dim_name}",
+                    on_select='rerun' if on_team_select else 'ignore',
+                    selection_mode='points',
                 )
+                if on_team_select:
+                    import team_interactive
+                    picked = [row[0] for row in team_interactive.selected_customdata(event) if row]
+                    if picked and picked[0] != team_name:
+                        on_team_select(picked[0])
 
 
 # ==============================================================================
@@ -9617,6 +8754,8 @@ st.markdown('<h1 style="text-align: center; color: #1a1a1a; font-weight: 700; le
 # --- Load Data ---
 with st.spinner("Loading match data..."):
     raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups = load_data()
+    # Which seasons actually have events — drives the default season selection.
+    SEASON_MATCHES_WITH_EVENTS = _season_match_counts(raw_events_df)
 
 # RSS telemetry: boot line + 5-min daemon (singleton via cache_resource)
 try:
@@ -9641,7 +8780,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'nav_has_season' not in st.session_state:
         st.session_state.nav_has_season = False
     if 'current_page' not in st.session_state:
-        st.session_state.current_page = 'Match Analysis'
+        st.session_state.current_page = navigation.HOME
     if 'radio_key_version' not in st.session_state:
         st.session_state.radio_key_version = 0
     if 'shadow_teams' not in st.session_state:
@@ -9651,23 +8790,44 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'player_profile_last_season' not in st.session_state:
         st.session_state.player_profile_last_season = None
 
-    # --- Sidebar for Navigation ---
+    # --- Sidebar: context bar (filled once the page is known), then navigation ---
+    _context_slot = st.sidebar.container()
     st.sidebar.markdown('<div style="text-align: center; padding: 1rem 0 0.5rem 0;"><h2 style="color: #ffffff; font-size: 1.3rem; font-weight: 600; margin: 0;">Navigation</h2></div>', unsafe_allow_html=True)
 
-    # Check if we should navigate to Player Profile
+    # Cross-page bridge: a view that selected a player asks for the profile,
+    # optionally carrying the season it was looking at. The season goes into
+    # the context bar's key HERE, before the bar draws its widget (Streamlit
+    # rejects writes to a widget key after the widget exists in a run).
     if st.session_state.nav_to_profile:
         st.session_state.current_page = 'Player Profile'
-        # Set radio value directly on the existing key instead of creating a new one
-        current_radio_key = f"analysis_type_radio_{st.session_state.radio_key_version}"
-        st.session_state[current_radio_key] = 'Player Profile'
         st.session_state.nav_to_profile = False
+        # nav_league: the similar-players table spans both leagues, so a
+        # Campeonato neighbour must open in Campeonato — the season label
+        # alone would land in the CURRENT league (set_context writes the
+        # season into that league's key).
+        _nav_league = st.session_state.pop('nav_league', None)
+        if _nav_league not in context_bar.LEAGUE_OPTIONS:
+            _nav_league = None
+        if st.session_state.get('nav_has_season', False):
+            _nav_sid = st.session_state.get('nav_season_id')
+            context_bar.set_context(league=_nav_league, season=(
+                context_bar.ALL_SEASONS if _nav_sid is None else SEASON_ID_MAP.get(_nav_sid, context_bar.ALL_SEASONS)))
+            st.session_state.nav_season_id = None
+            st.session_state.nav_has_season = False
+        elif _nav_league:
+            context_bar.set_context(league=_nav_league)
 
-    ANALYSIS_OPTIONS = ('Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile', 'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team', 'Opposition Report')
+    ANALYSIS_OPTIONS = navigation.ALL_PAGES
 
     if '--precompute' in sys.argv:
         import time as _t
         import gc as _gc
         print('[precompute] warming per-season stats caches...', flush=True)
+        # Current-season (and All-Seasons, which include it) disk caches go
+        # stale as matches accrue — the cache key carries no data fingerprint,
+        # so a cache written at matchweek 1 would be served all season. CI is
+        # the cache factory: delete those scopes first to force fresh computes.
+        _current_sids = {cfg['current_season'] for cfg in COMPETITIONS.values()}
         for _cid, _cfg in COMPETITIONS.items():
             # Each league's individual seasons PLUS its All-Seasons scope
             # (_sid=None). The league-aware scope key keeps the two single-league
@@ -9676,6 +8836,21 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                 _label = 'ALL' if _sid is None else _sid
                 _t0 = _t.time()
                 _ev = _mins = None
+                if _sid in _current_sids or _sid is None:
+                    _scope = f'all_{_cid}' if _sid is None else str(_sid)
+                    _stale = [f'player_stats_{STATS_CACHE_VERSION}_{_scope}.parquet',
+                              f'player_percentiles_{STATS_CACHE_VERSION}_{_scope}.parquet']
+                    if _sid is not None:
+                        # All three team-strength caches are keyed on season only
+                        # and go stale together as matches accrue.
+                        _stale += [f'team_strength_{_sid}.parquet',
+                                   f'rolling_strength_{_sid}.parquet',
+                                   f'sos_strength_{SOS_CACHE_VERSION}_{_sid}.parquet']
+                    for _fname in _stale:
+                        _fp = os.path.join(STATS_CACHE_DIR, _fname)
+                        if os.path.exists(_fp):
+                            os.remove(_fp)
+                            print(f'[precompute] dropped stale cache {_fname}', flush=True)
                 try:
                     _ev = get_filtered_events(raw_events_df, _sid, [_cid])
                     _mins = get_season_player_minutes(player_minutes_data, _sid, comp_ids=[_cid])
@@ -9726,13 +8901,12 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         except Exception as _pe:
             logger.warning(f"[prewarm] could not start: {_pe}")
 
-    analysis_type = st.sidebar.radio(
-        "Choose Analysis Type",
-        ANALYSIS_OPTIONS,
-        index=ANALYSIS_OPTIONS.index(st.session_state.current_page),
-        key=f"analysis_type_radio_{st.session_state.radio_key_version}"
-    )
-    st.session_state.current_page = analysis_type
+    # Grouped navigation (Club / Opposition / Players / Recruitment); the
+    # single source of truth is st.session_state.current_page — see navigation.py.
+    analysis_type = navigation.render_sidebar_nav()
+    with _context_slot:
+        context_bar.render(analysis_type)
+    navigation.scroll_to_top_on_page_change(analysis_type)
 
     # Engine freshness stamp — visible on every page (lesson from the
     # April→June staleness: nobody could see the data was 2 months old)
@@ -9745,6011 +8919,53 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     except Exception:
         pass
 
-    if analysis_type == 'Match Analysis':
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("match_analysis")
-        selected_season_id = season_selector("match_analysis", comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        season_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids).copy()
+    if analysis_type == navigation.HOME:
+        views.home.render()
 
-        # --- Match Selection (Using correct column names) ---
-        if 'dateutc' in season_matches_df.columns:
-            season_matches_df['display_date'] = pd.to_datetime(season_matches_df['dateutc']).dt.strftime('%Y-%m-%d')
-        else: season_matches_df['display_date'] = 'Unknown Date'
+    elif analysis_type == 'Match Analysis':
+        views.match_analysis.render()
 
-        # Create a display-ready gameweek column
-        season_matches_df['gw_display'] = "GW " + season_matches_df.get('gameweek', pd.Series(dtype='str')).fillna('?').astype(str)
-
-        # --- Determine stage labels (Promotion League vs Maintenance Stage) ---
-        if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
-            # Group matches by roundId to find the first stage (most matches)
-            round_counts = season_matches_df.groupby('roundId').size()
-            first_stage_round = round_counts.idxmax()
-
-            # Determine second stage rounds and their labels
-            second_stage_rounds = round_counts.drop(first_stage_round, errors='ignore')
-
-            def get_stage_label(row):
-                if row['roundId'] == first_stage_round:
-                    return row['gw_display']  # Regular season: no prefix
-                else:
-                    # Second stage: determine if Promotion or Maintenance
-                    if len(second_stage_rounds) > 0:
-                        min_round = second_stage_rounds.idxmin()
-                        is_promotion = row['roundId'] == min_round
-                        prefix = "[P] " if is_promotion else "[M] "
-                    else:
-                        prefix = "[S2] "
-                    return prefix + row['gw_display']
-
-            season_matches_df['gw_display_with_stage'] = season_matches_df.apply(get_stage_label, axis=1)
-        else:
-            season_matches_df['gw_display_with_stage'] = season_matches_df['gw_display']
-
-        # Build the full display name using the new columns (GW: Teams (Score) - Date)
-        season_matches_df['display_name'] = season_matches_df['gw_display_with_stage'] + ": " + \
-                                             season_matches_df.get('homeTeamName', '?').fillna('?') + " vs " + \
-                                             season_matches_df.get('awayTeamName', '?').fillna('?') + \
-                                             " (" + season_matches_df.get('score', '?-?').fillna('?-?') + ") - " + \
-                                             season_matches_df['display_date']
-
-        sort_key = 'dateutc' if 'dateutc' in season_matches_df.columns else 'matchId'
-        # Sort descending to show newest matches first
-        season_matches_df.sort_values(by=[sort_key, 'matchId'], inplace=True, ascending=False, na_position='last')
-
-        selected_match_display = st.sidebar.selectbox("Select a Match", season_matches_df['display_name'])
-        matching_matches = season_matches_df[season_matches_df['display_name'] == selected_match_display]
-        if matching_matches.empty:
-            st.error("Selected match not found. Please refresh the page and try again.")
-            st.stop()
-        selected_match_info = matching_matches.iloc[0]
-        selected_match_id = selected_match_info['matchId']
-
-        # --- Display stage badge for the selected match ---
-        if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
-            round_counts = season_matches_df.groupby('roundId').size()
-            first_stage_round = round_counts.idxmax()
-            second_stage_rounds = round_counts.drop(first_stage_round, errors='ignore')
-
-            current_round_id = selected_match_info.get('roundId')
-            if current_round_id == first_stage_round:
-                badge_text = "Regular Season"
-                badge_bg = "rgba(255,255,255,0.08)"
-                badge_fg = "rgba(255,255,255,0.45)"
-                badge_border = "rgba(255,255,255,0.12)"
-            else:
-                if len(second_stage_rounds) > 0:
-                    min_round = second_stage_rounds.idxmin()
-                    is_promotion = current_round_id == min_round
-                    if is_promotion:
-                        badge_text = "Promotion League"
-                        badge_bg = "rgba(255,255,255,0.12)"
-                        badge_fg = "#fff"
-                        badge_border = "rgba(255,255,255,0.2)"
-                    else:
-                        badge_text = "Maintenance Stage"
-                        badge_bg = "rgba(255,255,255,0.08)"
-                        badge_fg = "#fff"
-                        badge_border = "rgba(255,255,255,0.25)"
-                else:
-                    badge_text = "Second Stage"
-                    badge_bg = "rgba(255,255,255,0.08)"
-                    badge_fg = "rgba(255,255,255,0.45)"
-                    badge_border = "rgba(255,255,255,0.12)"
-
-            st.sidebar.markdown(
-                f'<div style="background:{badge_bg}; color:{badge_fg}; border:1px solid {badge_border}; padding:7px 12px; border-radius:6px; text-align:center; font-weight:600; font-size:0.8rem; margin-top:8px; letter-spacing:0.3px;">{badge_text}</div>',
-                unsafe_allow_html=True
-            )
-
-        st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
-        
-    
-
-        match_data = all_match_data.get(selected_match_id)
-        if match_data:
-            st.subheader("Shot Maps")
-            col1, col2 = st.columns(2)
-            
-            # --- Get the match events ONCE ---
-            match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
-
-            # Every pitch figure on this page goes through _show_match_png ->
-            # _render_match_figure_png, which caches the PNG bytes on
-            # (kind, matchId, team, FIGURE_CACHE_VERSION). See that function
-            # for why those four components are the complete key. int() the
-            # matchId so a numpy int64 and a Python int can't key separately.
-            _mid = int(selected_match_id)
-
-            def _show_match_png(kind, team=None, lineup=None):
-                _png = _render_match_figure_png(
-                    kind, _mid, team, FIGURE_CACHE_VERSION,
-                    match_events_df, selected_match_info, lineup)
-                if _png:
-                    st.image(_png, use_container_width=True)
-
-            with col1:
-                _show_match_png('shotmap', selected_match_info['homeTeamName'])
-            with col2:
-                _show_match_png('shotmap', selected_match_info['awayTeamName'])
-
-            # --- NEW: Shot Details Tables ---
-            st.markdown("---") # Add a separator
-            st.subheader("Shot Details")
-            
-            def get_shot_table(df, team_name):
-                """Helper function to create the shot detail table."""
-                shots = df[
-                    (df.get('team.name') == team_name) & 
-                    (df.get('type.primary').isin(['shot', 'penalty']))
-                ].copy()
-                
-                if shots.empty:
-                    return pd.DataFrame(columns=["#", "Shooter", "Minute", "Body Part", "xG", "PSxG"])
-
-                # Select and rename columns
-                # Use .get() for safety, in case a column is missing
-                shots_table = pd.DataFrame()
-                shots_table['Shooter'] = shots.get('player.name', 'N/A')
-                shots_table['Minute'] = shots.get('minute', 0).astype(int)
-                # Use .get() on the dictionary-like column 'shot.bodyPart'
-                shots_table['Body Part'] = shots.get('shot.bodyPart', {}).apply(lambda x: x.get('name', 'unknown') if isinstance(x, dict) else x)
-                shots_table['xG'] = shots.get('shot.xg', 0).fillna(0).round(2)
-                shots_table['PSxG'] = shots.get('shot.postShotXg', 0).fillna(0).round(2)
-                
-                # Add the shot number (#)
-                shots_table.reset_index(drop=True, inplace=True)
-                shots_table.index = shots_table.index + 1
-                shots_table.reset_index(inplace=True)
-                shots_table = shots_table.rename(columns={'index': '#'})
-                
-                return shots_table.set_index('#')
-
-            col1_table, col2_table = st.columns(2)
-            with col1_table:
-                st.markdown(f"**{selected_match_info['homeTeamName']}**")
-                home_shots_table = get_shot_table(match_events_df, selected_match_info['homeTeamName'])
-                st.dataframe(home_shots_table, column_config=auto_column_config(home_shots_table))
-
-            with col2_table:
-                st.markdown(f"**{selected_match_info['awayTeamName']}**")
-                away_shots_table = get_shot_table(match_events_df, selected_match_info['awayTeamName'])
-                st.dataframe(away_shots_table, column_config=auto_column_config(away_shots_table))
-            # --- END NEW SECTION ---
-            
-            # --- xG Flowchart ---
-            st.subheader("xG Flowchart")
-            match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
-            if not match_events_df.empty:
-                try:
-                    _show_match_png('xg_flowchart')
-                except Exception as e:
-                    st.warning(f"Could not generate xG flowchart: {e}")
-            else:
-                st.info("No event data found for flowchart.")
-
-            st.subheader("Team Stats")
-            if 'team_stats' in match_data and isinstance(match_data['team_stats'], dict) and match_data['team_stats']:
-                for stat_category, df in match_data['team_stats'].items():
-                    st.markdown(f"**{stat_category}**")
-                    if isinstance(df, pd.DataFrame): st.dataframe(df, column_config=auto_column_config(df))
-                    else: st.warning(f"Data for '{stat_category}' is not a DataFrame.")
-            else: st.warning("Team stats data not found.")
-
-            st.subheader("Player Stats")
-            if 'player_stats' in match_data and isinstance(match_data['player_stats'], dict) and 'home' in match_data['player_stats'] and 'away' in match_data['player_stats']:
-                st.markdown(f"**{selected_match_info['homeTeamName']}**")
-                if isinstance(match_data['player_stats']['home'], pd.DataFrame): st.dataframe(match_data['player_stats']['home'])
-                else: st.warning("Home player stats data not a DataFrame.")
-                st.markdown(f"**{selected_match_info['awayTeamName']}**")
-                if isinstance(match_data['player_stats']['away'], pd.DataFrame): st.dataframe(match_data['player_stats']['away'])
-                else: st.warning("Away player stats data not a DataFrame.")
-            else: st.warning("Player stats data not found.")
-
-            # =============================================================
-            # Tactical Analysis (Wyscout-style pitch visualizations)
-            # =============================================================
-            st.subheader("Tactical Analysis")
-            home_team = selected_match_info['homeTeamName']
-            away_team = selected_match_info['awayTeamName']
-
-            # Get lineup/substitution data for this match (if available)
-            match_lineup_data = match_lineups.get(selected_match_id, {}) if match_lineups else {}
-            home_lineup = match_lineup_data.get(home_team)
-            away_lineup = match_lineup_data.get(away_team)
-
-            # 1. Average Player Positions
-            st.markdown("**Average Player Positions**")
-            col_ap1, col_ap2 = st.columns(2)
-            with col_ap1:
-                try:
-                    _show_match_png('avg_positions', home_team, home_lineup)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-            with col_ap2:
-                try:
-                    _show_match_png('avg_positions', away_team, away_lineup)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-
-            # 2. Average Positions by Substitution Phase
-            st.markdown(f"**{home_team} — Avg Positions by Phase**")
-            try:
-                _show_match_png('avg_positions_by_subs', home_team, home_lineup)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-
-            st.markdown(f"**{away_team} — Avg Positions by Phase**")
-            try:
-                _show_match_png('avg_positions_by_subs', away_team, away_lineup)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-
-            # 3. Passing Network
-            st.markdown("**Passing Network**")
-            col_pn1, col_pn2 = st.columns(2)
-            with col_pn1:
-                try:
-                    _show_match_png('passing_network', home_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-            with col_pn2:
-                try:
-                    _show_match_png('passing_network', away_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-
-            # 4. Ball Recoveries & Losses
-            st.markdown("**Ball Recoveries & Losses**")
-            tac_team = st.selectbox(
-                "Select team for recovery/loss maps",
-                [home_team, away_team],
-                key="tac_recovery_team",
-            )
-            col_rl1, col_rl2 = st.columns(2)
-            with col_rl1:
-                try:
-                    # tac_team is the selectbox above — it IS the team component
-                    # of the key, so the toggle needs nothing extra.
-                    _show_match_png('recovery_map', tac_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-            with col_rl2:
-                try:
-                    _show_match_png('loss_map', tac_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-
-            # 5. Defensive Duels
-            st.markdown("**Defensive Duels**")
-            col_dd1, col_dd2 = st.columns(2)
-            with col_dd1:
-                try:
-                    _show_match_png('defensive_duels', home_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-            with col_dd2:
-                try:
-                    _show_match_png('defensive_duels', away_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-
-            # 6. Shot Assists + Dribbles in Final Third
-            st.markdown("**Shot Assists & Dribbles in Final Third**")
-            col_sa1, col_sa2 = st.columns(2)
-            with col_sa1:
-                try:
-                    _show_match_png('shot_assists', home_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-            with col_sa2:
-                try:
-                    _show_match_png('shot_assists', away_team)
-                except Exception as e:
-                    st.caption(f"Could not render: {e}")
-
-        else:
-             st.warning(f"No detailed match data found for Match ID {selected_match_id}.")
 
 
     elif analysis_type == 'Team Analysis':
+        views.team_analysis.render()
 
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("team_analysis")
-        selected_season_id = season_selector("team_analysis", comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown") if isinstance(selected_season_id, int) else "Unknown"
-        # Stage selector (Regular / Promotion / Maintenance / Promotion playoff)
-        selected_stage = stage_selector(
-            "team_analysis",
-            matches_summary_df,
-            selected_comp_ids,
-            active_season_ids,
-        )
-        team_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
-        team_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
-        # Apply stage filter — narrows the working set to the chosen stage's matches.
-        team_events_df, team_matches_df = filter_by_stage(
-            team_events_df, team_matches_df, matches_summary_df,
-            selected_comp_ids, active_season_ids, selected_stage,
-        )
-        team_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
-        team_season_stats = get_season_team_stats(season_team_stats, active_season_ids, comp_ids=selected_comp_ids)
-
-        all_teams_t = sorted(pd.concat([team_matches_df.get('homeTeamName'), team_matches_df.get('awayTeamName')]).dropna().unique())
-        selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t, key="team_select_tab")
-        _stage_suffix = "" if selected_stage in (STAGE_ALL, None) else f" — {selected_stage}"
-        st.header(f"Team Report: {selected_team_t}{_stage_suffix}")
-        if selected_stage not in (STAGE_ALL, None):
-            _n_team_matches = team_matches_df[
-                (team_matches_df['homeTeamName'] == selected_team_t)
-                | (team_matches_df['awayTeamName'] == selected_team_t)
-            ].shape[0]
-            st.caption(
-                f"Filtered to **{selected_stage}** — {len(team_matches_df)} matches in scope, "
-                f"{_n_team_matches} for {selected_team_t}."
-            )
-
-        # Load player details for roster table
-        player_details_df = load_player_details()
-
-        # When a stage filter is active, force events-based radars so they
-        # reflect only the matches in that stage (Wyscout's table is
-        # season-aggregated and would otherwise leak full-season numbers).
-        _stage_active = selected_stage not in (STAGE_ALL, None)
-        _radar_cache_key = (active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
-        if _stage_active:
-            _radar_cache_key = f"{_radar_cache_key}_{selected_stage}"
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(
-            team_events_df, team_matches_df,
-            season_id=_radar_cache_key,
-            force_events=_stage_active,
-        )
-
-        # Compute set piece radar data (all rate metrics — higher = better, no inversions)
-        sp_df_raw = None
-        sp_df_pct = None
-        try:
-            # team_events_df is stage-filtered above, so the stage has to ride
-            # in the key — it is unhashed inside (leading underscore), and the
-            # season alone would serve the All-Stages numbers here and cache
-            # them to a stage-blind parquet.
-            sp_df_raw = calculate_set_piece_metrics(
-                team_events_df,
-                season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id,
-                stage=selected_stage if _stage_active else None,
-            )
-            if sp_df_raw is not None and not sp_df_raw.empty:
-                sp_df_pct = sp_df_raw.copy()
-                for col in sp_df_pct.columns:
-                    sp_df_pct[col] = sp_df_pct[col].rank(pct=True) * 100
-        except Exception:
-            pass
-
-        league_label = get_league_label(selected_comp_ids)
-
-        # --- Cached-PNG figure plumbing for this page ---------------------
-        # Every figure below reads team_events_df / team_matches_df, which are
-        # fully determined by (active_season_ids, selected_comp_ids,
-        # selected_stage) — see _render_team_figure_png for the full argument.
-        # These three become the scope half of every cache key; team_name and
-        # `extra` supply the rest. _season_id_list normalises the
-        # None|int|list active_season_ids ('All Seasons' -> () stays distinct
-        # from any real season).
-        _fig_season_key = tuple(sorted(_season_id_list(active_season_ids)))
-        _fig_comp_key = tuple(sorted(int(c) for c in (selected_comp_ids or [])))
-        _fig_stage_key = '' if selected_stage in (STAGE_ALL, None) else str(selected_stage)
-
-        def _show_team_png(kind, extra=(), payload=None):
-            _png = _render_team_figure_png(
-                kind, selected_team_t, _fig_season_key, _fig_comp_key,
-                _fig_stage_key, extra, FIGURE_CACHE_VERSION,
-                team_events_df, team_matches_df, payload)
-            if _png:
-                st.image(_png, use_container_width=True)
-
-        def _show_team_radar(title, params, values_raw, values_pct, color):
-            # The plotted values ride in `extra` (hashed), not just the scope:
-            # ~10 floats, and it makes the radar a pure function of its key
-            # regardless of how the upstream stat caches key themselves.
-            # league_label/season_label are drawn onto the image, so they
-            # belong in the key too — season_label derives from
-            # selected_season_id, which season_key does not capture.
-            _show_team_png(
-                'radar',
-                extra=(title, tuple(params), color, league_label, season_label),
-                payload=(tuple(values_raw), tuple(values_pct)))
-
-        st.subheader(f"Team Style Radars (Percentile Ranks vs {league_label})")
-        if selected_team_t in stats_df_raw.index and selected_team_t in stats_df_pct.index:
-            offensive_params = ['Goals', 'xG', 'xG per Shot', 'Shots', 'Actions in Box', 'Passes into Box', 'Crosses', 'Dribbles']
-            distribution_params = ['Passes', 'Progressive Passes', 'Directness', 'Ball Possession', 'Losses']
-            defensive_params = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'Aerial Duel Win %', 'Defensive Duel Win %', 'Interceptions', 'Fouls', 'PPDA']
-            set_piece_params = [
-                'Corners', 'xG per Corner', 'Goals per Corner', 'Short Corner %',  # corner cluster
-                'Long Throws', 'Long Throw %', 'xG per Long Throw',  # throw-in cluster
-                'First Contact %', 'xG per FK Delivery', 'Penalties', 'Non-Pen SP Goals',  # general
-            ]
-            team_stats_raw = stats_df_raw.loc[selected_team_t]
-            team_stats_pct = stats_df_pct.loc[selected_team_t]
-            current_league = get_league_label(selected_comp_ids); current_season = season_label
-
-            # Row 1: Offensive + Distribution
-            col_r1, col_r2 = st.columns(2)
-            with col_r1:
-                st.markdown("**Offensive Radar**")
-                valid_offensive_params = [p for p in offensive_params if p in team_stats_raw.index]
-                if valid_offensive_params:
-                     _show_team_radar("Offensive Radar", valid_offensive_params,
-                                      team_stats_raw[valid_offensive_params].tolist(),
-                                      team_stats_pct[valid_offensive_params].tolist(),
-                                      '#e60000')
-            with col_r2:
-                st.markdown("**Distribution Radar**")
-                valid_distribution_params = [p for p in distribution_params if p in team_stats_raw.index]
-                if valid_distribution_params:
-                     raw_dist_values = team_stats_raw[valid_distribution_params].tolist()
-                     try: poss_index = valid_distribution_params.index('Ball Possession'); raw_dist_values[poss_index] = f"{raw_dist_values[poss_index]:.0f}%"
-                     except ValueError: pass
-                     _show_team_radar("Distribution Radar", valid_distribution_params,
-                                      raw_dist_values,
-                                      team_stats_pct[valid_distribution_params].tolist(),
-                                      '#0077b6')
-
-            # Row 2: Defensive + Set Piece
-            col_r3, col_r4 = st.columns(2)
-            with col_r3:
-                st.markdown("**Defensive Radar**")
-                valid_defensive_params = [p for p in defensive_params if p in team_stats_raw.index]
-                if valid_defensive_params:
-                     raw_def_values = team_stats_raw[valid_defensive_params].tolist()
-                     try: aerial_idx = valid_defensive_params.index('Aerial Duel Win %'); raw_def_values[aerial_idx] = f"{raw_def_values[aerial_idx]:.0f}%"
-                     except ValueError: pass
-                     try: def_idx = valid_defensive_params.index('Defensive Duel Win %'); raw_def_values[def_idx] = f"{raw_def_values[def_idx]:.0f}%"
-                     except ValueError: pass
-                     _show_team_radar("Defensive Radar", valid_defensive_params,
-                                      raw_def_values,
-                                      team_stats_pct[valid_defensive_params].tolist(),
-                                      '#52A736')
-            with col_r4:
-                st.markdown("**Set Piece Radar**")
-                if sp_df_raw is not None and not sp_df_raw.empty and selected_team_t in sp_df_raw.index:
-                    sp_team_raw = sp_df_raw.loc[selected_team_t]
-                    sp_team_pct = sp_df_pct.loc[selected_team_t]
-                    valid_sp_params = [p for p in set_piece_params if p in sp_team_raw.index]
-                    if valid_sp_params:
-                        raw_sp_values = sp_team_raw[valid_sp_params].tolist()
-                        # Format percentage params with % suffix
-                        for _pct_name in ['Short Corner %', 'Long Throw %', 'First Contact %']:
-                            try:
-                                _idx = valid_sp_params.index(_pct_name)
-                                raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
-                            except ValueError:
-                                pass
-                        _show_team_radar("Set Piece Radar", valid_sp_params,
-                                         raw_sp_values,
-                                         sp_team_pct[valid_sp_params].tolist(),
-                                         '#ff8c00')
-                    else:
-                        st.info("Set piece data not available.")
-                else:
-                    st.info("Set piece data not available for this team.")
-        else:
-            st.warning(f"Could not find calculated radar statistics for {selected_team_t}.")
-
-        # ── Season Report (7-dimension dot plots, replicates the Twelve format) ─
-        st.divider()
-        with st.expander("📊 Season Report — performance across 7 dimensions",
-                          expanded=False):
-            st.caption(
-                "Each row shows every team in the current league/stage as a green dot, "
-                f"with **{selected_team_t}** highlighted as a white hexagon. "
-                "Values are the team's raw per-match / per-90 numbers."
-            )
-            _sr_cache_key = (
-                f"sr_{','.join(map(str, selected_comp_ids))}"
-                f"_{active_season_ids if not isinstance(active_season_ids, list) else ','.join(map(str, active_season_ids))}"
-                f"_{selected_stage or 'all'}"
-            )
-            render_season_report_section(
-                team_events_df, team_matches_df, selected_team_t,
-                season_ids=active_season_ids,
-                stage=selected_stage,
-                cache_key=_sr_cache_key,
-            )
-
-        # Primary Formation XI Graphic
-        st.subheader("Primary Formation")
-        primary_formation = get_team_primary_formation(team_events_df, selected_team_t)
-        starting_xi = get_team_starting_xi(team_events_df, selected_team_t)
-
-        col_xi1, col_xi2 = st.columns([1, 1])
-
-        with col_xi1:
-            if primary_formation and starting_xi:
-                # starting_xi is the render payload; the formation string rides
-                # in the key alongside the scope. Both are derived from
-                # (team_events_df, team) i.e. the scope key + team, so the
-                # scope pins the XI too — the formation is included because it
-                # is cheap and makes the key self-evident.
-                _show_team_png('formation_xi', extra=(primary_formation,),
-                               payload=starting_xi)
-            else:
-                st.info("Formation data not available for this team.")
-
-        with col_xi2:
-            st.write(f"**Formation:** {primary_formation}")
-
-            # Build roster table with unique players
-            if starting_xi:
-                # Get unique players (same player may appear at multiple positions)
-                unique_players = {}
-                for pos, player in starting_xi.items():
-                    pid = player['id']
-                    if pid not in unique_players:
-                        unique_players[pid] = {'name': player['name'], 'positions': [pos], 'id': pid}
-                    else:
-                        unique_players[pid]['positions'].append(pos)
-
-                # Build table data
-                roster_data = []
-                player_id_list = []
-                for pid, pinfo in unique_players.items():
-                    row = {'Player': pinfo['name'], 'Position': pinfo['positions'][0]}
-
-                    # Get age and nationality from player_details
-                    if pid in player_details_df.index:
-                        details = player_details_df.loc[pid]
-                        age = _calculate_age(details.get('birthDate'))
-                        row['Age'] = int(age) if isinstance(age, (int, float)) and age != "N/A" else "N/A"
-                        row['Nationality'] = details.get('passportArea', 'N/A')
-                    else:
-                        row['Age'] = "N/A"
-                        row['Nationality'] = "N/A"
-
-                    # Get minutes from team_player_minutes_df
-                    player_mins = team_player_minutes_df[team_player_minutes_df['playerId'] == pid] if not team_player_minutes_df.empty else pd.DataFrame()
-                    if not player_mins.empty:
-                        row['Minutes'] = int(player_mins['totalMinutes'].values[0])
-                    else:
-                        row['Minutes'] = 0
-
-                    roster_data.append(row)
-                    player_id_list.append(pid)
-
-                roster_df = pd.DataFrame(roster_data)
-                roster_df = roster_df.sort_values('Minutes', ascending=False)
-                # Reorder player_id_list to match sorted dataframe
-                player_id_list = [player_id_list[i] for i in roster_df.index] if len(roster_data) > 0 else []
-                roster_df = roster_df.reset_index(drop=True)
-
-                st.write("**Squad Roster** (click to view profile):")
-                selection = st.dataframe(
-                    roster_df,
-                    use_container_width=True,
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key="team_roster_table",
-                    hide_index=True,
-                    column_config=auto_column_config(roster_df)
-                )
-
-                # Handle row selection for navigation to Player Profile
-                if selection and selection.selection and selection.selection.rows:
-                    selected_row_idx = selection.selection.rows[0]
-                    if selected_row_idx < len(player_id_list):
-                        selected_player_id = player_id_list[selected_row_idx]
-                        st.session_state.selected_player_id = selected_player_id
-                        st.session_state.nav_to_profile = True
-                        st.session_state.nav_season_id = selected_season_id
-                        st.session_state.nav_has_season = True
-                        st.rerun()
-
-        st.subheader("Season Shot Maps (Non-Penalty)")
-        col1_shot, col2_shot = st.columns(2)
-        with col1_shot:
-            st.markdown(f"**Shots FOR {selected_team_t}**")
-            _show_team_png('season_shotmap_for')
-        with col2_shot:
-            st.markdown(f"**Shots AGAINST {selected_team_t}**")
-            _show_team_png('season_shotmap_against')
-
-        # --- Rolling xG History ---
-        with st.expander("Rolling xG (5-Game Average)", expanded=False):
-            try:
-                # Use the stage-filtered events/matches so the rolling
-                # series only covers matches in the active stage. Both frames
-                # are underscore-prefixed inside, so scope_key is what makes
-                # the cache follow the scope — reuse the same triple the
-                # figure cache keys on.
-                rolling_xg_data_for_plot = calculate_xg_history_data(
-                    team_events_df, team_matches_df,
-                    scope_key=(_fig_season_key, _fig_comp_key, _fig_stage_key))
-                if not rolling_xg_data_for_plot.empty:
-                    _show_team_png('rolling_xg', payload=rolling_xg_data_for_plot)
-                else:
-                    st.warning("No data available to calculate xG history.")
-            except Exception as e:
-                st.error(f"Error loading xG history: {e}")
-
-        st.subheader("Corner Kick Analysis")
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            st.markdown("**Corners from Left Side**")
-            # (These two were also the only figures on the page with no
-            # plt.close — they leaked until the plt.close('all') at the end of
-            # the script. Going through _fig_png_bytes closes them properly.)
-            _show_team_png('corner_analysis', extra=('left',))
-        with col_c2:
-            st.markdown("**Corners from Right Side**")
-            _show_team_png('corner_analysis', extra=('right',))
-
-        st.subheader("Season-Long Stats")
-        if selected_team_t in team_season_stats and 'corners' in team_season_stats[selected_team_t]:
-            st.markdown("**Corner Kick Summary**")
-            if selected_stage not in (STAGE_ALL, None):
-                st.caption(
-                    f"⚠️ Showing full-season aggregates; this table is pre-computed "
-                    f"and doesn't filter to the **{selected_stage}** stage."
-                )
-            st.dataframe(team_season_stats[selected_team_t]['corners'])
-        else:
-            st.write("No season-long stats available for this team.")
-
-        # =============================================================
-        # Tactical Zone Analysis (Wyscout-style)
-        # =============================================================
-        st.subheader("Tactical Zone Analysis")
-
-        # 1. Ball Recovery Zones (vs league average)
-        st.markdown("**Ball Recovery Zones** (vs League Average)")
-        try:
-            _show_team_png('zone_heatmap', extra=('recovery',))
-        except Exception as e:
-            st.caption(f"Could not render recovery zones: {e}")
-
-        # 2. Ball Loss Zones (vs league average)
-        st.markdown("**Ball Loss Zones** (vs League Average)")
-        try:
-            _show_team_png('zone_heatmap', extra=('loss',))
-        except Exception as e:
-            st.caption(f"Could not render loss zones: {e}")
-
-        # 3. Passing Network (Season)
-        st.markdown("**Passing Network (Season)**")
-        try:
-            _show_team_png('passing_network')
-        except Exception as e:
-            st.caption(f"Could not render passing network: {e}")
-
-        # 4. Defensive Structure
-        st.markdown("**Defensive Structure**")
-        try:
-            _show_team_png('defensive_structure')
-        except Exception as e:
-            st.caption(f"Could not render defensive structure: {e}")
 
     elif analysis_type == 'League Analysis':
+        views.league_analysis.render()
 
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("league_analysis")
-        selected_season_id = season_selector("league_analysis", comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        league_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
-        league_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
-
-        # --- 1. ALL DATA CALCS ---
-        stats_df_raw, stats_df_pct = calculate_all_team_radars_stats(league_events_df, league_matches_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id)
-        team_strength_df = calculate_team_strength(league_events_df, league_matches_df, season_id=active_season_ids if isinstance(active_season_ids, list) else selected_season_id).copy()
-
-        # Filter all_match_data to only include matches from selected season
-        season_match_ids = set(league_matches_df['matchId'].dropna().unique())
-        season_match_data = {mid: data for mid, data in all_match_data.items() if mid in season_match_ids}
-
-        try:
-            expanded_stats_df = calculate_expanded_team_stats(season_match_data, league_matches_df, season_id=selected_season_id)
-            combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
-        except Exception as e:
-            st.warning(f"Could not calculate expanded match stats: {e}")
-            combined_stats_df = stats_df_raw.copy()
-
-        # Calculate and merge set piece metrics
-        try:
-            set_piece_df = calculate_set_piece_metrics(league_events_df, season_id=selected_season_id)
-            combined_stats_df = pd.merge(combined_stats_df, set_piece_df, left_index=True, right_index=True, how='outer').fillna(0)
-        except Exception as e:
-            st.warning(f"Could not calculate set piece metrics: {e}")
-
-        # --- 2. Define Team Lists (Season-dependent groups) ---
-        # Only 2025/26 has defined Group A/B; other seasons show all teams together
-        SEASON_GROUPS = {
-            191782: {
-                'Group A': ['Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
-                            'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'],
-                'Group B': ['1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-                            'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
-            }
-        }
-
-        has_groups = selected_season_id in SEASON_GROUPS
-        all_season_teams = sorted(pd.concat([league_matches_df.get('homeTeamName'), league_matches_df.get('awayTeamName')]).dropna().unique())
-
-        if has_groups:
-            GROUP_A_TEAMS = SEASON_GROUPS[selected_season_id]['Group A']
-            GROUP_B_TEAMS = SEASON_GROUPS[selected_season_id]['Group B']
-            valid_group_a_teams = [t for t in GROUP_A_TEAMS if t in combined_stats_df.index]
-            valid_group_b_teams = [t for t in GROUP_B_TEAMS if t in combined_stats_df.index]
-            ALL_TEAMS_TO_HIGHLIGHT = list(set(GROUP_A_TEAMS + GROUP_B_TEAMS))
-        else:
-            ALL_TEAMS_TO_HIGHLIGHT = all_season_teams
-
-        valid_all_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in combined_stats_df.index]
-
-        # --- Cached-PNG figure plumbing for this page ---------------------
-        # These figures do NOT key on the data scope the way Match/Team do.
-        # Both plotters read only their frame's index and the columns they
-        # plot, so _plot_values_key() of that slice is the data half of the
-        # key — see _render_league_figure_png. What no scope key could supply
-        # is the WIDGET STATE: which metric sits on each axis, whether it is
-        # inverted, which teams are drawn, which seasons the multi-season
-        # chart concatenated. That rides in `extra`.
-        _fig_day_key = datetime.date.today().isoformat()
-
-        def _show_strength_png(stats_df, teams=None, icon_zoom=0.25,
-                                season_label=None):
-            _png = _render_league_figure_png(
-                'team_strength', _plot_values_key(stats_df, _STRENGTH_COLS),
-                (tuple(teams) if teams is not None else None, icon_zoom,
-                 season_label),
-                _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
-            if _png:
-                st.image(_png, use_container_width=True)
-
-        def _show_scatter_png(stats_df, x_metric, y_metric, invert_x, invert_y):
-            _png = _render_league_figure_png(
-                'custom_scatter', _plot_values_key(stats_df, (x_metric, y_metric)),
-                (x_metric, y_metric, bool(invert_x), bool(invert_y)),
-                _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
-            if _png:
-                st.image(_png, use_container_width=True)
-
-        # --- 3. League Tables ---
-        st.subheader("League Standings")
-
-        league_table_config = {
-            'Pos': st.column_config.NumberColumn('Pos', width='small'),
-            'Team': st.column_config.TextColumn('Team', width='medium'),
-            'P': st.column_config.NumberColumn('P', help='Played', width='small'),
-            'W': st.column_config.NumberColumn('W', help='Won', width='small'),
-            'D': st.column_config.NumberColumn('D', help='Drawn', width='small'),
-            'L': st.column_config.NumberColumn('L', help='Lost', width='small'),
-            'GF': st.column_config.NumberColumn('GF', help='Goals For', width='small'),
-            'GA': st.column_config.NumberColumn('GA', help='Goals Against', width='small'),
-            'GD': st.column_config.NumberColumn('GD', help='Goal Difference', width='small'),
-            'Pts': st.column_config.NumberColumn('Pts', help='Points', width='small'),
-        }
-
-        if has_groups:
-            col_table_a, col_table_b = st.columns(2)
-            with col_table_a:
-                st.markdown("**Group A**")
-                table_a = calculate_league_table(league_matches_df, GROUP_A_TEAMS)
-                st.dataframe(table_a, use_container_width=True, hide_index=True, column_config=league_table_config)
-            with col_table_b:
-                st.markdown("**Group B**")
-                table_b = calculate_league_table(league_matches_df, GROUP_B_TEAMS)
-                st.dataframe(table_b, use_container_width=True, hide_index=True, column_config=league_table_config)
-        else:
-            st.markdown("**All Teams**")
-            table_all = calculate_league_table(league_matches_df, all_season_teams)
-            st.dataframe(table_all, use_container_width=True, hide_index=True, column_config=league_table_config)
-
-        # --- 4. Strength Charts ---
-        if has_groups:
-            st.subheader(f"Team Strength Scatterplot ({get_league_label(selected_comp_ids)} - Group B)")
-            if not team_strength_df.empty:
-                valid_group_b_strength_teams = [t for t in GROUP_B_TEAMS if t in team_strength_df.index]
-                _show_strength_png(team_strength_df,
-                                    teams=valid_group_b_strength_teams,
-                                    icon_zoom=0.4)
-                with st.expander("View Group B Raw Strength Data"):
-                    if valid_group_b_strength_teams:
-                        st.dataframe(team_strength_df.loc[valid_group_b_strength_teams, ['Attacking Strength', 'Defending Strength']].round(2))
-            else:
-                st.warning("Could not calculate team strength data for Group B.")
-
-            # Group B Custom Scatterplot
-            st.subheader("Group B Custom Scatterplot")
-            if not combined_stats_df.empty and valid_group_b_teams:
-                group_b_stats_df = combined_stats_df.loc[valid_group_b_teams]
-                metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
-                available_metrics_gb = sorted([col for col in group_b_stats_df.columns if col not in metrics_to_exclude])
-
-                col_x_gb, col_y_gb = st.columns(2)
-                with col_x_gb:
-                    default_x_gb_index = available_metrics_gb.index('xG') if 'xG' in available_metrics_gb else 0
-                    x_metric_gb = st.selectbox("Select X-Axis Metric:", available_metrics_gb, index=default_x_gb_index, key='x_metric_group_b')
-                with col_y_gb:
-                    default_y_gb_index = available_metrics_gb.index('xG Against') if 'xG Against' in available_metrics_gb else 1
-                    y_metric_gb = st.selectbox("Select Y-Axis Metric:", available_metrics_gb, index=default_y_gb_index, key='y_metric_group_b')
-
-                col_inv_x_gb, col_inv_y_gb = st.columns(2)
-                with col_inv_x_gb:
-                    invert_x_gb = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_group_b')
-                with col_inv_y_gb:
-                    default_invert_y_gb = 'Against' in y_metric_gb or 'PPDA' in y_metric_gb or 'Losses' in y_metric_gb
-                    invert_y_gb = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_gb, key='invert_y_group_b')
-
-                if x_metric_gb and y_metric_gb:
-                    _show_scatter_png(group_b_stats_df, x_metric_gb, y_metric_gb,
-                                       invert_x_gb, invert_y_gb)
-            else:
-                st.info("No data available for Group B custom plot.")
-
-        # --- 5. All Teams Strength Chart ---
-        st.subheader("Team Strength Scatterplot (All Teams)")
-
-        # Multi-season comparison option (filtered to selected league)
-        league_scatter_map = {}
-        for cid in selected_comp_ids:
-            if cid in COMPETITIONS:
-                league_scatter_map.update(COMPETITIONS[cid]["seasons"])
-        scatter_season_labels = list(league_scatter_map.values())
-        scatter_default = league_scatter_map.get(selected_season_id)
-        if not scatter_default and scatter_season_labels:
-            scatter_default = scatter_season_labels[0]
-        scatter_seasons = st.multiselect(
-            "Compare seasons", scatter_season_labels,
-            default=[scatter_default] if scatter_default else [],
-            key="scatter_seasons"
-        )
-        season_name_to_id_scatter = {v: k for k, v in league_scatter_map.items()}
-
-        if len(scatter_seasons) > 1:
-            # Multi-season: combine team_strength_df from each season
-            combined_strength_frames = []
-            for sname in scatter_seasons:
-                sid = season_name_to_id_scatter[sname]
-                s_events = get_filtered_events(raw_events_df, sid, selected_comp_ids)
-                s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
-                s_df = calculate_team_strength(s_events, s_matches, season_id=sid).copy()
-                if not s_df.empty:
-                    s_df.index = [f"{t} ({sname})" for t in s_df.index]
-                    s_df['Season'] = sname
-                    combined_strength_frames.append(s_df)
-            if combined_strength_frames:
-                multi_strength_df = pd.concat(combined_strength_frames)
-                # Plot with text labels (no logos since same team appears multiple times)
-                # scatter_seasons is not named in the key: it reaches the picture
-                # only through multi_strength_df, whose index is
-                # "{team} ({season})" per row — so values_key already carries
-                # every season drawn, in the order they were concatenated.
-                _show_strength_png(multi_strength_df, season_label="Multi-Season")
-                with st.expander("View Multi-Season Raw Strength Data"):
-                    st.dataframe(multi_strength_df[['Attacking Strength', 'Defending Strength', 'Season']].round(2))
-            else:
-                st.warning("No team strength data for selected seasons.")
-        else:
-            # Single season (original behavior)
-            if not team_strength_df.empty:
-                valid_all_strength_teams = [t for t in ALL_TEAMS_TO_HIGHLIGHT if t in team_strength_df.index]
-                _show_strength_png(team_strength_df, teams=valid_all_strength_teams)
-                with st.expander("View All Teams Raw Strength Data"):
-                     st.dataframe(team_strength_df[['Attacking Strength', 'Defending Strength']].round(2))
-            else:
-                st.warning("Could not calculate team strength data.")
-
-        # --- 6. All Teams Custom Scatterplot ---
-        st.subheader("All Teams Custom Scatterplot")
-        if not combined_stats_df.empty:
-            metrics_to_exclude = ['teamName', 'matchId', 'seasonId', 'teamId']
-            available_metrics_all = sorted([col for col in combined_stats_df.columns if col not in metrics_to_exclude])
-
-            col_x_all, col_y_all = st.columns(2)
-            with col_x_all:
-                default_x_all_index = available_metrics_all.index('xG') if 'xG' in available_metrics_all else 0
-                x_metric_all = st.selectbox("Select X-Axis Metric:", available_metrics_all, index=default_x_all_index, key='x_metric_all')
-            with col_y_all:
-                default_y_all_index = available_metrics_all.index('xG Against') if 'xG Against' in available_metrics_all else 1
-                y_metric_all = st.selectbox("Select Y-Axis Metric:", available_metrics_all, index=default_y_all_index, key='y_metric_all')
-
-            col_inv_x_all, col_inv_y_all = st.columns(2)
-            with col_inv_x_all:
-                invert_x_all = st.checkbox("Invert X-Axis (Lower is Better)", key='invert_x_all')
-            with col_inv_y_all:
-                default_invert_y_all = 'Against' in y_metric_all or 'PPDA' in y_metric_all or 'Losses' in y_metric_all
-                invert_y_all = st.checkbox("Invert Y-Axis (Lower is Better)", value=default_invert_y_all, key='invert_y_all')
-
-            if x_metric_all and y_metric_all:
-                _show_scatter_png(combined_stats_df, x_metric_all, y_metric_all,
-                                   invert_x_all, invert_y_all)
-
-            with st.expander("View All Teams Raw Radar & Expanded Stats Data"):
-                st.dataframe(combined_stats_df.round(2))
-        else:
-            st.warning("Could not calculate raw league stats for custom plot.")
 
     
     # --- UPDATED: Renamed to Player Profile ---
     elif analysis_type == 'Player Profile':
+        views.player_profile.render()
 
-        # If navigating from another section, set the season selector to match
-        if st.session_state.get('nav_has_season', False):
-            nav_sid = st.session_state.nav_season_id
-            if nav_sid is None:
-                # "All Seasons" was selected
-                st.session_state['season_select_player_profile'] = "All Seasons"
-            else:
-                nav_label = SEASON_ID_MAP.get(nav_sid)
-                if nav_label:
-                    st.session_state['season_select_player_profile'] = nav_label
-            st.session_state.nav_season_id = None
-            st.session_state.nav_has_season = False
-
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("player_profile")
-        selected_season_id = season_selector("player_profile", include_all_seasons=True, comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        profile_season_changed = (selected_season_id != st.session_state.player_profile_last_season)
-        st.session_state.player_profile_last_season = selected_season_id
-        profile_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
-        profile_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
-        profile_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
-
-        # --- 1. Load All Necessary Data ---
-        player_details_df = load_player_details()
-
-        try:
-            with st.spinner("Calculating player statistics (this may take a moment on first load)..."):
-                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
-                    profile_events_df, profile_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
-                )
-        except Exception as e:
-            st.error(f"An error occurred calculating overall player stats: {e}")
-            logger.exception("Error in calculate_all_player_stats")
-            player_stats_df = pd.DataFrame()
-            player_stats_with_scores_df = pd.DataFrame()
-            
-        if player_stats_df.empty or player_details_df.empty or player_stats_with_scores_df.empty:
-            st.warning("Player data not available. Please ensure all processing scripts have run and data is loaded.")
-            st.stop()
-
-        # --- 2. Player Selector ---
-        st.sidebar.subheader("Player Analysis Options")
-
-        # FIX: Include 'playerId' in the list dataframe so we can grab it later
-        # (Added 'playerId' to the list of columns below)
-        player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-
-        # Create unique display names
-        player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
-
-        # If navigating from another section, set the player selectbox value directly
-        if st.session_state.selected_player_id is not None:
-            sorted_player_ids = player_list_df['playerId'].tolist()
-            target_id = st.session_state.selected_player_id
-            for i, pid in enumerate(sorted_player_ids):
-                if int(pid) == int(target_id):
-                    st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
-                    st.session_state.player_profile_current_id = int(target_id)
-                    break
-            st.session_state.selected_player_id = None
-        # Persist player selection across season changes (only when season actually changed)
-        elif profile_season_changed and st.session_state.player_profile_current_id is not None:
-            target_id = st.session_state.player_profile_current_id
-            sorted_player_ids = player_list_df['playerId'].tolist()
-            for i, pid in enumerate(sorted_player_ids):
-                if int(pid) == int(target_id):
-                    st.session_state['player_profile_selector'] = player_list_df['display_name'].iloc[i]
-                    break
-
-        selected_player_display = st.sidebar.selectbox(
-            "Select Player:",
-            player_list_df['display_name'],
-            key="player_profile_selector"
-        )
-        
-        try:
-            # FIX: Get the UNIQUE ID corresponding to the selected display name
-            # (We use .values[0] to grab the actual integer ID)
-            selected_player_id = player_list_df[player_list_df['display_name'] == selected_player_display]['playerId'].values[0]
-            st.session_state.player_profile_current_id = int(selected_player_id)
-
-            # FIX: Filter the main dataframe by ID, not by Name
-            # This ensures we get the exact Miguel Lopes the user clicked on
-            player_data_row = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_id]
-            
-            # Extract stats series
-            player_per_90_stats = player_data_row.iloc[0] 
-            
-            # Define player_id variable for use in other sections
-            player_id = selected_player_id
-            
-            # Load Bio
-            player_bio = player_details_df.loc[player_id] if player_id in player_details_df.index else pd.Series(dtype='object')
-            total_minutes = player_per_90_stats.get('totalMinutes', 0)
-            
-            # Also update the 'selected_player_name' variable for the Match Log function
-            selected_player_name = player_per_90_stats.get('playerName')
-
-        except Exception as e:
-            st.error(f"Could not load data for {selected_player_display}. Error: {e}")
-            st.stop()
-        
-        # --- 3. Get Player's Match Log ---
-        player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df, season_id=selected_season_id)
-
-        # Enrich match log with per-match xA (xAOP/xASP) and xT (xTOP/xTSP) from raw events
-        if not player_match_log_df.empty and not profile_events_df.empty:
-            try:
-                _p_events = profile_events_df[profile_events_df['player.name'] == selected_player_name].copy()
-                if not _p_events.empty:
-                    # Per-match xA: find shot assists, map to shot xG
-                    _p_events['shot_event_id'] = np.where(_p_events['shot.xg'].notna(), _p_events['id'], np.nan)
-                    _p_events['next_shot_id'] = _p_events.groupby('matchId')['shot_event_id'].bfill()
-                    _shot_xg_map = _p_events[_p_events['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
-                    # Get all events in matches this player played (need all players for shot assists)
-                    _player_match_ids = _p_events['matchId'].unique()
-                    _match_events = profile_events_df[profile_events_df['matchId'].isin(_player_match_ids)].copy()
-                    _match_events['shot_event_id'] = np.where(_match_events['shot.xg'].notna(), _match_events['id'], np.nan)
-                    _match_events['next_shot_id'] = _match_events.groupby('matchId')['shot_event_id'].bfill()
-                    _all_shot_xg = _match_events[_match_events['shot.xg'].notna()].set_index('id')['shot.xg'].to_dict()
-                    _assists = _match_events[
-                        (_match_events['player.name'] == selected_player_name) &
-                        (_match_events.get('type.secondary', pd.Series(dtype='object')).apply(lambda x: isinstance(x, (list, np.ndarray)) and 'shot_assist' in x))
-                    ].copy()
-                    _assists['xA'] = _assists['next_shot_id'].map(_all_shot_xg)
-                    _sp_types = ['corner', 'free_kick', 'throw_in', 'goal_kick']
-                    _assists['_xa_type'] = np.where(_assists['type.primary'].isin(_sp_types), 'xASP', 'xAOP')
-                    # Aggregate per match
-                    _xa_per_match = _assists.groupby(['matchId', '_xa_type'])['xA'].sum().unstack(fill_value=0).reset_index()
-                    for _c in ['xAOP', 'xASP']:
-                        if _c not in _xa_per_match.columns:
-                            _xa_per_match[_c] = 0.0
-                    _xa_total = _assists.groupby('matchId')['xA'].sum().reset_index().rename(columns={'xA': 'xA_total'})
-                    _xa_per_match = _xa_per_match.merge(_xa_total, on='matchId', how='left')
-
-                    # Per-match xT: calculate from passes/touches/accelerations + set pieces
-                    _xt_data = [[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.04,0.11,0.26,0.26],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.05,0.06,0.06],[0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.02,0.03,0.04,0.05,0.05],[0.01,0.01,0.01,0.01,0.01,0.01,0.02,0.02,0.03,0.03,0.04,0.04]]
-                    _xt_grid = np.array(_xt_data); _r, _c = _xt_grid.shape
-                    _sp_xt = ['corner', 'free_kick', 'throw_in']
-                    _moves = _p_events[_p_events['type.primary'].isin(['pass', 'touch', 'acceleration'] + _sp_xt)].copy()
-                    _suc_pass = (_moves['type.primary'] == 'pass') & (_moves.get('pass.accurate') == True)
-                    _other_suc = _moves['type.primary'].isin(['touch', 'acceleration'] + _sp_xt)
-                    _moves = _moves[_suc_pass | _other_suc]
-                    _is_pass_like = _moves['type.primary'].isin(['pass'] + _sp_xt)
-                    _moves['_ex'] = np.where(_is_pass_like, _moves.get('pass.endLocation.x'), _moves.get('carry.endLocation.x'))
-                    _moves['_ey'] = np.where(_is_pass_like, _moves.get('pass.endLocation.y'), _moves.get('carry.endLocation.y'))
-                    _moves = _moves.dropna(subset=['_ex', '_ey'])
-                    _moves['_sc'] = np.clip((_moves['location.x'].astype(float).fillna(0) / 100 * _c).astype(int), 0, _c-1)
-                    _moves['_sr'] = np.clip((_moves['location.y'].astype(float).fillna(0) / 100 * _r).astype(int), 0, _r-1)
-                    _moves['_ec'] = np.clip((_moves['_ex'].astype(float).fillna(0) / 100 * _c).astype(int), 0, _c-1)
-                    _moves['_er'] = np.clip((_moves['_ey'].astype(float).fillna(0) / 100 * _r).astype(int), 0, _r-1)
-                    _moves['_xT'] = _xt_grid[_moves['_er'].values, _moves['_ec'].values] - _xt_grid[_moves['_sr'].values, _moves['_sc'].values]
-                    _pos_xt = _moves[_moves['_xT'] > 0].copy()
-                    _pos_xt['_xt_type'] = np.where(_pos_xt['type.primary'].isin(_sp_xt), 'xTSP', 'xTOP')
-                    _xt_per_match = _pos_xt.groupby(['matchId', '_xt_type'])['_xT'].sum().unstack(fill_value=0).reset_index()
-                    for _c_name in ['xTOP', 'xTSP']:
-                        if _c_name not in _xt_per_match.columns:
-                            _xt_per_match[_c_name] = 0.0
-                    _xt_total = _pos_xt.groupby('matchId')['_xT'].sum().reset_index().rename(columns={'_xT': 'xT_total'})
-                    _xt_per_match = _xt_per_match.merge(_xt_total, on='matchId', how='left')
-
-                    # Map matchId to match log rows via Date + opponent lookup
-                    _mid_map = profile_matches_df.set_index('matchId')['dateutc'].to_dict()
-                    _xa_per_match['_date'] = _xa_per_match['matchId'].map(_mid_map)
-                    _xa_per_match['_date'] = pd.to_datetime(_xa_per_match['_date'], errors='coerce').apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A')
-                    _xt_per_match['_date'] = _xt_per_match['matchId'].map(_mid_map)
-                    _xt_per_match['_date'] = pd.to_datetime(_xt_per_match['_date'], errors='coerce').apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A')
-
-                    # Merge into match log
-                    player_match_log_df = player_match_log_df.merge(
-                        _xa_per_match[['_date', 'xAOP', 'xASP']].rename(columns={'_date': 'Date'}),
-                        on='Date', how='left'
-                    )
-                    player_match_log_df = player_match_log_df.merge(
-                        _xt_per_match[['_date', 'xTOP', 'xTSP']].rename(columns={'_date': 'Date'}),
-                        on='Date', how='left'
-                    )
-                    # Round and fill
-                    for _mc in ['xAOP', 'xASP', 'xTOP', 'xTSP']:
-                        if _mc in player_match_log_df.columns:
-                            player_match_log_df[_mc] = player_match_log_df[_mc].fillna(0).round(2)
-            except Exception as e:
-                print(f"Warning: Could not enrich match log with xA/xT: {e}")
-
-        # --- 4. Display Player Bio ---
-        current_team = player_per_90_stats.get('teamName', 'N/A')
-        current_pos = player_per_90_stats.get('primaryPosition', 'N/A')
-
-        # If 'Unknown', try to force a lookup in the minutes file
-        if (current_team in ['Unknown', 'N/A'] or current_pos in ['Unknown', 'N/A']) and not profile_player_minutes_df.empty:
-            try:
-                pid_int = int(player_id)
-                min_row = profile_player_minutes_df[profile_player_minutes_df['playerId'] == pid_int]
-                if not min_row.empty:
-                    current_team = min_row.iloc[0]['teamName']
-                    current_pos = min_row.iloc[0]['primaryPosition']
-            except Exception:
-                pass # Fallback to original values if lookup fails
-
-        st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
-
-        # ---- Compute Transfer Value primitives ONCE per page load ----
-        # Used twice: (a) compact projected / true / Δ metrics in the
-        # Player Information bio row below, (b) full CVI breakdown +
-        # Market Context detail section just above Career Trajectory.
-        _tv_age = _calculate_age(player_bio.get('birthDate')) \
-                   if isinstance(player_bio, pd.Series) else None
-        _tv_comp_id = competition_for_season(selected_season_id) \
-                       if selected_season_id else None
-        _tv_player_row = player_data_row.iloc[0] if not player_data_row.empty else None
-        _tv_single = (player_data_row.copy()
-                       if not player_data_row.empty else None)
-        if _tv_single is not None and 'Total Value' not in _tv_single.columns:
-            # GPA merge may not be present in profile-mode stats; backfill.
-            try:
-                _gpa = load_gpa_values()
-                if _gpa is not None and not _gpa.empty:
-                    _r = _gpa[(_gpa['playerId'] == player_id)
-                               & (_gpa['seasonId'] == selected_season_id)]
-                    if not _r.empty:
-                        _val_col = next((c for c in ('Total Value',
-                                          'total_v_per_90')
-                                          if c in _r.columns), None)
-                        if _val_col:
-                            _tv_single['Total Value'] = float(_r[_val_col].iloc[0])
-            except Exception:
-                pass
-
-        _tv_cvi_block = pd.DataFrame()
-        if _tv_single is not None and 'primaryPosition' in _tv_single.columns:
-            try:
-                # Build empirical-Bayes prior for THIS player based on
-                # their strictly-prior-season career data. Pulls the
-                # same perf_table used for Career CVI below so we only
-                # pay the cost once.
-                _tv_prior_lookup = None
-                try:
-                    _pt = _build_player_season_perf_table(
-                        load_gpa_values(),
-                        profile_player_minutes_df
-                          if 'profile_player_minutes_df' in dir() else None,
-                    )
-                    _prior_map = build_player_priors_lookup(
-                        _pt, selected_season_id,
-                    ) if selected_season_id is not None else {}
-                    _tv_prior_lookup = lambda pid: _prior_map.get(int(pid)) \
-                                                    if pid is not None else None
-                except Exception:
-                    _tv_prior_lookup = None
-                _tv_cvi_block = compute_cvi_columns(
-                    _tv_single,
-                    age_lookup=lambda pid: _tv_age,
-                    comp_id_lookup=lambda pid: _tv_comp_id,
-                    prior_lookup=_tv_prior_lookup,
-                )
-            except Exception:
-                _tv_cvi_block = pd.DataFrame()
-
-        # ---- Career CVI (cross-season, cross-league, decay-weighted) ----
-        # Two anchors:
-        #   • _tv_career_current — anchored to the player's most recent
-        #     season → headline "Current CVI" in the bio row
-        #   • _tv_career_season  — anchored to the selected season → shown
-        #     in Transfer Value Detail with full per-season breakdown
-        # Both apply 0.6 decay per season back and never peek at seasons
-        # after the anchor.
-        _tv_career_current = None
-        _tv_career_season = None
-        try:
-            _gpa_for_career = load_gpa_values()
-            _perf_table = _build_player_season_perf_table(
-                _gpa_for_career,
-                profile_player_minutes_df
-                  if 'profile_player_minutes_df' in dir() else None,
-            )
-            _dob_for_career = None
-            if isinstance(player_bio, pd.Series):
-                _dob_for_career = player_bio.get('birthDate')
-            _dob_lookup_for_career = (lambda pid:
-                                         pd.to_datetime(_dob_for_career,
-                                                          errors='coerce')
-                                         if _dob_for_career is not None
-                                         else None)
-            # Current CVI: anchor at player's most recent season w/ GPA data
-            _most_recent_sid = most_recent_season_for_player(_perf_table,
-                                                                player_id)
-            if _most_recent_sid is not None:
-                _tv_career_current = compute_career_cvi(
-                    player_id, _most_recent_sid,
-                    perf_table=_perf_table,
-                    dob_lookup=_dob_lookup_for_career,
-                )
-            # Season CVI: anchor at the user-selected season
-            if selected_season_id is not None:
-                _tv_career_season = compute_career_cvi(
-                    player_id, selected_season_id,
-                    perf_table=_perf_table,
-                    dob_lookup=_dob_lookup_for_career,
-                )
-        except Exception as _car_exc:
-            print(f"Warning: career CVI failed: "
-                   f"{type(_car_exc).__name__}: {_car_exc}")
-
-        _tv_valuations_rows = pd.DataFrame()
-        try:
-            from valuations.load_valuations import load_all_valuations
-            _all_val = load_all_valuations()
-            if _all_val is not None and not _all_val.empty:
-                _tv_valuations_rows = _all_val[
-                    _all_val['playerId'] == player_id
-                ].sort_values('as_of_date', ascending=False)
-        except Exception:
-            pass
-
-        # Headline projected / true / Δ values for the bio row.
-        # v2.7+ — Projected value is now a direct CVI → EUR mapping,
-        # calibrated against the 27 reported transfers (mostly €25k-€450k).
-        # Power-curve fit: EUR ≈ 2.5 × CVI^2.5, capped at €500k. Anchors:
-        #   CVI 40  → €25k    (replacement-level starter)
-        #   CVI 60  → €70k
-        #   CVI 80  → €150k
-        #   CVI 100 → €260k
-        #   CVI 120 → €400k
-        #   CVI 135 → €500k   (cap — top of Yan Maranhão / Catarino tier)
-        _tv_projected_eur = None
-        _current_cvi_for_eur = None
-        if _tv_career_current is not None:
-            _v = _tv_career_current.get('career_cvi')
-            if _v is not None and not pd.isna(_v):
-                _current_cvi_for_eur = float(_v)
-        if _current_cvi_for_eur is None and not _tv_cvi_block.empty:
-            _v = _tv_cvi_block.iloc[0].get('_CVI')
-            if _v is not None and not pd.isna(_v):
-                _current_cvi_for_eur = float(_v)
-        if _current_cvi_for_eur is not None and _current_cvi_for_eur > 0:
-            # v2.9 — single helper handles power curve + position
-            # multiplier + Camp penalty + cap. See cvi_to_projected_eur.
-            _pos_grp_for_eur = _cvi_position_group(current_pos)
-            _tv_projected_eur = cvi_to_projected_eur(
-                _current_cvi_for_eur,
-                position_group=_pos_grp_for_eur,
-                competition_id=_tv_comp_id,
-            )
-        _tv_true_eur = None
-        _tv_true_source = None
-        if not _tv_valuations_rows.empty:
-            _latest = _tv_valuations_rows.iloc[0]
-            _tv_true_eur = _latest.get('value_eur')
-            _tv_true_source = _latest.get('source')
-        _tv_delta_eur = (_tv_projected_eur - _tv_true_eur
-                          if _tv_projected_eur is not None and _tv_true_eur is not None
-                          else None)
-
-        # Engine projected value — computed centrally in
-        # load_player_engine() (engine_value_eur); just look it up.
-        _eng_proj_eur = None
-        try:
-            _eng_tv_df, _ = load_player_engine()
-            if not _eng_tv_df.empty:
-                _p_rows = _eng_tv_df[(_eng_tv_df['playerId'] == int(selected_player_id))
-                                       ].dropna(subset=['engine_value_eur'])
-                if not _p_rows.empty:
-                    _p_row = (_p_rows[_p_rows['seasonId'] == _p_rows['seasonId'].max()]
-                                .sort_values('mins_played').iloc[-1])
-                    _eng_proj_eur = float(_p_row['engine_value_eur'])
-        except Exception:
-            logger.exception("engine projected value failed")
-
-        col1_bio, col2_bio = st.columns([1, 3])
-        with col1_bio:
-            image_url = player_bio.get('imageDataURL', None)
-            if image_url:
-                st.image(image_url, width=150)
-            else:
-                st.image("https://t3.ftcdn.net/jpg/05/16/27/58/360_F_516275801_f3Fsp17x6HQK0xQgDQEELoGau0sJzEf4.jpg", width=150)
-
-        with col2_bio:
-            st.subheader("Player Information")
-            bio_row1 = st.columns(4)
-            bio_row1[0].metric("Team", current_team)
-            bio_row1[1].metric("Position", current_pos)
-            bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
-            
-            age = _calculate_age(player_bio.get('birthDate'))
-            age_display = f"{age:.1f}" if isinstance(age, float) else "N/A"
-            bio_row1[3].metric("Age", age_display)
-            
-            bio_row2 = st.columns(4)
-            foot_value = player_bio.get('foot')
-            foot_display = "N/A"
-            if foot_value and not pd.isna(foot_value):
-                foot_display = foot_value.capitalize()
-            bio_row2[0].metric("Foot", foot_display)
-            bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
-            bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
-            bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
-
-            # Headline value — ENGINE projected value for outfielders;
-            # GOALKEEPERS keep the prior CVI→EUR value (Lucas) since the
-            # outfield engine does not cover keepers.
-            _is_gk = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
-            bio_row3 = st.columns(3)
-            if _is_gk:
-                bio_row3[0].metric(
-                    "Projected value",
-                    ("—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}"),
-                    help="Goalkeeper — legacy CVI→EUR value (the prior "
-                         "system, retained for keepers; the outfield ACP "
-                         "engine does not rate goalkeepers).",
-                )
-            else:
-                bio_row3[0].metric(
-                    "Projected value",
-                    ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
-                    help="ACP engine projection → EUR. Perf = percentile of "
-                         "the next-season projection (abs scale — Camp "
-                         "recruit discount already applied, so no extra Camp "
-                         "penalty) × career-NPV age multiplier, through the "
-                         "fee-calibrated CVI→EUR curve (capped €500k). No "
-                         "reliability ramp: the projection is already "
-                         "evidence-weighted.",
-                )
-                # Observed role + style in the header (Lucas 2026-07-17).
-                # Scope-aware; hidden when the player has no style row (GKs
-                # never reach here, sub-300' players degrade gracefully).
-                try:
-                    _hdr_style = get_scoped_style(int(selected_player_id),
-                                                  active_season_ids)
-                except Exception:
-                    _hdr_style = None
-                if _hdr_style:
-                    bio_row3[1].metric(
-                        "Role", str(_hdr_style.get('role') or '—'),
-                        help="Observed engine role — learned from where his "
-                             "events actually happen match by match, not the "
-                             "lineup-card position.",
-                    )
-                    _stl = _hdr_style.get('style')
-                    _fit = _hdr_style.get('style_fit')
-                    bio_row3[2].metric(
-                        "Style", (str(_stl) if _stl else '—'),
-                        delta=(f"{float(_fit):.0f}% fit"
-                               if _fit is not None and pd.notna(_fit) else None),
-                        delta_color="off",
-                        help="Tendency-derived archetype — how he plays the "
-                             "role, not how well. Never part of the rating. "
-                             "Fit = how strongly he expresses the style "
-                             "(percentile vs the role cohort).",
-                    )
-
-        st.divider()
-
-        with st.expander("ℹ️ How these ratings work"):
-            st.markdown(RATINGS_EXPLAINER_MD)
-
-        # --- ACP Engine card: rating + projection + components ---------
-        try:
-            _eng_df, _eng_meta = load_player_engine()
-            _erows = _eng_df[_eng_df['playerId'] == int(selected_player_id)] if not _eng_df.empty else pd.DataFrame()
-            # active_season_ids can be None (All Seasons), an int, or a list
-            if isinstance(active_season_ids, (list, tuple, set)):
-                _e_sids = [int(s) for s in active_season_ids if s is not None]
-            elif active_season_ids is not None:
-                _e_sids = [int(active_season_ids)]
-            else:
-                _e_sids = None
-            _career_view = False
-            if _erows.empty:
-                _escope = _erows
-            elif _e_sids:
-                _escope = _erows[_erows['seasonId'].isin(_e_sids)]
-            else:   # All Seasons → CAREER view: aggregate every rated season
-                _escope = _erows
-                _career_view = len(_erows) > 1
-            _eng_stale = False
-            if _escope.empty and not _erows.empty:
-                # not rated in the selected scope — fall back to last rated season
-                _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
-                _eng_stale = True
-            _is_gk_card = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
-            st.subheader("Goalkeeper Rating (legacy system)" if _is_gk_card
-                          else "ACP Index")
-            if _escope.empty:
-                if _is_gk_card:
-                    # Prior rating + value system, retained for keepers.
-                    _gk_templates = ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK']
-                    _gk_scored = []
-                    for _t in _gk_templates:
-                        _s = player_per_90_stats.get(f'{_t}_Score')
-                        if _s is not None and pd.notna(_s):
-                            _gk_scored.append((_t, float(_s)))
-                    if _gk_scored:
-                        _gk_best = max(_gk_scored, key=lambda x: x[1])
-                        _gkc = st.columns(3)
-                        _gkc[0].metric(
-                            "GK Rating (legacy)", f"{_gk_best[1]:.0f}",
-                            help="Best-fit goalkeeper template score — the "
-                                 "bespoke weighted-percentile system (the prior "
-                                 "rating engine), retained for keepers since the "
-                                 "outfield ACP engine does not cover them.")
-                        _gkc[1].metric("Best-fit template", _gk_best[0])
-                        _gkc[2].metric(
-                            "Projected value",
-                            "—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}",
-                            help="Legacy CVI→EUR value.")
-                        st.caption("Template scores — " + " · ".join(
-                            f"**{_t}** {_s:.0f}" for _t, _s in _gk_scored)
-                            + "  ·  full goalkeeping metrics in the Player "
-                              "Radar and Stats tabs below.")
-                    else:
-                        st.info("Goalkeeper — insufficient minutes for the "
-                                "legacy GK rating in this scope.")
-                else:
-                    st.info("Not rated by the engine for this scope "
-                            "(below the 90-minute floor, or no "
-                            "role assignment yet).")
-            else:
-                _e = _escope.sort_values('mins_played').iloc[-1]
-                if _career_view:
-                    # All-seasons CAREER view: representative row = highest-
-                    # minutes season (for role/league/shares); rating + every
-                    # percentile/grade aggregated minutes-weighted across all
-                    # the player's rated seasons.
-                    _e = _e.copy()
-                    _wts = pd.to_numeric(_escope['mins_played'], errors='coerce').fillna(0.0).to_numpy()
-                    _pct_cols = ['off_pct', 'qual_pct', 'rapm_pct', 'defr_pct',
-                                  'datt_pct', 'setpiece_pct', 'aerial_grade_pct',
-                                  'ground_grade_pct', 'Shooting_pct', 'Creating_pct',
-                                  'Linking_pct', 'Receiving_pct', 'Dribbling_pct',
-                                  'career_asof', 'w_evidence']
-                    for _c in _pct_cols:
-                        if _c in _escope.columns and _wts.sum() > 0:
-                            _v = pd.to_numeric(_escope[_c], errors='coerce').to_numpy()
-                            _m = ~np.isnan(_v)
-                            if _m.any():
-                                _e[_c] = float(np.average(_v[_m], weights=_wts[_m]))
-                    if pd.notna(_e.get('acp_rating_career')):
-                        _e['acp_rating'] = float(_e['acp_rating_career'])
-                    _e['mins_played'] = float(_wts.sum())
-                    # projection = the LATEST season's forward look; lineup
-                    # minutes = career total (for the radar header)
-                    _latest_row = _escope.sort_values('seasonId').iloc[-1]
-                    for _pc in ('projection', 'projection_abs', 'band_sd',
-                                 'proj_delta', 'seasons_ago', 'age'):
-                        if _pc in _latest_row:
-                            _e[_pc] = _latest_row[_pc]
-                    if 'mins_lineup' in _escope.columns:
-                        _e['mins_lineup'] = float(pd.to_numeric(
-                            _escope['mins_lineup'], errors='coerce').fillna(0.0).sum())
-                    st.caption(f"📚 Career view — minutes-weighted across "
-                               f"{len(_escope)} rated seasons "
-                               f"({int(_wts.sum())} total minutes). Select a "
-                               f"single season for that season's rating.")
-                if _eng_stale:
-                    st.caption(f"⏳ Not rated in the selected season — showing "
-                               f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
-                # The projection is a single player-level forward-look anchored to
-                # the player's most-recent season. seasonId is NOT chronological
-                # across leagues (Camp 23/24 = 190230 > L3 24/25 = 190090), so the
-                # in-scope "latest" row picked above can be the wrong one and carry
-                # no projection (e.g. M. Konaté). Always source the projection from
-                # the row that actually has one. (Lucas 2026-06-24)
-                _proj_src = (_erows[_erows['projection'].notna()]
-                             if not _erows.empty else _erows)
-                if not _proj_src.empty:
-                    _pr = _proj_src.sort_values('seasonId').iloc[-1]
-                    for _pc in ('projection', 'projection_abs', 'band_sd',
-                                 'proj_delta', 'seasons_ago'):
-                        if _pc in _pr.index:
-                            _e[_pc] = _pr[_pc]
-                _ec1, _ec2, _ec3, _ec4 = st.columns(4)
-                _abs_note = (f"abs {_e['acp_rating_abs']:.0f}"
-                             if pd.notna(_e.get('acp_rating_abs'))
-                             and _e.get('league') == 'CAMP' else None)
-                _ec1.metric("ACP Rating", f"{_e['acp_rating']:.0f}", _abs_note,
-                            delta_color="off",
-                            help="Role-blended 5-axis rating, 50±17 scale, "
-                                 "within-league. 'abs' = Liga-3-equivalent "
-                                 "(descriptive league delta).")
-                if pd.notna(_e.get('projection')):
-                    _proj_note = (f"abs {_e['projection_abs']:.0f}"
-                                  if pd.notna(_e.get('projection_abs'))
-                                  and _e.get('league') == 'CAMP' else None)
-                    _ec2.metric("Projection (next season)",
-                                f"{_e['projection']:.0f} ± {_e['band_sd']:.0f}",
-                                _proj_note, delta_color="off",
-                                help="Career + evidence pull + role age curve. "
-                                     "Band = role-specific 1 SD of realized "
-                                     "error. 'abs' applies the stricter "
-                                     "recruit league delta.")
-                else:
-                    _ec2.metric("Projection", "—",
-                                help="No projection (age unknown or below floor).")
-                _ec3.metric("Career (as-of)",
-                            f"{_e['career_asof']:.0f}" if pd.notna(_e.get('career_asof')) else "—",
-                            help="Recency-weighted career rating through this season.")
-                _ec4.metric("Evidence",
-                            f"{_e['w_evidence']:.0%}" if pd.notna(_e.get('w_evidence')) else "—",
-                            help="Career evidence weight w = eff_mins/(eff_mins+K). "
-                                 "Low = projection leans on the pull terms.")
-
-                # badges
-                _badges = []
-                _shares = sorted(
-                    [(c[3:], float(_e[c])) for c in _escope.columns
-                     if c.startswith('sh_') and pd.notna(_e[c]) and float(_e[c]) > 0.15],
-                    key=lambda x: -x[1])
-                if _shares:
-                    _badges.append(" · ".join(f"**{n}** {s:.0%}" for n, s in _shares[:3]))
-                if pd.notna(_e.get('seasons_ago')) and int(_e['seasons_ago']) >= 1:
-                    _badges.append("🕐 last rated 24/25 — projection carries "
-                                   "extra age step + wider band")
-                if float(_e['mins_played']) < 500:
-                    _badges.append(f"⚠️ thin sample this league "
-                                   f"({int(_e['mins_played'])}′ — admitted via "
-                                   f"cross-competition season pooling)")
-                if len(_escope) > 1:
-                    _others = _escope[_escope.index != _e.name]
-                    for _, _o in _others.iterrows():
-                        _badges.append(f"also rated in {_o['league']} "
-                                       f"({int(_o['mins_played'])}′, rating "
-                                       f"{_o['acp_rating']:.0f})")
-                if _badges:
-                    st.markdown("  \n".join(_badges))
-
-                # --- style chip: role + tendency-derived archetype ----------
-                # Descriptive only (never in the rating). Scope-aware: the
-                # style of the player's highest-minutes row in the selected
-                # scope. GKs / sub-300' players simply get no chip.
-                try:
-                    _sty = get_scoped_style(int(selected_player_id), _e_sids)
-                    _role_disp = _e.get('role')
-                    if _sty and pd.notna(_sty.get('style')):
-                        _fit = _sty.get('style_fit')
-                        _fit_txt = (f" · {float(_fit):.0f}% fit"
-                                    if _fit is not None and pd.notna(_fit) else "")
-                        _thin = " · thin sample" if _sty.get('thin_sample') else ""
-                        st.markdown(
-                            f"<span style='background:#eef2ff;color:#3730a3;"
-                            f"padding:3px 10px;border-radius:12px;font-size:0.9em;"
-                            f"font-weight:600'>{_role_disp} · "
-                            f"{_sty['style']}{_fit_txt}{_thin}</span>",
-                            unsafe_allow_html=True)
-                except Exception:
-                    logger.exception("style chip failed")
-
-                # component bars
-                _comp_cols = st.columns(6)
-                for _i, (_lbl, _col) in enumerate([
-                        ("Offensive Value", 'off_pct'),
-                        ("Def Quality Grade", 'qual_pct'),
-                        ("RAPM", 'rapm_pct'),
-                        ("Def Volume Grade", 'defr_pct'),
-                        ("Off Duel Grade", 'datt_pct'),
-                        ("Set piece", 'setpiece_pct')]):
-                    _v = _e.get(_col)
-                    with _comp_cols[_i]:
-                        if pd.notna(_v):
-                            st.progress(min(max(float(_v), 0.0), 1.0))
-                            st.caption(f"{_lbl} · {float(_v)*100:.0f}")
-                        else:
-                            st.caption(f"{_lbl} · —")
-                # --- ACP Index radar card: cached PNG render (see
-                # _render_acp_index_card_png). Building the matplotlib
-                # radar+KDE figure inline cost ~2-3 s on every rerun /
-                # profile section toggle; the PNG bytes are cached on
-                # (player, season scope, stats-cache ver, engine ver).
-                _card_png = _render_acp_index_card_png(
-                    int(selected_player_id),
-                    tuple(sorted(_e_sids)) if _e_sids else (),
-                    STATS_CACHE_VERSION,
-                    str(_eng_meta.get('rating_version', '')),
-                    _career_view,
-                    _eng_df, _e, _eng_meta)
-                if _card_png:
-                    st.image(_card_png, use_container_width=True)
-
-                # --- Tendencies panel: futi-style bipolar sliders ----------
-                # The role's menu of attempt-composition leanings, each a
-                # within-role percentile (50 = role-typical). Descriptive, never
-                # a rating. Hidden entirely for players without tendencies.
-                try:
-                    _has_tend = get_scoped_tendencies(
-                        int(selected_player_id), _e_sids) is not None
-                    if _has_tend:
-                        with st.expander("🎚️ Tendencies — how he plays the role",
-                                         expanded=False):
-                            st.caption(
-                                "Each bar is a **within-role percentile** of "
-                                "what he attempts (50 = typical for the role) — "
-                                "style, not quality, and never part of the "
-                                "rating. The leaning side is coloured.")
-                            render_tendencies_panel(int(selected_player_id),
-                                                    _e_sids)
-                except Exception:
-                    logger.exception("tendencies panel failed")
-
-                # --- Projection outlook fan chart (prototype) ---
-                try:
-                    from pitch_interactive import plotly_projection_fan
-                    _fan = plotly_projection_fan(
-                        _erows, SEASON_ID_MAP, selected_player_name)
-                    if _fan is not None:
-                        st.plotly_chart(_fan, use_container_width=True,
-                                        config={'displayModeBar': False})
-                        st.caption(
-                            "Career ratings by season (league and age on "
-                            "each tick) flowing into next season's "
-                            "projection. Shaded fan = ±1 SD of the "
-                            "projection; a faded segment bridges seasons "
-                            "missing from our data; green band = typical "
-                            "peak ages for the role (literature-based "
-                            "curve used by the projection model); "
-                            "evidence % = how much data underwrites the "
-                            "starting point. Cross-league careers plot on "
-                            "the L3-equivalent scale (CAMP seasons "
-                            "discounted by the league conversion — hover "
-                            "a dot for the native rating).")
-                except Exception:
-                    logger.exception("Projection fan chart failed")
-                st.caption(
-                    f"Engine {_eng_meta.get('rating_version', '?')} · "
-                    f"projection {_eng_meta.get('projection_version', '?')} · "
-                    f"data through {_eng_meta.get('data_through', '?')} · "
-                    f"percentiles within league × season × role cohort; "
-                    f"set piece shown separately (not in the rating)")
-        except Exception:
-            logger.exception("Engine card failed")
-        st.divider()
-
-        # --- Exportable one-pager PDF ----------------------------------
-        _op_cols = st.columns([1.4, 1.4, 3])
-        with _op_cols[0]:
-            _op_clicked = st.button("📄 Build player report PDF",
-                                     key="onepager_build")
-        if _op_clicked:
-            try:
-                with st.spinner("Composing player report…"):
-                    from player_onepager import build_player_onepager
-                    from pitch_interactive import mpl_projection_fan
-                    # The whole build runs under ONE MPL_LOCK: every figure is
-                    # created here and rasterised inside build_player_onepager,
-                    # so build + render + close must not be split (a figure
-                    # freed by another session's plt.close('all') mid-render is
-                    # a segfault — see mpl_safety). Each figure has its own
-                    # try/except so one failure drops that panel, not the PDF.
-                    _op_figs = []          # every fig we create, for cleanup
-                    with MPL_LOCK:
-                        # --- resolve the player's stats row + best-fit role ---
-                        _op_row = None
-                        _op_role = None      # config template role (radar/stats)
-                        _op_elig = []
-                        _op_pop = player_stats_with_scores_df
-                        _op_matches = player_stats_with_scores_df[
-                            player_stats_with_scores_df['playerId']
-                            == int(selected_player_id)]
-                        if not _op_matches.empty:
-                            _op_row = _op_matches.iloc[0]
-                            _op_pos = _op_row.get('primaryPosition')
-                            _op_elig = [r for r in WEIGHTS
-                                        if _op_pos in POSITION_GROUPS.get(r, [])]
-                            if _op_elig:
-                                _op_role = max(_op_elig, key=lambda r: float(
-                                    _op_row.get(f'{r}_Score', 0) or 0))
-                                _op_pop = player_stats_with_scores_df[
-                                    player_stats_with_scores_df['primaryPosition']
-                                    .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
-                                if len(_op_pop) < 5:
-                                    _op_pop = player_stats_with_scores_df
-
-                        # --- engine row: reuse the header's `_e` when present
-                        # (it is sorted/scoped correctly); fall back defensively
-                        # for keepers, who have no engine row at all. ---
-                        _op_e = None
-                        _op_eng_role = None
-                        if not _erows.empty:
-                            _op_prow = _erows[_erows['projection'].notna()]
-                            if not _op_prow.empty:
-                                # match the header's chronological pick, NOT the
-                                # unsorted .iloc[-1] the old build used
-                                _op_e = _op_prow.sort_values('seasonId').iloc[-1]
-                            else:
-                                _op_e = _erows.sort_values('mins_played').iloc[-1]
-                            _op_eng_role = _canonical_engine_role(
-                                _op_e.get('role'))
-                        # attacker vs defender: engine role first (the split
-                        # Lucas asked for), then fall back to the config
-                        # template allowlist for players the engine does not
-                        # rate (keepers). Unknown -> defensive layout.
-                        _op_attacking = (
-                            _engine_role_is_attacking(_op_eng_role)
-                            if _op_eng_role is not None
-                            else (_op_role in _ATTACK_TEMPLATE_ROLES))
-
-                        # 1) template radar (percentile mode)
-                        _op_fig_radar = None
-                        try:
-                            if _op_row is not None and _op_role:
-                                _op_metrics = [m for m in WEIGHTS[_op_role]
-                                               if m in _op_row.index
-                                               and m not in RADAR_HIDDEN_METRICS]
-                                if _op_metrics:
-                                    _op_seasons = _season_id_list(active_season_ids)
-                                    _op_season_lbl = (
-                                        SEASON_ID_MAP.get(_op_seasons[0], '')
-                                        if len(_op_seasons) == 1 else 'All Seasons')
-                                    _op_fig_radar = create_radar_with_distributions(
-                                        pd.DataFrame([_op_row]), _op_metrics,
-                                        _op_pos, _op_elig, _op_pop,
-                                        full_df_for_ranking=player_stats_with_scores_df,
-                                        season_label=_op_season_lbl,
-                                        radar_mode='percentile')
-                                    _op_figs.append(_op_fig_radar)
-                        except Exception:
-                            logger.exception("one-pager radar failed")
-
-                        # 2) projection outlook (matplotlib twin of the fan)
-                        _op_fig_proj = None
-                        try:
-                            if not _erows.empty:
-                                _op_fig_proj = mpl_projection_fan(
-                                    _erows, SEASON_ID_MAP, selected_player_name)
-                                if _op_fig_proj is not None:
-                                    _op_figs.append(_op_fig_proj)
-                        except Exception:
-                            logger.exception("one-pager projection failed")
-
-                        # 3) position-conditional maps
-                        _op_fig_shots = _op_fig_passes = _op_fig_def = None
-                        if _op_attacking:
-                            try:   # shot map
-                                _op_shots = profile_events_df[
-                                    (profile_events_df['player.name'] == selected_player_name)
-                                    & (profile_events_df['type.primary'] == 'shot')].copy()
-                                if not _op_shots.empty:
-                                    _op_shots = _op_shots.sort_values(
-                                        ['matchId', 'minute', 'second'])
-                                    _op_shots.reset_index(drop=True, inplace=True)
-                                    _op_shots['Shot Number'] = _op_shots.index + 1
-                                    _op_fig_shots = create_player_shotmap(
-                                        _op_shots, selected_player_name)
-                                    _op_figs.append(_op_fig_shots)
-                            except Exception:
-                                logger.exception("one-pager shotmap failed")
-                            try:   # box-pass creativity map
-                                _op_bp = load_box_passes()
-                                if not _op_bp.empty:
-                                    _op_bp_seasons = _season_id_list(active_season_ids)
-                                    _op_bp = _op_bp[
-                                        _op_bp['player.id'] == int(selected_player_id)]
-                                    if _op_bp_seasons:
-                                        _op_bp = _op_bp[
-                                            _op_bp['seasonId'].isin(_op_bp_seasons)]
-                                    if not _op_bp.empty:
-                                        _op_fig_passes = mpl_box_passes_map(
-                                            _op_bp, selected_player_name)
-                                        _op_figs.append(_op_fig_passes)
-                            except Exception:
-                                logger.exception("one-pager box passes failed")
-                        else:
-                            try:   # defensive action heatmap
-                                # Same peer-group resolution + cached density
-                                # stack the Shots & Creation tab uses, so the
-                                # PDF heatmap is normalised identically.
-                                _DEF_PEERS = {
-                                    'GK': ['GK'],
-                                    'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
-                                    'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
-                                    'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF',
-                                           'LCMF3', 'RCMF3'],
-                                    'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW',
-                                                'LWF', 'RWF'],
-                                    'ST': ['CF', 'SS'],
-                                }
-                                _op_pos_codes = [current_pos]
-                                for _gc in _DEF_PEERS.values():
-                                    if current_pos in _gc:
-                                        _op_pos_codes = _gc
-                                        break
-                                _op_ev_hash = hashlib.md5(
-                                    f"{len(profile_events_df)}_"
-                                    f"{tuple(sorted(_op_pos_codes))}".encode()
-                                ).hexdigest()
-                                _op_stack = _compute_peer_density_stack(
-                                    _op_ev_hash, profile_events_df,
-                                    tuple(sorted(_op_pos_codes)),
-                                    _player_minutes_df=profile_player_minutes_df,
-                                    include_recoveries=True)
-                                _op_fig_def = pv.plot_defensive_action_heatmap(
-                                    profile_events_df, player_id,
-                                    selected_player_name,
-                                    position_codes=_op_pos_codes,
-                                    player_minutes_df=profile_player_minutes_df,
-                                    peer_density_stack=_op_stack,
-                                    include_recoveries=True)
-                                if _op_fig_def is not None:
-                                    _op_figs.append(_op_fig_def)
-                            except Exception:
-                                logger.exception("one-pager def heatmap failed")
-
-                        # 4) role-relevant stats (percentile-washed table)
-                        _op_role_stats = _role_key_stats(_op_row, _op_role) \
-                            if _op_role else []
-
-                        # 5) engine card PNG — reuse the header's cached render
-                        _op_card_png = None
-                        _op_card_aspect = 2.0    # figsize (20, 10)
-                        try:
-                            if _op_e is not None and not _erows.empty:
-                                _op_card_png = _render_acp_index_card_png(
-                                    int(selected_player_id),
-                                    tuple(sorted(_e_sids)) if _e_sids else (),
-                                    STATS_CACHE_VERSION,
-                                    str(_eng_meta.get('rating_version', '')),
-                                    _career_view,
-                                    _eng_df, _op_e, _eng_meta)
-                        except Exception:
-                            logger.exception("one-pager engine card failed")
-
-                        # --- header tiles + bio strip ---
-                        _op_tiles = [("Team", current_team),
-                                     ("Position", current_pos),
-                                     ("Age", age_display),
-                                     ("Minutes", f"{total_minutes:,.0f}")]
-                        _op_val = (_tv_projected_eur if str(current_pos).upper().startswith('GK')
-                                   else _eng_proj_eur)
-                        if _op_val is not None:
-                            _op_tiles.append(("Proj. value",
-                                              f"EUR {_op_val:,.0f}"))
-                        if _op_e is not None:
-                            _op_tiles.append(
-                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
-                            if pd.notna(_op_e.get('projection')):
-                                _op_tiles.append(
-                                    ("Projection",
-                                     f"{float(_op_e['projection']):.0f} "
-                                     f"+/- {float(_op_e.get('band_sd', 0) or 0):.0f}"))
-                        _op_bio = [
-                            ("Nationality", player_bio.get('passportArea')),
-                            ("Foot", str(player_bio.get('foot', '')).capitalize()),
-                            ("Height", f"{player_bio.get('height')} cm"
-                             if player_bio.get('height') else None),
-                            ("Weight", f"{player_bio.get('weight')} kg"
-                             if player_bio.get('weight') else None),
-                            ("Born", player_bio.get('birthArea')),
-                        ]
-                        _op_footer = (
-                            f"Engine {_eng_meta.get('rating_version', '?')} · "
-                            f"projection {_eng_meta.get('projection_version', '?')} · "
-                            f"data through {_eng_meta.get('data_through', '?')} · "
-                            f"generated {datetime.date.today().isoformat()}"
-                        ) if not _erows.empty else (
-                            f"Generated {datetime.date.today().isoformat()}")
-
-                        _op_bytes = build_player_onepager(
-                            selected_player_name,
-                            f"{current_team} · {current_pos}",
-                            _op_tiles, _op_fig_radar, _op_fig_shots,
-                            _op_fig_passes, footer_note=_op_footer,
-                            bio=_op_bio, role_stats=_op_role_stats,
-                            role_label=_op_role or '',
-                            fig_projection=_op_fig_proj,
-                            fig_defensive=_op_fig_def,
-                            engine_card_png=_op_card_png,
-                            engine_card_aspect=_op_card_aspect)
-                        for _f in _op_figs:
-                            if _f is not None:
-                                plt.close(_f)
-                        st.session_state['onepager_pdf'] = (
-                            int(selected_player_id), _op_bytes)
-            except Exception:
-                logger.exception("one-pager build failed")
-                st.error("Could not build the one-pager for this player.")
-        _op_cached = st.session_state.get('onepager_pdf')
-        if _op_cached and _op_cached[0] == int(selected_player_id):
-            with _op_cols[1]:
-                st.download_button(
-                    "⬇️ Download player report",
-                    data=_op_cached[1],
-                    file_name=f"{selected_player_name.replace(' ', '_')}_report.pdf",
-                    mime="application/pdf", key="onepager_dl")
-        st.divider()
-
-        # Hoisted so every lazy section can access it: the Stats section's
-        # positional-peer population (radar_stats_df at ~10840) was previously
-        # populated by the Player Radar tab body, which always ran under st.tabs.
-        # With lazy if/elif rendering only one section runs, so compute the base
-        # (player_stats_with_scores_df + DefR columns) up front. The Player Radar
-        # section may still override radar_stats_df locally via its "Show Only
-        # Position" filter for its own rendering.
-        radar_stats_df = merge_defr_values_into_stats(
-            player_stats_with_scores_df, active_season_ids, selected_comp_ids)
-
-        _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log"]
-        _active_tab = st.radio("Profile section", _profile_sections,
-                                horizontal=True, label_visibility="collapsed",
-                                key="profile_active_tab")
-
-        if _active_tab == "Player Radar":
-            # --- Transfer Value Detail moved to just above Career Trajectory ---
-
-           # --- 5. NEW: DISPLAY PLAYER RADAR ---
-            st.subheader("Player Radar")
-
-            # Gate: 300-minute minimum for radar charts
-            _MIN_RADAR_MINUTES = 300
-            _show_radar = total_minutes >= _MIN_RADAR_MINUTES
-            if not _show_radar:
-                st.info(f"⚠️ **Insufficient sample size** — {player_per_90_stats.get('playerName', 'This player')} has only played **{int(total_minutes)} minutes** this season.")
-
-            # 1. Detect Raw Positions (What did they actually play?)
-            try:
-                player_events = profile_events_df[profile_events_df['player.id'] == player_id]
-                if 'player.position' in player_events.columns:
-                    raw_positions = player_events['player.position'].unique()
-                elif 'position_name' in player_events.columns:
-                    raw_positions = player_events['position_name'].unique()
-                else:
-                    raw_positions = []
-            
-                # Filter out None/Nan
-                raw_positions = [x for x in raw_positions if x and str(x) != 'nan']
-
-            except Exception:
-                logger.exception("position extraction failed")
-                raw_positions = []
-            
-            # Ensure we at least have the primary position from the bio
-            if current_pos and current_pos not in raw_positions:
-                raw_positions.append(current_pos)
-            
-            # Sort for the dropdown
-            raw_positions = sorted([str(p) for p in raw_positions])
-
-            # 2. Position Selector (Simple Raw Codes)
-            col_rad_sel1, col_rad_sel2 = st.columns([1, 3])
-            with col_rad_sel1:
-                st.markdown("##### Show Radar For:")
-            with col_rad_sel2:
-                selected_raw_pos = st.selectbox(
-                    "Select Position:",
-                    raw_positions,
-                    label_visibility="collapsed",
-                    key="radar_pos_selector"
-                )
-
-            # --- Show Only Position toggle ---
-            # When active, recompute stats using only events at the selected position
-            profile_pos_filter = st.checkbox(
-                "Show Only Position",
-                key="profile_pos_played_filter",
-                help=f"When checked, the radar uses only events where the player played as **{selected_raw_pos}** (selected above), instead of all events."
-            )
-            radar_stats_df = player_stats_with_scores_df
-            radar_player_data_row = player_data_row
-            if profile_pos_filter and 'player.position' in profile_events_df.columns:
-                pos_filtered_events = profile_events_df[
-                    profile_events_df['player.position'] == selected_raw_pos
-                ]
-                if not pos_filtered_events.empty:
-                    # Build position-adjusted minutes: replace totalMinutes with minutes at this position
-                    all_pos_minutes = get_all_players_minutes_by_position(profile_events_df)
-                    pos_minutes = all_pos_minutes[all_pos_minutes['Position'] == selected_raw_pos][['playerId', 'Minutes']]
-                    pos_player_minutes_df = profile_player_minutes_df.copy()
-                    pos_player_minutes_df = pos_player_minutes_df.merge(pos_minutes, on='playerId', how='inner')
-                    pos_player_minutes_df['totalMinutes'] = pos_player_minutes_df['Minutes']
-                    pos_player_minutes_df = pos_player_minutes_df.drop(columns=['Minutes'])
-
-                    # Use a distinct season_id so the cache differentiates from unfiltered stats
-                    pos_cache_key = f"{selected_season_id}_pos_{selected_raw_pos}"
-                    pos_filtered_stats = calculate_all_player_stats(
-                        pos_filtered_events, pos_player_minutes_df, season_id=pos_cache_key
-                    )
-                    # Merge GPA Value columns (same season × competition scope as profile)
-                    pos_filtered_stats = merge_gpa_values_into_stats(pos_filtered_stats, active_season_ids, selected_comp_ids)
-                    pos_filtered_scores = calculate_player_percentiles_and_scores(
-                        pos_filtered_stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=pos_cache_key
-                    )
-                    if not pos_filtered_scores.empty:
-                        radar_stats_df = pos_filtered_scores
-                        pos_player_row = pos_filtered_scores[pos_filtered_scores['playerId'] == player_id]
-                        if not pos_player_row.empty:
-                            radar_player_data_row = pos_player_row
-
-            # Ensure the radar population carries DefR columns (the percentile
-            # function is disk-cached and may drop them) — used by the radar
-            # population, the DefR-mode toggle, and Overall Season Stats coloring.
-            radar_stats_df = merge_defr_values_into_stats(
-                radar_stats_df, active_season_ids, selected_comp_ids)
-
-            # 3. Find the "Best Fit" Template for this Raw Position
-            # (e.g. If 'CF' is selected, check 'Target Man', 'Poacher', etc. and pick the best one)
-        
-            # Find all roles that include this raw position
-            eligible_roles = []
-            for role, valid_codes in POSITION_GROUPS.items():
-                if selected_raw_pos in valid_codes:
-                    eligible_roles.append(role)
-        
-            if not eligible_roles:
-                st.warning(f"No radar templates defined for position '{selected_raw_pos}'.")
-            else:
-                # Calculate Scores to find the best fit
-                best_role = None
-                best_score = -1
-            
-                # We calculate a simple score (sum of percentiles) for each eligible role
-                for role in eligible_roles:
-                    # Get metrics and weights
-                    role_weights = WEIGHTS.get(role, {})
-                    if not role_weights: continue
-                
-                    # Define Population for this role (for percentile calculation)
-                    role_codes = POSITION_GROUPS[role]
-                    population = radar_stats_df[
-                        radar_stats_df['primaryPosition'].isin(role_codes)
-                    ]
-                    if len(population) < 5: population = radar_stats_df # Fallback
-
-                    # Calculate Score
-                    role_score = 0
-                    total_weight = 0
-
-                    for metric, weight in role_weights.items():
-                        if metric in radar_player_data_row.columns and metric in population.columns:
-                            val = radar_player_data_row[metric].values[0]
-                            pop_vals = population[metric].fillna(0)
-                        
-                            # Percentile
-                            pct = (pop_vals < val).mean()
-                            if metric in INVERT_METRICS: pct = 1.0 - pct
-                        
-                            role_score += (pct * weight)
-                            total_weight += weight
-                
-                    final_score = (role_score / total_weight) if total_weight > 0 else 0
-                
-                    if final_score > best_score:
-                        best_score = final_score
-                        best_role = role
-            
-                # Handle case where no score could be calculated
-                if best_role is None: best_role = eligible_roles[0]
-
-                # 4. Generate Chart for the Winner
-                st.caption(f"Best Template Match: **{best_role}**")
-                _radar_style = st.radio("Radar Style", ["Percentile", "Raw Values (mean ± 2σ)"], horizontal=True, key=f"radar_style_{player_id}")
-                _use_defr = st.toggle(
-                    "Defensive metrics → DefR",
-                    value=False, key=f"defr_mode_{player_id}",
-                    help="Swap each defensive axis (tackles, interceptions, recoveries, "
-                         "clearances, aerials) to its Defensive Responsibility value — "
-                         "actions above/below what the player's role is expected to make.")
-
-                # Prepare data for plotting
-                metrics_to_plot = list(WEIGHTS[best_role].keys())
-                metrics_to_plot = [m for m in metrics_to_plot
-                                   if m in radar_player_data_row.columns
-                                   and m not in RADAR_HIDDEN_METRICS]
-
-                # Get Population for distribution
-                final_population = radar_stats_df[
-                    radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[best_role])
-                ]
-                if len(final_population) < 5: final_population = radar_stats_df
-
-                # --- DefR mode: swap each defensive axis to its DefR value ---
-                if _use_defr:
-                    final_population = merge_defr_values_into_stats(
-                        final_population, active_season_ids, selected_comp_ids)
-                    radar_player_data_row = merge_defr_values_into_stats(
-                        radar_player_data_row, active_season_ids, selected_comp_ids)
-                    _mapped, _seen = [], set()
-                    for _m in metrics_to_plot:
-                        _mm = DEFR_RADAR_MAP.get(_m, _m)
-                        if _mm in radar_player_data_row.columns and _mm not in _seen:
-                            _mapped.append(_mm); _seen.add(_mm)
-                    if _mapped:
-                        metrics_to_plot = _mapped
-                    # Percentile for each DefR axis vs same-position peers
-                    for _m in metrics_to_plot:
-                        if _m in DEFR_DISPLAY_METRICS \
-                                and _m in radar_player_data_row.columns \
-                                and _m in final_population.columns:
-                            _pv = final_population[_m].dropna()
-                            if not _pv.empty:
-                                _val = radar_player_data_row[_m].values[0]
-                                radar_player_data_row[_m + '_percentile'] = (
-                                    scipy.stats.percentileofscore(_pv, _val, kind='weak') / 100.0)
-                    if _mapped:
-                        st.caption("🛡️ Defensive axes show **DefR** (actions above/below role expectation).")
-
-                # --- NEW: Recalculate percentiles and scores for ALL eligible roles ---
-                # This ensures that if the user selects a raw position that maps to multiple templates
-                # (e.g., 'CF' -> Mobile Striker, Poacher, etc.), ALL those scores are updated
-                # based on the new comparison group.
-                radar_player_data_row = radar_player_data_row.copy()
-
-                for role in eligible_roles:
-                    # 1. Get Population for this specific role
-                    role_population = radar_stats_df[
-                        radar_stats_df['primaryPosition'].isin(POSITION_GROUPS[role])
-                    ]
-                    if len(role_population) < 5: role_population = radar_stats_df
-
-                    # 2. Get metrics and weights for this role
-                    role_weights = WEIGHTS.get(role, {})
-                    new_total_score = 0
-                    total_weight = 0
-
-                    # 3. Recalculate percentiles for all metrics used in this role
-                    for metric, weight in role_weights.items():
-                        if metric not in role_population.columns:
-                            continue
-                        # Get population values for this metric
-                        pop_values = role_population[metric].dropna()
-
-                        if metric in radar_player_data_row.columns:
-                            player_val = radar_player_data_row[metric].values[0]
-                        
-                            if not pop_values.empty:
-                                # Calculate percentile (0-100)
-                                pct_score = scipy.stats.percentileofscore(pop_values, player_val, kind='weak')
-                            
-                                # Handle Inverted Metrics
-                                if metric in INVERT_METRICS:
-                                    pct_score = 100.0 - pct_score
-                            
-                                # Update the row's percentile column (0-1) used for plotting
-                                # Note: This overwrites the column. If multiple roles use the same metric,
-                                # the last one wins. This is generally acceptable as they are usually 
-                                # compared against similar populations if they share a raw position.
-                                # Ideally, we'd plot based on the 'best_role' metrics specifically.
-                                radar_player_data_row[metric + '_percentile'] = pct_score / 100.0
-
-                                # Add to weighted score
-                                new_total_score += ((pct_score / 100.0) * weight)
-                                total_weight += weight
-
-                    # 4. Update the Role Score column
-                    if total_weight > 0:
-                        final_new_score = (new_total_score / total_weight) * 100
-                        radar_player_data_row[role + '_Score'] = final_new_score
-
-                # --- NEW: Update Position Label for Chart ---
-                # This ensures the chart displays "CF" if we selected "CF", even if their bio says "RW"
-                radar_player_data_row['primaryPosition'] = selected_raw_pos
-                # -----------------------------------------------------------------------
-
-                # Plot
-                _radar_season_label = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-                _radar_mode = 'raw' if _radar_style == "Raw Values (mean ± 2σ)" else 'percentile'
-                with MPL_LOCK:
-                    fig_radar = create_radar_with_distributions(
-                        radar_player_data_row,
-                        metrics_to_plot,
-                        best_role,
-                        eligible_roles,
-                        all_position_data=final_population,
-                        full_df_for_ranking=radar_stats_df,
-                        season_label=_radar_season_label,
-                        radar_mode=_radar_mode
-                    )
-                    st.pyplot(fig_radar, use_container_width=True)
-
-            # Career radar section disabled to reduce memory usage
-            # TODO: Re-enable when Streamlit Cloud resources are upgraded
-
-            # --- Minutes by Position + Outlier Stats side-by-side ---
-            _col_mins, _col_outliers = st.columns([1, 2])
-
-            with _col_mins:
-                minutes_by_pos = get_player_minutes_by_position(profile_events_df, player_id, player_match_log_df)
-                if not minutes_by_pos.empty and len(minutes_by_pos) > 1:
-                    st.caption("Minutes by Position")
-                    st.dataframe(
-                        minutes_by_pos,
-                        column_config={
-                            "Position": st.column_config.TextColumn("Position"),
-                            "Minutes": st.column_config.NumberColumn("Minutes", format="%d"),
-                            "Percentage": st.column_config.ProgressColumn(
-                                "% of Minutes",
-                                min_value=0,
-                                max_value=100,
-                                format="%.1f%%",
-                            ),
-                        },
-                        hide_index=True,
-                        use_container_width=False,
-                    )
-
-            with _col_outliers:
-                # Compute outlier stats: metrics beyond 2σ / 3σ from positional mean
-                try:
-                    # Use the best role's position group as the population
-                    _outlier_pop = radar_stats_df[
-                        radar_stats_df['primaryPosition'].isin(POSITION_GROUPS.get(best_role, [selected_raw_pos]))
-                    ].copy() if 'best_role' in dir() and best_role else radar_stats_df.copy()
-                    if 'totalMinutes' in _outlier_pop.columns:
-                        _outlier_pop = _outlier_pop[pd.to_numeric(_outlier_pop['totalMinutes'], errors='coerce').fillna(0) >= 500]
-
-                    # Gather all numeric per-90 metrics (exclude info/intermediate columns)
-                    _skip_cols = {'playerName', 'teamName', 'totalMinutes', 'primaryPosition', 'secondaryPosition',
-                                  'tertiaryPosition', 'playerId', 'player.id', 'Defensive Area', 'Expected xT at Center',
-                                  'competitionId', 'competitionId_per_90'}
-                    _skip_suffixes = ('_percentile', '_Score', '_TotalScore', '_Rank')
-                    _all_metrics = [c for c in radar_player_data_row.columns
-                                    if pd.api.types.is_numeric_dtype(radar_player_data_row[c])
-                                    and c not in _skip_cols
-                                    and not c.endswith(_skip_suffixes)]
-
-                    _outliers_2s = []  # (metric, value, z_score, direction)
-                    _outliers_3s = []
-                    for _m in _all_metrics:
-                        if _m not in _outlier_pop.columns:
-                            continue
-                        _pop_vals = pd.to_numeric(_outlier_pop[_m], errors='coerce').dropna()
-                        if len(_pop_vals) < 5:
-                            continue
-                        _mean = _pop_vals.mean()
-                        _std = _pop_vals.std()
-                        if _std == 0:
-                            continue
-                        _player_val = float(radar_player_data_row[_m].values[0])
-                        _z = (_player_val - _mean) / _std
-                        # For inverted metrics, negative z is "good" (below average = better)
-                        if _m in INVERT_METRICS:
-                            _direction = "⬇️" if _z < 0 else "⬆️"
-                        else:
-                            _direction = "⬆️" if _z > 0 else "⬇️"
-                        if abs(_z) >= 3:
-                            _outliers_3s.append((_m, _player_val, _z, _direction))
-                        elif abs(_z) >= 2:
-                            _outliers_2s.append((_m, _player_val, _z, _direction))
-
-                    # Sort by absolute z-score descending
-                    _outliers_3s.sort(key=lambda x: abs(x[2]), reverse=True)
-                    _outliers_2s.sort(key=lambda x: abs(x[2]), reverse=True)
-
-                    if _outliers_3s or _outliers_2s:
-                        st.caption("Statistical Outliers (vs. positional avg)")
-                        if _outliers_3s:
-                            st.markdown("**🔴 Super-outliers (> 3σ)**")
-                            for _m, _v, _z, _d in _outliers_3s:
-                                st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
-                        if _outliers_2s:
-                            st.markdown("**🟡 Outliers (> 2σ)**")
-                            for _m, _v, _z, _d in _outliers_2s:
-                                st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
-                    else:
-                        st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
-                except Exception as e:
-                    print(f"Warning: Could not compute outlier stats: {e}")
-
-
-
-        elif _active_tab == "Stats":
-            # --- 5b. Career Trajectory ----------------------------------------
-            # Per-season summary of the player's appearances + per-season
-            # strip plots of the chosen metric (Action V/90 or Best-fit
-            # Rating) showing the full league-wide distribution with the
-            # selected player highlighted. Lives just above Overall Season
-            # Stats so the trajectory context flows into the per-season
-            # breakdown right below it.
-            st.subheader("Career Trajectory")
-
-            from plotly.subplots import make_subplots as _make_subplots
-
-            def _season_start_year(season_label: str) -> int | None:
-                """Parse a season label like '2025/26' or '2025/2026' and
-                return the start year. Used to sort seasons chronologically
-                because raw seasonIds aren't comparable across competitions
-                (e.g. Camp 23/24 seasonId 190230 sorts AFTER Liga 3 24/25
-                seasonId 190090 by numeric value)."""
-                try:
-                    return int(str(season_label).split('/')[0])
-                except (ValueError, AttributeError, IndexError):
-                    return None
-
-            def _age_at_season_label(birth, season_label) -> float | None:
-                """Age at midpoint of the season (start year + 0.5)."""
-                if not birth or pd.isna(birth):
-                    return None
-                try:
-                    from datetime import datetime
-                    bd = pd.to_datetime(birth, errors='coerce')
-                    if pd.isna(bd):
-                        return None
-                    start_year = _season_start_year(season_label)
-                    if start_year is None:
-                        return None
-                    mid_season = datetime(start_year, 12, 31)
-                    return round((mid_season - bd.to_pydatetime()).days / 365.25, 1)
-                except Exception:
-                    return None
-
-            # ---- 1) Walk player_minutes_data to build per-season rows ----
-            career_rows = []
-            birth = player_bio.get('birthDate') if isinstance(player_bio, pd.Series) else None
-            for _sid, _pm_df in player_minutes_data.items():
-                if not isinstance(_pm_df, pd.DataFrame) or _pm_df.empty:
-                    continue
-                if 'playerId' not in _pm_df.columns:
-                    continue
-                sub = _pm_df[_pm_df['playerId'] == player_id]
-                if sub.empty:
-                    continue
-                for _, row in sub.iterrows():
-                    _comp_id = competition_for_season(_sid)
-                    _season_label = SEASON_ID_MAP.get(_sid, str(_sid))
-                    _comp_name = (COMPETITIONS.get(_comp_id, {}).get('name')
-                                   if _comp_id else 'Other')
-                    career_rows.append({
-                        'Season': _season_label,
-                        '_seasonId': _sid,
-                        '_startYear': _season_start_year(_season_label) or 0,
-                        'Competition': _comp_name or 'Other',
-                        '_compId': _comp_id,
-                        'Team': row.get('teamName', 'N/A'),
-                        'Position': row.get('primaryPosition', 'N/A'),
-                        'Minutes': int(row.get('totalMinutes', 0) or 0),
-                        'Age': _age_at_season_label(birth, _season_label),
-                    })
-
-            if not career_rows:
-                st.caption("No multi-season history available for this player.")
-            else:
-                # Chronological sort: by parsed start year, then by competition
-                # id as a stable tiebreaker (so Liga 3 23/24 + Camp 23/24
-                # land next to each other deterministically).
-                career_df = (pd.DataFrame(career_rows)
-                              .sort_values(['_startYear', '_compId', '_seasonId']))
-
-                # ---- 2) Merge in GPA Total Value per season for the player ----
-                _gpa_full = None
-                try:
-                    _gpa_full = load_gpa_values()
-                    if _gpa_full is not None and not _gpa_full.empty \
-                            and 'playerId' in _gpa_full.columns:
-                        _gpa_player = _gpa_full[_gpa_full['playerId'] == player_id].copy()
-                        if not _gpa_player.empty:
-                            _val_col = next((c for c in ('Total Value', 'total_v_per_90')
-                                              if c in _gpa_player.columns), None)
-                            if _val_col:
-                                career_df = career_df.merge(
-                                    _gpa_player[['seasonId', _val_col]]
-                                        .rename(columns={'seasonId': '_seasonId',
-                                                          _val_col: 'Action V/90'})
-                                        .drop_duplicates('_seasonId'),
-                                    on='_seasonId', how='left'
-                                )
-                except Exception:
-                    pass
-
-                # ---- 3) Per-season best-fit rating + per-season population ----
-                # For each season the player has data in, also collect the
-                # FULL league-wide distribution of the metric so we can plot
-                # a violin per season with the player highlighted.
-                _role_rating_by_season: dict[int, float] = {}
-                _role_name_by_season:   dict[int, str]   = {}
-                _rating_population: dict[int, np.ndarray] = {}  # sid -> array of all players' best-fit scores
-
-                def _best_fit_score(row, _weights, _groups):
-                    pos = row.get('primaryPosition')
-                    if pd.isna(pos):
-                        return None
-                    eligible = [r for r in _weights if pos in _groups.get(r, [])]
-                    vals = [row.get(f"{r}_Score") for r in eligible
-                             if f"{r}_Score" in row.index]
-                    vals = [float(v) for v in vals if v is not None and not pd.isna(v)]
-                    return max(vals) if vals else None
-
-                def _position_group_of(pos):
-                    """Map a Wyscout primaryPosition to its top-level position
-                    group (GK/CB/FB/CM/AM/WG/ST). Best-fit Rating is a
-                    position-specific composite, so the per-season violin
-                    should compare against same-position peers only — not
-                    fullbacks vs centerbacks vs forwards."""
-                    if pos is None or pd.isna(pos):
-                        return None
-                    p = str(pos)
-                    if p == 'GK': return 'GK'
-                    if p in ('CB', 'LCB', 'RCB', 'LCB3', 'RCB3'): return 'CB'
-                    if p in ('LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'): return 'FB'
-                    if p in ('CMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3',
-                              'DMF', 'LDMF', 'RDMF'): return 'CM'
-                    if p in ('AMF', 'LAMF', 'RAMF', 'LMF', 'RMF'): return 'AM'
-                    if p in ('LW', 'RW', 'LWF', 'RWF'): return 'WG'
-                    if p in ('CF', 'SS'): return 'ST'
-                    return None
-
-                try:
-                    for _sid in career_df['_seasonId'].unique():
-                        _events_sid = get_season_events(raw_events_df, [_sid])
-                        _minutes_sid = player_minutes_data.get(_sid)
-                        if _events_sid.empty or _minutes_sid is None or _minutes_sid.empty:
-                            continue
-                        _stats_sid = calculate_all_player_stats(
-                            _events_sid, _minutes_sid, season_id=_sid
-                        )
-                        if _stats_sid.empty:
-                            continue
-                        _scores_sid = calculate_player_percentiles_and_scores(
-                            _stats_sid, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
-                            min_minutes=500, season_id=_sid
-                        )
-                        if _scores_sid.empty:
-                            continue
-                        # Per-player best-fit role score (vectorized via apply).
-                        _scores_sid = _scores_sid.copy()
-                        _scores_sid['_best_fit'] = _scores_sid.apply(
-                            _best_fit_score, axis=1,
-                            args=(WEIGHTS, POSITION_GROUPS),
-                        )
-                        # The selected player's row — needed up-front so we
-                        # can filter the population to same-position peers.
-                        _player_rows = _scores_sid[_scores_sid['playerId'] == player_id]
-                        if _player_rows.empty:
-                            continue
-                        _player_row = _player_rows.iloc[0]
-                        _pos = _player_row.get('primaryPosition')
-                        _player_pos_group = _position_group_of(_pos)
-
-                        # Population for violin = ≥500-min players in the
-                        # SAME position group as the selected player this
-                        # season. Best-fit Rating is position-specific so
-                        # comparing a CB to wingers isn't meaningful.
-                        if 'totalMinutes' in _scores_sid.columns:
-                            _qualified = _scores_sid[
-                                (_scores_sid['totalMinutes'].fillna(0) >= 500)
-                                & _scores_sid['_best_fit'].notna()
-                            ]
-                        else:
-                            _qualified = _scores_sid[_scores_sid['_best_fit'].notna()]
-                        if _player_pos_group and 'primaryPosition' in _qualified.columns:
-                            _qualified = _qualified[
-                                _qualified['primaryPosition'].map(_position_group_of)
-                                == _player_pos_group
-                            ]
-                        _pop = _qualified['_best_fit'].values
-                        if len(_pop) > 0:
-                            _rating_population[int(_sid)] = _pop
-                        _eligible = [r for r in WEIGHTS
-                                      if _pos in POSITION_GROUPS.get(r, [])]
-                        _scored = [(r, float(_player_row.get(f"{r}_Score", 0) or 0))
-                                    for r in _eligible
-                                    if f"{r}_Score" in _player_row.index]
-                        if not _scored:
-                            continue
-                        _best_role, _best_score = max(_scored, key=lambda t: t[1])
-                        _role_rating_by_season[int(_sid)] = round(_best_score, 1)
-                        _role_name_by_season[int(_sid)] = _best_role
-                except Exception as _exc:
-                    logger.warning(f"Could not compute per-season role ratings: {_exc}")
-
-                if _role_rating_by_season:
-                    career_df['Best-fit Rating'] = career_df['_seasonId'].map(_role_rating_by_season)
-                    career_df['Best-fit Role']   = career_df['_seasonId'].map(_role_name_by_season)
-
-                # ---- 4) Display per-season table ----
-                _display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
-                if 'Action V/90' in _display_career.columns:
-                    _display_career['Action V/90'] = _display_career['Action V/90'].round(3)
-                st.dataframe(_display_career, use_container_width=True, hide_index=True, column_config=auto_column_config(_display_career))
-
-                # ---- 5) Per-season strip plots with player highlighted ----
-                _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
-                                        if m in career_df.columns
-                                        and career_df[m].notna().any()]
-                if not _chart_y_candidates:
-                    st.caption(
-                        "No Action V/90 or Best-fit Rating data available across "
-                        "this player's seasons — chart suppressed."
-                    )
-                else:
-                    chart_y = st.radio(
-                        "Trajectory metric:",
-                        _chart_y_candidates,
-                        horizontal=True,
-                        key=f"_traj_metric_{player_id}",
-                    )
-                    # Build (season, label, population, player_value) list in
-                    # chronological order. Skip seasons where the player has
-                    # no value for the chosen metric — the violin without a
-                    # highlighted dot is just visual noise.
-                    _panels = []
-                    _seen_sids = set()
-                    for _, _row in career_df.iterrows():
-                        _sid = int(_row['_seasonId'])
-                        if _sid in _seen_sids:
-                            continue  # de-dupe rows where player had multi teams
-                        _seen_sids.add(_sid)
-                        _pv = _row.get(chart_y)
-                        if pd.isna(_pv):
-                            continue
-                        if chart_y == 'Action V/90' and _gpa_full is not None:
-                            _val_col = next((c for c in ('Total Value', 'total_v_per_90')
-                                              if c in _gpa_full.columns), None)
-                            if _val_col:
-                                # Filter to ≥500-min sample so the population
-                                # represents proper regular-rotation players.
-                                _gpa_season = _gpa_full.loc[
-                                    (_gpa_full['seasonId'] == _sid)
-                                    & (_gpa_full.get('mins_played', 0) >= 500)
-                                ]
-                                # Filter to same position group as the
-                                # selected player in this season. Prefer
-                                # GPA's own position_group column (source-
-                                # of-truth for this dataset); fall back to
-                                # deriving from the `position` column via
-                                # _position_group_of if missing.
-                                _player_pg = None
-                                _gpa_player_row = _gpa_full[
-                                    (_gpa_full['playerId'] == player_id)
-                                    & (_gpa_full['seasonId'] == _sid)
-                                ]
-                                if not _gpa_player_row.empty:
-                                    if 'position_group' in _gpa_player_row.columns:
-                                        _v = _gpa_player_row['position_group'].iloc[0]
-                                        if pd.notna(_v):
-                                            _player_pg = str(_v)
-                                    if _player_pg is None and 'position' in _gpa_player_row.columns:
-                                        _player_pg = _position_group_of(
-                                            _gpa_player_row['position'].iloc[0]
-                                        )
-                                if _player_pg:
-                                    if 'position_group' in _gpa_season.columns:
-                                        _gpa_season = _gpa_season[
-                                            _gpa_season['position_group'] == _player_pg
-                                        ]
-                                    elif 'position' in _gpa_season.columns:
-                                        _gpa_season = _gpa_season[
-                                            _gpa_season['position'].map(_position_group_of)
-                                            == _player_pg
-                                        ]
-                                _pop = _gpa_season[_val_col].dropna().values
-                            else:
-                                _pop = np.array([])
-                        else:
-                            _pop = _rating_population.get(_sid, np.array([]))
-                        if len(_pop) < 5:
-                            continue
-                        _age_str = (f" · age {_row['Age']:.0f}"
-                                     if pd.notna(_row.get('Age')) else "")
-                        _comp_short = ('L3' if _row.get('_compId') == 43324
-                                        else 'CP' if _row.get('_compId') == 702
-                                        else (_row.get('Competition') or '')[:6])
-                        _panels.append({
-                            'sid': _sid,
-                            'label': f"{_row['Season']}<br>{_comp_short}{_age_str}",
-                            'population': _pop,
-                            'player_value': float(_pv),
-                            'team': _row.get('Team', ''),
-                        })
-
-                    if not _panels:
-                        st.caption(
-                            f"No seasons have both a {chart_y} value for this "
-                            f"player AND a comparable population to plot."
-                        )
-                    else:
-                        # One subplot per season, shared y-axis so the player's
-                        # trajectory is easy to follow across seasons.
-                        _fig = _make_subplots(
-                            rows=1, cols=len(_panels),
-                            shared_yaxes=True,
-                            subplot_titles=[p['label'] for p in _panels],
-                            horizontal_spacing=0.01,
-                        )
-                        # Common y-range — driven by the ≥500-min POPULATION
-                        # only (per user request). If the highlighted player
-                        # is outside that range we extend slightly so the gold
-                        # dot is still visible, but the scale is anchored to
-                        # the regular-rotation population.
-                        _pop_concat = np.concatenate([p['population'] for p in _panels])
-                        _y_lo = float(np.nanmin(_pop_concat))
-                        _y_hi = float(np.nanmax(_pop_concat))
-                        _y_pad = 0.05 * (_y_hi - _y_lo if _y_hi > _y_lo else 1.0)
-                        # Allow the highlighted dot to bleed up to 1 pad
-                        # outside the population range without rescaling the
-                        # whole panel.
-                        _player_vals = [p['player_value'] for p in _panels]
-                        _y_lo = min(_y_lo, float(np.nanmin(_player_vals)) - _y_pad)
-                        _y_hi = max(_y_hi, float(np.nanmax(_player_vals)) + _y_pad)
-                        # Width scaling: seasons with more ≥500-min players get
-                        # visibly wider violins so the user can tell apart a
-                        # 200-player Liga 3 season from a 600-player Camp
-                        # season. Use a power < 1 so small samples don't
-                        # collapse to slivers.
-                        _max_n = max(len(p['population']) for p in _panels) or 1
-                        for _i, _p in enumerate(_panels, start=1):
-                            _n = len(_p['population'])
-                            _scaled_w = 0.85 * (_n / _max_n) ** 0.5
-                            # 1) Violin: density shape, no built-in points (we
-                            # render our own colored dots in the next trace).
-                            # Explicit x=0 anchor — without this, plotly
-                            # picks categorical mode and the highlight dot's
-                            # numeric x positioning silently breaks.
-                            _fig.add_trace(go.Violin(
-                                x=np.zeros(len(_p['population'])),
-                                y=_p['population'],
-                                points=False,
-                                box_visible=False,
-                                meanline_visible=False,
-                                side='both',
-                                width=_scaled_w,
-                                line_color='rgba(80,80,80,0.55)',
-                                fillcolor='rgba(140,140,140,0.18)',
-                                showlegend=False,
-                                hoverinfo='skip',
-                                name='',
-                            ), row=1, col=_i)
-
-                            # 2) Colored dots: deterministic jitter so the
-                            # layout doesn't shift on rerun (seeded by sid),
-                            # bounded so dots stay inside the violin.
-                            _rng = np.random.default_rng(seed=int(_p['sid']) & 0xFFFFFFFF)
-                            _half = max(0.05, _scaled_w / 2 - 0.04)
-                            _jitter = _rng.uniform(-_half, _half, size=_n)
-                            _fig.add_trace(go.Scatter(
-                                x=_jitter,
-                                y=_p['population'],
-                                mode='markers',
-                                marker=dict(
-                                    size=5,
-                                    color=_p['population'],
-                                    colorscale='RdYlGn',
-                                    cmin=_y_lo, cmax=_y_hi,
-                                    opacity=0.6,
-                                    line=dict(width=0),
-                                    showscale=False,
-                                ),
-                                showlegend=False,
-                                hoverinfo='y',
-                                name='',
-                            ), row=1, col=_i)
-
-                            # 3) Highlight: the selected player's point on top.
-                            # Bumped to a larger diamond with a thicker dark
-                            # ring so it stays unmistakable against the
-                            # dense violin shape.
-                            _fig.add_trace(go.Scatter(
-                                y=[_p['player_value']],
-                                x=[0.0],
-                                mode='markers',
-                                marker=dict(
-                                    size=18,
-                                    color='#FFC400',
-                                    line=dict(color='black', width=2),
-                                    symbol='diamond',
-                                ),
-                                showlegend=False,
-                                hovertemplate=(
-                                    f"<b>{selected_player_name}</b><br>"
-                                    f"Team: {_p['team']}<br>"
-                                    f"{chart_y}: %{{y:.2f}}<extra></extra>"
-                                ),
-                                name='',
-                            ), row=1, col=_i)
-                            # Force the x-axis to linear — adding go.Violin
-                            # without an explicit x array flips Plotly into
-                            # categorical-axis mode, which silently clobbers
-                            # the numeric x positions we use for jitter and
-                            # the highlight dot (so they collapse onto a
-                            # single phantom category and the gold dot got
-                            # buried under the colored cloud).
-                            _fig.update_xaxes(
-                                type='linear',
-                                showticklabels=False, zeroline=False,
-                                range=[-0.5, 0.5], row=1, col=_i,
-                            )
-                        _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
-                        _fig.update_layout(
-                            title=f"{chart_y} by season (gold dot = {selected_player_name})",
-                            height=420,
-                            margin=dict(t=70, b=30, l=40, r=20),
-                            showlegend=False,
-                        )
-                        # Make subplot titles smaller so they fit when there
-                        # are 5+ panels.
-                        for _ann in _fig['layout']['annotations']:
-                            _ann['font'] = dict(size=10)
-                        st.plotly_chart(_fig, use_container_width=True)
-
-            st.divider()
-
-            # --- 6. STATS TOGGLE ---
-            st.subheader("Overall Season Stats")
-            show_totals = st.toggle("Show Season Totals", value=False)
-            stats_to_display = pd.Series(dtype='object')
-        
-            per_90_stats = player_per_90_stats.copy()
-        
-            if show_totals:
-                st.text(f"Displaying TOTAL stats from {total_minutes:.0f} minutes played.")
-                total_stats = per_90_stats.copy()
-                rate_cols = [col for col in total_stats.index if '%' in col or 'per' in col.lower() or 'index' in col or 'Percentage' in col]
-                # goalsConceded is conceptually a defensive rate (goals against per 90)
-                # rather than a count — it stays per-90 even in season-totals mode,
-                # the same way 'goalsPrevented' / xG family already do.
-                if 'goalsConceded' in total_stats.index and 'goalsConceded' not in rate_cols:
-                    rate_cols.append('goalsConceded')
-                # engine metrics are levels, never season-totaled
-                for _ec in ENGINE_DISPLAY_METRICS:
-                    if _ec in total_stats.index and _ec not in rate_cols:
-                        rate_cols.append(_ec)
-            
-                for col in total_stats.index:
-                    if col not in rate_cols and pd.api.types.is_numeric_dtype(total_stats[col]):
-                        total_val = (total_stats[col] * total_minutes) / 90
-                        if col in ['xG', 'xA', 'xT', 'xTOP', 'xTSP', 'npxG', 'xAOP', 'xASP', 'psxG_faced', 'goalsPrevented']:
-                             total_stats[col] = total_val
-                        else:
-                             total_stats[col] = np.round(total_val)
-            
-                for col in rate_cols:
-                    if col in per_90_stats.index:
-                        total_stats[col] = per_90_stats[col]
-            
-                stats_to_display = total_stats
-            
-            else: # Show Per 90
-                st.text(f"Displaying PER 90 stats from {total_minutes:.0f} minutes played.")
-                stats_to_display = per_90_stats
-
-            # --- 7. Display Stats (Using all global groups) ---
-            stat_groups = {
-                "Output": OUTPUT_METRICS,
-                "Passing": PASSING_METRICS,
-                "Defensive": DEFENSIVE_METRICS,
-                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
-                "Dribbling": DRIBBLING_METRICS,
-                "ACP Index": ENGINE_DISPLAY_METRICS,
-                "Goalkeeping": GOALKEEPING_METRICS
-            }
-
-            player_is_gk = (per_90_stats.get('primaryPosition', 'N/A') == 'GK')
-
-            # ── Build positional-peer population for percentile comparisons ──
-            # Union of all raw positions that share at least one role template
-            # with the player's primary position; filter to 500+ minutes.
-            _primary_pos = player_per_90_stats.get('primaryPosition', None)
-            _peer_pop = pd.DataFrame()
-            if _primary_pos and _primary_pos not in ('N/A', 'Unknown', None, ''):
-                _peer_positions = set()
-                for _role, _positions in POSITION_GROUPS.items():
-                    if _primary_pos in _positions:
-                        _peer_positions.update(_positions)
-                if not _peer_positions:
-                    _peer_positions = {_primary_pos}
-                _peer_pop = radar_stats_df[radar_stats_df['primaryPosition'].isin(_peer_positions)]
-                if 'totalMinutes' in _peer_pop.columns:
-                    _peer_pop = _peer_pop[
-                        pd.to_numeric(_peer_pop['totalMinutes'], errors='coerce').fillna(0) >= 500
-                    ]
-
-            def _percentile_for(metric_name, p90_value):
-                """Percentile of this player's per-90 value against same-position peers (≥500 min)."""
-                if _peer_pop.empty or metric_name not in _peer_pop.columns:
-                    return None
-                if pd.isna(p90_value):
-                    return None
-                pop_vals = pd.to_numeric(_peer_pop[metric_name], errors='coerce').dropna()
-                if len(pop_vals) < 5 or pop_vals.std() == 0:
-                    return None
-                pct = scipy.stats.percentileofscore(pop_vals, p90_value, kind='weak')
-                if metric_name in INVERT_METRICS:
-                    pct = 100.0 - pct
-                return float(pct)
-
-            def _percentile_color(p):
-                """Red (0) → yellow (50) → green (100) HSL gradient."""
-                if p is None or pd.isna(p):
-                    return ''
-                p_clamped = max(0.0, min(100.0, float(p)))
-                hue = (p_clamped / 100.0) * 120.0   # 0=red, 60=yellow, 120=green
-                return f'background-color: hsl({hue:.0f}, 65%, 72%); color: black;'
-
-            for group_name, group_metrics in stat_groups.items():
-
-                if player_is_gk and group_name != 'Goalkeeping':
-                    continue
-                if not player_is_gk and group_name == 'Goalkeeping':
-                    continue
-
-                if player_is_gk and group_name == 'Goalkeeping':
-                    group_metrics = GOALKEEPING_METRICS + ['GK Passes successful %', 'GK Long passes successful %']
-
-                metrics_to_show = [m for m in group_metrics if m in stats_to_display.index]
-
-                if metrics_to_show:
-                    default_expanded = (group_name == 'Output')
-                    with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
-
-                        stats_subset_series = stats_to_display[metrics_to_show]
-                        stats_subset_series = stats_subset_series[stats_subset_series != 0]
-
-                        if stats_subset_series.empty:
-                            st.text("No data for this category.")
-                            continue
-
-                        def _fmt_stat(metric_name, x):
-                            if not isinstance(x, (int, float)):
-                                return str(x)
-                            if metric_name in THOUSANDTHS_METRICS:
-                                return f"{x:.3f}"
-                            if np.round(x) == x and '%' not in str(x):
-                                return f"{x:.0f}"
-                            return f"{x:.2f}"
-
-                        # Build display DataFrame: Value (formatted str) + Percentile (numeric)
-                        _rows = []
-                        for _metric in stats_subset_series.index:
-                            _disp_val = stats_subset_series[_metric]
-                            _p90_val = per_90_stats.get(_metric, np.nan)
-                            _pct = _percentile_for(_metric, _p90_val)
-                            _rows.append({
-                                'Metric': _metric,
-                                'Value': _fmt_stat(_metric, _disp_val),
-                                'Percentile': _pct,
-                            })
-                        stats_subset = pd.DataFrame(_rows).set_index('Metric')
-
-                        _styled = (
-                            stats_subset.style
-                            .applymap(_percentile_color, subset=['Percentile'])
-                            .format({'Percentile': lambda v: f"{int(round(v))}" if pd.notna(v) else '—'})
-                        )
-                        st.dataframe(_styled, use_container_width=True)
-        
-
-        elif _active_tab == "Value":
-            st.divider()
-        
-            # --- Transfer Value Detail ----------------------------------------
-            # Deep-dive on market value: Reported fees & manual entries
-            # expander + the Market Context features block. The legacy CVI
-            # breakdown display panels were retired (Lucas 2026-06-12) — the
-            # ACP engine provides the headline Projected value in the bio
-            # card. CVI computation helpers stay at module level for other
-            # pages.
-            st.subheader("Transfer Value Detail")
-            st.caption("Projected value is computed by the ACP engine (see bio card). "
-                       "Legacy CVI breakdown retired 2026-06-12.")
-            try:
-                with st.expander("Reported transfer fees & manual entries",
-                                  expanded=False):
-                    st.caption("**Market value sources**")
-                    if _tv_valuations_rows.empty:
-                        st.caption("No data yet. Populates from reported transfer "
-                                    "fees + manual entries.")
-                    else:
-                        _src_view = (_tv_valuations_rows
-                                      .groupby('source', as_index=False)
-                                      .first()[['source', 'value_eur', 'as_of_date']])
-                        _src_view['value_eur'] = _src_view['value_eur'].apply(
-                            lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                        )
-                        st.dataframe(_src_view, use_container_width=True, hide_index=True, column_config=auto_column_config(_src_view))
-                        if len(_tv_valuations_rows) > len(_src_view):
-                            with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
-                                _hist_view = _tv_valuations_rows[
-                                    ['source', 'value_eur', 'as_of_date', 'notes']
-                                ].copy()
-                                _hist_view['value_eur'] = _hist_view['value_eur'].apply(
-                                    lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
-                                )
-                                st.dataframe(_hist_view, use_container_width=True,
-                                              hide_index=True,
-                                              column_config=auto_column_config(_hist_view))
-
-                    # ---- Manual valuation entry ----
-                    # Add a hand-entered figure from club / agent conversations.
-                    # Highest-authority source (weight 4.0 in the loader's blend).
-                    with st.expander("➕ Add manual valuation", expanded=False):
-                        with st.form(f"manual_val_{player_id}_{selected_season_id}",
-                                      clear_on_submit=True):
-                            _mv_col_a, _mv_col_b = st.columns(2)
-                            _mv_eur = _mv_col_a.number_input(
-                                "Value (EUR)", min_value=0, step=10_000,
-                                value=0, help="Hand-entered figure from club "
-                                              "or agent conversation. €0 = skip.",
-                            )
-                            from datetime import date as _date_cls
-                            _mv_date = _mv_col_b.date_input(
-                                "As-of date", value=_date_cls.today(),
-                                help="When this valuation was given to you.",
-                            )
-                            _mv_notes = st.text_input(
-                                "Notes (optional)",
-                                placeholder="e.g. 'agent quote', 'club asking price', "
-                                            "'rejected bid from X'",
-                            )
-                            _mv_submitted = st.form_submit_button("Save",
-                                                                    type="primary")
-                            if _mv_submitted:
-                                if _mv_eur <= 0:
-                                    st.warning("Value must be > €0 — skipping.")
-                                else:
-                                    try:
-                                        import csv
-                                        _man_path = (Path(__file__).resolve().parent
-                                                      / 'valuations'
-                                                      / 'manual_entries.csv')
-                                        _man_path.parent.mkdir(exist_ok=True)
-                                        _new_file = not _man_path.exists()
-                                        with open(_man_path, 'a', newline='') as _f:
-                                            _w = csv.writer(_f)
-                                            if _new_file:
-                                                _w.writerow(['playerId', 'value_eur',
-                                                              'as_of_date', 'season_id',
-                                                              'source_url', 'notes'])
-                                            _w.writerow([
-                                                int(player_id), int(_mv_eur),
-                                                _mv_date.isoformat(),
-                                                (int(selected_season_id)
-                                                 if selected_season_id else ''),
-                                                '',
-                                                (f"{_mv_notes} | added via dashboard"
-                                                 if _mv_notes else "added via dashboard"),
-                                            ])
-                                        st.success(
-                                            f"Saved: €{_mv_eur:,} as of {_mv_date} "
-                                            f"for {selected_player_name}. "
-                                            f"Refresh the page to see it in the True value."
-                                        )
-                                    except Exception as _save_exc:
-                                        st.error(f"Could not save: "
-                                                  f"{type(_save_exc).__name__}: {_save_exc}")
-
-                # ---- Market Context features ----
-                st.markdown("##### Market Context")
-                try:
-                    _tv_team = (str(_tv_player_row.get('teamName'))
-                                 if _tv_player_row is not None
-                                 and pd.notna(_tv_player_row.get('teamName'))
-                                 else None)
-                    _opta_fn = (make_opta_team_strength_lookup()
-                                 if 'make_opta_team_strength_lookup' in globals()
-                                 else (lambda _t: None))
-                    _mc = compute_market_features(
-                        player_id=player_id,
-                        season_id=selected_season_id,
-                        raw_events_df=raw_events_df,
-                        matches_summary_df=matches_summary_df,
-                        player_details_df=player_details_df,
-                        player_minutes_data=player_minutes_data,
-                        team_name=_tv_team,
-                        opta_team_lookup=_opta_fn,
-                    )
-                    _mc_c1, _mc_c2, _mc_c3, _mc_c4 = st.columns(4)
-                    def _fmt_resid(v, n_dec=1):
-                        if v is None or pd.isna(v): return "—"
-                        return f"{v:+.{n_dec}f}"
-
-                    _mc_c1.metric("xG O/U (season)",
-                                    _fmt_resid(_mc['xg_residual_season']),
-                                    help="Goals minus xG, non-penalty, this season. "
-                                         "Positive = outperforming xG (clinical "
-                                         "finishing or variance); negative = "
-                                         "underperforming.")
-                    _mc_c1.metric("xG O/U (career)",
-                                    _fmt_resid(_mc['xg_residual_career']),
-                                    help="Cumulative across all seasons in our "
-                                         "data. More stable than single-season "
-                                         "residuals.")
-                    _mc_c2.metric("xA O/U (season)",
-                                    _fmt_resid(_mc['ass_residual_season']),
-                                    help="Assists minus xA proxy (sum of xG of "
-                                         "shots the player set up).")
-                    _mc_c2.metric("xA O/U (career)",
-                                    _fmt_resid(_mc['ass_residual_career']))
-
-                    _nat_p = _mc.get('passport_nationality') or '—'
-                    _nat_b = _mc.get('birth_nationality') or '—'
-                    _mc_c3.metric("Nationality (passport)", _nat_p)
-                    if _nat_b != _nat_p:
-                        _mc_c3.metric("Birthplace", _nat_b)
-
-                    _team_opta = _mc.get('team_opta_rating')
-                    _team_ppm = _mc.get('team_ppm_season')
-                    _team_pos = _mc.get('team_league_position')
-                    _mc_c4.metric(
-                        "Team Opta",
-                        f"{_team_opta:.1f}" if _team_opta is not None else "—",
-                        help="Current team's Opta Power Ranking — proxy for "
-                             "scouting visibility and tier-internal team strength.",
-                    )
-                    _mc_c4.metric(
-                        "Team this season",
-                        (f"{_team_ppm:.2f} PPM" if _team_ppm is not None else "—")
-                        + (f" · {_team_pos}." if _team_pos is not None else ""),
-                        help="Points per match + league position from parsed scores. "
-                             "Successful-team players typically carry a market premium.",
-                    )
-
-                    _ver = _mc.get('positions_played_career')
-                    _sea = _mc.get('seasons_played')
-                    if _ver is not None or _sea is not None:
-                        _bits = []
-                        if _ver is not None:
-                            _bits.append(f"{_ver} position{'s' if _ver != 1 else ''} played")
-                        if _sea is not None:
-                            _bits.append(f"{_sea} season{'s' if _sea != 1 else ''} in data")
-                        st.caption("· ".join(_bits))
-                    st.caption(
-                        "📌 These features feed the v2 EUR regression "
-                        "(currently pending). They don't change CVI itself."
-                    )
-                except Exception as _mc_exc:
-                    st.caption(f"Market Context error: "
-                                f"{type(_mc_exc).__name__}: {_mc_exc}")
-            except Exception as _tv_exc:
-                st.caption(f"Transfer Value Detail error: "
-                            f"{type(_tv_exc).__name__}: {_tv_exc}")
-
-
-        elif _active_tab == "Shots & Creation":
-            st.divider()
-
-            # --- 7. SHOT ANALYSIS (UPDATED) ---
-            st.subheader("Shot Analysis")
-        
-            # 1. Get all player events
-            player_events_all = profile_events_df[profile_events_df['player.name'] == selected_player_name].copy()
-        
-            # 2. Filter for shots (non-penalty) for the map/analysis
-            shot_log = player_events_all[
-                (player_events_all['type.primary'] == 'shot') &
-                (player_events_all['type.primary'] != 'penalty')
-            ].copy()
-        
-            if not shot_log.empty:
-                # --- DATA PROCESSING START ---
-            
-                # Sort chronologically for numbering (oldest first)
-                if 'dateutc' in shot_log.columns:
-                    shot_log = shot_log.sort_values(by=['dateutc', 'minute', 'second'], ascending=True)
-                else:
-                    shot_log = shot_log.sort_values(by=['matchId', 'minute', 'second'], ascending=True)
-                
-                # Assign Shot Numbers (1 to N)
-                shot_log.reset_index(drop=True, inplace=True)
-                shot_log['Shot Number'] = shot_log.index + 1
-            
-                # Basic formatting
-                shot_log['Date'] = pd.to_datetime(shot_log['dateutc']).dt.strftime('%Y-%m-%d') if 'dateutc' in shot_log.columns else "N/A"
-                shot_log['Opponent'] = shot_log.get('opponentTeam.name', 'Unknown')
-                shot_log['xG'] = pd.to_numeric(shot_log['shot.xg'], errors='coerce').fillna(0)
-                shot_log['Result'] = np.where(shot_log['shot.isGoal'] == True, 'Goal', 
-                                     np.where(shot_log['shot.onTarget'] == True, 'Saved', 'Off Target'))
-
-                # Body Part Extraction
-                if 'shot.bodyPart.name' in shot_log.columns:
-                    shot_log['Body Part'] = shot_log['shot.bodyPart.name']
-                elif 'shot.bodyPart' in shot_log.columns:
-                    shot_log['Body Part'] = shot_log['shot.bodyPart'].apply(
-                        lambda x: x.get('name', 'Unknown') if isinstance(x, dict) else str(x)
-                    )
-                    shot_log['Body Part'] = shot_log['Body Part'].str.replace('_', ' ').str.title()
-                else:
-                    shot_log['Body Part'] = 'Unknown'
-
-                # Phase of Play
-                def get_phase(possession_types):
-                    if not isinstance(possession_types, (list, np.ndarray)): return "Open Play"
-                    if 'counter_attack' in possession_types: return "Counter Attack"
-                    if 'corner' in possession_types or 'free_kick' in possession_types or 'penalty' in possession_types: return "Set Piece"
-                    if 'positional_attack' in possession_types: return "Positional Attack"
-                    return "Open Play"
-            
-                if 'possession.types' in shot_log.columns:
-                    shot_log['Phase'] = shot_log['possession.types'].apply(get_phase)
-                else:
-                    shot_log['Phase'] = "Unknown"
-
-                # Shot Creating Action (SCA)
-                relevant_match_ids = shot_log['matchId'].unique()
-                context_events = profile_events_df[
-                    (profile_events_df['matchId'].isin(relevant_match_ids)) &
-                    (profile_events_df['team.name'] == shot_log.iloc[0]['team.name'])
-                ].copy()
-            
-                shot_log['prev_event_idx'] = shot_log['possession.eventIndex'] - 1
-            
-                sca_merge = pd.merge(
-                    shot_log[['id', 'matchId', 'possession.id', 'prev_event_idx']],
-                    context_events[['matchId', 'possession.id', 'possession.eventIndex', 'type.primary', 'type.secondary']],
-                    left_on=['matchId', 'possession.id', 'prev_event_idx'],
-                    right_on=['matchId', 'possession.id', 'possession.eventIndex'],
-                    how='left',
-                    suffixes=('', '_prev')
-                )
-            
-                def label_sca(row):
-                    if pd.isna(row['type.primary']): return "Recovery/None"
-                    sec_types = row['type.secondary'] if isinstance(row['type.secondary'], (list, np.ndarray)) else []
-                    if 'cross' in sec_types: return "Cross"
-                    if 'through_pass' in sec_types: return "Through Pass"
-                    if 'deep_completion' in sec_types: return "Deep Completion"
-                    prim = row['type.primary']
-                    if prim == 'pass': return "Pass"
-                    if prim == 'duel': return "Dribble/Duel"
-                    if prim == 'acceleration' or prim == 'touch': return "Carry"
-                    if prim == 'clearance': return "Clearance"
-                    if prim == 'interception': return "Interception"
-                    return prim.replace('_', ' ').title()
-
-                sca_merge['SCA'] = sca_merge.apply(label_sca, axis=1)
-                shot_log = shot_log.merge(sca_merge[['id', 'SCA']], on='id', how='left')
-            
-                # --- DATA PROCESSING END ---
-
-                # --- VISUALIZATION: one combined visual — full-width
-                # StatsBomb-style map (shape = creating action, color =
-                # xG, ring = goal), shot log directly beneath. Static mpl
-                # version kept for the PDF one-pager.
-                st.plotly_chart(
-                    plotly_shot_map(shot_log, selected_player_name,
-                                    height=660),
-                    use_container_width=True,
-                    config={'displayModeBar': False})
-
-                st.markdown("**Shot Log**")
-                display_cols = ['Shot Number', 'Date', 'Opponent', 'Result', 'xG', 'Body Part', 'SCA']
-                table_display = shot_log[display_cols].rename(columns={
-                    'Shot Number': '#',
-                    'SCA': 'Creating Action'
-                }).sort_values(by='#', ascending=False) # Show newest first (highest number)
-
-                st.dataframe(table_display, use_container_width=True, height=380, hide_index=True, column_config=auto_column_config(table_display))
-
-                # --- NEW: SUMMARY TABLES ---
-                st.markdown("---")
-                col_sum1, col_sum2 = st.columns(2)
-            
-                with col_sum1:
-                    st.markdown("**Stats by Body Part**")
-                    body_summary = shot_log.groupby('Body Part').agg(
-                        Shots=('id', 'count'),
-                        Goals=('shot.isGoal', 'sum'),
-                        Total_xG=('xG', 'sum')
-                    ).sort_values(by='Total_xG', ascending=False)
-                    body_summary['xG/Shot'] = (body_summary['Total_xG'] / body_summary['Shots']).round(2)
-                    body_summary['Total_xG'] = body_summary['Total_xG'].round(2)
-                    st.dataframe(body_summary, use_container_width=True, column_config=auto_column_config(body_summary))
-                
-                with col_sum2:
-                    st.markdown("**Stats by Creating Action**")
-                    sca_summary = shot_log.groupby('SCA').agg(
-                        Shots=('id', 'count'),
-                        Goals=('shot.isGoal', 'sum'),
-                        Total_xG=('xG', 'sum')
-                    ).sort_values(by='Total_xG', ascending=False)
-                    sca_summary['xG/Shot'] = (sca_summary['Total_xG'] / sca_summary['Shots']).round(2)
-                    sca_summary['Total_xG'] = sca_summary['Total_xG'].round(2)
-                    st.dataframe(sca_summary, use_container_width=True, column_config=auto_column_config(sca_summary))
-
-            else:
-                st.info("No shots recorded for this player.")
-
-            st.divider()
-
-            # --- 7a-bis. CREATION — passes into the attacking box ---
-            st.subheader("Creation — Passes into the Box")
-            _bp_all = load_box_passes()
-            if _bp_all.empty:
-                st.caption("Box-pass data not available in this deployment.")
-            else:
-                _bp_seasons = _season_id_list(active_season_ids)
-                _bp_p = _bp_all[
-                    _bp_all['player.id'] == int(selected_player_id)].copy()
-                if _bp_seasons:
-                    _bp_p = _bp_p[_bp_p['seasonId'].isin(_bp_seasons)]
-                if _bp_p.empty:
-                    st.info("No passes into the box recorded for this player "
-                            "in the selected season(s).")
-                else:
-                    _cc1, _cc2, _cc3 = st.columns([1, 1, 2])
-                    with _cc1:
-                        _bp_no_sp = st.checkbox(
-                            "Open play only", value=False,
-                            help="Exclude corner / free-kick / throw-in deliveries")
-                    with _cc2:
-                        _bp_acc_only = st.checkbox("Completed only", value=False)
-                    _bp_view = _bp_p
-                    if _bp_no_sp:
-                        _bp_view = _bp_view[_bp_view['phase'] != 'set_piece']
-                    if _bp_acc_only:
-                        _bp_view = _bp_view[_bp_view['pass.accurate'] == True]  # noqa: E712
-                    if _bp_view.empty:
-                        st.info("No box passes match the current filters.")
-                    else:
-                        st.plotly_chart(
-                            plotly_box_passes_map(_bp_view, selected_player_name),
-                            use_container_width=True,
-                            config={'displayModeBar': False})
-                        _n_bp = len(_bp_view)
-                        _mets = st.columns(4)
-                        _mets[0].metric("Box passes", f"{_n_bp}")
-                        _mets[1].metric(
-                            "Completed",
-                            f"{(_bp_view['pass.accurate'] == True).mean():.0%}")  # noqa: E712
-                        _mets[2].metric(
-                            "Total pass value",
-                            f"{pd.to_numeric(_bp_view['action_value'], errors='coerce').sum():+.3f}",
-                            help="Sum of GPA action values of these passes")
-                        _mets[3].metric(
-                            "Value / pass",
-                            f"{pd.to_numeric(_bp_view['action_value'], errors='coerce').mean():+.4f}")
-                        st.caption(
-                            "Arrow color = GPA pass value (red = value created, "
-                            "blue = negative value); arrow weight scales with "
-                            "|value|. Hover an endpoint for pass details.")
-
-            st.divider()
-
-            # --- 7b. Shot Assists & Dribbles in Final Third ---
-            st.subheader("Shot Assists & Dribbles in Final Third")
-            try:
-                with MPL_LOCK:
-                    fig_sa_player = pv.plot_shot_assists_and_dribbles(
-                        profile_events_df, current_team,
-                        player_name=selected_player_name,
-                    )
-                    st.pyplot(fig_sa_player, use_container_width=True)
-                    plt.close(fig_sa_player)
-            except Exception as e:
-                st.caption(f"Could not render shot assists & dribbles: {e}")
-
-            st.divider()
-
-            # --- 7c. Defensive Action Heatmap ---
-            st.subheader("Defensive Action Heatmap")
-            try:
-                # Resolve positional peer group for defensive heatmap
-                _DEFENSIVE_PEER_GROUPS = {
-                    'GK': ['GK'],
-                    'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
-                    'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
-                    'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF', 'LCMF3', 'RCMF3'],
-                    'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW', 'LWF', 'RWF'],
-                    'ST': ['CF', 'SS'],
-                }
-                _heatmap_pos_codes = [current_pos]
-                _heatmap_peer_label = current_pos
-                for _grp_name, _grp_codes in _DEFENSIVE_PEER_GROUPS.items():
-                    if current_pos in _grp_codes:
-                        _heatmap_pos_codes = _grp_codes
-                        _heatmap_peer_label = _grp_name
-                        break
-
-                # Compute peer density stack (cached)
-                _events_hash = hashlib.md5(
-                    f"{len(profile_events_df)}_{tuple(sorted(_heatmap_pos_codes))}".encode()
-                ).hexdigest()
-
-                _peer_stack = _compute_peer_density_stack(
-                    _events_hash, profile_events_df,
-                    tuple(sorted(_heatmap_pos_codes)),
-                    _player_minutes_df=profile_player_minutes_df,
-                    include_recoveries=True,
-                )
-
-                with MPL_LOCK:
-                    fig_def_heatmap = pv.plot_defensive_action_heatmap(
-                        profile_events_df, player_id, selected_player_name,
-                        position_codes=_heatmap_pos_codes,
-                        player_minutes_df=profile_player_minutes_df,
-                        peer_density_stack=_peer_stack,
-                        include_recoveries=True,
-                    )
-                    st.pyplot(fig_def_heatmap, use_container_width=True)
-                    plt.close(fig_def_heatmap)
-                st.caption(f"Colour intensity normalised across **{_heatmap_peer_label}** peers.")
-            except Exception as e:
-                st.caption(f"Could not render defensive action heatmap: {e}")
-
-            st.divider()
-
-            # --- 7a. Throw-In Analysis ---
-            st.subheader("Throw-In Analysis")
-
-            try:
-                player_throwin_df = profile_events_df[
-                    (profile_events_df['player.id'] == player_id) &
-                    (profile_events_df['type.primary'] == 'throw_in')
-                ].copy()
-
-                if not player_throwin_df.empty and 'pass.length' in player_throwin_df.columns:
-                    total_throwins = len(player_throwin_df)
-
-                    # Avg of top 10 longest throw-ins (overall distance)
-                    top_10_all = player_throwin_df.nlargest(min(10, total_throwins), 'pass.length')
-                    avg_top10_length = top_10_all['pass.length'].mean()
-
-                    # Throw-ins into the attacking penalty box (end x >= 84, 20 <= end y <= 80)
-                    into_box = player_throwin_df[
-                        (player_throwin_df['pass.endLocation.x'] >= 84) &
-                        (player_throwin_df['pass.endLocation.y'] >= 20) &
-                        (player_throwin_df['pass.endLocation.y'] <= 80)
-                    ]
-                    if not into_box.empty:
-                        top_10_box = into_box.nlargest(min(10, len(into_box)), 'pass.length')
-                        avg_top10_into_box = top_10_box['pass.length'].mean()
-                    else:
-                        avg_top10_into_box = 0.0
-
-                    # Throw-ins into box where next action is an aerial duel
-                    avg_top10_into_box_aerial = 0.0
-                    if not into_box.empty:
-                        sorted_match_events = profile_events_df.sort_values(by=['matchId', 'minute', 'second']).reset_index(drop=True)
-                        aerial_box_throws = []
-                        for _, ti_row in into_box.iterrows():
-                            m_id = ti_row.get('matchId')
-                            if m_id is None:
-                                continue
-                            m_events = sorted_match_events[sorted_match_events['matchId'] == m_id]
-                            pos_mask = (m_events['minute'] == ti_row['minute']) & (m_events['second'] == ti_row['second']) & (m_events['type.primary'] == 'throw_in')
-                            positions = m_events[pos_mask].index
-                            if len(positions) == 0:
-                                continue
-                            next_pos = positions[0] + 1
-                            if next_pos in m_events.index:
-                                next_sec = m_events.loc[next_pos].get('type.secondary', '')
-                                if isinstance(next_sec, (list, set)):
-                                    is_aerial = 'aerial_duel' in next_sec
-                                else:
-                                    is_aerial = 'aerial_duel' in str(next_sec)
-                                if is_aerial:
-                                    aerial_box_throws.append(ti_row)
-                        if aerial_box_throws:
-                            aerial_df = pd.DataFrame(aerial_box_throws)
-                            top_10_aerial = aerial_df.nlargest(min(10, len(aerial_df)), 'pass.length')
-                            avg_top10_into_box_aerial = top_10_aerial['pass.length'].mean()
-
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Total Throw-Ins", int(total_throwins))
-                    with col2:
-                        st.metric("Avg Max Distance", f"{avg_top10_length:.1f}m")
-                    with col3:
-                        st.metric("Avg Max Into Box", f"{avg_top10_into_box:.1f}m")
-                    with col4:
-                        st.metric("Avg Max Into Box → Aerial", f"{avg_top10_into_box_aerial:.1f}m")
-                else:
-                    st.info(f"{selected_player_name} has no throw-ins in the selected period.")
-
-            except Exception as e:
-                st.caption(f"Could not render throw-in analysis: {e}")
-
-
-        elif _active_tab == "Match Log":
-            st.divider()
-
-            # --- 8. Display Individual Match Stats (Unchanged) ---
-            st.subheader("Individual Match Log")
-        
-            if player_match_log_df.empty:
-                st.info("No individual match stats found for this player.")
-            else:
-                key_match_stats = ['Date', 'Match', 'Score', 'Minutes', 'Goals / xG', 'xAOP', 'xASP', 'xTOP', 'xTSP', 'Actions / successful', 'Passes / accurate', 'Duels / won']
-                cols_to_show = [c for c in key_match_stats if c in player_match_log_df.columns]
-                st.dataframe(player_match_log_df[cols_to_show].set_index('Date'))
-                with st.expander("View Full Match Log (All Stats)"):
-                    st.dataframe(player_match_log_df.set_index('Date'))
 
 # --- NEW: Player Comparison Section ---
     elif analysis_type == 'Player Comparison':
+        views.player_comparison.render()
 
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("player_comparison")
-        selected_season_id = season_selector("player_comparison", include_all_seasons=True, comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        comp_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
-        comp_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
-
-        # --- 1. Load Data ---
-        try:
-            with st.spinner("Loading player statistics..."):
-                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
-                    comp_events_df, comp_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
-                )
-        except Exception as e:
-            st.error(f"An error occurred calculating player stats: {e}")
-            logger.exception("Error in Player Comparison stats calculation")
-            st.stop()
-            
-        if player_stats_with_scores_df.empty:
-            st.warning("No players found with sufficient minutes for comparison.")
-            st.stop()
-
-        # --- 2. Player Selectors (NEW LOGIC) ---
-        st.sidebar.subheader("Comparison Options")
-        
-        # --- Step A: Select Player A (from all players) ---
-        # FIX: Include 'playerId' in the columns so we can use it for lookup
-        player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-        player_list_df['display_name'] = player_list_df['playerName'].astype(str) + " (" + player_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
-        
-        selected_player_a_display = st.sidebar.selectbox(
-            "Select Player A:", 
-            player_list_df['display_name'], 
-            index=0 # Default to first player
-        )
-        
-        # FIX: Lookup by ID instead of Name
-        selected_player_a_id = player_list_df[player_list_df['display_name'] == selected_player_a_display]['playerId'].values[0]
-        player_a_data = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_a_id]
-        
-        # Get the name safely from the ID-filtered data
-        selected_player_a_name = player_a_data.iloc[0]['playerName']
-
-        # --- Step B: Select Template ---
-        all_templates = sorted(list(POSITION_GROUPS.keys()))
-        
-        # Find Player A's best-fit template as default
-        primary_pos_a = player_a_data.iloc[0]['primaryPosition']
-        eligible_groups_a = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos_a in pos_roles]
-        highest_score = -1; default_template = all_templates[0]
-        for group in eligible_groups_a:
-            score_col = group + '_Score'
-            if score_col in player_a_data.columns:
-                player_score = player_a_data[score_col].values[0]
-                if player_score > highest_score:
-                    highest_score = player_score; default_template = group
-        
-        default_index = all_templates.index(default_template) if default_template in all_templates else 0
-        
-        selected_template = st.sidebar.selectbox(
-            "Select Comparison Template:",
-            all_templates,
-            index=default_index
-        )
-        
-        # --- Step C: Filter Player B list based on Template ---
-        positions_in_group = POSITION_GROUPS.get(selected_template, [])
-        
-        filtered_player_df = player_stats_with_scores_df[
-            player_stats_with_scores_df['primaryPosition'].isin(positions_in_group)
-        ]
-        
-        # Create the display list for Player B from the filtered df
-        # FIX: Include 'playerId' here too
-        player_b_list_df = filtered_player_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].sort_values(by='totalMinutes', ascending=False)
-        player_b_list_df['display_name'] = player_b_list_df['playerName'].astype(str) + " (" + player_b_list_df['teamName'].astype(str) + ", " + pd.to_numeric(player_b_list_df['totalMinutes'], errors='coerce').fillna(0).astype(int).astype(str) + " min)"
-        
-        # Find a smart default index for Player B (e.g., the second player in the list)
-        default_b_index = 0
-        if len(player_b_list_df) > 1:
-            default_b_index = 1
-        
-        # --- Step D: Select Player B (from filtered list) ---
-        selected_player_b_display = st.sidebar.selectbox(
-            "Select Player B (Same Position Group):", 
-            player_b_list_df['display_name'],
-            index=default_b_index 
-        )
-        
-        # FIX: Lookup by ID instead of Name
-        selected_player_b_id = player_b_list_df[player_b_list_df['display_name'] == selected_player_b_display]['playerId'].values[0]
-        player_b_data = player_stats_with_scores_df[player_stats_with_scores_df['playerId'] == selected_player_b_id]
-        
-        # Get the name safely
-        selected_player_b_name = player_b_data.iloc[0]['playerName']
-
-
-        # --- 4. Plot Radar ---
-        st.subheader(f"Comparing: {selected_player_a_name} vs. {selected_player_b_name}")
-
-        _mins_a = pd.to_numeric(player_a_data.iloc[0].get('totalMinutes', 0), errors='coerce') or 0
-        _mins_b = pd.to_numeric(player_b_data.iloc[0].get('totalMinutes', 0), errors='coerce') or 0
-        _below_threshold = []
-        if _mins_a < 300:
-            _below_threshold.append(f"{selected_player_a_name} ({int(_mins_a)} min)")
-        if _mins_b < 300:
-            _below_threshold.append(f"{selected_player_b_name} ({int(_mins_b)} min)")
-
-        if _below_threshold:
-            st.info(f"⚠️ **Insufficient sample size** — {' and '.join(_below_threshold)}.")
-
-        metrics_to_plot = list(WEIGHTS[selected_template].keys())
-        metrics_to_plot = [m for m in metrics_to_plot
-                           if m in player_stats_with_scores_df.columns
-                           and m not in RADAR_HIDDEN_METRICS]
-
-        # --- FIX: Use a square figure to prevent distortion ---
-        with MPL_LOCK:
-            fig = plt.figure(figsize=(15, 15))
-            # [left, bottom, width, height] - This centers the radar
-            ax_radar = fig.add_axes([0.15, 0.15, 0.7, 0.7], polar=True)
-
-            plot_comparison_radar(
-                ax_radar,
-                player_a_data,
-                player_b_data,
-                metrics_to_plot,
-                selected_template
-            )
-
-            st.pyplot(fig, use_container_width=True)
 
     # --- NEW: Player Analysis Section ---
     elif analysis_type == 'Player Analysis':
+        views.player_analysis.render()
 
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("player_analysis")
-        selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        analysis_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
-        analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
-
-        # --- 1. Load Data ---
-        try:
-            with st.spinner("Loading player statistics..."):
-                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
-                    analysis_events_df, analysis_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
-                )
-        except Exception as e:
-            st.error(f"An error occurred calculating player stats: {e}")
-            logger.exception("Error in Player Analysis stats calculation")
-            st.stop()
-
-        if player_stats_with_scores_df.empty:
-            st.warning("No players found with sufficient minutes for analysis.")
-            st.stop()
-
-        # --- 2. Sidebar Controls ---
-        st.sidebar.subheader("Analysis Options")
-
-        # Template / mode selector — Overview is the default landing page
-        _TEMPLATE_GROUPS = {
-            'Goalkeepers': ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK'],
-            'Center Backs': ['Ball-Playing Centerback', 'Stopper', 'Athletic Centerback'],
-            'Full Backs': ['Full Back', 'Wingback', 'Inverted Full Back'],
-            'Central Midfielders': ['Box-to-Box', 'Holding Mid', 'Ball-Winning Mid', 'Deep-lying Playmaker'],
-            'Attacking Mids / Wingers': ['Advanced Playmaker', 'Wide Winger', 'Creative Winger', 'Inside Forward'],
-            'Forwards': ['Shadow Striker', 'Mobile Striker', 'Poacher', 'Target Man', 'Pressing Forward'],
-        }
-        # Build ordered template list from groups (preserving group order)
-        _ordered_templates = []
-        for _grp_templates in _TEMPLATE_GROUPS.values():
-            _ordered_templates.extend([t for t in _grp_templates if t in POSITION_GROUPS])
-        _selector_options = ["Overview"] + _ordered_templates + ["Individual Metric", "Peer Scatter"]
-        _selected_view = st.sidebar.selectbox(
-            "View:",
-            _selector_options,
-            index=0,
-            key="player_analysis_view"
-        )
-
-        # Minimum minutes filter. Floor lowered 500->90 (Lucas 2026-06): the
-        # ACP engine now rates players down to 90 min (scored against the
-        # >=500 cohort, then minutes-shrunk toward replacement), so low-minute
-        # players are penalised by the shrink rather than excluded. Default 90
-        # surfaces them; the shrinkage keeps them off the top of the boards.
-        max_minutes = int(player_stats_with_scores_df['totalMinutes'].max())
-        min_minutes_filter = st.sidebar.slider(
-            "Minimum Minutes Played:",
-            min_value=90,
-            max_value=max(max_minutes, 500),
-            value=90,
-            step=45,
-            key="player_analysis_min_minutes",
-            help="ACP ratings exist down to 90 min (heavily shrunk toward "
-                 "replacement). Bespoke template scores still need 500+.",
-        )
-
-        # Number of players to display
-        num_players = st.sidebar.slider(
-            "Number of Players to Display:",
-            min_value=5,
-            max_value=50,
-            value=20,
-            step=5,
-            key="player_analysis_num_players"
-        )
-
-        # --- Bulk Radar Export ---
-        st.sidebar.markdown("---")
-        # Per-radar PNG files in a render directory — each completed
-        # radar is independently committed to disk, so a kill mid-render
-        # leaves a directory of valid PNGs the user can still download
-        # as a ZIP. The ZIP is built lazily at download time, never
-        # streamed/written during render → no central-directory
-        # truncation problem.
-        import os as _os, io as _io, time as _time, pickle as _pickle
-        import hashlib as _hashlib, json as _json, zipfile as _zipfile
-        _BULK_CACHE_DIR = "/tmp/dashboard_bulk_export"
-        _BULK_CACHE_ERROR = None
-        try:
-            _os.makedirs(_BULK_CACHE_DIR, exist_ok=True)
-            _probe = _os.path.join(_BULK_CACHE_DIR, '.writable_probe')
-            with open(_probe, 'w') as _pf:
-                _pf.write('ok')
-            _os.unlink(_probe)
-        except Exception as _cache_dir_exc:
-            _BULK_CACHE_ERROR = f"{type(_cache_dir_exc).__name__}: {_cache_dir_exc}"
-
-        def _bulk_cache_key(season_lbl, groups, mode, min_mins):
-            payload = _json.dumps({
-                "season": str(season_lbl),
-                "groups": sorted([str(g) for g in groups]),
-                "mode": str(mode),
-                "min_mins": int(min_mins),
-            }, sort_keys=True)
-            return _hashlib.md5(payload.encode("utf-8")).hexdigest()[:12]
-
-        def _bulk_render_dir(key):
-            return _os.path.join(_BULK_CACHE_DIR, f"radars__{key}")
-
-        def _bulk_meta_path(key):
-            return _os.path.join(_bulk_render_dir(key), 'meta.pkl')
-
-        def _list_cached_renders():
-            """Return one entry per render directory under the cache
-            dir, regardless of meta state. Each entry surfaces the PNG
-            count, total bytes on disk, and last-modified time so
-            partial/crashed runs are still visible and downloadable."""
-            entries = []
-            try:
-                names = _os.listdir(_BULK_CACHE_DIR)
-            except (FileNotFoundError, Exception):
-                return entries
-            for name in names:
-                full = _os.path.join(_BULK_CACHE_DIR, name)
-                if not _os.path.isdir(full):
-                    continue
-                try:
-                    pngs = [f for f in _os.listdir(full) if f.endswith('.png')]
-                except Exception:
-                    continue
-                if not pngs:
-                    continue
-                meta_path = _os.path.join(full, 'meta.pkl')
-                meta = None
-                if _os.path.exists(meta_path):
-                    try:
-                        with open(meta_path, 'rb') as _f:
-                            meta = _pickle.load(_f)
-                    except Exception:
-                        meta = None
-                if meta is None:
-                    meta = {'status': 'incomplete', 'label': name}
-                try:
-                    total_bytes = sum(_os.path.getsize(_os.path.join(full, f))
-                                       for f in pngs)
-                    mtime = max((_os.path.getmtime(_os.path.join(full, f))
-                                  for f in pngs), default=0)
-                except Exception:
-                    total_bytes, mtime = 0, 0
-                entries.append({
-                    'path': full,
-                    'meta': meta,
-                    'mtime': mtime,
-                    'size': total_bytes,
-                    'png_count': len(pngs),
-                })
-            entries.sort(key=lambda e: e['mtime'], reverse=True)
-            return entries
-
-        def _build_zip_from_dir(render_dir):
-            """Build a ZIP byte-string on the fly from every PNG in the
-            render directory. Memory cost is proportional to ZIP size at
-            click time only — not held during rendering."""
-            buf = _io.BytesIO()
-            with _zipfile.ZipFile(buf, 'w', _zipfile.ZIP_DEFLATED,
-                                   compresslevel=1) as _zf:
-                for fn in sorted(_os.listdir(render_dir)):
-                    if not fn.endswith('.png'):
-                        continue
-                    _fp = _os.path.join(render_dir, fn)
-                    with open(_fp, 'rb') as _ff:
-                        _zf.writestr(fn, _ff.read())
-            return buf.getvalue()
-
-        # Apply minutes filter
-        filtered_df = player_stats_with_scores_df[
-            player_stats_with_scores_df['totalMinutes'] >= min_minutes_filter
-        ].copy()
-
-        if filtered_df.empty:
-            st.warning(f"No players found with {min_minutes_filter}+ minutes. Try lowering the threshold.")
-            st.stop()
-
-        # --- Age filter ---
-        analysis_player_details_df = load_player_details()
-        if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
-            _ages_series = analysis_player_details_df['birthDate'].apply(_calculate_age)
-            _numeric_ages = pd.to_numeric(_ages_series, errors='coerce').dropna()
-            if not _numeric_ages.empty:
-                min_age_available = int(_numeric_ages.min())
-                max_age_available = int(_numeric_ages.max()) + 1
-                age_range = st.sidebar.slider(
-                    "Age Range:",
-                    min_value=min_age_available,
-                    max_value=max_age_available,
-                    value=(min_age_available, max_age_available),
-                    key="player_analysis_age_range"
-                )
-                if age_range != (min_age_available, max_age_available):
-                    valid_ids = _numeric_ages[
-                        (_numeric_ages >= age_range[0]) & (_numeric_ages <= age_range[1])
-                    ].index.tolist()
-                    filtered_df = filtered_df[filtered_df['playerId'].isin(valid_ids)]
-                    if filtered_df.empty:
-                        st.warning(f"No players found in age range {age_range[0]}-{age_range[1]}.")
-                        st.stop()
-
-        # --- Observed role / Style filters (Lucas 2026-07-17) ------------
-        # Two scope-aware maps (playerId -> observed engine role / tendency-
-        # derived style, highest-minutes row in the selected scope). They
-        # drive sidebar filters that subset the WHOLE analysis population —
-        # every view downstream (role board, template tables, scatter,
-        # individual metric) inherits them — and Role/Style columns on the
-        # per-template tables so the dataframe search finds them. Both maps
-        # degrade to empty (filters hidden) if the parquets are missing.
-        _ANALYSIS_ROLE_ORDER = ['Striker', 'Wide Attacker', 'Advanced Midfielder',
-                                'Deep Midfielder', 'Wide Defender', 'Central Defender']
-        _scope_sids = None
-        if active_season_ids is not None:
-            _scope_sids = [int(s) for s in (active_season_ids
-                           if isinstance(active_season_ids, (list, tuple, set))
-                           else [active_season_ids])]
-        _obs_role_map, _an_style_map = {}, {}
-        try:
-            # SAME career share-weighted role the Best-Players-by-Role board
-            # buckets by — one source of truth, so filtering to "Striker"
-            # keeps exactly the players the board files under Striker.
-            _obs_role_map = get_career_engine_role_map()
-        except Exception:
-            logger.exception("observed-role filter map failed")
-        try:
-            _st_flt = load_styles()
-            if _st_flt is not None and not _st_flt.empty:
-                _sf = _st_flt
-                if _scope_sids:
-                    _sfs = _sf[_sf['seasonId'].isin(_scope_sids)]
-                    _sf = _sfs if not _sfs.empty else _sf
-                _sf = _sf.sort_values('mins_played').drop_duplicates(
-                    'playerId', keep='last')
-                _an_style_map = {int(p): s for p, s in
-                                 zip(_sf['playerId'], _sf['style']) if pd.notna(s)}
-        except Exception:
-            logger.exception("style filter map failed")
-
-        _roles_present = [r for r in _ANALYSIS_ROLE_ORDER
-                          if r in set(_obs_role_map.values())]
-        if _roles_present:
-            _sel_obs_role = st.sidebar.selectbox(
-                "Observed role:", ['All roles'] + _roles_present, index=0,
-                key="analysis_obs_role_filter",
-                help="The engine's data-derived role (where his events happen "
-                     "match by match) — not the lineup position.")
-            if _sel_obs_role != 'All roles':
-                filtered_df = filtered_df[filtered_df['playerId'].map(
-                    _obs_role_map) == _sel_obs_role]
-                if filtered_df.empty:
-                    st.warning(f"No players with observed role "
-                               f"“{_sel_obs_role}” in this scope.")
-                    st.stop()
-        _styles_present = sorted({s for s in _an_style_map.values()
-                                  if isinstance(s, str)})
-        if _styles_present:
-            _sel_an_style = st.sidebar.selectbox(
-                "Style:", ['All styles'] + _styles_present, index=0,
-                key="analysis_style_filter",
-                help="Tendency-derived archetype (descriptive, never in the "
-                     "rating). Conventional = no pronounced lean.")
-            if _sel_an_style != 'All styles':
-                filtered_df = filtered_df[filtered_df['playerId'].map(
-                    _an_style_map) == _sel_an_style]
-                if filtered_df.empty:
-                    st.warning(f"No players with style “{_sel_an_style}” "
-                               f"in this scope.")
-                    st.stop()
-
-        # --- Show Only Position toggle (HIDDEN per Lucas 2026-06) ---
-        # Toggle removed from the sidebar; pos-played filtering stays off.
-        analysis_pos_played_filter = False
-        analysis_pos_played_active = False
-        analysis_selected_positions = []
-        if analysis_pos_played_filter:
-            all_pos_minutes = get_all_players_minutes_by_position(analysis_events_df)
-            if not all_pos_minutes.empty:
-                available_positions = sorted(all_pos_minutes['Position'].unique().tolist())
-                analysis_selected_positions = st.sidebar.multiselect(
-                    "Position(s):",
-                    available_positions,
-                    default=available_positions[:1],
-                    key="analysis_pos_played_position"
-                )
-                if analysis_selected_positions:
-                    pos_min_for_positions = all_pos_minutes[all_pos_minutes['Position'].isin(analysis_selected_positions)].groupby('playerId')['Minutes'].sum().reset_index().rename(columns={'Minutes': 'posMinutes'})
-                    filtered_df = filtered_df.merge(pos_min_for_positions, on='playerId', how='inner')
-                    analysis_pos_played_active = not filtered_df.empty
-                    if filtered_df.empty:
-                        pos_label = "/".join(analysis_selected_positions)
-                        st.warning(f"No players found who played at {pos_label} with current filters.")
-                        st.stop()
-
-        # --- Global rating-adjustment toggles ----------------------------
-        # These adjustments operate on the Rating column (Role_Score) used
-        # in Overview + per-template views. They are intentionally NOT
-        # offered on Individual Metric (per user — they only make sense
-        # for overall profile ratings, not per-metric leaderboards).
-        st.sidebar.markdown("---")
-        # Same-age-peers + cross-tier toggles REMOVED (Lucas 2026-06-12):
-        # the engine's age curve handles age context in the projection,
-        # and the abs columns handle cross-league translation. Flags stay
-        # pinned off; their dormant downstream code paths were deleted.
-        age_adjusted = False
-
-        # Cross-tier translation — Opta strength multiplier only. The
-        # empirical-median variant is per-metric, so it doesn't apply
-        # to a composite Role_Score.
-        cross_tier_mode = 'Off'
-        _trans_src_comp = _trans_tgt_comp = None
-        _rating_multiplier = None
-        _rating_caption = None
-
-        # --- CVI (Composite Value Index) toggle -----------------------
-        # When ON, a CVI column is appended to the right of the Rating
-        # column in Overview + per-template tables, and (optionally) the
-        # ranking re-sorts by CVI. Position-tuned age curve
-        # (see CVI_AGE_VALUE_PARAMS) calibrated off the 27 reported transfers.
-        show_cvi = st.sidebar.checkbox(
-            "Show Projected value",
-            value=False,
-            key="player_analysis_show_cvi",
-            help="ACP engine projection → EUR: percentile of the "
-                 "next-season projection (abs scale, recruit-discounted "
-                 "for Camp) × career-NPV age multiplier (ST 1.30, AM/WG "
-                 "1.25, CM 1.00, CB 0.90, FB 0.85), through the "
-                 "fee-calibrated CVI→EUR curve, capped at €500k.",
-        )
-        sort_by_cvi = False
-        if show_cvi:
-            sort_by_cvi = st.sidebar.checkbox(
-                "Sort by Projected value",
-                value=False,
-                key="player_analysis_sort_by_cvi",
-                help="Replace the Rating-based sort with a Projected-value sort.",
-            )
-
-        # Pre-compute age column for the full filtered pool — used by
-        # the same-age peer computation inside _build_template_table
-        # AND by CVI's age-value lookup.
-        _has_age = (not analysis_player_details_df.empty
-                     and 'birthDate' in analysis_player_details_df.columns)
-        if show_cvi and _has_age:
-            _filtered_age = filtered_df['playerId'].map(
-                lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
-                if pid in analysis_player_details_df.index else None
-            )
-            filtered_df = filtered_df.assign(_age=_filtered_age.values)
-
-        # Pre-compute CVI columns once for the full filtered_df. The
-        # helper does its own position-grouped percentile internally;
-        # we slice the result per-template inside _build_template_table.
-        if show_cvi:
-            try:
-                _age_map = (filtered_df.set_index('playerId')['_age'].to_dict()
-                             if '_age' in filtered_df.columns else {})
-                # Map player → competitionId. selected_comp_ids is the
-                # league filter active in the sidebar; when one league
-                # is selected, every visible player belongs to it.
-                # Otherwise fall back to competition_for_season.
-                if selected_comp_ids and len(selected_comp_ids) == 1:
-                    _the_comp = int(selected_comp_ids[0])
-                    _comp_lookup = lambda _pid: _the_comp
-                elif 'seasonId' in filtered_df.columns:
-                    _season_to_comp = {
-                        sid: competition_for_season(sid)
-                        for sid in filtered_df['seasonId'].dropna().unique()
-                    }
-                    _ssid_map = filtered_df.set_index('playerId')['seasonId'].to_dict()
-                    _comp_lookup = lambda pid: _season_to_comp.get(_ssid_map.get(pid))
-                else:
-                    _comp_lookup = lambda _pid: None
-                # Build empirical-Bayes prior lookup so each player's
-                # season perf is shrunk toward THEIR OWN career prior
-                # (not generic 40). Single perf_table build covers
-                # every player in filtered_df → cheap bulk lookup.
-                _bulk_prior_lookup = None
-                try:
-                    _bulk_pt = _build_player_season_perf_table(
-                        load_gpa_values(), None,
-                    )
-                    if (_bulk_pt is not None and not _bulk_pt.empty
-                            and selected_season_id is not None):
-                        _bulk_prior_map = build_player_priors_lookup(
-                            _bulk_pt, selected_season_id,
-                        )
-                        _bulk_prior_lookup = (
-                            lambda pid: _bulk_prior_map.get(int(pid))
-                                          if pid is not None else None
-                        )
-                except Exception as _prior_exc:
-                    print(f"[CVI prior] bulk lookup build failed: "
-                           f"{type(_prior_exc).__name__}: {_prior_exc}")
-                _cvi_block = compute_cvi_columns(
-                    filtered_df,
-                    age_lookup=lambda pid: _age_map.get(pid),
-                    comp_id_lookup=_comp_lookup,
-                    prior_lookup=_bulk_prior_lookup,
-                )
-                if not _cvi_block.empty:
-                    filtered_df = pd.concat(
-                        [filtered_df.reset_index(drop=True),
-                         _cvi_block.reset_index(drop=True)],
-                        axis=1,
-                    )
-            except Exception as _cvi_exc:
-                import traceback as _tb
-                _tb_str = _tb.format_exc()
-                # Dtype diagnostic for the input frame — the most likely
-                # source of comparison errors is a mixed-type column.
-                _dtype_lines = []
-                try:
-                    for _c in ('primaryPosition', 'totalMinutes',
-                                'Total Value', 'playerId', 'seasonId',
-                                'competitionId', '_age'):
-                        if _c in filtered_df.columns:
-                            _samp = filtered_df[_c].dropna().head(3).tolist()
-                            _dtype_lines.append(
-                                f"  {_c:<18} dtype={filtered_df[_c].dtype} "
-                                f"sample={_samp}")
-                    _score_cols = [c for c in filtered_df.columns
-                                    if c.endswith('_Score')][:5]
-                    for _c in _score_cols:
-                        _samp = filtered_df[_c].dropna().head(3).tolist()
-                        _dtype_lines.append(
-                            f"  {_c:<18} dtype={filtered_df[_c].dtype} "
-                            f"sample={_samp}")
-                except Exception:
-                    pass
-                _diag = "\n".join(_dtype_lines)
-                st.sidebar.warning(f"CVI compute failed: "
-                                    f"{type(_cvi_exc).__name__}: {_cvi_exc}")
-                # Full traceback + dtype diagnostic to BOTH sidebar
-                # (always visible) and server-side stdout. Don't gate
-                # on an expander — Streamlit's expander_state can hide
-                # the message on some deploys.
-                _full_diag = (f"{_tb_str}\n"
-                                f"---- input column diagnostics ----\n"
-                                f"{_diag}")
-                print(f"[CVI ERROR] {type(_cvi_exc).__name__}: {_cvi_exc}\n"
-                       f"{_full_diag}")
-                st.sidebar.code(_full_diag, language='python')
-                show_cvi = False
-                sort_by_cvi = False
-
-        # --- Helper: build a display table for a given template ---
-        def _build_template_table(template_name, source_df, n_players, compact=False):
-            """Build a display DataFrame for a template. Returns (display_df, player_ids) or (None, [])."""
-            positions_in_group = POSITION_GROUPS.get(template_name, [])
-            score_col = f"{template_name}_Score"
-            if score_col not in source_df.columns:
-                return None, []
-
-            if analysis_pos_played_active:
-                tdf = source_df
-            else:
-                tdf = source_df[source_df['primaryPosition'].isin(positions_in_group)]
-
-            if tdf.empty:
-                return None, []
-
-            _sort_col = score_col
-
-            # Overview defaults to ACP PROJECTION order (Lucas) —
-            # bespoke template score still drives the per-template views
-            # and remains sortable via Individual Metric mode. GK
-            # templates (no engine coverage) keep the score sort.
-            if (compact and 'ACP Projection (abs)' in tdf.columns
-                    and tdf['ACP Projection (abs)'].notna().any()):
-                _sort_col = 'ACP Projection (abs)'
-
-            # Projected-value sort override.
-            if show_cvi and sort_by_cvi and 'Engine Value EUR' in tdf.columns:
-                _sort_col = 'Engine Value EUR'
-
-            sorted_tdf = tdf.sort_values(by=_sort_col, ascending=False, na_position='last').head(n_players)
-
-            if compact:
-                # Overview mode (Lucas): ACP Projection first, then ACP
-                # Rating, REPLACING the bespoke template score. GK
-                # templates fall back to the bespoke score.
-                _eng_over = [c for c in ('ACP Projection (abs)', 'ACP Rating')
-                             if c in sorted_tdf.columns
-                             and sorted_tdf[c].notna().any()]
-                if _eng_over:
-                    cols = ['playerName', 'teamName', 'primaryPosition',
-                            'totalMinutes'] + _eng_over
-                else:
-                    cols = ['playerName', 'teamName', 'primaryPosition',
-                            'totalMinutes', score_col]
-            else:
-                # Template-specific mode: include all weighted metrics (weight > 0) sorted by weight desc
-                template_weights = WEIGHTS.get(template_name, {})
-                weighted_metrics = sorted(
-                    [(m, w) for m, w in template_weights.items() if w > 0],
-                    key=lambda x: x[1], reverse=True
-                )
-                metric_cols = [m for m, _ in weighted_metrics if m in sorted_tdf.columns]
-                _eng_cols = [c for c in ('ACP Rating', 'ACP Projection (abs)')
-                             if c in sorted_tdf.columns]
-                cols = (['playerName', 'teamName', 'primaryPosition', 'totalMinutes',
-                          score_col] + _eng_cols + metric_cols)
-
-            cols = [c for c in cols if c in sorted_tdf.columns]
-            display = sorted_tdf[cols].copy()
-            _ren = {
-                'playerName': 'Player',
-                'teamName': 'Team',
-                'primaryPosition': 'Position',
-                'totalMinutes': 'Minutes',
-                score_col: 'Rating'
-            }
-            if compact and 'ACP Rating' in cols:
-                # engine columns take the headline names in Overview
-                _ren.update({'ACP Projection (abs)': 'Projection',
-                              'ACP Rating': 'Rating'})
-            display = display.rename(columns=_ren)
-            if 'Rating' in display.columns:
-                display['Rating'] = pd.to_numeric(display['Rating'], errors='coerce').round(1)
-            if 'Projection' in display.columns:
-                display['Projection'] = pd.to_numeric(display['Projection'], errors='coerce').round(1)
-            display['Minutes'] = display['Minutes'].astype(int)
-
-            # Observed role + style columns (full mode only — the compact
-            # Overview pivot stays narrow). Searchable via the dataframe
-            # toolbar; the sidebar filters subset the population upstream.
-            if not compact and 'Position' in display.columns:
-                _rs_idx = display.columns.get_loc('Position') + 1
-                display.insert(_rs_idx, 'Role',
-                               [(_obs_role_map.get(int(p), '—') if pd.notna(p)
-                                 else '—') for p in sorted_tdf['playerId']])
-                display.insert(_rs_idx + 1, 'Style',
-                               [(_an_style_map.get(int(p), '—') if pd.notna(p)
-                                 else '—') for p in sorted_tdf['playerId']])
-
-            # Projected value: insert next to Rating in both compact
-            # and full modes. EUR computed from CVI × position mult ×
-            # Camp penalty, capped at €500k. In full mode also surface
-            # the Trajectory flag (perf - same-age-position median).
-            # Projected Value column — ENGINE value (legacy CVI→EUR
-            # removed per Lucas 2026-06-12). Computed centrally in
-            # load_player_engine(); merged in as 'Engine Value EUR'.
-            if show_cvi and 'Engine Value EUR' in sorted_tdf.columns:
-                pv_vals = pd.Series(sorted_tdf['Engine Value EUR'].values,
-                                     index=display.index)
-                pv_display = [
-                    (f"€{int(v):,}" if v is not None and pd.notna(v) else '')
-                    for v in pv_vals
-                ]
-                _r_idx = display.columns.get_loc('Rating')
-                display.insert(_r_idx + 1, 'Projected Value', pv_display)
-
-            # Add Pos. Minutes
-            if analysis_pos_played_active and 'posMinutes' in sorted_tdf.columns:
-                display.insert(display.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_tdf['posMinutes'].astype(int).values)
-
-            # Add Age
-            if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
-                age_pos = display.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display.columns else display.columns.get_loc('Minutes') + 1
-                display.insert(age_pos, 'Age', sorted_tdf['playerId'].map(
-                    lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
-                ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
-
-            # Round metric columns
-            for col in display.columns:
-                if pd.api.types.is_numeric_dtype(display[col]) and col not in ['Minutes', 'Rating', 'Pos. Minutes', 'Age', 'Rank']:
-                    decimals = 3 if col in THOUSANDTHS_METRICS else (0 if col in WHOLE_NUMBER_METRICS else 2)
-                    display[col] = display[col].round(decimals)
-
-            display.insert(0, 'Rank', range(1, len(display) + 1))
-            return display, sorted_tdf['playerId'].tolist()
-
-        # --- Helper: handle row selection from a dataframe ---
-        def _handle_row_selection(selection, player_ids):
-            if selection and selection.selection and selection.selection.rows:
-                selected_row_idx = selection.selection.rows[0]
-                if selected_row_idx < len(player_ids):
-                    st.session_state.selected_player_id = player_ids[selected_row_idx]
-                    st.session_state.nav_to_profile = True
-                    st.session_state.nav_season_id = selected_season_id
-                    st.session_state.nav_has_season = True
-                    st.rerun()
-
-        # --- 3. Display based on selected view ---
-        if _selected_view == "Overview":
-            # --- Engine-role board (shown ABOVE the template Overview) ---
-            # Best players per OBSERVED engine role (the 6 data-derived
-            # clusters), ranked by ACP Projection, with Minutes + Age.
-            #
-            # CONSISTENCY: the engine ROLE is the ONLY thing taken from
-            # player_engine. Age, Min and Proj are read from the SAME scoped
-            # stats frame (filtered_df) + player_details that the template table
-            # below uses — so every shared column is identical across the two
-            # tables. In particular: Age = age TODAY (_calculate_age), Min =
-            # totalMinutes (TRUE lineup minutes). We deliberately do NOT use the
-            # engine's `age` (as-of-season, ~5.5 mo stale) or `mins_played`
-            # (event-derived undercount) for display.
-            _eng_role_df, _ = load_player_engine()
-            if (_eng_role_df is not None and not _eng_role_df.empty
-                    and filtered_df is not None and not filtered_df.empty):
-                # role per player = their MOST COMMON ACP engine role across ALL
-                # seasons and BOTH leagues (Lucas 2026-06-24) — computed by the
-                # shared get_career_engine_role_map() helper, which the sidebar
-                # role filter and the template-table Role column also use, so
-                # a role filter keeps exactly the players this board files
-                # under that role.
-                _role_map_d = get_career_engine_role_map()
-                _role_map = pd.DataFrame(
-                    {'playerId': list(_role_map_d.keys()),
-                     'role': list(_role_map_d.values())})
-                # join role onto the scoped, minutes-filtered stats pool — the
-                # board now inherits filtered_df's totalMinutes + ACP columns
-                _rb = filtered_df.merge(_role_map, on='playerId', how='inner')
-                # canonical age TODAY (same lookup the template table uses)
-                if (not analysis_player_details_df.empty
-                        and 'birthDate' in analysis_player_details_df.columns):
-                    _rb_age = _rb['playerId'].map(
-                        lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate'])
-                        if pid in analysis_player_details_df.index else None)
-                    _rb = _rb.assign(_age_disp=_rb_age.values)
-                else:
-                    _rb = _rb.assign(_age_disp=None)
-                # Projection is the headline. Rank by it and show only players
-                # who HAVE one (current + recent-lapsed), so inactive historical
-                # players — whose face-value rating would otherwise outrank the
-                # mean-shrunk projections — don't pollute the board. A purely
-                # past-season scope carries no projections, so there we fall
-                # back to rating and relabel the column honestly.
-                _proj_num = pd.to_numeric(_rb.get('ACP Projection (abs)'), errors='coerce')
-                if _proj_num.notna().any():
-                    _rb = _rb[_proj_num.notna()].copy()
-                    _metric_label, _metric_col = 'Proj', 'ACP Projection (abs)'
-                else:
-                    _metric_label, _metric_col = 'Rating', 'ACP Rating (abs)'
-                _rb['_rankval'] = pd.to_numeric(_rb[_metric_col], errors='coerce')
-
-                # --- style per board player (scope-aware, descriptive) ------
-                # Highest-minutes style row within the scoped seasons; falls
-                # back to the player's most-played season overall so a purely
-                # historical scope still shows a style.
-                _styles_all = load_styles()
-                _style_map = {}
-                if _styles_all is not None and not _styles_all.empty:
-                    _sc = _styles_all
-                    if active_season_ids is not None:
-                        _ssids = [int(s) for s in (active_season_ids
-                                  if isinstance(active_season_ids, (list, tuple, set))
-                                  else [active_season_ids])]
-                        _sc_scope = _sc[_sc['seasonId'].isin(_ssids)]
-                        _sc = _sc_scope if not _sc_scope.empty else _sc
-                    _sc = _sc.sort_values('mins_played').drop_duplicates(
-                        'playerId', keep='last')
-                    _style_map = dict(zip(_sc['playerId'], _sc['style']))
-                _rb['_style'] = _rb['playerId'].map(_style_map)
-
-                # --- style filter selectbox ---------------------------------
-                _style_opts = ['All styles'] + sorted(
-                    {s for s in _rb['_style'].dropna().unique()})
-                _sel_style = 'All styles'
-                if len(_style_opts) > 1:
-                    _sel_style = st.selectbox(
-                        "Filter board by style", _style_opts, index=0,
-                        key="role_board_style_filter",
-                        help="Descriptive tendency-derived archetype (never in "
-                             "the rating). Filters the board to one style.")
-                    if _sel_style != 'All styles':
-                        _rb = _rb[_rb['_style'] == _sel_style].copy()
-
-                _ENGINE_ROLE_ORDER = ['Striker', 'Wide Attacker', 'Advanced Midfielder',
-                                       'Deep Midfielder', 'Wide Defender', 'Central Defender']
-                _role_sub = ['Player', _metric_label, 'Min', 'Age', 'Style']
-                _role_cols = {}
-                for _role in _ENGINE_ROLE_ORDER:
-                    _rsub = _rb[_rb['role'] == _role].sort_values('_rankval', ascending=False).head(num_players)
-                    if _rsub.empty:
-                        continue
-                    _rows = []
-                    for _, _r in _rsub.iterrows():
-                        _mval = pd.to_numeric(_r.get(_metric_col), errors='coerce')
-                        _age = _r.get('_age_disp')
-                        _age = float(_age) if isinstance(_age, (int, float)) and pd.notna(_age) else None
-                        _mins = pd.to_numeric(_r.get('totalMinutes'), errors='coerce')
-                        _stl = _r.get('_style')
-                        _rows.append((
-                            _r.get('playerName', ''),
-                            (round(float(_mval), 1) if pd.notna(_mval) else ''),
-                            (int(_mins) if pd.notna(_mins) else 0),
-                            (round(_age, 1) if _age is not None else ''),
-                            (str(_stl) if _stl is not None and pd.notna(_stl) else '—'),
-                        ))
-                    _role_cols[_role] = _rows
-
-                if _role_cols:
-                    _max_r = max(len(v) for v in _role_cols.values())
-                    _ctups, _cdata = [], {}
-                    _present_roles = [r for r in _ENGINE_ROLE_ORDER if r in _role_cols]
-                    for _role in _present_roles:
-                        for _s in _role_sub:
-                            _ctups.append((_role, _s)); _cdata[(_role, _s)] = []
-                    for _i in range(_max_r):
-                        for _role in _present_roles:
-                            _rws = _role_cols[_role]
-                            if _i < len(_rws):
-                                for _s, _v in zip(_role_sub, _rws[_i]):
-                                    _cdata[(_role, _s)].append(_v)
-                            else:
-                                for _s in _role_sub:
-                                    _cdata[(_role, _s)].append('')
-                    _erole_df = pd.DataFrame(_cdata, columns=pd.MultiIndex.from_tuples(_ctups))
-                    _erole_df.index = range(1, len(_erole_df) + 1)
-                    _erole_df.index.name = 'Rank'
-                    st.subheader("Best Players by Role")
-                    with st.expander("ℹ️ How these ratings work"):
-                        st.markdown(RATINGS_EXPLAINER_MD)
-                    if _metric_label == 'Proj':
-                        st.caption(
-                            "Observed ACP engine roles (data-derived from playing patterns), "
-                            "ranked by ACP Projection. **Proj** = projected level next season "
-                            "(absolute / cross-league scale). **Age** (current) and **Min** "
-                            "(total minutes in scope) match the table below. **Style** = the "
-                            "player's tendency-derived archetype (descriptive, never in the "
-                            "rating). Only players with a live projection appear."
-                        )
-                    else:
-                        st.caption(
-                            "Observed ACP engine roles (data-derived from playing patterns), "
-                            "ranked by ACP **Rating** (absolute scale) — the selected season is "
-                            "historical, so no forward projection exists. **Age** is current; "
-                            "**Min** is total minutes in scope. **Style** = tendency-derived "
-                            "archetype (descriptive, never in the rating)."
-                        )
-                    st.dataframe(_erole_df, use_container_width=True)
-                    st.markdown("---")
-                elif _sel_style != 'All styles':
-                    st.subheader("Best Players by Role")
-                    st.info(f"No players match the style “{_sel_style}” in this "
-                            f"scope. Clear the style filter to see the full board.")
-                    st.markdown("---")
-
-            # Build wide pivot table: each template is a column group with Player, Team, Minutes, Rating
-            _OVERVIEW_ORDER = [
-                'Forwards', 'Attacking Mids / Wingers', 'Central Midfielders',
-                'Full Backs', 'Center Backs', 'Goalkeepers',
-            ]
-            # Collect per-template data as lists aligned by rank.
-            # When Projected Value is on, append it as a 5th sub-column
-            # per template (already EUR-formatted by _build_template_table).
-            _sub_cols = ['Player', 'Team', 'Min', 'Proj', 'Rating']
-            if show_cvi:
-                _sub_cols.append('Proj. Value')
-            template_columns = {}
-            for group_name in _OVERVIEW_ORDER:
-                group_templates = _TEMPLATE_GROUPS.get(group_name, [])
-                for tmpl in [t for t in group_templates if t in POSITION_GROUPS]:
-                    display_df, _ = _build_template_table(tmpl, filtered_df, num_players, compact=True)
-                    if display_df is not None and not display_df.empty:
-                        rows = []
-                        for _, row in display_df.iterrows():
-                            _proj_v = row.get('Projection')
-                            _rat_v = row.get('Rating')
-                            tup = [
-                                row.get('Player', ''),
-                                row.get('Team', ''),
-                                int(row.get('Minutes', 0)),
-                                (round(float(_proj_v), 1)
-                                 if _proj_v is not None and pd.notna(_proj_v) else ''),
-                                (round(float(_rat_v), 1)
-                                 if _rat_v is not None and pd.notna(_rat_v) else ''),
-                            ]
-                            if show_cvi:
-                                _pv = row.get('Projected Value', '')
-                                tup.append(_pv if _pv else '')
-                            rows.append(tuple(tup))
-                        template_columns[tmpl] = rows
-
-            if template_columns:
-                max_rows = max(len(v) for v in template_columns.values())
-                # Build MultiIndex columns DataFrame
-                col_tuples = []
-                data_dict = {}
-                for tmpl in template_columns:
-                    for sub in _sub_cols:
-                        col_tuples.append((tmpl, sub))
-                        data_dict[(tmpl, sub)] = []
-
-                for rank_idx in range(max_rows):
-                    for tmpl in template_columns:
-                        rows = template_columns[tmpl]
-                        if rank_idx < len(rows):
-                            tup = rows[rank_idx]
-                            for sub, val in zip(_sub_cols, tup):
-                                data_dict[(tmpl, sub)].append(val)
-                        else:
-                            for sub in _sub_cols:
-                                data_dict[(tmpl, sub)].append('')
-
-                multi_idx = pd.MultiIndex.from_tuples(col_tuples)
-                overview_df = pd.DataFrame(data_dict, columns=multi_idx)
-                overview_df.index = range(1, len(overview_df) + 1)
-                overview_df.index.name = 'Rank'
-
-                st.subheader("Player Overview — Template Roles")
-                st.caption(
-                    "Bespoke scouting templates (Shadow Striker, Mobile Striker, "
-                    "Creative Winger, …) — same players, scored against each role's "
-                    "weighting. Proj/Rating columns are the ACP engine values."
-                )
-                if show_cvi:
-                    st.caption(
-                        "🟩 Projected Value = CVI → EUR mapping "
-                        "(2.5 × CVI^2.5 × position multiplier, capped at €500k). "
-                        "Calibrated against the 27 reported transfer fees."
-                        + (" Sort is by Projected Value." if sort_by_cvi else "")
-                    )
-                st.dataframe(overview_df, use_container_width=True)
-            else:
-                st.warning("No players match current filters.")
-
-        elif _selected_view == "Peer Scatter":
-            # --- Peer Scatter: any metric vs any metric, full peer cloud ---
-            _SC_SET_PIECE = ['Set Piece Value', 'Corner Value',
-                             'Free Kick Value', 'Throw-In Value',
-                             'xASP', 'xTSP']
-            _sc_categories = {
-                "Output": OUTPUT_METRICS,
-                "Passing": PASSING_METRICS,
-                "Defensive": DEFENSIVE_METRICS,
-                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
-                "Dribbling": DRIBBLING_METRICS,
-                "Goalkeeping": GOALKEEPING_METRICS,
-                "Set Pieces": _SC_SET_PIECE,
-                "ACP Index": ENGINE_DISPLAY_METRICS,
-                "Template Ratings": sorted(
-                    [c for c in filtered_df.columns if c.endswith('_Score')]),
-            }
-
-            def _sc_metric_picker(axis_label, default_cat, default_metric):
-                cat = st.sidebar.selectbox(
-                    f"{axis_label} category:", list(_sc_categories.keys()),
-                    index=list(_sc_categories.keys()).index(default_cat),
-                    key=f"peer_scatter_cat_{axis_label}")
-                opts = [m for m in _sc_categories[cat]
-                        if m in filtered_df.columns]
-                if not opts:
-                    return None
-                idx = opts.index(default_metric) if default_metric in opts else 0
-                return st.sidebar.selectbox(
-                    f"{axis_label} metric:", opts, index=idx,
-                    key=f"peer_scatter_metric_{axis_label}")
-
-            _sc_x = _sc_metric_picker("X", "Defensive", "Interceptions")
-            _sc_y = _sc_metric_picker("Y", "Output", "npxG")
-
-            _sc_positions = sorted(
-                filtered_df['primaryPosition'].dropna().unique().tolist())
-            _sc_pos_filter = st.sidebar.multiselect(
-                "Filter by Position (optional):", _sc_positions, default=[],
-                key="peer_scatter_positions")
-
-            if _sc_x is None or _sc_y is None:
-                st.warning("No metrics available for the selected categories.")
-                st.stop()
-            if _sc_x == _sc_y:
-                st.info("Pick two different metrics to compare.")
-                st.stop()
-
-            _sc_df = filtered_df
-            if _sc_pos_filter:
-                _sc_df = _sc_df[_sc_df['primaryPosition'].isin(_sc_pos_filter)]
-            _sc_df = _sc_df.dropna(subset=[_sc_x, _sc_y])
-            if len(_sc_df) < 5:
-                st.warning("Not enough players with both metrics under the "
-                           "current filters.")
-                st.stop()
-
-            st.subheader(f"{_sc_y} vs {_sc_x} (per 90)")
-            _sc_c1, _sc_c2 = st.columns([2, 1])
-            with _sc_c1:
-                _sc_hl = st.selectbox(
-                    "Highlight player:",
-                    ["(none)"] + sorted(_sc_df['playerName'].dropna().unique().tolist()),
-                    key="peer_scatter_highlight")
-            with _sc_c2:
-                _sc_fit = st.checkbox("Show line of best fit", value=True,
-                                      key="peer_scatter_fit")
-
-            _sx = pd.to_numeric(_sc_df[_sc_x], errors='coerce')
-            _sy = pd.to_numeric(_sc_df[_sc_y], errors='coerce')
-            _sc_fig = go.Figure()
-            _sc_hover = [
-                f"<b>{r.playerName}</b> · {r.teamName}<br>"
-                f"{r.primaryPosition} · {int(r.totalMinutes)}'<br>"
-                f"{_sc_x}: {x:.3f}<br>{_sc_y}: {y:.3f}"
-                for r, x, y in zip(_sc_df.itertuples(), _sx, _sy)]
-            _sc_fig.add_trace(go.Scatter(
-                x=_sx, y=_sy, mode='markers',
-                marker=dict(size=8, color='rgba(110,125,118,0.45)',
-                            line=dict(color='rgba(255,255,255,0.6)', width=0.5)),
-                text=_sc_hover, hovertemplate='%{text}<extra></extra>',
-                name='peers'))
-            _sc_fig.add_vline(x=float(_sx.median()), line_dash='dot',
-                              line_color='rgba(128,128,128,0.5)')
-            _sc_fig.add_hline(y=float(_sy.median()), line_dash='dot',
-                              line_color='rgba(128,128,128,0.5)')
-            if _sc_fit and len(_sc_df) >= 3:
-                _b, _a = np.polyfit(_sx, _sy, 1)
-                _xline = np.linspace(_sx.min(), _sx.max(), 50)
-                _r = float(np.corrcoef(_sx, _sy)[0, 1])
-                _sc_fig.add_trace(go.Scatter(
-                    x=_xline, y=_b * _xline + _a, mode='lines',
-                    line=dict(color='#3987e5', width=2, dash='dash'),
-                    hoverinfo='skip', name=f'fit (r = {_r:+.2f})'))
-            if _sc_hl != "(none)":
-                _hrow = _sc_df[_sc_df['playerName'] == _sc_hl]
-                _sc_fig.add_trace(go.Scatter(
-                    x=pd.to_numeric(_hrow[_sc_x], errors='coerce'),
-                    y=pd.to_numeric(_hrow[_sc_y], errors='coerce'),
-                    mode='markers+text',
-                    marker=dict(size=14, color='#2aa876',
-                                line=dict(color='white', width=2)),
-                    text=[_sc_hl] * len(_hrow), textposition='top center',
-                    textfont=dict(size=12),
-                    hoverinfo='skip', name=_sc_hl))
-            _sc_fig.update_layout(
-                height=640, showlegend=True,
-                legend=dict(orientation='h', yanchor='bottom', y=1.01),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(title=_sc_x, gridcolor='rgba(128,128,128,0.15)',
-                           zeroline=False),
-                yaxis=dict(title=_sc_y, gridcolor='rgba(128,128,128,0.15)',
-                           zeroline=False))
-            st.plotly_chart(_sc_fig, use_container_width=True)
-            _sc_notes = []
-            if _sc_x in INVERT_METRICS or _sc_y in INVERT_METRICS:
-                _inv = [m for m in (_sc_x, _sc_y) if m in INVERT_METRICS]
-                _sc_notes.append(f"lower is better for: {', '.join(_inv)}")
-            _sc_notes.append("dotted lines = peer medians")
-            _sc_notes.append(f"{len(_sc_df)} players shown "
-                             "(sidebar minutes/age filters apply)")
-            st.caption(" · ".join(_sc_notes))
-
-        elif _selected_view == "Individual Metric":
-            # --- Individual Metric mode (preserved from original) ---
-            # Set-piece metrics — the four GPA action-value columns
-            # ("Set Piece Value" = sum of the other three) plus the
-            # set-piece-only flavors of xA and xT. xASP/xTSP also live
-            # in OUTPUT_METRICS but are duplicated here so users can
-            # find every set-piece metric in one place.
-            SET_PIECE_METRICS = [
-                'Set Piece Value', 'Corner Value', 'Free Kick Value',
-                'Throw-In Value', 'xASP', 'xTSP',
-            ]
-            metric_categories = {
-                "Output": OUTPUT_METRICS,
-                "Passing": PASSING_METRICS,
-                "Defensive": DEFENSIVE_METRICS,
-                "Defensive Responsibility (DefR)": DEFR_DISPLAY_METRICS,
-                "Dribbling": DRIBBLING_METRICS,
-                "Goalkeeping": GOALKEEPING_METRICS,
-                "Set Pieces": SET_PIECE_METRICS,
-                "ACP Index": ENGINE_DISPLAY_METRICS,
-                # bespoke template ratings stay sortable here (Lucas) —
-                # they left the Overview headline but remain a metric
-                "Template Ratings": sorted(
-                    [c for c in filtered_df.columns if c.endswith('_Score')]),
-            }
-
-            selected_category = st.sidebar.selectbox(
-                "Metric Category:",
-                list(metric_categories.keys()),
-                key="player_analysis_metric_category"
-            )
-
-            available_metrics = [m for m in metric_categories[selected_category]
-                               if m in filtered_df.columns]
-            if not available_metrics:
-                st.warning(f"No metrics available for {selected_category} category.")
-                st.stop()
-
-            selected_metric = st.sidebar.selectbox(
-                "Select Metric:",
-                available_metrics,
-                key="player_analysis_metric_v2"
-            )
-
-            all_positions = sorted(filtered_df['primaryPosition'].dropna().unique().tolist())
-            position_filter = st.sidebar.multiselect(
-                "Filter by Position (optional):",
-                all_positions,
-                default=[],
-                key="player_analysis_position_filter"
-            )
-
-            if position_filter:
-                metric_filtered_df = filtered_df[filtered_df['primaryPosition'].isin(position_filter)]
-            else:
-                metric_filtered_df = filtered_df
-
-            if metric_filtered_df.empty:
-                st.warning("No players found with current filters.")
-                st.stop()
-
-            # Individual Metric mode intentionally does NOT apply the
-            # age-adjusted / cross-tier-translation toggles — those are
-            # for overall profile ratings only (Overview + per-template).
-            _sort_ascending = selected_metric in INVERT_METRICS
-            sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
-
-            st.subheader(f"Top Players by {selected_metric} (per 90)")
-
-            related_metrics = []
-            if selected_metric in OUTPUT_METRICS:
-                related_metrics = ['Goals', 'xG', 'npxG', 'Shots', 'Assists', 'xAOP']
-            elif selected_metric in PASSING_METRICS:
-                related_metrics = ['Passes', 'Passes successful %', 'Progressive Passes', 'xTOP']
-            elif selected_metric in DEFENSIVE_METRICS:
-                related_metrics = ['Interceptions', 'Recoveries', 'Defensive duels', 'Aerial duels']
-            elif selected_metric in DRIBBLING_METRICS:
-                related_metrics = ['Dribbles', 'Dribbles successful %', 'Progressive runs']
-            elif selected_metric in GOALKEEPING_METRICS:
-                related_metrics = ['goalsPrevented', 'savePercentage', 'exits']
-            elif selected_metric in SET_PIECE_METRICS:
-                # Show the other set-piece value flavors + the set-
-                # piece xA/xT pair so you can see, e.g., which corner
-                # specialists are also creating high-xT deliveries.
-                related_metrics = ['Set Piece Value', 'Corner Value',
-                                    'Free Kick Value', 'Throw-In Value',
-                                    'xASP', 'xTSP']
-
-            related_metrics = [m for m in related_metrics if m in sorted_df.columns and m != selected_metric][:4]
-
-            display_cols = ['playerName', 'teamName', 'primaryPosition', 'totalMinutes', selected_metric] + related_metrics
-            display_cols = [c for c in display_cols if c in sorted_df.columns]
-
-            display_df = sorted_df[display_cols].copy()
-            display_df = display_df.rename(columns={
-                'playerName': 'Player',
-                'teamName': 'Team',
-                'primaryPosition': 'Position',
-                'totalMinutes': 'Minutes'
-            })
-            display_df['Minutes'] = display_df['Minutes'].astype(int)
-
-            if analysis_pos_played_active and 'posMinutes' in sorted_df.columns:
-                display_df.insert(display_df.columns.get_loc('Minutes') + 1, 'Pos. Minutes', sorted_df['posMinutes'].astype(int).values)
-
-            if not analysis_player_details_df.empty and 'birthDate' in analysis_player_details_df.columns:
-                age_col_pos = display_df.columns.get_loc('Pos. Minutes') + 1 if 'Pos. Minutes' in display_df.columns else display_df.columns.get_loc('Minutes') + 1
-                display_df.insert(age_col_pos, 'Age', sorted_df['playerId'].map(
-                    lambda pid: _calculate_age(analysis_player_details_df.loc[pid, 'birthDate']) if pid in analysis_player_details_df.index else None
-                ).apply(lambda x: round(x, 1) if isinstance(x, float) else None))
-
-            # Individual Metric no longer applies the cross-tier / age
-            # toggles — those are now scoped to overall ratings only.
-            for col in display_df.columns:
-                if pd.api.types.is_numeric_dtype(display_df[col]) and col not in ['Minutes', 'Pos. Minutes', 'Age']:
-                    decimals = 3 if col in THOUSANDTHS_METRICS else 2
-                    display_df[col] = display_df[col].round(decimals)
-
-            display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
-            player_ids = sorted_df['playerId'].tolist()
-
-            st.caption("Click on a row to view that player's profile")
-            selection = st.dataframe(
-                display_df.set_index('Rank'),
-                use_container_width=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="individual_metric_table"
-            )
-            _handle_row_selection(selection, player_ids)
-
-        else:
-            # --- Template-specific view ---
-            selected_template = _selected_view
-            st.subheader(f"Top {selected_template}s by Rating")
-
-            display_df, player_ids = _build_template_table(selected_template, filtered_df, num_players, compact=False)
-
-            if display_df is not None and not display_df.empty:
-                if show_cvi:
-                    st.caption(
-                        "🟩 CVI = composite scout-facing value · 'Traj vs age' = "
-                        "performance vs same-position-same-age median "
-                        "(e.g. '+25' = 25pt ahead of age peer median). "
-                        "Currently uses placeholder parameters; will be calibrated "
-                        "against scraped market values."
-                        + (" Sort is by CVI." if sort_by_cvi else "")
-                    )
-                st.caption("Click on a row to view that player's profile")
-                selection = st.dataframe(
-                    display_df.set_index('Rank'),
-                    use_container_width=True,
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key="template_detail_table"
-                )
-                _handle_row_selection(selection, player_ids)
-
-                # Display weight reference table below
-                template_weights = WEIGHTS.get(selected_template, {})
-                weighted_items = sorted(
-                    [(m, w) for m, w in template_weights.items() if w > 0],
-                    key=lambda x: x[1], reverse=True
-                )
-                if weighted_items:
-                    with st.expander("Template Weights", expanded=False):
-                        weight_df = pd.DataFrame(weighted_items, columns=['Metric', 'Weight'])
-                        weight_df['Weight'] = weight_df['Weight'].apply(lambda w: f"{w:.1f}")
-                        st.dataframe(weight_df, use_container_width=True, hide_index=True, column_config=auto_column_config(weight_df))
-            else:
-                st.warning(f"No players found for {selected_template} template with current filters.")
-
-        # ===== Distribution violins (appended below either Overview or
-        # template table). Skips Individual Metric because that view is
-        # already a per-metric leaderboard. =====
-        if _selected_view not in ("Individual Metric", "Peer Scatter"):
-            st.markdown("---")
-
-            from plotly.subplots import make_subplots as _make_subplots
-
-            def _pos_to_group_full(pos):
-                """primaryPosition → top-level position-group label
-                (matches _TEMPLATE_GROUPS keys)."""
-                if pos is None or pd.isna(pos):
-                    return None
-                p = str(pos)
-                if p == 'GK': return 'Goalkeepers'
-                if p in ('CB','LCB','RCB','LCB3','RCB3'): return 'Center Backs'
-                if p in ('LB','RB','LB5','RB5','LWB','RWB'): return 'Full Backs'
-                if p in ('CMF','LCMF','RCMF','LCMF3','RCMF3',
-                         'DMF','LDMF','RDMF'): return 'Central Midfielders'
-                if p in ('AMF','LAMF','RAMF','LMF','RMF',
-                         'LW','RW','LWF','RWF'): return 'Attacking Mids / Wingers'
-                if p in ('CF','SS'): return 'Forwards'
-                return None
-
-            def _best_fit_in_group(row, group_roles):
-                """Best Role_Score among the templates in this group."""
-                vals = []
-                for r in group_roles:
-                    col = f"{r}_Score"
-                    if col in row.index:
-                        v = row.get(col)
-                        if v is not None and not pd.isna(v):
-                            vals.append(float(v))
-                return max(vals) if vals else None
-
-            def _add_strip(fig, row_idx, col_idx, values, names, teams,
-                            metric_label, y_lo, y_hi, scaled_w, sid):
-                """Append a violin + jittered dots to the (row, col)
-                subplot. Hover on a dot shows player + team + value."""
-                if len(values) < 3:
-                    return
-                # 1) Violin shape
-                fig.add_trace(go.Violin(
-                    x=np.zeros(len(values)),
-                    y=values,
-                    points=False,
-                    box_visible=False,
-                    meanline_visible=False,
-                    side='both',
-                    width=scaled_w,
-                    line_color='rgba(80,80,80,0.55)',
-                    fillcolor='rgba(140,140,140,0.18)',
-                    showlegend=False,
-                    hoverinfo='skip',
-                    name='',
-                ), row=row_idx, col=col_idx)
-                # 2) Colored jittered dots with rich hover text
-                _rng = np.random.default_rng(seed=int(sid) & 0xFFFFFFFF)
-                _half = max(0.06, scaled_w / 2 - 0.04)
-                _jit = _rng.uniform(-_half, _half, size=len(values))
-                _custom = np.array(list(zip(names, teams)), dtype=object)
-                fig.add_trace(go.Scatter(
-                    x=_jit, y=values,
-                    mode='markers',
-                    marker=dict(
-                        size=6,
-                        color=values,
-                        colorscale='RdYlGn',
-                        cmin=y_lo, cmax=y_hi,
-                        opacity=0.7,
-                        line=dict(width=0),
-                        showscale=False,
-                    ),
-                    customdata=_custom,
-                    hovertemplate=(
-                        "<b>%{customdata[0]}</b><br>"
-                        "Team: %{customdata[1]}<br>"
-                        f"{metric_label}: " + "%{y:.3f}<extra></extra>"
-                    ),
-                    showlegend=False,
-                    name='',
-                ), row=row_idx, col=col_idx)
-                fig.update_xaxes(
-                    type='linear', showticklabels=False, zeroline=False,
-                    range=[-0.5, 0.5], row=row_idx, col=col_idx,
-                )
-
-            def _build_panel_for_group(group_name, source_df, metric_key):
-                """Return (values, names, teams) for the panel at this
-                position group. metric_key ∈ {'action_v', 'best_fit',
-                'acp_rating', 'acp_proj'}."""
-                grp_pop = source_df[
-                    source_df['primaryPosition'].map(_pos_to_group_full)
-                    == group_name
-                ]
-                if grp_pop.empty:
-                    return np.array([]), [], []
-                if metric_key in ('action_v', 'acp_rating', 'acp_proj'):
-                    if metric_key == 'action_v':
-                        col = next((c for c in ('Total Value', 'total_v_per_90')
-                                      if c in grp_pop.columns), None)
-                    elif metric_key == 'acp_rating':
-                        col = 'ACP Rating' if 'ACP Rating' in grp_pop.columns else None
-                    else:
-                        col = ('ACP Projection (abs)'
-                               if 'ACP Projection (abs)' in grp_pop.columns else None)
-                    if col is None:
-                        return np.array([]), [], []
-                    sub = grp_pop[grp_pop[col].notna()]
-                    return (sub[col].astype(float).values,
-                             sub.get('playerName', sub.index).astype(str).tolist(),
-                             sub.get('teamName', pd.Series([''] * len(sub))).fillna('').astype(str).tolist())
-                # best_fit
-                group_roles = _TEMPLATE_GROUPS.get(group_name, [])
-                if not group_roles:
-                    return np.array([]), [], []
-                _scores = grp_pop.apply(_best_fit_in_group, axis=1,
-                                          args=(group_roles,))
-                mask = _scores.notna()
-                vals = _scores[mask].astype(float).values
-                names = grp_pop.loc[mask].get('playerName',
-                            grp_pop.loc[mask].index).astype(str).tolist()
-                teams = grp_pop.loc[mask].get(
-                    'teamName', pd.Series([''] * mask.sum())
-                ).fillna('').astype(str).tolist()
-                return vals, names, teams
-
-            # --- View-dependent rendering ---
-            if _selected_view == "Overview":
-                st.subheader("Distribution by Position Group")
-                _viz_metric = st.radio(
-                    "Distribution metric:",
-                    ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],
-                    horizontal=True,
-                    key="player_analysis_viz_metric_overview",
-                )
-                _metric_key = {'Action V/90': 'action_v',
-                                'Best-fit Rating': 'best_fit',
-                                'ACP Rating': 'acp_rating',
-                                'ACP Projection': 'acp_proj'}[_viz_metric]
-
-                _groups = ['Goalkeepers', 'Center Backs', 'Full Backs',
-                            'Central Midfielders',
-                            'Attacking Mids / Wingers', 'Forwards']
-                _panels = []
-                for g in _groups:
-                    vals, names, teams = _build_panel_for_group(
-                        g, filtered_df, _metric_key
-                    )
-                    if len(vals) >= 5:
-                        _panels.append({
-                            'label': f"{g}<br><span style='font-size:0.85em;color:#777'>n={len(vals)}</span>",
-                            'group': g,
-                            'values': vals,
-                            'names': names,
-                            'teams': teams,
-                        })
-
-                if not _panels:
-                    st.caption(
-                        f"No {_viz_metric} data available for any position "
-                        f"group in the current selection."
-                    )
-                else:
-                    _pop_concat = np.concatenate([p['values'] for p in _panels])
-                    _y_lo = float(np.nanmin(_pop_concat))
-                    _y_hi = float(np.nanmax(_pop_concat))
-                    _y_pad = 0.05 * (_y_hi - _y_lo or 1.0)
-                    _max_n = max(len(p['values']) for p in _panels) or 1
-                    _fig = _make_subplots(
-                        rows=1, cols=len(_panels),
-                        shared_yaxes=True,
-                        subplot_titles=[p['label'] for p in _panels],
-                        horizontal_spacing=0.01,
-                    )
-                    for _i, _p in enumerate(_panels, start=1):
-                        _scaled_w = 0.85 * (len(_p['values']) / _max_n) ** 0.5
-                        # Use a stable per-group seed for jitter (so layout
-                        # doesn't dance on rerun).
-                        _seed = abs(hash(_p['group'])) & 0xFFFFFFFF
-                        _add_strip(
-                            _fig, 1, _i,
-                            _p['values'], _p['names'], _p['teams'],
-                            _viz_metric, _y_lo, _y_hi, _scaled_w, _seed,
-                        )
-                    _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
-                    _fig.update_layout(
-                        title=(f"{_viz_metric} distribution by position "
-                                f"group · ≥{min_minutes_filter:.0f} min"),
-                        height=460,
-                        margin=dict(t=70, b=30, l=40, r=20),
-                        showlegend=False,
-                    )
-                    for _ann in _fig['layout']['annotations']:
-                        _ann['font'] = dict(size=11)
-                    st.plotly_chart(_fig, use_container_width=True)
-
-            else:
-                # Template view — one panel per season for that template's
-                # position group. We compute role scores for each season
-                # (cached), filter to the template's eligible positions,
-                # and use THAT template's Role_Score as the y-value.
-                _template = _selected_view
-                _eligible_positions = POSITION_GROUPS.get(_template, [])
-                if not _eligible_positions:
-                    st.caption(f"No position list defined for template '{_template}'.")
-                else:
-                    st.subheader(f"{_template} distribution across seasons")
-                    _viz_metric = st.radio(
-                        "Distribution metric:",
-                        ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],
-                        horizontal=True,
-                        key="player_analysis_viz_metric_template",
-                    )
-
-                    # Iterate over every season we have data for, sorted
-                    # chronologically by parsed start year.
-                    def _season_start_year(label):
-                        try: return int(str(label).split('/')[0])
-                        except (ValueError, AttributeError, IndexError): return None
-                    _season_panels = []
-                    _all_sids = sorted(
-                        [int(s) for s in SEASON_ID_MAP.keys()],
-                        key=lambda s: (
-                            _season_start_year(SEASON_ID_MAP.get(s, '')) or 0,
-                            competition_for_season(s) or 0,
-                            s,
-                        ),
-                    )
-
-                    with st.spinner(f"Computing {_template} distributions across "
-                                     f"{len(_all_sids)} seasons…"):
-                        for _sid in _all_sids:
-                            _evs = get_season_events(raw_events_df, [_sid])
-                            _mins = player_minutes_data.get(_sid)
-                            if _evs.empty or _mins is None or _mins.empty:
-                                continue
-                            if _viz_metric == 'Action V/90':
-                                # GPA path: filter by season + position
-                                if 'load_gpa_values' in globals():
-                                    _gpa_all = load_gpa_values()
-                                else:
-                                    _gpa_all = None
-                                if _gpa_all is None or _gpa_all.empty:
-                                    continue
-                                _val_col = next((c for c in ('Total Value',
-                                                  'total_v_per_90')
-                                                  if c in _gpa_all.columns), None)
-                                if _val_col is None:
-                                    continue
-                                _sub = _gpa_all[
-                                    (_gpa_all['seasonId'] == _sid)
-                                    & (_gpa_all.get('mins_played', 0)
-                                       >= min_minutes_filter)
-                                    & (_gpa_all.get('position', '').astype(str)
-                                       .isin(_eligible_positions))
-                                ]
-                                _sub = _sub[_sub[_val_col].notna()]
-                                vals = _sub[_val_col].astype(float).values
-                                names = _sub.get('name', pd.Series([''] * len(_sub))).astype(str).tolist()
-                                # GPA doesn't carry teamName — leave blank
-                                teams = [''] * len(_sub)
-                            elif _viz_metric in ('ACP Rating', 'ACP Projection'):
-                                # Engine path: per-season engine values,
-                                # position-filtered via the GPA table
-                                # (engine rows don't carry raw position
-                                # codes). Projections exist only for the
-                                # current + lapsed seasons, so older
-                                # panels skip naturally (<5 rows).
-                                _eng_all, _ = load_player_engine()
-                                _gpa_all = (load_gpa_values()
-                                             if 'load_gpa_values' in globals() else None)
-                                if _eng_all.empty or _gpa_all is None or _gpa_all.empty:
-                                    continue
-                                _ecol = ('acp_rating' if _viz_metric == 'ACP Rating'
-                                          else 'projection_abs')
-                                _sub = _gpa_all[
-                                    (_gpa_all['seasonId'] == _sid)
-                                    & (_gpa_all.get('mins_played', 0)
-                                       >= min_minutes_filter)
-                                    & (_gpa_all.get('position', '').astype(str)
-                                       .isin(_eligible_positions))
-                                ][['playerId', 'name']].merge(
-                                    _eng_all[_eng_all['seasonId'] == _sid][
-                                        ['playerId', _ecol]],
-                                    on='playerId', how='inner')
-                                _sub = _sub[_sub[_ecol].notna()]
-                                vals = _sub[_ecol].astype(float).values
-                                names = _sub['name'].astype(str).tolist()
-                                teams = [''] * len(_sub)
-                            else:
-                                # Best-fit (this template's specific Role_Score)
-                                _stats = calculate_all_player_stats(
-                                    _evs, _mins, season_id=_sid
-                                )
-                                if _stats.empty:
-                                    continue
-                                _scored = calculate_player_percentiles_and_scores(
-                                    _stats, POSITION_GROUPS, WEIGHTS, INVERT_METRICS,
-                                    min_minutes=int(min_minutes_filter),
-                                    season_id=_sid,
-                                )
-                                if _scored.empty:
-                                    continue
-                                _score_col = f"{_template}_Score"
-                                if _score_col not in _scored.columns:
-                                    continue
-                                _sub = _scored[
-                                    _scored['primaryPosition'].isin(_eligible_positions)
-                                    & _scored[_score_col].notna()
-                                    & (_scored.get('totalMinutes', 0)
-                                       >= min_minutes_filter)
-                                ]
-                                vals = _sub[_score_col].astype(float).values
-                                names = _sub.get('playerName',
-                                            pd.Series([''] * len(_sub))).astype(str).tolist()
-                                teams = _sub.get('teamName',
-                                            pd.Series([''] * len(_sub))).fillna('').astype(str).tolist()
-
-                            if len(vals) < 5:
-                                continue
-                            _comp = competition_for_season(_sid)
-                            _comp_short = ('L3' if _comp == 43324
-                                            else 'CP' if _comp == 702
-                                            else (COMPETITIONS.get(_comp, {}).get('name', '') or '')[:6])
-                            _season_panels.append({
-                                'sid': _sid,
-                                'label': (f"{SEASON_ID_MAP.get(_sid, str(_sid))}<br>"
-                                           f"<span style='font-size:0.85em;color:#777'>"
-                                           f"{_comp_short} · n={len(vals)}</span>"),
-                                'values': vals,
-                                'names': names,
-                                'teams': teams,
-                            })
-
-                    if not _season_panels:
-                        st.caption(
-                            f"No {_viz_metric} data available across seasons "
-                            f"for the {_template} template."
-                        )
-                    else:
-                        _pop_concat = np.concatenate([p['values'] for p in _season_panels])
-                        _y_lo = float(np.nanmin(_pop_concat))
-                        _y_hi = float(np.nanmax(_pop_concat))
-                        _y_pad = 0.05 * (_y_hi - _y_lo or 1.0)
-                        _max_n = max(len(p['values']) for p in _season_panels) or 1
-                        _fig = _make_subplots(
-                            rows=1, cols=len(_season_panels),
-                            shared_yaxes=True,
-                            subplot_titles=[p['label'] for p in _season_panels],
-                            horizontal_spacing=0.01,
-                        )
-                        for _i, _p in enumerate(_season_panels, start=1):
-                            _scaled_w = 0.85 * (len(_p['values']) / _max_n) ** 0.5
-                            _add_strip(
-                                _fig, 1, _i,
-                                _p['values'], _p['names'], _p['teams'],
-                                _viz_metric, _y_lo, _y_hi, _scaled_w, _p['sid'],
-                            )
-                        _fig.update_yaxes(range=[_y_lo - _y_pad, _y_hi + _y_pad])
-                        _fig.update_layout(
-                            title=(f"{_template} · {_viz_metric} distribution "
-                                    f"by season · ≥{min_minutes_filter:.0f} min"),
-                            height=460,
-                            margin=dict(t=70, b=30, l=40, r=20),
-                            showlegend=False,
-                        )
-                        for _ann in _fig['layout']['annotations']:
-                            _ann['font'] = dict(size=11)
-                        st.plotly_chart(_fig, use_container_width=True)
-
-        # Always keep the expander open on the Player Analysis page so the
-        # Cached ZIPs section, debug info, and any errors are unmissable.
-        _bulk_expander_open = True
-        with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
-            _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
-            _bulk_groups = st.multiselect(
-                "Position groups:",
-                _bulk_groups_default,
-                default=_bulk_groups_default,
-                key="bulk_export_groups",
-            )
-            _bulk_mode_label = st.radio(
-                "Radar style:",
-                ["Percentile", "Raw (mean ± 2σ)"],
-                key="bulk_export_mode",
-            )
-            _bulk_min_mins = st.number_input(
-                "Min minutes:",
-                min_value=0,
-                max_value=int(max_minutes) if max_minutes else 5000,
-                value=int(min_minutes_filter),
-                step=45,
-                key="bulk_export_min_mins",
-                help="Default uses the Minimum Minutes Played slider above."
-            )
-            _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
-
-            if _bulk_generate:
-                # Resolve the multi-select group labels to raw position codes.
-                _bulk_raw_codes = set()
-                for _grp in _bulk_groups:
-                    for _role in _TEMPLATE_GROUPS.get(_grp, []):
-                        if _role in POSITION_GROUPS:
-                            _bulk_raw_codes.update(POSITION_GROUPS[_role])
-
-                _export_df = player_stats_with_scores_df[
-                    (pd.to_numeric(player_stats_with_scores_df['totalMinutes'], errors='coerce').fillna(0) >= _bulk_min_mins) &
-                    (player_stats_with_scores_df['primaryPosition'].isin(_bulk_raw_codes))
-                ].copy()
-
-                if _export_df.empty:
-                    st.warning("No players match the selection.")
-                else:
-                    _n_total = len(_export_df)
-                    _progress = st.progress(0.0, text=f"Rendering 0/{_n_total} radars…")
-
-                    def _on_progress(i, n, name, resumed=0):
-                        if resumed:
-                            _progress.progress(
-                                i / max(n, 1),
-                                text=f"Rendering {i}/{n} (resumed {resumed}): {name}"
-                            )
-                        else:
-                            _progress.progress(
-                                i / max(n, 1),
-                                text=f"Rendering {i}/{n}: {name}"
-                            )
-
-                    _radar_mode = 'raw' if _bulk_mode_label.startswith("Raw") else 'percentile'
-                    _season_lbl = SEASON_ID_MAP.get(selected_season_id, 'All Seasons') if selected_season_id else 'All Seasons'
-
-                    # Write each PNG into a per-render directory; the
-                    # download ZIP is built lazily at click time. Sentinel
-                    # meta.pkl is written first so even crashed runs
-                    # appear in the Cached list.
-                    _cache_key = _bulk_cache_key(_season_lbl, _bulk_groups, _radar_mode, _bulk_min_mins)
-                    _render_dir = _bulk_render_dir(_cache_key)
-                    _meta_path = _bulk_meta_path(_cache_key)
-                    try:
-                        _os.makedirs(_render_dir, exist_ok=True)
-                        with open(_meta_path, 'wb') as _f:
-                            _pickle.dump({
-                                'status': 'running',
-                                'rendered': 0,
-                                'skipped': [],
-                                'label': f"{_season_lbl}__{_radar_mode}",
-                                'season': _season_lbl,
-                                'mode': _radar_mode,
-                                'groups': list(_bulk_groups),
-                                'min_mins': int(_bulk_min_mins),
-                                'started_at': _time.time(),
-                            }, _f)
-                    except Exception as _sentinel_exc:
-                        st.warning(f"⚠️ Could not write sentinel meta: "
-                                   f"{type(_sentinel_exc).__name__}: {_sentinel_exc}")
-
-                    try:
-                        _result_path, _rendered, _skipped, _resumed = bulk_export_radars(
-                            _export_df,
-                            player_stats_with_scores_df,
-                            radar_mode=_radar_mode,
-                            season_label=_season_lbl,
-                            progress_cb=_on_progress,
-                            output_path=_render_dir,
-                        )
-                        try:
-                            with open(_meta_path, 'wb') as _f:
-                                _pickle.dump({
-                                    'status': 'complete',
-                                    'rendered': _rendered,
-                                    'skipped': _skipped,
-                                    'resumed': _resumed,
-                                    'label': f"{_season_lbl}__{_radar_mode}",
-                                    'season': _season_lbl,
-                                    'mode': _radar_mode,
-                                    'groups': list(_bulk_groups),
-                                    'min_mins': int(_bulk_min_mins),
-                                }, _f)
-                        except Exception as _meta_exc:
-                            st.warning(f"⚠️ Render finished but completion-meta "
-                                       f"write failed: {type(_meta_exc).__name__}: "
-                                       f"{_meta_exc}")
-                        _progress.empty()
-                        _new_count = _rendered - _resumed
-                        _resume_note = (f" (resumed {_resumed}, rendered {_new_count} new)"
-                                         if _resumed else "")
-                        st.success(
-                            f"Rendered {_rendered} radars to disk{_resume_note}"
-                            + (f" · {len(_skipped)} skipped" if _skipped else "")
-                            + ". Use the Prepare ZIP button below."
-                        )
-                    except Exception as _gen_exc:
-                        _progress.empty()
-                        import traceback as _tb
-                        st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
-                        with st.popover("Traceback (for debugging)", use_container_width=True):
-                            st.code(_tb.format_exc())
-
-            # --- Cached Renders section — always shown. ---
-            st.markdown("---")
-            _cached = _list_cached_renders()
-            if _BULK_CACHE_ERROR:
-                st.error(f"⚠️ Cache directory unusable: {_BULK_CACHE_ERROR}. "
-                         f"Generated renders will not survive the page render. "
-                         f"This usually means /tmp/ is not writable in this runtime.")
-            if not _cached:
-                st.caption("💾 No cached renders yet. Run Generate ZIP to create one.")
-            else:
-                st.caption(f"💾 Cached renders ({len(_cached)})")
-            _now = _time.time()
-            for _idx, _entry in enumerate(_cached):
-                _meta = _entry['meta']
-                _rd = _entry['path']
-                _age = _now - _entry['mtime']
-                _age_str = (f"{int(_age)}s ago" if _age < 60 else
-                            f"{int(_age/60)} min ago" if _age < 3600 else
-                            f"{int(_age/3600)} h ago" if _age < 86400 else
-                            f"{int(_age/86400)} d ago")
-                _size_mb = _entry['size'] / (1024 * 1024)
-                _status = _meta.get('status', 'complete')
-                _png_count = _entry['png_count']
-                _season = _meta.get('season', '?')
-                _mode = _meta.get('mode', '?')
-                _mm = _meta.get('min_mins', '?')
-                _ngroups = len(_meta.get('groups', []) or [])
-                _badge = ""
-                if _status == 'running':
-                    _badge = " · 🟡 interrupted (partial download still works)"
-                elif _status == 'incomplete':
-                    _badge = " · 🟠 metadata missing (download still works)"
-                st.markdown(
-                    f"**{_season}** · {_mode} · {_ngroups} groups · ≥{_mm} min{_badge}  \n"
-                    f"<span style='color:#888;font-size:0.85em'>{_png_count} radars · "
-                    f"{_size_mb:.1f} MB on disk · {_age_str}</span>",
-                    unsafe_allow_html=True,
-                )
-                # Build ZIP lazily from the directory contents. This is
-                # the moment we pay the in-memory cost for the ZIP, not
-                # during render. Even if the render was interrupted,
-                # every PNG that made it to disk gets bundled cleanly.
-                _zip_btn_key = f"bulk_export_dl_{_idx}"
-                _prep_key = f"bulk_export_prep_{_idx}"
-                _zip_bytes_key = f"bulk_export_bytes_{_idx}"
-                _zip_fp_key = f"bulk_export_fp_{_idx}"
-                # Fingerprint the on-disk state so a previously-built
-                # ZIP gets invalidated when the directory has grown
-                # (e.g. after a resume run). Without this the download
-                # button would happily serve stale bytes.
-                _current_fp = f"{_png_count}_{int(_entry['size'])}"
-                _cached_fp = st.session_state.get(_zip_fp_key)
-                if (_zip_bytes_key in st.session_state
-                        and _cached_fp == _current_fp):
-                    _cached_size_mb = len(st.session_state[_zip_bytes_key]) / (1024*1024)
-                    st.download_button(
-                        label=f"⬇️ Download ({_cached_size_mb:.0f} MB)",
-                        data=st.session_state[_zip_bytes_key],
-                        file_name=f"radars__{_meta.get('label', 'export')}.zip",
-                        mime="application/zip",
-                        key=_zip_btn_key,
-                        use_container_width=True,
-                    )
-                else:
-                    # If we have stale cached bytes, surface that so the
-                    # user understands why the prepare button is back.
-                    if _zip_bytes_key in st.session_state and _cached_fp:
-                        try:
-                            _stale_count = int(_cached_fp.split('_')[0])
-                            st.caption(f"⚠️ Cached ZIP is stale "
-                                       f"({_stale_count} files vs {_png_count} on disk). "
-                                       f"Re-prepare to refresh.")
-                        except Exception:
-                            pass
-                    if st.button(f"📦 Prepare ZIP ({_png_count} files, ~{_size_mb:.0f} MB)",
-                                  key=_prep_key, use_container_width=True):
-                        try:
-                            with st.spinner("Building ZIP from rendered PNGs…"):
-                                st.session_state[_zip_bytes_key] = _build_zip_from_dir(_rd)
-                                st.session_state[_zip_fp_key] = _current_fp
-                            st.rerun()
-                        except Exception as _zip_exc:
-                            st.error(f"ZIP build failed: "
-                                     f"{type(_zip_exc).__name__}: {_zip_exc}")
-                if _meta.get('skipped'):
-                    _sk = _meta['skipped']
-                    with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
-                        for _name, _reason in _sk[:50]:
-                            st.caption(f"• **{_name}** — {_reason}")
-                        if len(_sk) > 50:
-                            st.caption(f"…and {len(_sk) - 50} more")
-
-            # --- Diagnostics: surfaces the actual on-disk state ---
-            # popover instead of expander — Streamlit forbids nested expanders.
-            with st.popover("🔍 Diagnostics", use_container_width=True):
-                st.caption(f"Cache dir: `{_BULK_CACHE_DIR}`")
-                if _BULK_CACHE_ERROR:
-                    st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
-                try:
-                    _entries = sorted(_os.listdir(_BULK_CACHE_DIR))
-                    if not _entries:
-                        st.caption("Directory is empty.")
-                    else:
-                        _rows = []
-                        for _en in _entries:
-                            _ep = _os.path.join(_BULK_CACHE_DIR, _en)
-                            try:
-                                if _os.path.isdir(_ep):
-                                    _png = [f for f in _os.listdir(_ep)
-                                             if f.endswith('.png')]
-                                    _sz = sum(_os.path.getsize(_os.path.join(_ep, f))
-                                               for f in _os.listdir(_ep))
-                                    _mt = _os.path.getmtime(_ep)
-                                    _rows.append({
-                                        'entry': _en + '/',
-                                        'type': 'dir',
-                                        'pngs': len(_png),
-                                        'size_MB': f"{_sz/(1024*1024):.2f}",
-                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
-                                                                _time.localtime(_mt)),
-                                    })
-                                else:
-                                    _sz = _os.path.getsize(_ep)
-                                    _mt = _os.path.getmtime(_ep)
-                                    _rows.append({
-                                        'entry': _en,
-                                        'type': 'file',
-                                        'pngs': 0,
-                                        'size_MB': f"{_sz/(1024*1024):.2f}",
-                                        'mtime': _time.strftime('%Y-%m-%d %H:%M:%S',
-                                                                _time.localtime(_mt)),
-                                    })
-                            except Exception:
-                                _rows.append({'entry': _en, 'type': '?',
-                                              'pngs': 0, 'size_MB': '?', 'mtime': '?'})
-                        st.dataframe(pd.DataFrame(_rows),
-                                     use_container_width=True, hide_index=True)
-                except Exception as _diag_exc:
-                    st.error(f"Cannot list cache dir: "
-                             f"{type(_diag_exc).__name__}: {_diag_exc}")
-                # Disk usage info — useful if /tmp/ is filling up
-                try:
-                    import shutil as _shutil
-                    _du = _shutil.disk_usage(_BULK_CACHE_DIR if _os.path.exists(_BULK_CACHE_DIR) else '/tmp')
-                    st.caption(
-                        f"`/tmp/` disk: total {_du.total/(1024**3):.1f} GB · "
-                        f"used {_du.used/(1024**3):.1f} GB · "
-                        f"free {_du.free/(1024**3):.1f} GB"
-                    )
-                except Exception as _du_exc:
-                    st.caption(f"disk_usage error: {_du_exc}")
-                # Process RAM, if psutil is available — early-warning for OOM
-                try:
-                    import psutil as _psutil
-                    _proc = _psutil.Process()
-                    _rss = _proc.memory_info().rss / (1024**3)
-                    _vmem = _psutil.virtual_memory()
-                    st.caption(
-                        f"Process RSS: {_rss:.2f} GB · "
-                        f"system RAM: {_vmem.used/(1024**3):.1f} GB used / "
-                        f"{_vmem.total/(1024**3):.1f} GB total "
-                        f"({_vmem.percent:.0f}%)"
-                    )
-                except Exception:
-                    pass
 
 
     elif analysis_type == 'Match Predictor':
-        selected_comp_ids = league_selector("match_predictor")
-        st.markdown("Predict the outcome of upcoming matches based on team performance data with season-specific priors.")
+        views.match_predictor.render()
 
-        # Load prediction model
-        @st.cache_resource
-        def load_prediction_model():
-            try:
-                with open('match_predictor_model.pkl', 'rb') as f:
-                    return pickle.load(f)
-            except FileNotFoundError:
-                return None
-
-        # Helper functions for decay priors
-        def get_decay_weight(matches_played, decay_rate=0.15):
-            """Exponential decay weight for prior season stats"""
-            return np.exp(-decay_rate * matches_played)
-
-        def get_blended_stat(current_value, current_matches, prior_per_game, decay_rate=0.15, default_prior=None):
-            """Blend current season stat with decaying prior"""
-            if current_matches == 0:
-                return prior_per_game if prior_per_game is not None else (default_prior if default_prior else 0.0)
-            current_per_game = current_value / current_matches
-            if prior_per_game is None:
-                return current_per_game
-            prior_weight = get_decay_weight(current_matches, decay_rate)
-            current_weight = 1 - prior_weight
-            return current_weight * current_per_game + prior_weight * prior_per_game
-
-        def calculate_prediction_features(team_stats, prior_stats, league_avg, is_home):
-            """Calculate features for a team with decaying priors"""
-            curr = team_stats
-            m = curr['matches']
-
-            # Get prior per-game stats
-            if prior_stats and prior_stats.get('matches', 0) > 0:
-                pm = prior_stats['matches']
-                prior_ppg = prior_stats['points'] / pm
-                prior_gpg = prior_stats['goals_for'] / pm
-                prior_gapg = prior_stats['goals_against'] / pm
-                prior_xgpg = prior_stats['xG_for'] / pm if prior_stats['xG_for'] > 0 else 1.0
-                prior_xgapg = prior_stats['xG_against'] / pm if prior_stats['xG_against'] > 0 else 1.0
-                prior_winrate = prior_stats['wins'] / pm
-                prior_csrate = prior_stats['clean_sheets'] / pm
-                prior_shot_conv = prior_stats['goals_for'] / max(prior_stats['shots_for'], 1)
-                prior_sot_rate = prior_stats['sot_for'] / max(prior_stats['shots_for'], 1)
-                if is_home and prior_stats['home_matches'] > 0:
-                    prior_venue_wr = prior_stats['home_wins'] / prior_stats['home_matches']
-                    prior_venue_gpg = prior_stats['home_goals'] / prior_stats['home_matches']
-                elif not is_home and prior_stats['away_matches'] > 0:
-                    prior_venue_wr = prior_stats['away_wins'] / prior_stats['away_matches']
-                    prior_venue_gpg = prior_stats['away_goals'] / prior_stats['away_matches']
-                else:
-                    prior_venue_wr = prior_winrate
-                    prior_venue_gpg = prior_gpg
-            else:
-                # Promoted team: use league average (slightly below)
-                prior_ppg = league_avg.get('ppg', 1.0) * 0.85
-                prior_gpg = league_avg.get('gpg', 1.0) * 0.85
-                prior_gapg = league_avg.get('gapg', 1.0) * 1.15
-                prior_xgpg = league_avg.get('xgpg', 1.0) * 0.85
-                prior_xgapg = league_avg.get('xgapg', 1.0) * 1.15
-                prior_winrate = 0.28
-                prior_csrate = league_avg.get('csrate', 0.25) * 0.85
-                prior_shot_conv = league_avg.get('shot_conv', 0.1) * 0.9
-                prior_sot_rate = league_avg.get('sot_rate', 0.35) * 0.95
-                prior_venue_wr = 0.28
-                prior_venue_gpg = prior_gpg
-
-            decay_rate = 0.15
-            # Blend current and prior stats
-            ppg = get_blended_stat(curr['points'], m, prior_ppg, decay_rate)
-            gpg = get_blended_stat(curr['goals_for'], m, prior_gpg, decay_rate)
-            gapg = get_blended_stat(curr['goals_against'], m, prior_gapg, decay_rate)
-            xgpg = get_blended_stat(curr['xG_for'], m, prior_xgpg, decay_rate)
-            xgapg = get_blended_stat(curr['xG_against'], m, prior_xgapg, decay_rate)
-            win_rate = get_blended_stat(curr['wins'], m, prior_winrate, decay_rate)
-            cs_rate = get_blended_stat(curr['clean_sheets'], m, prior_csrate, decay_rate)
-
-            curr_shot_conv = curr['goals_for'] / max(curr['shots_for'], 1) if m > 0 else 0
-            curr_sot_rate = curr['sot_for'] / max(curr['shots_for'], 1) if m > 0 else 0
-            shot_conv = curr_shot_conv if m > 3 else prior_shot_conv
-            sot_rate = curr_sot_rate if m > 3 else prior_sot_rate
-
-            venue_key = 'home' if is_home else 'away'
-            venue_wr = get_blended_stat(
-                curr[f'{venue_key}_wins'], curr[f'{venue_key}_matches'],
-                prior_venue_wr, decay_rate
-            )
-            venue_gpg = get_blended_stat(
-                curr[f'{venue_key}_goals'], curr[f'{venue_key}_matches'],
-                prior_venue_gpg, decay_rate
-            )
-
-            gd = gpg - gapg
-            xg_diff = xgpg - xgapg
-            form = np.mean(curr['last_5_results'][-5:]) if curr['last_5_results'] else 1.0
-            xg_form = np.mean(curr['last_5_xG'][-5:]) if curr['last_5_xG'] else prior_xgpg
-
-            return {
-                'ppg': ppg, 'gpg': gpg, 'gapg': gapg, 'xgpg': xgpg, 'xgapg': xgapg,
-                'win_rate': win_rate, 'cs_rate': cs_rate, 'shot_conv': shot_conv,
-                'sot_rate': sot_rate, 'gd': gd, 'xg_diff': xg_diff, 'form': form,
-                'xg_form': xg_form, 'venue_wr': venue_wr, 'venue_gpg': venue_gpg
-            }
-
-        model_data = load_prediction_model()
-
-        if model_data is None:
-            st.error("Prediction model not found. Please ensure 'match_predictor_model.pkl' exists.")
-        else:
-            model = model_data['model']
-            scaler = model_data['scaler']
-            team_stats = model_data['team_stats']
-            prior_season_stats = model_data.get('prior_season_stats', {})
-            league_avg_stats = model_data.get('league_avg_stats', {'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0, 'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35})
-            team_ratings = model_data.get('team_ratings', {})
-
-            # Display Team Strength Ratings (Multi-Season with SOS)
-            with st.expander("Team Strength Ratings", expanded=False):
-                # Build season options filtered to selected league(s)
-                league_season_map = {}
-                for cid in selected_comp_ids:
-                    if cid in COMPETITIONS:
-                        league_season_map.update(COMPETITIONS[cid]["seasons"])
-                league_season_labels = list(league_season_map.values())
-                # Default to current season for selected league
-                default_label = league_season_map.get(
-                    COMPETITIONS[selected_comp_ids[0]].get("current_season") if selected_comp_ids else CURRENT_SEASON_ID,
-                    league_season_labels[0] if league_season_labels else None
-                )
-                rating_seasons = st.multiselect(
-                    "Seasons", league_season_labels,
-                    default=[default_label] if default_label else [],
-                    key="rating_seasons"
-                )
-                # Reverse-lookup season IDs from display names (league-filtered)
-                season_name_to_id = {v: k for k, v in league_season_map.items()}
-                rating_rows = []
-                for season_name in rating_seasons:
-                    sid = season_name_to_id[season_name]
-                    s_events = get_filtered_events(raw_events_df, sid, selected_comp_ids)
-                    s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
-                    ts_df = calculate_team_strength(s_events, s_matches, season_id=sid)
-                    if ts_df.empty:
-                        continue
-                    rolling_df = calculate_rolling_team_strength(s_events, s_matches, season_id=sid)
-                    sos_df = calculate_sos_adjusted_strength(rolling_df, ts_df, season_id=sid)
-                    for team in ts_df.index:
-                        raw_att = ts_df.loc[team, 'Attacking Strength']
-                        raw_def = ts_df.loc[team, 'Defending Strength']
-                        sos_att = sos_df.loc[team, 'sos_att'] if team in sos_df.index else raw_att
-                        sos_def = sos_df.loc[team, 'sos_def'] if team in sos_df.index else raw_def
-                        sos_factor = sos_df.loc[team, 'sos_factor'] if team in sos_df.index else np.nan
-                        # Count matches from rolling data
-                        team_rolling = rolling_df[rolling_df['team'] == team] if not rolling_df.empty else pd.DataFrame()
-                        n_matches = int(team_rolling['match_number'].max()) + 1 if not team_rolling.empty else 0
-                        rating_rows.append({
-                            'Rank': 0,
-                            'Team': team,
-                            'Season': season_name,
-                            'Att Strength': round(raw_att, 3),
-                            'Def Strength': round(raw_def, 3),
-                            'SOS Att': round(float(sos_att), 3),
-                            'SOS Def': round(float(sos_def), 3),
-                            'SOS Factor': round(float(sos_factor), 3) if not np.isnan(float(sos_factor)) else None,
-                            'Matches': n_matches,
-                        })
-                if rating_rows:
-                    ratings_combined = pd.DataFrame(rating_rows)
-                    # Overall = att - def, rescaled to 0-100
-                    raw_overall = ratings_combined['SOS Att'] - ratings_combined['SOS Def']
-                    ov_min = raw_overall.min()
-                    ov_max = raw_overall.max()
-                    if ov_max > ov_min:
-                        ratings_combined['Overall'] = round(((raw_overall - ov_min) / (ov_max - ov_min)) * 100, 1)
-                    else:
-                        ratings_combined['Overall'] = 50.0
-                    ratings_combined = ratings_combined.sort_values('Overall', ascending=False).reset_index(drop=True)
-                    ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
-                    st.dataframe(ratings_combined, use_container_width=True, hide_index=True, column_config=auto_column_config(ratings_combined))
-                else:
-                    st.info("No team strength data available for selected seasons.")
-
-            # Season Simulation - Promotion/Relegation Probabilities
-            @st.cache_data
-            def load_simulation_data():
-                try:
-                    with open('season_simulation.pkl', 'rb') as f:
-                        return pickle.load(f)
-                except FileNotFoundError:
-                    return None
-
-            sim_data = load_simulation_data()
-            if sim_data is None:
-                st.info("Season simulation not yet available. Run simulate_season.py to generate probabilities.")
-            else:
-                st.subheader("Promotion & Relegation Probabilities")
-                sim_ts = sim_data.get('timestamp', '')
-                n_sims = sim_data.get('n_simulations', 0)
-                st.caption(f"Based on {n_sims:,} Monte Carlo simulations | Updated: {sim_ts[:16].replace('T', ' ')}")
-
-                def render_probability_table(group_name, prob_df, matches_remaining, bonus_points=None, expanded=False, current_standings=None, playoff_pct=None, promotion_pct=None):
-                    """Render a color-coded probability table for a second-stage group."""
-                    n_teams = len(prob_df)
-                    pos_cols = [str(i+1) for i in range(n_teams)]
-                    is_serie = group_name.startswith('Série')
-                    is_playoff_group = group_name.startswith('Promotion Playoff')
-
-                    # Build lookup for points and matches played from current standings
-                    standings_lookup = {}
-                    if current_standings is not None:
-                        for _, row in current_standings.iterrows():
-                            standings_lookup[row['Team']] = {'P': row['P'], 'Pts': row['Pts']}
-
-                    with st.expander(f"{group_name} ({matches_remaining} matches remaining)", expanded=expanded):
-                        # Build HTML table
-                        html = '<table style="width:100%;border-collapse:collapse;font-size:0.85em;text-align:center;">'
-
-                        # Header row
-                        html += '<tr style="border-bottom:2px solid #444;">'
-                        html += '<th style="text-align:left;padding:6px 10px;">Team</th>'
-                        html += '<th style="padding:6px 8px;">P</th>'
-                        html += '<th style="padding:6px 8px;">Pts</th>'
-                        for p in pos_cols:
-                            html += f'<th style="padding:6px 8px;">{p}</th>'
-
-                        # Summary column header
-                        if group_name == 'Promotion':
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
-                            html += '<th style="padding:6px 8px;">Playoff %</th>'
-                        elif is_playoff_group:
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Promo %</th>'
-                        elif is_serie:
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Playoff %</th>'
-                            html += '<th style="padding:6px 8px;">Promo %</th>'
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
-                        else:
-                            html += '<th style="padding:6px 8px;border-left:2px solid #444;">Releg %</th>'
-                        html += '</tr>'
-
-                        # Data rows
-                        for team in prob_df.index:
-                            html += '<tr style="border-bottom:1px solid #ddd;">'
-                            html += f'<td style="text-align:left;padding:6px 10px;font-weight:bold;white-space:nowrap;">{team}</td>'
-                            team_info = standings_lookup.get(team, {'P': 0, 'Pts': 0})
-                            html += f'<td style="padding:6px 8px;color:#888;">{team_info["P"]}</td>'
-                            total_pts = team_info["Pts"] + (bonus_points.get(team, 0) if bonus_points else 0)
-                            html += f'<td style="padding:6px 8px;font-weight:bold;">{total_pts}</td>'
-
-                            for p in pos_cols:
-                                val = prob_df.loc[team, p]
-                                pos_num = int(p)
-
-                                # Determine cell color
-                                bg = ''
-                                if group_name == 'Promotion':
-                                    if pos_num <= 2:
-                                        intensity = min(val * 1.2, 1.0)
-                                        bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
-                                    elif pos_num == 3:
-                                        intensity = min(val * 1.2, 1.0)
-                                        bg = f'background-color:rgba(241,196,15,{intensity:.2f});'
-                                elif is_playoff_group:
-                                    if pos_num <= 2:
-                                        intensity = min(val * 1.2, 1.0)
-                                        bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
-                                elif is_serie:
-                                    if pos_num <= 2:
-                                        # Green for playoff qualification positions
-                                        intensity = min(val * 1.2, 1.0)
-                                        bg = f'background-color:rgba(46,204,113,{intensity:.2f});'
-                                    elif pos_num >= n_teams - 4:
-                                        # Red for relegation positions (bottom 5)
-                                        intensity = min(val * 1.2, 1.0)
-                                        bg = f'background-color:rgba(231,76,60,{intensity:.2f});'
-                                else:
-                                    if pos_num >= n_teams - 1:
-                                        intensity = min(val * 1.2, 1.0)
-                                        bg = f'background-color:rgba(231,76,60,{intensity:.2f});'
-
-                                cell_text = f'{val:.1%}' if val >= 0.005 else ''
-                                html += f'<td style="padding:6px 8px;{bg}">{cell_text}</td>'
-
-                            # Summary columns
-                            if group_name == 'Promotion':
-                                promo_pct = prob_df.loc[team, '1'] + prob_df.loc[team, '2']
-                                po_pct = prob_df.loc[team, '3']
-                                promo_bg = f'background-color:rgba(46,204,113,{min(promo_pct * 1.2, 1.0):.2f});'
-                                po_bg = f'background-color:rgba(241,196,15,{min(po_pct * 1.2, 1.0):.2f});'
-                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{promo_bg}">{promo_pct:.1%}</td>'
-                                html += f'<td style="padding:6px 8px;font-weight:bold;{po_bg}">{po_pct:.1%}</td>'
-                            elif is_playoff_group:
-                                team_promo = promotion_pct.get(team, 0) if promotion_pct else 0
-                                promo_bg = f'background-color:rgba(46,204,113,{min(team_promo * 1.2, 1.0):.2f});'
-                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{promo_bg}">{team_promo:.1%}</td>'
-                            elif is_serie:
-                                # Playoff % = chance of finishing top 2 in série
-                                team_playoff = playoff_pct.get(team, 0) if playoff_pct else 0
-                                # Promotion % = chance of top 2 in série AND top 2 in playoff group
-                                team_promo = promotion_pct.get(team, 0) if promotion_pct else 0
-                                # Relegation % = bottom 5 positions
-                                releg_positions = [str(i) for i in range(n_teams - 4, n_teams + 1)]
-                                team_releg = sum(prob_df.loc[team, p] for p in releg_positions if p in prob_df.columns)
-
-                                playoff_bg = f'background-color:rgba(46,204,113,{min(team_playoff * 1.2, 1.0):.2f});'
-                                promo_bg = f'background-color:rgba(46,204,113,{min(team_promo * 2.0, 1.0):.2f});'
-                                releg_bg = f'background-color:rgba(231,76,60,{min(team_releg * 1.2, 1.0):.2f});'
-                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{playoff_bg}">{team_playoff:.1%}</td>'
-                                html += f'<td style="padding:6px 8px;font-weight:bold;{promo_bg}">{team_promo:.1%}</td>'
-                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{releg_bg}">{team_releg:.1%}</td>'
-                            else:
-                                releg_pct = prob_df.loc[team, str(n_teams - 1)] + prob_df.loc[team, str(n_teams)]
-                                releg_bg = f'background-color:rgba(231,76,60,{min(releg_pct * 1.2, 1.0):.2f});'
-                                html += f'<td style="padding:6px 8px;border-left:2px solid #444;font-weight:bold;{releg_bg}">{releg_pct:.1%}</td>'
-
-                            html += '</tr>'
-
-                        html += '</table>'
-                        st.markdown(html, unsafe_allow_html=True)
-
-                # Display simulation results for selected competition(s)
-                competitions_data = sim_data.get('competitions', {})
-                if not competitions_data:
-                    # Backward compat: old format has 'groups' at top level (Liga 3 only)
-                    competitions_data = {43324: {'competition_name': 'Liga 3', 'groups': sim_data.get('groups', {})}}
-
-                for comp_id in selected_comp_ids:
-                    comp_sim = competitions_data.get(comp_id, {})
-                    sim_groups = comp_sim.get('groups', {})
-                    if not sim_groups:
-                        continue
-
-                    comp_name = comp_sim.get('competition_name', COMPETITIONS.get(comp_id, {}).get('name', ''))
-                    if len(selected_comp_ids) > 1:
-                        st.markdown(f"#### {comp_name}")
-
-                    for group_name, g in sim_groups.items():
-                        expanded = (
-                            group_name == 'Promotion'
-                            or group_name.startswith('Promotion Playoff')
-                            or (comp_id == 702 and group_name == list(sim_groups.keys())[0])
-                        )
-                        render_probability_table(
-                            group_name, g['position_probabilities'], g['matches_remaining'],
-                            bonus_points=g.get('bonus_points'), expanded=expanded,
-                            current_standings=g.get('current_standings'),
-                            playoff_pct=g.get('playoff_pct'),
-                            promotion_pct=g.get('promotion_pct'),
-                        )
-
-            # Team selection — cross-season team-season combos
-            all_season_options = {}  # {"Team (Season)": (team_name, season_id)}
-            # Filter seasons by selected league(s)
-            available_sids = set()
-            for cid in selected_comp_ids:
-                if cid in COMPETITIONS:
-                    available_sids.update(COMPETITIONS[cid]["seasons"].keys())
-            pred_events = filter_by_league(raw_events_df, selected_comp_ids)
-            pred_matches = filter_by_league(matches_summary_df, selected_comp_ids)
-            for sid in sorted(available_sids, reverse=True):
-                season_cum = build_season_cumulative_stats(pred_events, pred_matches, sid)
-                for team_name, stats in season_cum.items():
-                    if stats['matches'] >= 3:
-                        label = f"{team_name} ({SEASON_ID_MAP[sid]})"
-                        all_season_options[label] = (team_name, sid)
-
-            sorted_options = sorted(all_season_options.keys())
-            col1, col2 = st.columns(2)
-            with col1:
-                home_label = st.selectbox("Home Team", sorted_options, key="pred_home")
-            with col2:
-                away_options = [t for t in sorted_options if t != home_label]
-                away_label = st.selectbox("Away Team", away_options, key="pred_away")
-
-            if st.button("Predict Match Outcome", type="primary"):
-                home_team_name, home_sid = all_season_options[home_label]
-                away_team_name, away_sid = all_season_options[away_label]
-                home_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, home_sid)[home_team_name]
-                away_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, away_sid)[away_team_name]
-
-                home_prior = home_cum.get('prior_stats')
-                away_prior = away_cum.get('prior_stats')
-
-                # Calculate features with decay priors
-                home_feats = calculate_prediction_features(home_cum, home_prior, league_avg_stats, is_home=True)
-                away_feats = calculate_prediction_features(away_cum, away_prior, league_avg_stats, is_home=False)
-
-                feature_vector = [
-                    home_feats['ppg'], away_feats['ppg'], home_feats['ppg'] - away_feats['ppg'],
-                    home_feats['form'], away_feats['form'], home_feats['form'] - away_feats['form'],
-                    home_feats['gpg'], away_feats['gpg'], home_feats['gpg'] - away_feats['gpg'],
-                    home_feats['gd'], away_feats['gd'], home_feats['gd'] - away_feats['gd'],
-                    home_feats['xgpg'], away_feats['xgpg'], home_feats['xgpg'] - away_feats['xgpg'],
-                    home_feats['xgapg'], away_feats['xgapg'],
-                    home_feats['xg_diff'], away_feats['xg_diff'], home_feats['xg_diff'] - away_feats['xg_diff'],
-                    home_feats['xg_form'], away_feats['xg_form'],
-                    home_feats['win_rate'], away_feats['win_rate'], home_feats['win_rate'] - away_feats['win_rate'],
-                    home_feats['venue_wr'], away_feats['venue_wr'],
-                    home_feats['shot_conv'], away_feats['shot_conv'],
-                    home_feats['sot_rate'], away_feats['sot_rate'],
-                    home_feats['cs_rate'], away_feats['cs_rate'],
-                    home_feats['venue_gpg'], away_feats['venue_gpg'],
-                ]
-
-                X = scaler.transform([feature_vector])
-                proba = model.predict_proba(X)[0]
-                pred = model.predict(X)[0]
-
-                # Display results
-                st.subheader(f"{home_label} vs {away_label}")
-
-                # Show team strength ratings
-                if team_ratings:
-                    home_rating = team_ratings.get(home_team_name, {})
-                    away_rating = team_ratings.get(away_team_name, {})
-                    if home_rating and away_rating:
-                        rcol1, rcol2 = st.columns(2)
-                        with rcol1:
-                            st.caption(f"**{home_label}** Rating: {home_rating['overall']:.1f}")
-                        with rcol2:
-                            st.caption(f"**{away_label}** Rating: {away_rating['overall']:.1f}")
-
-                # Probability bars
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Home Win", f"{proba[1]:.1%}")
-                    st.progress(proba[1])
-                with col2:
-                    st.metric("Draw", f"{proba[0]:.1%}")
-                    st.progress(proba[0])
-                with col3:
-                    st.metric("Away Win", f"{proba[2]:.1%}")
-                    st.progress(proba[2])
-
-                # Prediction
-                if pred == 1:
-                    st.success(f"**Predicted Outcome: {home_label} Win**")
-                elif pred == 2:
-                    st.success(f"**Predicted Outcome: {away_label} Win**")
-                else:
-                    st.info(f"**Predicted Outcome: Draw**")
-
-                # Team stats comparison (using blended stats)
-                st.subheader("Team Comparison (Season Stats with Priors)")
-                comparison_data = {
-                    'Metric': ['Points/Game', 'Goals/Game', 'xG/Game', 'xG Against/Game', 'Win Rate', 'Form (Last 5)', 'Clean Sheet Rate'],
-                    home_label: [f"{home_feats['ppg']:.2f}", f"{home_feats['gpg']:.2f}", f"{home_feats['xgpg']:.2f}", f"{home_feats['xgapg']:.2f}", f"{home_feats['win_rate']:.1%}", f"{home_feats['form']:.2f}", f"{home_feats['cs_rate']:.1%}"],
-                    away_label: [f"{away_feats['ppg']:.2f}", f"{away_feats['gpg']:.2f}", f"{away_feats['xgpg']:.2f}", f"{away_feats['xgapg']:.2f}", f"{away_feats['win_rate']:.1%}", f"{away_feats['form']:.2f}", f"{away_feats['cs_rate']:.1%}"]
-                }
-                comparison_df = pd.DataFrame(comparison_data)
-                st.dataframe(comparison_df, use_container_width=True, hide_index=True, column_config=auto_column_config(comparison_df))
-
-                # Show matches played
-                home_matches = home_cum['matches']
-                away_matches = away_cum['matches']
-                st.caption(f"Based on {home_matches} matches for {home_label} and {away_matches} matches for {away_label}")
 
     # ==========================================================================
     # SHADOW TEAM BUILDER
     # ==========================================================================
     elif analysis_type == 'Shadow Team':
+        views.shadow_team.render()
 
-        # --- League & Season Selector ---
-        selected_comp_ids = league_selector("shadow_team")
-        selected_season_id = season_selector("shadow_team", include_all_seasons=True, comp_ids=selected_comp_ids)
-        active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
-        shadow_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
-        shadow_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
-
-        # --- Load Data ---
-        player_details_df = load_player_details()
-
-        try:
-            with st.spinner("Loading player statistics..."):
-                player_stats_df, player_stats_with_scores_df = load_and_score_player_stats(
-                    shadow_events_df, shadow_player_minutes_df, selected_season_id, active_season_ids, selected_comp_ids
-                )
-        except Exception as e:
-            st.error(f"An error occurred calculating player stats: {e}")
-            logger.exception("Error in Shadow Team stats calculation")
-            st.stop()
-
-        if player_stats_with_scores_df.empty:
-            st.warning("No players found with sufficient minutes for analysis.")
-            st.stop()
-
-        # Build player options sorted by minutes desc, using "Name (Team)" for uniqueness
-        player_list_df = player_stats_with_scores_df[['playerId', 'playerName', 'teamName', 'totalMinutes']].copy()
-        player_list_df = player_list_df.sort_values('totalMinutes', ascending=False)
-        player_list_df['display_key'] = player_list_df['playerName'] + ' (' + player_list_df['teamName'] + ')'
-        player_display_names = player_list_df['display_key'].tolist()
-        # Map display_key -> index in stats df for exact lookups
-        display_key_to_idx = {}
-        for idx, row in player_list_df.iterrows():
-            display_key_to_idx[row['display_key']] = idx
-
-        # --- Sidebar Controls ---
-        st.sidebar.subheader("Formation")
-        formation_key = st.sidebar.selectbox("Select Formation", list(FORMATION_COORDS.keys()), key="shadow_formation")
-        formation_data = FORMATION_COORDS[formation_key]
-
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("Save / Load")
-        team_name_input = st.sidebar.text_input("Team Name", value="My Shadow Team", key="shadow_team_name_input")
-
-        if st.sidebar.button("Save Team", key="shadow_save_btn"):
-            players = {}
-            tags = {}
-            for slot in formation_data['positions']:
-                p_key = f"shadow_players_{slot}"
-                selected = st.session_state.get(p_key, [])
-                players[slot] = selected
-                slot_tags = {}
-                for p_name in selected:
-                    t_key = f"shadow_tag_{slot}_{p_name}"
-                    l_key = f"shadow_label_{slot}_{p_name}"
-                    slot_tags[p_name] = {
-                        'category': st.session_state.get(t_key, 'Current Starter'),
-                        'label': st.session_state.get(l_key, ''),
-                    }
-                tags[slot] = slot_tags
-            st.session_state.shadow_teams[team_name_input] = {
-                'formation': formation_key,
-                'players': players,
-                'tags': tags,
-            }
-            st.sidebar.success(f"Saved '{team_name_input}'!")
-
-        saved_names = list(st.session_state.shadow_teams.keys())
-        if saved_names:
-            load_name = st.sidebar.selectbox("Load Saved Team", saved_names, key="shadow_load_select")
-            if st.sidebar.button("Load Team", key="shadow_load_btn"):
-                saved = st.session_state.shadow_teams[load_name]
-                st.session_state['shadow_formation'] = saved['formation']
-                for slot, player_list in saved['players'].items():
-                    st.session_state[f"shadow_players_{slot}"] = player_list
-                for slot, slot_tags in saved['tags'].items():
-                    for p_name, tag_info in slot_tags.items():
-                        st.session_state[f"shadow_tag_{slot}_{p_name}"] = tag_info.get('category', 'Current Starter')
-                        st.session_state[f"shadow_label_{slot}_{p_name}"] = tag_info.get('label', '')
-                st.rerun()
-
-        # --- Tag Legend (sidebar) ---
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("Tag Legend")
-        for tag_name, tag_color in SHADOW_TAG_CATEGORIES.items():
-            st.sidebar.markdown(
-                f'<span style="display:inline-block;width:12px;height:12px;'
-                f'background-color:{tag_color};border-radius:50%;margin-right:6px;'
-                f'vertical-align:middle;"></span>'
-                f'<span style="vertical-align:middle;">{tag_name}</span>',
-                unsafe_allow_html=True
-            )
-
-        # --- Main Content: Two Columns ---
-        left_col, right_col = st.columns([3, 2])
-
-        # Gather current assignments from widget state
-        player_assignments = {}  # {slot: [player_name, ...]}
-        tag_assignments = {}     # {slot: {player_name: {category, label}}}
-        tag_categories_list = list(SHADOW_TAG_CATEGORIES.keys())
-
-        with right_col:
-            st.subheader("Assign Players")
-            for slot in formation_data['positions']:
-                with st.expander(f"{slot}", expanded=False):
-                    selected_players = st.multiselect(
-                        "Players", player_display_names,
-                        key=f"shadow_players_{slot}"
-                    )
-                    player_assignments[slot] = selected_players
-                    slot_tags = {}
-                    for p_name in selected_players:
-                        st.markdown(f"**{p_name}**")
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            selected_tag = st.selectbox(
-                                "Tag", tag_categories_list,
-                                key=f"shadow_tag_{slot}_{p_name}"
-                            )
-                        with c2:
-                            custom_label = st.text_input(
-                                "Label", value="",
-                                key=f"shadow_label_{slot}_{p_name}"
-                            )
-                        slot_tags[p_name] = {
-                            'category': selected_tag,
-                            'label': custom_label,
-                        }
-                    tag_assignments[slot] = slot_tags
-
-        with left_col:
-            st.subheader("Formation View")
-            with MPL_LOCK:
-                fig = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
-                st.pyplot(fig)
-                plt.close(fig)
-
-                # Export PNG
-                buf = io.BytesIO()
-                fig_export = create_shadow_team_graphic(formation_key, player_assignments, tag_assignments, team_name_input, player_stats_with_scores_df)
-                fig_export.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor='#1a472a')
-                plt.close(fig_export)
-            buf.seek(0)
-            st.download_button(
-                label="Download PNG",
-                data=buf,
-                file_name=f"shadow_team_{team_name_input.replace(' ', '_')}.png",
-                mime="image/png",
-                key="shadow_download_png"
-            )
-
-        # --- Player Details Panel ---
-        st.markdown("---")
-        st.subheader("Player Details")
-
-        for slot in formation_data['positions']:
-            slot_players = player_assignments.get(slot, [])
-            if not slot_players:
-                continue
-
-            for p_display_key in slot_players:
-                # Find player row via display_key index lookup
-                row_idx = display_key_to_idx.get(p_display_key)
-                if row_idx is None:
-                    continue
-                player_row = player_stats_with_scores_df.loc[row_idx]
-                player_id = player_row.get('playerId', None)
-                p_name = player_row.get('playerName', p_display_key)
-                team = player_row.get('teamName', 'N/A')
-                minutes = player_row.get('totalMinutes', 0)
-                primary_pos = player_row.get('primaryPosition', 'N/A')
-
-                # Get tag info for display
-                p_tag_info = tag_assignments.get(slot, {}).get(p_display_key, {})
-                p_tag = p_tag_info.get('category', '')
-                p_tag_color = SHADOW_TAG_CATEGORIES.get(p_tag, '#ffffff')
-
-                # Get age from player_details
-                age_str = "N/A"
-                if player_id is not None and not player_details_df.empty:
-                    pid = int(player_id) if pd.notna(player_id) else None
-                    if pid is not None and pid in player_details_df.index:
-                        birth_date = player_details_df.loc[pid].get('birthDate', None)
-                        age_val = _calculate_age(birth_date)
-                        if age_val != "N/A":
-                            age_str = f"{age_val:.1f}"
-
-                with st.expander(f"{slot}: {p_name} ({team})", expanded=False):
-                    # Tag badge
-                    if p_tag:
-                        st.markdown(
-                            f'<span style="background-color:{p_tag_color};color:#fff;'
-                            f'padding:2px 8px;border-radius:10px;font-size:0.8em;">'
-                            f'{p_tag}</span>',
-                            unsafe_allow_html=True
-                        )
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Team", team)
-                    m2.metric("Age", age_str)
-                    m3.metric("Minutes", f"{int(minutes):,}")
-                    m4.metric("Position", primary_pos)
-
-                    # Role scores table
-                    role_scores = get_player_role_scores(player_row, slot)
-                    if role_scores:
-                        scores_df = pd.DataFrame(list(role_scores.items()), columns=['Role', 'Score'])
-                        st.dataframe(scores_df, use_container_width=True, hide_index=True, column_config=auto_column_config(scores_df))
-                    else:
-                        st.caption("No role scores available for this slot.")
 
     elif analysis_type == 'Opposition Report':
-        selected_comp_ids = league_selector("opposition_report")
-        from opposition_report import render_opposition_report
-        opp_events = filter_by_league(raw_events_df, selected_comp_ids)
-        opp_matches = filter_by_league(matches_summary_df, selected_comp_ids)
-        # Build season map for selected leagues
-        opp_season_map = {}
-        for cid in selected_comp_ids:
-            if cid in COMPETITIONS:
-                opp_season_map.update(COMPETITIONS[cid]["seasons"])
-        opp_current_sid = COMPETITIONS[selected_comp_ids[0]]["current_season"] if selected_comp_ids else CURRENT_SEASON_ID
-        render_opposition_report(
-            opp_events, opp_matches, all_match_data,
-            season_team_stats, player_minutes_data,
-            opp_current_sid, opp_season_map,
-            comp_ids=selected_comp_ids,
-        )
+        views.opposition.render()
+
 
 
 else:

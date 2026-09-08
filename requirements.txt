@@ -3,7 +3,7 @@
 # re-resolves and can silently swap native libs (numpy/pyarrow/matplotlib)
 # under a working app. Do not relax to >= without a deliberate rebuild+test.
 # Note: streamlit is NOT installed from here — HF pins it via the README
-# frontmatter (sdk_version: 1.41.0). Keep the two in sync by hand.
+# frontmatter (sdk_version: 1.50.0). Keep the two in sync by hand.
 adjustText==1.4.0
 matplotlib==3.11.0
 mplsoccer==1.6.1

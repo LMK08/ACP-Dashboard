@@ -6,6 +6,7 @@ All functions expect Wyscout-normalised coordinates (0-100 on both axes).
 
 import numpy as np
 import pandas as pd
+from event_tags import TagIndex, has_tag
 # Selects the Agg backend before pyplot is imported. Every builder here is
 # called under MPL_LOCK by its caller (app.py / opposition_report.py); the
 # figures are created via pyplot's global manager, so that is load-bearing.
@@ -18,8 +19,10 @@ from adjustText import adjust_text
 # ---------------------------------------------------------------------------
 # Pitch setup defaults
 # ---------------------------------------------------------------------------
-PITCH_COLOR = '#f5f1e9'
-LINE_COLOR = 'black'
+import theme
+
+PITCH_COLOR = theme.FIGURE_BG
+LINE_COLOR = theme.PITCH_LINE_MPL
 
 # Formation coordinates (mirrored from app.py to avoid circular imports)
 FORMATION_COORDS = {
@@ -130,10 +133,11 @@ FORMATION_COORDS = {
 # Helper
 # ---------------------------------------------------------------------------
 def _check_secondary(secondary_col, tag):
-    """Return boolean Series where *tag* is in the type.secondary list."""
-    return secondary_col.apply(
-        lambda x: tag in x if isinstance(x, (list, np.ndarray, set)) else False
-    )
+    """Return boolean Series where *tag* is in the type.secondary list.
+
+    Vectorised (event_tags.TagIndex); testing several tags on one column?
+    Build one TagIndex and call .has() per tag instead."""
+    return has_tag(secondary_col, tag)
 
 
 def _make_pitch(figsize=(12, 8)):
@@ -158,17 +162,17 @@ def _add_attack_direction_arrow(ax):
 def _filter_defensive_actions(df, include_recoveries=True):
     """Boolean mask for defensive action events."""
     secondary_col = df.get('type.secondary', pd.Series(dtype='object'))
+    tags = TagIndex(secondary_col)  # one explode for all five tests
     # Include aerial duels only when they are also defensive
-    is_defensive_aerial = (_check_secondary(secondary_col, 'aerial_duel')
-                           & _check_secondary(secondary_col, 'defensive_duel'))
+    is_defensive_aerial = tags.has('aerial_duel') & tags.has('defensive_duel')
     mask = (
         df['type.primary'].isin(['interception', 'clearance'])
-        | _check_secondary(secondary_col, 'defensive_duel')
-        | _check_secondary(secondary_col, 'sliding_tackle')
+        | tags.has('defensive_duel')
+        | tags.has('sliding_tackle')
         | is_defensive_aerial
     )
     if include_recoveries:
-        mask = mask | _check_secondary(secondary_col, 'recovery')
+        mask = mask | tags.has('recovery')
     return mask
 
 
@@ -821,8 +825,15 @@ def plot_avg_positions_by_subs(events_df, team_name, title=None, match_lineup=No
 # =========================================================================
 # 3. Passing Network
 # =========================================================================
-def plot_passing_network(events_df, team_name, title=None):
-    """Pass connections between players (using possession chain)."""
+def compute_passing_network(events_df, team_name, obv_pairs=None):
+    """The passing-network DATA both renderers draw (matplotlib below for the
+    PDF, team_interactive.plotly_passing_network on screen):
+
+    nodes: player.id, x, y, count (touches), name, position, pass_count,
+           node_metric (passing OBV when obv_pairs is given, else involvement)
+    edges: passer, receiver, count, obv (0 when no OBV)
+    has_obv: whether edges/nodes carry on-ball value
+    """
     te = events_df[events_df['team.name'] == team_name].copy()
     passes = te[te['type.primary'] == 'pass'].copy()
 
@@ -904,12 +915,62 @@ def plot_passing_network(events_df, team_name, title=None):
     # Count total passes per player (as passer)
     player_pass_counts = passes.groupby('passer').size().to_dict()
 
+    # Optional OBV weighting: edge color = value added by that pass pair
+    edge_obv = {}
+    if obv_pairs is not None and not obv_pairs.empty:
+        agg = (obv_pairs.groupby(['passerId', 'recipientId'])['obv_sum']
+               .sum())
+        edge_obv = {(int(p), int(r)): float(v) for (p, r), v in agg.items()}
+
+    # Nodes — sized by the player's PASSING value when OBV is available
+    # (it's a pass network), else by involvement
+    node_metric = avg_pos['count']
+    if obv_pairs is not None and not obv_pairs.empty:
+        pass_obv = obv_pairs.groupby('passerId')['obv_sum'].sum()
+        mapped = avg_pos['player.id'].map(pass_obv)
+        if mapped.notna().any():
+            node_metric = mapped.fillna(0).clip(lower=0)
+    nodes = avg_pos.copy()
+    nodes['pass_count'] = nodes['player.id'].map(player_pass_counts).fillna(0).astype(int)
+    nodes['node_metric'] = node_metric.values
+    edges = pair_counts.copy()
+    edges['obv'] = [edge_obv.get((int(p), int(r)), 0.0) for p, r in zip(edges['passer'], edges['receiver'])]
+    return {'nodes': nodes.reset_index(drop=True), 'edges': edges.reset_index(drop=True),
+            'has_obv': bool(edge_obv)}
+
+
+def plot_passing_network(events_df, team_name, title=None, obv_pairs=None):
+    """Pass connections between players (using possession chain).
+
+    obv_pairs: optional DataFrame (passerId, recipientId, obv_sum) for this
+        scope — edges are then COLORED by on-ball value added (single-hue
+        ramp) while thickness stays pass volume, and nodes are SIZED by each
+        player's total PASSING value (sum of their pair OBV).
+
+    Data comes from compute_passing_network (shared with the Plotly version).
+    """
+    net = compute_passing_network(events_df, team_name, obv_pairs)
+    avg_pos, pair_counts = net['nodes'], net['edges']
+    edge_obv = {(int(p), int(r)): float(v) for p, r, v in zip(pair_counts['passer'], pair_counts['receiver'], pair_counts['obv'])} if net['has_obv'] else {}
+    player_pass_counts = dict(zip(avg_pos['player.id'].astype(int), avg_pos['pass_count']))
+    node_metric = avg_pos['node_metric']
+
     pitch, fig, ax = _make_pitch()
 
     # Lines
     pos_dict = {int(r['player.id']): (r['x'], r['y'])
                 for _, r in avg_pos.iterrows()}
     max_cnt = pair_counts['count'].max() if not pair_counts.empty else 1
+
+    if edge_obv:
+        import matplotlib.colors as mcolors
+        vals = [edge_obv.get((int(r['passer']), int(r['receiver'])), 0.0)
+                for _, r in pair_counts.iterrows()]
+        vmax = max(abs(v) for v in vals) if vals else 1.0
+        vmax = vmax or 1.0
+        # single-hue ramp: pitch-cream -> deep green; negative pairs grey
+        ramp = mcolors.LinearSegmentedColormap.from_list(
+            'obv_ramp', ['#c9d6c4', '#1a472a'])
 
     for _, row in pair_counts.iterrows():
         p = int(row['passer'])
@@ -918,15 +979,27 @@ def plot_passing_network(events_df, team_name, title=None):
             sx, sy = pos_dict[p]
             ex, ey = pos_dict[r]
             lw = 0.5 + 4 * (row['count'] / max_cnt)
-            ax.plot([sx, ex], [sy, ey], color='#457b9d', linewidth=lw,
-                    alpha=0.6, zorder=2)
+            if edge_obv:
+                v = edge_obv.get((p, r), 0.0)
+                color = ramp(min(max(v, 0.0) / vmax, 1.0)) if v >= 0 else '#b0b0a8'
+                ax.plot([sx, ex], [sy, ey], color=color, linewidth=lw,
+                        alpha=0.85, zorder=2)
+            else:
+                ax.plot([sx, ex], [sy, ey], color='#457b9d', linewidth=lw,
+                        alpha=0.6, zorder=2)
 
-    # Nodes
-    max_involvement = avg_pos['count'].max() if not avg_pos.empty else 1
-    sizes = 100 + 500 * (avg_pos['count'] / max_involvement)
+    max_involvement = node_metric.max() if not avg_pos.empty else 1
+    max_involvement = max_involvement if max_involvement else 1
+    sizes = 190 + 460 * (node_metric / max_involvement)
     pitch.scatter(avg_pos['x'], avg_pos['y'], s=sizes,
                   color='#1d3557', edgecolors='white', linewidth=2,
                   zorder=5, ax=ax)
+    if edge_obv:
+        ax.text(0.5, -0.035,
+                'Line width = pass volume · line color = on-ball value added (grey = negative) · '
+                'circle size = player passing value',
+                transform=ax.transAxes, ha='center', va='top',
+                fontsize=7, color='#6b7570')
 
     # Pass count inside each node
     for _, row in avg_pos.iterrows():
@@ -1078,15 +1151,20 @@ def plot_zone_heatmap(events_df, team_name, tag, league_events_df=None,
     x_bounds = [0, 25, 50, 75, 100]
     y_bounds = [0, 33.33, 66.67, 100]
 
-    def _zone_pcts(df, team):
-        te = df[df['team.name'] == team].copy()
-        secondary_col = te.get('type.secondary', pd.Series(dtype='object'))
-        mask = _check_secondary(secondary_col, tag)
-        ev = te[mask].copy()
+    def _tagged(df):
+        """Events carrying *tag* with numeric coordinates — ONE tag pass per
+        frame (it used to run per team over the whole league frame)."""
+        if 'type.secondary' in df.columns:
+            mask = has_tag(df['type.secondary'], tag)
+        else:
+            mask = pd.Series(False, index=df.index)
+        ev = df.loc[mask, ['team.name', 'location.x', 'location.y']].copy()
         ev['location.x'] = pd.to_numeric(ev['location.x'], errors='coerce')
         ev['location.y'] = pd.to_numeric(ev['location.y'], errors='coerce')
-        ev = ev.dropna(subset=['location.x', 'location.y'])
+        return ev.dropna(subset=['location.x', 'location.y'])
 
+    def _zone_pcts(tagged, team):
+        ev = tagged[tagged['team.name'] == team]
         total = len(ev)
         grid = np.zeros((len(x_bounds) - 1, len(y_bounds) - 1))
         for i in range(len(x_bounds) - 1):
@@ -1100,16 +1178,14 @@ def plot_zone_heatmap(events_df, team_name, tag, league_events_df=None,
                 grid[i, j] = (cnt / total * 100) if total > 0 else 0
         return grid
 
-    team_grid = _zone_pcts(events_df, team_name)
+    team_grid = _zone_pcts(_tagged(events_df), team_name)
 
     # League average
     league_grid = None
     if league_events_df is not None:
         teams = league_events_df['team.name'].unique()
-        all_grids = []
-        for t in teams:
-            g = _zone_pcts(league_events_df, t)
-            all_grids.append(g)
+        _league_tagged = _tagged(league_events_df)
+        all_grids = [_zone_pcts(_league_tagged, t) for t in teams]
         if all_grids:
             league_grid = np.mean(all_grids, axis=0)
 

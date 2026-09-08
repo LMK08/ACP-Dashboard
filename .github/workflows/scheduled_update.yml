@@ -4,17 +4,13 @@ permissions:
   contents: write
 
 on:
-  # ⏸️ SCHEDULED RUNS PAUSED until August 2026 (off-season). The Liga 3 /
-  # Campeonato season is over, so the Wyscout API has no new matches to fetch
-  # and the nightly refresh just re-pushes unchanged data. Re-enable for the
-  # 2026/27 season by UNCOMMENTING the schedule block below.
-  # schedule:
-  #   # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
-  #   - cron: '0 5 * * 0,1'
-  #   # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
-  #   - cron: '0 6 * * 3,4'
+  schedule:
+    # Runs at 05:00 UTC on Sunday and Monday (midnight EST Sat/Sun night) — Liga 3 matches
+    - cron: '0 5 * * 0,1'
+    # Runs at 06:00 UTC on Wednesday and Thursday (1:00 AM EST Tue/Wed night) — Campeonato matches
+    - cron: '0 6 * * 3,4'
 
-  # Manual run from the GitHub "Actions" tab still works while paused
+  # Manual run from the GitHub "Actions" tab
   workflow_dispatch:
     inputs:
       test_fetch_limit:
@@ -136,12 +132,14 @@ jobs:
           # cause of the 2026-06-17 failure: committed *.png plots got pushed
           # and HF declined the whole push.
           find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
-          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
+          # icons/ is exempt: team crests the app loads at runtime, shipped via LFS below.
+          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -not -path '*/icons/*' -delete 2>/dev/null || true
           cd "$DEPLOY_DIR"
           git init -b main
           git lfs install
           git lfs track "*.parquet"
           git lfs track "*.pkl"
+          git lfs track "icons/*.png"
           git add .gitattributes
           git add -A
           git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
@@ -149,3 +147,13 @@ jobs:
           git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
           git push hf main --force
           echo "✅ Successfully deployed to Hugging Face Space"
+
+      - name: Clean up orphaned HF LFS objects
+        # Force-push deploys orphan the previous deploy's LFS blobs, which
+        # still count against the Space's 1 GB storage cap until permanently
+        # deleted (this is what failed the 2026-08-09 deploy).
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          python hf_lfs_cleanup.py
