@@ -229,6 +229,12 @@ footer, footer::before { display: none !important; }
 .main { background: var(--bg); }
 
 /* Scrollbar */
+/* Thin scrollbars are LAYOUT-TAKING in Chrome once ::-webkit-scrollbar is
+   styled (overlay scrollbars are lost). A scrollbar that appears and
+   disappears then shifts every element sideways by its width — the
+   'charts and text shift back and forth' report (2026-09-07). Reserve
+   the gutter permanently so a toggling scrollbar never moves content. */
+[data-testid="stMain"], [data-testid="stSidebar"] > div, html, body { scrollbar-gutter: stable; }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
