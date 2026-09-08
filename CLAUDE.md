@@ -179,6 +179,13 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   and seeded before they draw), Shadow Team → profile with
   `profile_active_tab='Similar Players'` (settable from another page only).
   Tests: `tests/test_similar_players.py`.
+- Scrollbars (RULE): the theme styles `::-webkit-scrollbar` (thin 6 px
+  bars), which makes Chrome's scrollbars layout-taking; any scrollbar that
+  toggles then shifts the whole column sideways ('charts and text shift
+  back and forth', 2026-09-07). `scrollbar-gutter: stable` on stMain and
+  the sidebar (app.py CSS block) reserves the space — keep it whenever the
+  scrollbar styling stays. Plotly charts take no `'responsive': True`
+  config: Streamlit already sizes them to the container.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 - Match Predictor "Team Strength Ratings" = the Dixon-Coles attack /
   defence parameters (`DixonColes.strength_table` → `scoreline_ui.
