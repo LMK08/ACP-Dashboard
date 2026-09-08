@@ -274,12 +274,51 @@ class DixonColes:
                    asof=d.get('asof'), n_matches=int(d.get('n_matches', 0)),
                    weight_sum=float(d.get('weight_sum', 0.0)))
 
-    def strength_table(self):
-        """Per-team attack/defence on the log-rate scale plus a single
-        'rating' (att + def) for display, sorted best first."""
-        rows = [{'team': t, 'attack': float(a), 'defence': float(d), 'rating': float(a + d)}
-                for t, a, d in zip(self.teams, self.att, self.dfn)]
-        return pd.DataFrame(rows).sort_values('rating', ascending=False).reset_index(drop=True)
+    def strength_table(self, teams=None, league=None, centre=True):
+        """Per-team strength for display, best first.
+
+        Columns: ``attack`` / ``defence`` (the raw log-rate parameters; a
+        HIGHER defence concedes less), ``rating`` (attack + defence),
+        ``scores_x`` / ``concedes_x`` — goals scored / conceded relative to
+        the AVERAGE SIDE OF THE TEAMS SHOWN (1.0), ``xgd_vs_avg`` — expected
+        goal difference against that average side at a neutral venue — and
+        ``known`` (False for a team the fit has never seen; it is shown AT
+        the average: 1.0 / 1.0 / 0).
+
+        With ``centre`` (default) the parameters are centred on the mean of
+        the known teams shown, so a league's table reads against its own
+        average rather than against a zero-parameter side (the fit spans
+        both leagues, so zero sits nearer the cross-league average and a
+        whole league can come out 'above average'). ``teams`` restricts (or,
+        for unseen names, extends) the rows; ``league`` picks the base rate
+        that scales ``xgd_vs_avg`` (first league when None). Sorted by
+        ``xgd_vs_avg`` descending.
+        """
+        names = list(self.teams) if teams is None else list(teams)
+        li = (self.leagues.index(int(league))
+              if league is not None and int(league) in self.leagues else 0)
+        base = float(self.base[li]) if len(self.base) else 0.0
+        params = {t: self._team_params(t) for t in names}
+        known_a = [a for a, _, k in params.values() if k]
+        known_d = [d for _, d, k in params.values() if k]
+        a_bar = float(np.mean(known_a)) if (centre and known_a) else 0.0
+        d_bar = float(np.mean(known_d)) if (centre and known_d) else 0.0
+        # Goals per side per match between two average sides at a neutral venue.
+        avg_goals = math.exp(base + a_bar - d_bar)
+        rows = []
+        for t in names:
+            a, d, known = params[t]
+            rel_a = (a - a_bar) if known else 0.0
+            rel_d = (d - d_bar) if known else 0.0
+            scores_x, concedes_x = math.exp(rel_a), math.exp(-rel_d)
+            rows.append({'team': t, 'attack': a, 'defence': d, 'rating': a + d,
+                         'scores_x': scores_x, 'concedes_x': concedes_x,
+                         'xgd_vs_avg': avg_goals * (scores_x - concedes_x), 'known': known})
+        cols = ['team', 'attack', 'defence', 'rating', 'scores_x', 'concedes_x', 'xgd_vs_avg', 'known']
+        if not rows:
+            return pd.DataFrame(columns=cols)
+        return (pd.DataFrame(rows, columns=cols)
+                .sort_values('xgd_vs_avg', ascending=False).reset_index(drop=True))
 
 
 # ---------------------------------------------------------------------------

@@ -108,3 +108,40 @@ def test_shipped_params_load_and_predict():
     pr = model.predict('Atlético CP', 'Mafra', 43324)
     assert abs(pr['p_home'] + pr['p_draw'] + pr['p_away'] - 1) < 1e-9
     assert 0.5 < pr['lambda'] < 3 and 0.3 < pr['mu'] < 3
+
+
+def test_strength_table_is_interpretable_and_neutral_for_unseen_teams():
+    """scores_x / concedes_x are exp(±(param − mean of the teams shown)); xGD vs
+    avg is the average side's goal rate times their difference; an unseen team
+    sits at the average (1 / 1 / 0); best first."""
+    df, _teams, _att, _dfn = _synthetic()
+    m = dc.DixonColes.fit(df, xi=0.0, l2=0.001)
+    tbl = m.strength_table(teams=list(m.teams) + ['Never Played'], league=m.leagues[0])
+    assert list(tbl.columns) == ['team', 'attack', 'defence', 'rating', 'scores_x', 'concedes_x',
+                                 'xgd_vs_avg', 'known']
+    assert tbl['xgd_vs_avg'].is_monotonic_decreasing
+    row = tbl.set_index('team').loc['Never Played']
+    assert not row['known']
+    assert row['scores_x'] == pytest.approx(1.0) and row['concedes_x'] == pytest.approx(1.0)
+    assert row['xgd_vs_avg'] == pytest.approx(0.0)
+    known = tbl[tbl['known']]
+    a_bar, d_bar = known['attack'].mean(), known['defence'].mean()
+    avg_goals = float(np.exp(m.base[0] + a_bar - d_bar))
+    for _, r in known.iterrows():
+        assert r['scores_x'] == pytest.approx(np.exp(r['attack'] - a_bar))
+        assert r['concedes_x'] == pytest.approx(np.exp(-(r['defence'] - d_bar)))
+        assert r['xgd_vs_avg'] == pytest.approx(avg_goals * (r['scores_x'] - r['concedes_x']))
+    # Centred on the teams shown: the average side really is 1.0 on both.
+    assert np.log(known['scores_x']).mean() == pytest.approx(0.0, abs=1e-9)
+    assert np.log(known['concedes_x']).mean() == pytest.approx(0.0, abs=1e-9)
+    # The strongest side beats the average on net; the weakest loses to it.
+    assert known.iloc[0]['xgd_vs_avg'] > 0 > known.iloc[-1]['xgd_vs_avg']
+    # centre=False reports against a zero-parameter side instead.
+    raw = m.strength_table(teams=m.teams[:3], centre=False).set_index('team')
+    for t in m.teams[:3]:
+        a, d, _ = m._team_params(t)
+        assert raw.loc[t, 'scores_x'] == pytest.approx(np.exp(a))
+        assert raw.loc[t, 'concedes_x'] == pytest.approx(np.exp(-d))
+    sub = m.strength_table(teams=m.teams[:3])
+    assert set(sub['team']) == set(m.teams[:3]) and sub['xgd_vs_avg'].is_monotonic_decreasing
+    assert m.strength_table(teams=[]).empty

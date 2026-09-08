@@ -84,6 +84,70 @@ def _reliability_fig(rel_rows):
     return fig
 
 
+def render_strength_table(league_id, teams, played=None, league_name=None, season_label=None,
+                          key='dc_strength'):
+    """The Team Strength Ratings table: the Dixon-Coles attack / defence
+    parameters for ``teams`` (a league's current-season sides), best first.
+
+    Every team's attack and defence are fitted JOINTLY on all matches with
+    time decay and shrinkage toward the league average, so opponent quality
+    is inside the fit and a handful of early-season games moves a rating
+    only as far as the evidence warrants — the reason this replaced the
+    per-match xG rates + schedule ratio in 2026-09. ``played`` (Series
+    team -> matches played this season) is shown for context only: it is
+    NOT the sample the fit rests on.
+    """
+    mt = _mtime(PARAMS_PATH)
+    if mt is None:
+        st.info('Scoreline model not built yet — run `python models/scoreline/build_dc.py`.')
+        return None
+    model = load_model(mt)
+    tbl = model.strength_table(teams=teams, league=league_id)
+    if tbl.empty:
+        st.info('No teams to rate for this league.')
+        return None
+
+    unseen = tbl.loc[~tbl['known'], 'team'].tolist()
+    show = pd.DataFrame({
+        'Rank': range(1, len(tbl) + 1),
+        'Team': [f'{t} *' if t in unseen else t for t in tbl['team']],
+        'Scores ×': tbl['scores_x'].round(2),
+        'Concedes ×': tbl['concedes_x'].round(2),
+        'xGD vs avg': tbl['xgd_vs_avg'].round(2),
+    })
+    if played is not None:
+        show['P'] = [int(played.get(t, 0)) for t in tbl['team']]
+    st.dataframe(
+        show, hide_index=True, use_container_width=True,
+        column_config={
+            'Rank': st.column_config.NumberColumn('Rank', width='small'),
+            'Scores ×': st.column_config.NumberColumn('Scores ×', format='%.2f',
+                                                      help='Goals scored relative to the average of the sides shown (1.00)'),
+            'Concedes ×': st.column_config.NumberColumn('Concedes ×', format='%.2f',
+                                                        help='Goals conceded relative to the average of the sides shown (1.00); lower is better'),
+            'xGD vs avg': st.column_config.NumberColumn('xGD vs avg', format='%+.2f',
+                                                        help='Expected goal difference against an average side of this league at a neutral venue'),
+            'P': st.column_config.NumberColumn('P', width='small', help='Matches played this season (context only)'),
+        },
+        key=f'{key}_table')
+    mix_txt = ('goals' if model.mix >= 1 else f'{int(round((1 - model.mix) * 100))}% xG / {int(round(model.mix * 100))}% goals')
+    half_life = int(round(np.log(2) / model.xi)) if model.xi > 0 else None
+    scope = ' · '.join(x for x in (league_name, season_label) if x)
+    st.caption(
+        (f'{scope}. ' if scope else '')
+        + 'Dixon-Coles attack / defence parameters: every team\'s attack and defence are fitted jointly, so '
+          'opponent quality is inside the fit, with shrinkage toward the league average and '
+        + (f'a {half_life}-day half-life on older matches' if half_life else 'no time decay')
+        + f'; rates fitted on {mix_txt}, {model.n_matches:,} matches through {model.asof}. '
+          'Scores × / Concedes × = goals scored / conceded relative to the average of the sides shown; '
+          'xGD vs avg = expected goal difference against that average side at a neutral venue; '
+          'the table is ranked by it. P = matches played this season (context only). '
+          'Same model as the scoreline forecast below; its walk-forward backtest is there.'
+        + (f" * {', '.join(unseen)}: not seen by the fit yet — shown at the average here; the forecast "
+           f"below plays them at zero parameters." if unseen else ''))
+    return tbl
+
+
 def render_scoreline_section(home, away, league_id, season_id_map, key='dc'):
     """One fixture's scoreline forecast plus the model's calibration."""
     st.subheader('Scoreline model')

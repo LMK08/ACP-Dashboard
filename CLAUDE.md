@@ -172,8 +172,19 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   `profile_active_tab='Similar Players'` (settable from another page only).
   Tests: `tests/test_similar_players.py`.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
+- Match Predictor "Team Strength Ratings" = the Dixon-Coles attack /
+  defence parameters (`DixonColes.strength_table` → `scoreline_ui.
+  render_strength_table`; Scores × / Concedes × / xGD vs a league-average
+  side at a neutral venue, centred on the league's own sides), read from
+  the same `dc_params.json` as the scoreline forecast (one caveat: a team
+  the fit has never seen is shown at the average, while the forecast plays
+  it at zero parameters — the caption says so). Since 2026-09 it replaced
+  the per-match xG rates × schedule ratio as the rating: a joint fit with
+  shrinkage and time decay is the only one of the two that knows four
+  games are not thirty. The per-season rates below are context, behind a
+  toggle — never rank by them in copy.
 - `models/strength/sos.py` — the strength-of-schedule adjustment behind
-  the Match Predictor's Team Strength Ratings table (pure pandas;
+  that toggle's per-season xG-rate table (pure pandas;
   `app.calculate_sos_adjusted_strength` is the cached wrapper). Direction
   RULE: Def Strength is goals/xG conceded (lower = better), so a tough
   schedule is credited — attack × (league conceded ÷ opponents' conceded),

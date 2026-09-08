@@ -151,79 +151,99 @@ def render():
         league_avg_stats = model_data.get('league_avg_stats', {'ppg': 1.0, 'gpg': 1.19, 'gapg': 1.19, 'xgpg': 1.0, 'xgapg': 1.0, 'csrate': 0.25, 'shot_conv': 0.1, 'sot_rate': 0.35})
         team_ratings = model_data.get('team_ratings', {})
 
-        # Display Team Strength Ratings (Multi-Season with SOS)
+        # Team Strength Ratings — the Dixon-Coles attack / defence parameters
+        # (2026-09). They replaced the per-match xG rates × schedule ratio as
+        # the rating: that table treated four games as certainty and its
+        # schedule step was a ratio of noisy early-season numbers. The
+        # per-season rates stay available behind a toggle for context.
         with st.expander("Team Strength Ratings", expanded=False):
-            # Build season options filtered to selected league(s)
-            league_season_map = {}
-            for cid in selected_comp_ids:
-                if cid in COMPETITIONS:
-                    league_season_map.update(COMPETITIONS[cid]["seasons"])
-            league_season_labels = list(league_season_map.values())
-            # Default to current season for selected league
-            default_label = league_season_map.get(
-                COMPETITIONS[selected_comp_ids[0]].get("current_season") if selected_comp_ids else CURRENT_SEASON_ID,
-                league_season_labels[0] if league_season_labels else None
-            )
-            rating_seasons = st.multiselect(
-                "Seasons", league_season_labels,
-                default=[default_label] if default_label else [],
-                key="rating_seasons"
-            )
-            # Reverse-lookup season IDs from display names (league-filtered)
-            season_name_to_id = {v: k for k, v in league_season_map.items()}
-            rating_rows = []
-            for season_name in rating_seasons:
-                sid = season_name_to_id[season_name]
-                s_events = get_filtered_events(raw_events_df, sid, selected_comp_ids)
-                s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
-                ts_df = calculate_team_strength(s_events, s_matches, season_id=sid)
-                if ts_df.empty:
-                    continue
-                rolling_df = calculate_rolling_team_strength(s_events, s_matches, season_id=sid)
-                sos_df = calculate_sos_adjusted_strength(rolling_df, ts_df, season_id=sid)
-                for team in ts_df.index:
-                    raw_att = ts_df.loc[team, 'Attacking Strength']
-                    raw_def = ts_df.loc[team, 'Defending Strength']
-                    sos_att = sos_df.loc[team, 'sos_att'] if team in sos_df.index else raw_att
-                    sos_def = sos_df.loc[team, 'sos_def'] if team in sos_df.index else raw_def
-                    sos_factor = sos_df.loc[team, 'sos_factor'] if team in sos_df.index else np.nan
-                    # Count matches from rolling data
-                    team_rolling = rolling_df[rolling_df['team'] == team] if not rolling_df.empty else pd.DataFrame()
-                    n_matches = int(team_rolling['match_number'].max()) + 1 if not team_rolling.empty else 0
-                    rating_rows.append({
-                        'Rank': 0,
-                        'Team': team,
-                        'Season': season_name,
-                        'Att Strength': round(raw_att, 3),
-                        'Def Strength': round(raw_def, 3),
-                        'SOS Att': round(float(sos_att), 3),
-                        'SOS Def': round(float(sos_def), 3),
-                        'SOS Factor': round(float(sos_factor), 3) if not np.isnan(float(sos_factor)) else None,
-                        'Matches': n_matches,
-                    })
-            if rating_rows:
-                ratings_combined = pd.DataFrame(rating_rows)
-                # Overall = att - def, rescaled to 0-100
-                raw_overall = ratings_combined['SOS Att'] - ratings_combined['SOS Def']
-                ov_min = raw_overall.min()
-                ov_max = raw_overall.max()
-                if ov_max > ov_min:
-                    ratings_combined['Overall'] = round(((raw_overall - ov_min) / (ov_max - ov_min)) * 100, 1)
-                else:
-                    ratings_combined['Overall'] = 50.0
-                ratings_combined = ratings_combined.sort_values('Overall', ascending=False).reset_index(drop=True)
-                ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
-                st.dataframe(ratings_combined, use_container_width=True, hide_index=True, column_config=auto_column_config(ratings_combined))
-                st.caption(
-                    "Att / Def Strength = 30% goals + 70% xG per match (Def: lower is better). "
-                    "SOS columns credit a tough schedule: attack × (league conceded ÷ opponents' conceded), "
-                    "defence × (league scored ÷ opponents' scored), using each opponent's pre-match strength; "
-                    "SOS Factor > 1 = tougher-than-average schedule. Switches on after 3 matches against "
-                    "opponents with prior data, so it is noisy early in a season. "
-                    "Overall = SOS Att − SOS Def rescaled 0–100 across the rows shown."
+            import scoreline_ui
+            _lg = selected_comp_ids[0] if selected_comp_ids else None
+            _cur_sid = (COMPETITIONS[_lg].get("current_season", CURRENT_SEASON_ID)
+                        if _lg in COMPETITIONS else CURRENT_SEASON_ID)
+            _cur_matches = filter_by_league(get_season_matches(matches_summary_df, _cur_sid), selected_comp_ids)
+            _cur_teams = sorted(set(_cur_matches['homeTeamName'].dropna()) | set(_cur_matches['awayTeamName'].dropna()))
+            _cur_played = (_cur_matches[_cur_matches['status'] == 'Played']
+                           if 'status' in _cur_matches.columns else _cur_matches)
+            _played_counts = pd.concat([_cur_played['homeTeamName'], _cur_played['awayTeamName']]).value_counts()
+            try:
+                scoreline_ui.render_strength_table(
+                    _lg, _cur_teams, played=_played_counts,
+                    league_name=COMPETITIONS[_lg]["name"] if _lg in COMPETITIONS else None,
+                    season_label=SEASON_ID_MAP.get(_cur_sid, str(_cur_sid)),
+                    key='mp_dc_strength')
+            except Exception as _dc_err:  # a malformed params file must not take the page down
+                st.warning(f"Team strength table unavailable: {_dc_err}")
+
+            if st.toggle("Show per-match xG rates and schedule adjustment by season",
+                         value=False, key="rating_show_rates"):
+                # Build season options filtered to selected league(s)
+                league_season_map = {}
+                for cid in selected_comp_ids:
+                    if cid in COMPETITIONS:
+                        league_season_map.update(COMPETITIONS[cid]["seasons"])
+                league_season_labels = list(league_season_map.values())
+                # Default to current season for selected league
+                default_label = league_season_map.get(
+                    COMPETITIONS[selected_comp_ids[0]].get("current_season") if selected_comp_ids else CURRENT_SEASON_ID,
+                    league_season_labels[0] if league_season_labels else None
                 )
-            else:
-                st.info("No team strength data available for selected seasons.")
+                rating_seasons = st.multiselect(
+                    "Seasons", league_season_labels,
+                    default=[default_label] if default_label else [],
+                    key="rating_seasons"
+                )
+                # Reverse-lookup season IDs from display names (league-filtered)
+                season_name_to_id = {v: k for k, v in league_season_map.items()}
+                rating_rows = []
+                for season_name in rating_seasons:
+                    sid = season_name_to_id[season_name]
+                    s_events = get_filtered_events(raw_events_df, sid, selected_comp_ids)
+                    s_matches = filter_by_league(get_season_matches(matches_summary_df, sid), selected_comp_ids)
+                    ts_df = calculate_team_strength(s_events, s_matches, season_id=sid)
+                    if ts_df.empty:
+                        continue
+                    rolling_df = calculate_rolling_team_strength(s_events, s_matches, season_id=sid)
+                    sos_df = calculate_sos_adjusted_strength(rolling_df, ts_df, season_id=sid)
+                    for team in ts_df.index:
+                        raw_att = ts_df.loc[team, 'Attacking Strength']
+                        raw_def = ts_df.loc[team, 'Defending Strength']
+                        sos_att = sos_df.loc[team, 'sos_att'] if team in sos_df.index else raw_att
+                        sos_def = sos_df.loc[team, 'sos_def'] if team in sos_df.index else raw_def
+                        sos_factor = sos_df.loc[team, 'sos_factor'] if team in sos_df.index else np.nan
+                        # Count matches from rolling data
+                        team_rolling = rolling_df[rolling_df['team'] == team] if not rolling_df.empty else pd.DataFrame()
+                        n_matches = int(team_rolling['match_number'].max()) + 1 if not team_rolling.empty else 0
+                        rating_rows.append({
+                            'Rank': 0,
+                            'Team': team,
+                            'Season': season_name,
+                            'Att Strength': round(raw_att, 3),
+                            'Def Strength': round(raw_def, 3),
+                            'SOS Att': round(float(sos_att), 3),
+                            'SOS Def': round(float(sos_def), 3),
+                            'SOS Factor': round(float(sos_factor), 3) if not np.isnan(float(sos_factor)) else None,
+                            'Matches': n_matches,
+                        })
+                if rating_rows:
+                    ratings_combined = pd.DataFrame(rating_rows)
+                    # Net schedule-adjusted rate (goals + xG per match); no min-max
+                    # rescale — the model-based table above is the rating.
+                    ratings_combined['SOS Net'] = (ratings_combined['SOS Att'] - ratings_combined['SOS Def']).round(3)
+                    ratings_combined = ratings_combined.sort_values('SOS Net', ascending=False).reset_index(drop=True)
+                    ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
+                    st.dataframe(ratings_combined, use_container_width=True, hide_index=True, column_config=auto_column_config(ratings_combined))
+                    st.caption(
+                        "Att / Def Strength = 30% goals + 70% xG per match (Def: lower is better). "
+                        "SOS columns credit a tough schedule: attack × (league conceded ÷ opponents' conceded), "
+                        "defence × (league scored ÷ opponents' scored), using each opponent's pre-match strength; "
+                        "SOS Factor > 1 = tougher-than-average schedule. Switches on after 3 matches against "
+                        "opponents with prior data, so it is noisy early in a season. "
+                        "SOS Net = SOS Att − SOS Def. Descriptive per-season rates: a team with four "
+                        "matches is treated like one with thirty — rank by the model table above."
+                    )
+                else:
+                    st.info("No team strength data available for selected seasons.")
 
         # Season Simulation - Promotion/Relegation Probabilities
         @st.cache_data
