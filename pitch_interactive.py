@@ -94,6 +94,7 @@ def _pitch_layout(fig, height=800):
         plot_bgcolor=PITCH_BG, paper_bgcolor=PITCH_BG,
         margin=dict(l=10, r=10, t=64, b=10), height=height,
         showlegend=False, dragmode=False,
+        uirevision='pitch',   # keep Plotly's UI state across updates (no reset flash)
     )
     return fig
 

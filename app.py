@@ -8336,7 +8336,10 @@ def open_profile_from_selection(event, season_id):
         st.rerun()
 
 
-_PLOTLY_CFG = {'displayModeBar': False, 'responsive': True}
+# No 'responsive': Streamlit already sizes the chart to its container
+# (use_container_width) through its own ResizeObserver; Plotly's window-
+# resize listener on top of it is a second, competing resize pass.
+_PLOTLY_CFG = {'displayModeBar': False}
 
 
 # ==============================================================================
@@ -8734,7 +8737,7 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
                 event = st.plotly_chart(
                     fig,
                     use_container_width=True,
-                    config={'displayModeBar': False, 'responsive': True},
+                    config={'displayModeBar': False},
                     key=f"sr_dim_{team_name}_{dim_name}",
                     on_select='rerun' if on_team_select else 'ignore',
                     selection_mode='points',

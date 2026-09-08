@@ -187,6 +187,7 @@ def _full_pitch_shapes():
 
 def _full_pitch_layout(fig, height=820):
     fig.update_layout(
+        uirevision='pitch',
         shapes=_full_pitch_shapes(),
         xaxis=dict(range=[-4, 104], visible=False, fixedrange=True),
         yaxis=dict(range=[104, -8], visible=False, fixedrange=True, scaleanchor='x', scaleratio=0.68,
