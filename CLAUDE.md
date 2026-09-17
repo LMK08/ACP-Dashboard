@@ -221,6 +221,18 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   the sidebar (app.py CSS block) reserves the space — keep it whenever the
   scrollbar styling stays. Plotly charts take no `'responsive': True`
   config: Streamlit already sizes them to the container.
+- `models/templates/percentiles.py` — the minutes floor behind the template
+  percentiles (`minutes_floor`: 500', or half the current max while nobody
+  has 500' — the pipeline's early-season clamp) and `score_below_floor`,
+  which places a sub-floor player into the qualifying sample ON THEIR OWN
+  with the pipeline's own arithmetic. RULE: `calculate_player_percentiles_
+  and_scores` leaves every player under the floor at 0 in all `_percentile`
+  / `_Score` columns (deliberate for the leaderboards) — a radar of such a
+  player must go through `score_below_floor` first (the bulk export does,
+  and stamps a 'provisional' line), and any reader of a scored frame takes
+  the floor from `minutes_floor`, never a literal 500 (the raw-mode
+  population and the distribution panels did, and were empty for the first
+  weeks of 2026/27). Tests: `tests/test_template_percentiles.py`.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 - Match Predictor "Team Strength Ratings" = the Dixon-Coles attack /
   defence parameters (`DixonColes.strength_table` → `scoreline_ui.

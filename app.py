@@ -472,7 +472,7 @@ STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e
                              # override). v13 percentiles cache served stale minutes
                              # because the percentiles layer early-returns its disk cache
                              # and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v4'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v5'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -3161,6 +3161,7 @@ INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled pa
 from models.value.cvi import *
 from models.similarity import similar_players  # like-for-like search (pure)
 from models.strength import sos as sos_model  # strength-of-schedule adjustment (pure)
+from models.templates import percentiles as template_pct  # minutes floor + sub-floor radar scoring (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
     engine_value_eur_frame, projected_eur_interval,
@@ -4819,9 +4820,14 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     # cache_scope: league discriminator for the All-Seasons (season_id=None)
     # in-memory cache collision — see calculate_all_player_stats.
     """Calculates percentiles and scores for all players based on position.
-    Players below min_minutes are kept but ranked against the min_minutes+ population
-    (each low-minute player is temporarily added to the sample for their own percentile).
-    season_id is used as a cache key so Streamlit recomputes when the season changes."""
+    Only players at/above the minutes floor are ranked (against each other);
+    everyone below it is kept in the frame with every _percentile / _Score
+    column at 0 — deliberate for the leaderboards. A radar of a sub-floor
+    player must place them into the sample first: `template_pct.score_below_floor`
+    (the bulk export does). The floor is min_minutes, or the early-season
+    clamp from `template_pct.minutes_floor` — read it from there, never a
+    literal 500. season_id is used as a cache key so Streamlit recomputes
+    when the season changes."""
     # Disk cache: load pre-computed results if available
     _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP', 'Touches in penalty area_percentile'}
     _scope_key = _stats_scope_key(season_id, _player_data_df)
@@ -4859,10 +4865,10 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     # frame came back blank (2026/27 matchweek 1). Only when NO player meets
     # the floor, drop it to half the current max so scores exist from day one;
     # mid-season this never triggers and the floor stays as passed.
-    _max_min = data['totalMinutes'].max()
-    if pd.notna(_max_min) and _max_min < min_minutes:
-        min_minutes = max(1, int(_max_min * 0.5))
-        print(f"Early-season minutes floor: no player at requested floor; using {min_minutes}'")
+    _floor = template_pct.minutes_floor(data, min_minutes)
+    if _floor != min_minutes:
+        print(f"Early-season minutes floor: no player at requested floor; using {_floor}'")
+    min_minutes = _floor
     # Only include qualifying players (>= min_minutes) in percentile calculations
     _qualifying_mask = data['totalMinutes'] >= min_minutes
     if _qualifying_mask.sum() == 0:
@@ -5314,10 +5320,17 @@ def auto_column_config(df):
     return cfg
 
 
-def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None, season_label=None, radar_mode='percentile', population_data=None):
+def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups, full_df_for_ranking=None, season_label=None, radar_mode='percentile', population_data=None, note=None):
     """Helper function to create the base radar chart.
     radar_mode: 'percentile' (default) or 'raw' (raw per-90 values, mean ± 2σ scale).
     population_data: DataFrame of the position group population (required for 'raw' mode).
+    note: optional extra line under the info block (top right) — e.g. the
+        bulk export's 'below the minutes floor' caveat.
+    The raw-mode population is the players at/above the percentile floor the
+    pipeline applied to this scope (`template_pct.minutes_floor` of
+    full_df_for_ranking, the full scored frame) — 500' mid-season, half the
+    current maximum in the first weeks — so the mean ± 2σ scale never
+    collapses onto an empty sample.
     """
 
     num_metrics = len(metrics)
@@ -5331,10 +5344,12 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
 
     if radar_mode == 'raw' and population_data is not None:
         # --- RAW VALUE MODE: scale = mean ± 2σ ---
-        # Filter population to 500+ minutes
+        # Filter population to the qualifying (at/above the floor) players
         _pop = population_data.copy()
         if 'totalMinutes' in _pop.columns:
-            _pop = _pop[pd.to_numeric(_pop['totalMinutes'], errors='coerce').fillna(0) >= 500]
+            _floor = template_pct.minutes_floor(
+                full_df_for_ranking if full_df_for_ranking is not None else population_data)
+            _pop = _pop[pd.to_numeric(_pop['totalMinutes'], errors='coerce').fillna(0) >= _floor]
 
         # Compute mean and std for each metric from the population
         _means = {}; _stds = {}
@@ -5437,7 +5452,10 @@ def _create_base_radar_chart(ax, player_data, metrics, position, eligible_groups
     today = datetime.date.today()
     _season_str = season_label if season_label else SEASON_ID_MAP.get(CURRENT_SEASON_ID, '25-26')
     _mode_label = "Raw per 90 (mean ± 2σ)" if radar_mode == 'raw' else "Percentile"
-    plt.figtext(0.90, 0.90, f'Stats are per 90 mins \n{_mode_label} \n{_season_str} \nData via Wyscout \n@lucaskimball\nDate: {today}', horizontalalignment='left', fontsize=10, color='black')
+    _info_text = f'Stats are per 90 mins \n{_mode_label} \n{_season_str} \nData via Wyscout \n@lucaskimball\nDate: {today}'
+    if note:
+        _info_text += f'\n{note}'
+    plt.figtext(0.90, 0.90, _info_text, horizontalalignment='left', fontsize=10, color='black')
     # Build legend dynamically based on which categories are present in the metrics
     _has_off_ball = any(m in OFF_BALL_DEFENDING_METRICS for m in metrics)
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
@@ -5480,8 +5498,12 @@ def get_percentile_suffix(value):
     else: suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(value % 10, 'th')
     return suffix
 
-def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None, season_label=None, radar_mode='percentile'):
-    """Creates the combined figure with radar and distribution plots."""
+def create_radar_with_distributions(player_data, metrics, position, eligible_groups, all_position_data, full_df_for_ranking=None, season_label=None, radar_mode='percentile', note=None):
+    """Creates the combined figure with radar and distribution plots.
+    `note` is an optional extra line in the top-right info block (see
+    _create_base_radar_chart). The distribution panels show the players
+    at/above the scope's percentile floor (template_pct.minutes_floor of
+    full_df_for_ranking) — the same sample the percentiles were ranked in."""
 
     player_name = player_data['playerName'].values[0]
     highest_scoring_group = None; highest_score = -1; scores_by_group = {}
@@ -5509,7 +5531,7 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     _pop_group = POSITION_GROUPS.get(highest_scoring_group, [player_data['primaryPosition'].values[0]])
     _pop_for_radar = all_position_data[all_position_data['primaryPosition'].isin(_pop_group)]
 
-    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking, season_label=season_label, radar_mode=radar_mode, population_data=_pop_for_radar)
+    _create_base_radar_chart(ax_radar, player_data, metrics, position, eligible_groups, full_df_for_ranking=full_df_for_ranking, season_label=season_label, radar_mode=radar_mode, population_data=_pop_for_radar, note=note)
     
     ax_radar.text(-0.1, 1.065, f"{highest_scoring_group} Template",
                   horizontalalignment='left', verticalalignment='center', transform=ax_radar.transAxes,
@@ -5518,9 +5540,12 @@ def create_radar_with_distributions(player_data, metrics, position, eligible_gro
     # --- Distribution Plots ---
     primary_pos_group = POSITION_GROUPS.get(eligible_groups[0], [player_data['primaryPosition'].values[0]])
     relevant_players_data = all_position_data[all_position_data['primaryPosition'].isin(primary_pos_group)]
-    # Exclude sub-threshold players from distributions
+    # Exclude sub-floor players from distributions (the floor the pipeline
+    # applied to this scope, not a literal 500 — early season it is lower)
     if 'totalMinutes' in relevant_players_data.columns:
-        relevant_players_data = relevant_players_data[pd.to_numeric(relevant_players_data['totalMinutes'], errors='coerce').fillna(0) >= 500]
+        _dist_floor = template_pct.minutes_floor(
+            full_df_for_ranking if full_df_for_ranking is not None else all_position_data)
+        relevant_players_data = relevant_players_data[pd.to_numeric(relevant_players_data['totalMinutes'], errors='coerce').fillna(0) >= _dist_floor]
     
     if relevant_metrics and not relevant_players_data.empty:
         gs_distributions = GridSpec(len(relevant_metrics), 1, left=0.70, right=0.98, top=0.82, bottom=0.07, hspace=0.7, figure=fig)
@@ -5596,14 +5621,32 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
             the legacy in-memory ZIP-bytes path.
 
     Returns:
-        tuple: (result, rendered, skipped) where result is either the
-        output_path directory (when output_path given) or the
+        tuple: (result, rendered, skipped, resumed) where result is either
+        the output_path directory (when output_path given) or the
         in-memory ZIP bytes (legacy path).
+
+    Players below the scope's percentile floor (500', or the early-season
+    clamp — `template_pct.minutes_floor(full_pop_df)`) sit at 0 in every
+    _percentile / _Score column of the scored frame: an empty polygon,
+    "Score 0.00 (Rank: last)", and no way to pick a best-fit role (28% of
+    the >= 90' players at 2026/27 matchweek 4, when the floor was 197').
+    Each is placed into the qualifying sample on their own first
+    (`template_pct.score_below_floor` — the percentiles the pipeline would
+    have ranked them at; nobody else's numbers move), ranked against that
+    sample plus themselves, and the radar carries a 'provisional' line.
     """
     import io
     import re
     import gc
     import zipfile
+
+    floor = template_pct.minutes_floor(full_pop_df)
+    _export_mins = pd.to_numeric(export_df['totalMinutes'], errors='coerce').fillna(0)
+    sub_floor_idx = set(export_df.index[_export_mins < floor])
+    if sub_floor_idx:
+        export_df = template_pct.score_below_floor(
+            export_df, full_pop_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, floor)
+    _pop_mins = pd.to_numeric(full_pop_df['totalMinutes'], errors='coerce').fillna(0)
 
     # Position-bucket ordering: GK → CB → FB → CM → AM → WG → ST. Used to
     # name files so the ZIP listing groups by position and ranks players
@@ -5737,15 +5780,32 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
 
                 player_data_row = pd.DataFrame([player_row])
 
+                # A sub-floor player is ranked against the sample PLUS
+                # themselves: their own row in the ranking frame must carry
+                # the provisional scores (the scored frame has it at 0).
+                note = None
+                rank_df = full_pop_df
+                if player_row.name in sub_floor_idx:
+                    _n_sample = int((full_pop_df['primaryPosition'].isin(pop_pos_group)
+                                     & (_pop_mins >= floor)).sum())
+                    note = (f"Below the {floor}' percentile floor: provisional, "
+                            f"ranked vs the {_n_sample} players \u2265 {floor}'")
+                    _score_cols = [f'{r}_Score' for r in eligible_roles
+                                   if f'{r}_Score' in full_pop_df.columns]
+                    rank_df = full_pop_df.copy()
+                    rank_df.loc[player_row.name, _score_cols] = (
+                        player_row[_score_cols].to_numpy(dtype=float))
+
                 fig = create_radar_with_distributions(
                     player_data_row,
                     metrics_to_plot,
                     best_role,
                     eligible_roles,
                     all_position_data=final_population,
-                    full_df_for_ranking=full_pop_df,
+                    full_df_for_ranking=rank_df,
                     season_label=season_label,
                     radar_mode=radar_mode,
+                    note=note,
                 )
 
                 if output_path is not None:

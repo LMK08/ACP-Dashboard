@@ -24,6 +24,7 @@ def render():
     DRIBBLING_METRICS = app.DRIBBLING_METRICS
     ENGINE_DISPLAY_METRICS = app.ENGINE_DISPLAY_METRICS
     ENGINE_VALUE_TEMPER = app.ENGINE_VALUE_TEMPER
+    FIGURE_CACHE_VERSION = app.FIGURE_CACHE_VERSION
     engine_rows_for_scope = app.engine_rows_for_scope
     PROJECTED_EUR_COEF = app.PROJECTED_EUR_COEF
     PROJECTED_EUR_EXP = app.PROJECTED_EUR_EXP
@@ -66,6 +67,7 @@ def render():
     player_minutes_data = app.player_minutes_data
     raw_events_df = app.raw_events_df
     season_selector = app.season_selector
+    template_pct = app.template_pct
     player_stats_with_scores_df = app.player_stats_with_scores_df
 
 
@@ -164,11 +166,19 @@ def render():
         _BULK_CACHE_ERROR = f"{type(_cache_dir_exc).__name__}: {_cache_dir_exc}"
 
     def _bulk_cache_key(season_lbl, groups, mode, min_mins):
+        # The resume logic re-uses any PNG under this key, so the key must
+        # change whenever the radars would: the drawing code
+        # (FIGURE_CACHE_VERSION) and the scope's data (row count + minutes
+        # sum, the percentiles cache's own fingerprint) are part of it.
         payload = _json.dumps({
             "season": str(season_lbl),
             "groups": sorted([str(g) for g in groups]),
             "mode": str(mode),
             "min_mins": int(min_mins),
+            "figure_version": FIGURE_CACHE_VERSION,
+            "n_rows": int(len(player_stats_with_scores_df)),
+            "minutes_sum": int(pd.to_numeric(
+                player_stats_with_scores_df['totalMinutes'], errors='coerce').fillna(0).sum()),
         }, sort_keys=True)
         return _hashlib.md5(payload.encode("utf-8")).hexdigest()[:12]
 
@@ -1728,6 +1738,16 @@ def render():
                         + (f" · {len(_skipped)} skipped" if _skipped else "")
                         + ". Use the Prepare ZIP button below."
                     )
+                    _pct_floor = template_pct.minutes_floor(player_stats_with_scores_df)
+                    _n_provisional = int((pd.to_numeric(
+                        _export_df['totalMinutes'], errors='coerce').fillna(0) < _pct_floor).sum())
+                    if _n_provisional:
+                        st.caption(
+                            f"ℹ️ {_n_provisional} of these players are below the "
+                            f"{_pct_floor}' percentile floor: their percentiles, "
+                            f"scores and ranks are provisional (each placed into the "
+                            f"≥{_pct_floor}' sample on their own) and the radar says so."
+                        )
                 except Exception as _gen_exc:
                     _progress.empty()
                     import traceback as _tb
