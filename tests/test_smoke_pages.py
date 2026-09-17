@@ -308,7 +308,7 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
     sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
                 if v == season_label), None)
-    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v14_{sid}.parquet')
+    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v15_{sid}.parquet')
     if sid is None or not os.path.exists(cache):
         pytest.skip(f'percentiles cache for {season_label} not present')
     t = pq.read_table(cache, columns=['playerId', 'playerName', 'totalMinutes']).to_pandas()
@@ -331,7 +331,7 @@ def test_shadow_queue_adds_in_scope_players_and_keeps_others(app):
     season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
     sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
                 if v == season_label), None)
-    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v14_{sid}.parquet')
+    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v15_{sid}.parquet')
     if sid is None or not os.path.exists(cache):
         pytest.skip(f'percentiles cache for {season_label} not present')
     t = pq.read_table(cache, columns=['playerId', 'playerName', 'totalMinutes']).to_pandas()

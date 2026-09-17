@@ -104,4 +104,17 @@ PLAYER_ID_ALIASES = {
     # no stats. Remap 71835 → 1322978 so the GPA flows under the
     # correct younger bio.
     71835: 1322978,
+    # Alisson Calegari at Atlético CP (26-27 Liga 3). Wyscout opened a
+    # second record mid-season: pid 614969 is the established profile
+    # (Guimarães II 24/25, Sp. Covilhã 25/26, full bio, DOB 2001-01-03)
+    # and still carries the EVENTS of the MW3 Covilhã match; pid 1361357
+    # ("A. Calegari", empty bio, same DOB) carries the lineups and the
+    # season minutesOnField (164') for BOTH his matches plus the events
+    # from MW4 on. Remap 1361357 → 614969 so the history, the bio and
+    # this season's events land on one profile. NB the 61' minutes row
+    # under 614969 is only precompute_minutes' event-timestamp estimate
+    # of the SAME Covilhã appearance (he came on at 36'), so the
+    # loader's keep-FROM / drop-TO minutes rule yields the correct 164',
+    # not 225' (verified against the match sheets, 2026-09).
+    1361357: 614969,
 }

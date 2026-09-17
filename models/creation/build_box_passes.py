@@ -19,7 +19,7 @@ DASH = HERE.parent.parent
 GPA_PROJECT = DASH.parent.parent / 'GPA Model Project v2'
 
 # Keep in sync with PLAYER_ID_ALIASES in league_config.py (canonical pid mapping)
-PLAYER_ID_ALIASES = {71835: 1322978}
+PLAYER_ID_ALIASES = {71835: 1322978, 1361357: 614969}
 
 BOX_X = 84.0
 BOX_Y_LO, BOX_Y_HI = 19.0, 81.0

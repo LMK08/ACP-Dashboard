@@ -467,11 +467,12 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 192831  # Liga 3 default (2026/27)
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v14'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
+STATS_CACHE_VERSION = 'v15'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
                              # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
-                             # override). v13 percentiles cache served stale minutes
-                             # because the percentiles layer early-returns its disk cache
-                             # and only this version key invalidates it.
+                             # override; v15 = the 2026-09 Calegari alias, which merges
+                             # two 2026/27 rows into one). v13 percentiles cache served
+                             # stale minutes because the percentiles layer early-returns
+                             # its disk cache and only this version key invalidates it.
 FIGURE_CACHE_VERSION = 'v5'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
@@ -593,6 +594,20 @@ def load_data():
         # which is fine because this load runs after the module body.
         try:
             if 'player.id' in raw_events_df.columns and PLAYER_ID_ALIASES:
+                # One NAME per canonical pid as well: a mid-season record
+                # switch can carry a new spelling ("A. Calegari" vs "Alisson
+                # Calegari"), and the season-level visuals that key on
+                # player.name (average positions, corner takers, appearance
+                # counts) would otherwise still show two players. The
+                # canonical record's own spelling wins when it has events;
+                # a canonical pid with none (Camará) keeps the duplicate's.
+                if 'player.name' in raw_events_df.columns:
+                    _ev_pid = pd.to_numeric(raw_events_df['player.id'], errors='coerce')
+                    for _from, _to in PLAYER_ID_ALIASES.items():
+                        _to_names = raw_events_df.loc[_ev_pid == _to, 'player.name'].dropna()
+                        if len(_to_names):
+                            raw_events_df.loc[_ev_pid == _from, 'player.name'] = _to_names.mode().iloc[0]
+                    del _ev_pid
                 raw_events_df['player.id'] = raw_events_df['player.id'].map(
                     lambda p: PLAYER_ID_ALIASES.get(int(p), p)
                     if p is not None and not pd.isna(p) else p)
@@ -661,8 +676,12 @@ def load_data():
         # same stint duplicated by a Wyscout split (e.g. Mamadu Camará 25/26:
         # 71835=1144' + 1322978=1276'). Summing them double-counts — keep the
         # FROM row's minutes, DROP the TO row's, then remap, so the radar
-        # matches the ACP index (1144'). Any leftover same-pid collisions
-        # (genuine multi-position rows) still merge by summing.
+        # matches the ACP index (1144'). The same rule covers a mid-season
+        # record switch (Alisson Calegari 26/27: FROM 1361357 holds the API
+        # minutesOnField for every match, 164'; the TO row's 61' is only
+        # precompute_minutes' event estimate of one of those matches).
+        # Any leftover same-pid collisions (genuine multi-position rows)
+        # still merge by summing.
         try:
             if PLAYER_ID_ALIASES:
                 _alias_items = list(PLAYER_ID_ALIASES.items())
@@ -680,6 +699,14 @@ def load_data():
                     for _from, _to in _alias_items:
                         if _from in _present and _to in _present:
                             _drop |= (_pid == _to)
+                            # The canonical record's NAME wins, like its bio:
+                            # a mid-season record switch can carry a new
+                            # spelling ("A. Calegari") that the earlier
+                            # seasons and the profile selector don't use.
+                            if 'playerName' in _mdf.columns:
+                                _to_name = _mdf.loc[_pid == _to, 'playerName'].dropna()
+                                if len(_to_name):
+                                    _mdf.loc[_pid == _from, 'playerName'] = _to_name.iloc[0]
                     if _drop.any():
                         _mdf = _mdf[~_drop]
                         _pid = pd.to_numeric(_mdf['playerId'], errors='coerce')
@@ -817,6 +844,34 @@ def load_data():
             with open('match_lineups.pkl', 'rb') as f:
                 match_lineups = pickle.load(f)
             logger.info(f"Loaded lineup/substitution data for {len(match_lineups)} matches")
+        # Apply PLAYER_ID_ALIASES to lineup / bench / substitution pids too:
+        # the formation and timeline plotters match the (already remapped)
+        # event pids against these, so a duplicate left here would show the
+        # canonical player as a sub in matches he started.
+        try:
+            if PLAYER_ID_ALIASES and match_lineups:
+                def _alias_lineup_pid(p):
+                    try:
+                        return PLAYER_ID_ALIASES.get(int(p), p)
+                    except (TypeError, ValueError):
+                        return p
+                for _teams in match_lineups.values():
+                    if not isinstance(_teams, dict):
+                        continue
+                    for _side in _teams.values():
+                        if not isinstance(_side, dict):
+                            continue
+                        for _key in ('lineup', 'bench'):
+                            for _p in _side.get(_key, []) or []:
+                                if isinstance(_p, dict) and 'playerId' in _p:
+                                    _p['playerId'] = _alias_lineup_pid(_p['playerId'])
+                        for _sub in _side.get('substitutions', []) or []:
+                            if isinstance(_sub, dict):
+                                for _key in ('playerIn', 'playerOut'):
+                                    if _key in _sub:
+                                        _sub[_key] = _alias_lineup_pid(_sub[_key])
+        except NameError:
+            pass  # PLAYER_ID_ALIASES not defined yet
 
         logger.info(f"Loaded {len(raw_events_df)} events, {len(matches_summary_df)} matches")
         return raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups
