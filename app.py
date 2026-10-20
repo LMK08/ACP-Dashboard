@@ -473,7 +473,7 @@ STATS_CACHE_VERSION = 'v15'  # Bump when stat COLUMNS or cached VALUES change (e
                              # two 2026/27 rows into one). v13 percentiles cache served
                              # stale minutes because the percentiles layer early-returns
                              # its disk cache and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v5'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v6'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -670,18 +670,13 @@ def load_data():
         # Apply PLAYER_ID_ALIASES to per-season minutes dataframes so a
         # duplicate pid's minutes flow under the canonical pid.
         #
-        # The alias FROM pid is the stats-bearing record (that's why it's
-        # aliased); the engine reads it directly. When BOTH the FROM and the
-        # canonical TO pid have a minutes row in the SAME season, they are the
-        # same stint duplicated by a Wyscout split (e.g. Mamadu Camará 25/26:
-        # 71835=1144' + 1322978=1276'). Summing them double-counts — keep the
-        # FROM row's minutes, DROP the TO row's, then remap, so the radar
-        # matches the ACP index (1144'). The same rule covers a mid-season
-        # record switch (Alisson Calegari 26/27: FROM 1361357 holds the API
-        # minutesOnField for every match, 164'; the TO row's 61' is only
-        # precompute_minutes' event estimate of one of those matches).
-        # Any leftover same-pid collisions (genuine multi-position rows)
-        # still merge by summing.
+        # Since 2026-10 precompute_minutes.py resolves aliases at MATCH level
+        # from exact API minutes (a duplicate and its canonical record in the
+        # same match are one appearance), so the pkl carries canonical pids
+        # only and this block is a no-op on a fresh build. It stays as the
+        # guard for an older pkl: when BOTH pids have a row in a season they
+        # describe the same stint, so keep the larger row (never sum — Camará
+        # 25/26 and Calegari 26/27 were double-counted that way).
         try:
             if PLAYER_ID_ALIASES:
                 _alias_items = list(PLAYER_ID_ALIASES.items())
@@ -693,24 +688,15 @@ def load_data():
                     _mdf = _mdf.copy()
                     _pid = pd.to_numeric(_mdf['playerId'], errors='coerce')
                     _present = set(_pid.dropna().astype(int).tolist())
-                    # When both pids have a row this season, drop one of them.
-                    # An API-sourced row (competitionId set) beats an event
-                    # estimate (NaN): Wyscout can move the API minutes from one
-                    # record to the other between refreshes (Calegari 26/27:
-                    # 1361357 held them in 2026-09, 614969 holds them in
-                    # 2026-10, leaving 1361357 a 93' estimate). Otherwise the
-                    # FROM row wins; ALIAS_MINUTES_KEEP_FROM forces that.
                     _drop = pd.Series(False, index=_mdf.index)
-                    _has_comp = 'competitionId' in _mdf.columns
+                    _mins = (pd.to_numeric(_mdf['totalMinutes'], errors='coerce')
+                             if 'totalMinutes' in _mdf.columns
+                             else pd.Series(0, index=_mdf.index))
                     for _from, _to in _alias_items:
                         if _from in _present and _to in _present:
-                            _drop_pid = _to
-                            if _has_comp and _from not in ALIAS_MINUTES_KEEP_FROM:
-                                _from_api = _mdf.loc[_pid == _from, 'competitionId'].notna().any()
-                                _to_api = _mdf.loc[_pid == _to, 'competitionId'].notna().any()
-                                if _to_api and not _from_api:
-                                    _drop_pid = _from
-                            _drop |= (_pid == _drop_pid)
+                            _from_max = _mins[_pid == _from].max()
+                            _to_max = _mins[_pid == _to].max()
+                            _drop |= (_pid == (_from if _to_max >= _from_max else _to))
                             # The canonical record's NAME wins, like its bio:
                             # a mid-season record switch can carry a new
                             # spelling ("A. Calegari") that the earlier
@@ -905,32 +891,20 @@ def load_data():
 # PLAYER_ID_ALIASES lives in league_config.py (shared with the value
 # calibration script, which must apply the same remap to the fee join
 # without booting Streamlit). Add new aliases THERE.
-from league_config import PLAYER_ID_ALIASES, ALIAS_MINUTES_KEEP_FROM  # noqa: E402
+from league_config import PLAYER_ID_ALIASES  # noqa: E402
 
 # MINUTES_OVERRIDE — manual corrections for known Wyscout lineup-data errors a
 # data refresh can't fix. Keyed (playerId, seasonId) -> totalMinutes. Used when
 # Wyscout merged/changed a player's id on the backend so re-fetching by our
-# cached id 404s (see Manuel Pedro below). Applied to player_minutes_data in
+# cached id 404s. Applied to player_minutes_data in
 # load_data, so it survives a complete_player_minutes.pkl regeneration.
 MINUTES_OVERRIDE = {
-    # Manuel Pedro (AD Marco 09), Campeonato 23/24 (190230): Wyscout's lineup
-    # feed dropped ~25 of his matches (read 96'); his id 273828 was later merged
-    # on the backend, so a re-fetch by id 404s. His event record shows ~2,335'
-    # (a near-full season of starts) — override to that. (Lucas 2026-06)
-    (273828, 190230): 2335,
-    # Camp 23/24 lineup-gap goalkeepers: same Wyscout gap as the 63-outfielder
-    # fix (c7baa3a), but that sweep required >=500 event minutes, which these
-    # GK records missed. Lineup feed shows one match (~90') while their event
-    # record spans a full/partial season, so every per-90 GK metric (goals
-    # conceded, saves…) was inflated 10-30x. Values are event-derived minutes
-    # (same estimator as precompute_minutes.py). (2026-07)
-    (135928, 190230): 2933,   # André Preto (Pevidém) — 32 matches, was 90'
-    (593057, 190230): 2627,   # Diogo Figueiredo (Amarante) — 28 matches, was 96'
-    (553006, 190230): 2278,   # Heitor Silva (Ribeirão) — 24 matches, was 92'
-    (413326, 190230): 1971,   # Imerson Soares (Rabo Peixe) — 21 matches, was 93'
-    (623567, 190230): 1774,   # Pedro Teixeira (Marítimo II) — 19 matches, was 92'
-    (553543, 190230): 458,    # Pedro Palha (Vilar de Perdizes) — 5 matches, was 96'
-    (968986, 190230): 280,    # Caio Mendonça (Fontinhas) — 3 matches, was 94'
+    # Empty since 2026-10-20: every entry here (Manuel Pedro 23/24 and seven
+    # Camp 23/24 goalkeepers) was an event-derived estimate typed in by hand
+    # to cover gaps in the old season-level minutes feed. Minutes now come
+    # from Wyscout's per-match minutesOnField (match_minutes.py), which covers
+    # those players exactly; estimates are never used (Lucas 2026-10-20).
+    # Only ever add an EXACT figure (e.g. read off the official match sheet).
 }
 
 
@@ -2742,99 +2716,93 @@ def _calculate_age(birth_date):
         logger.warning(f"Failed to parse birth date '{birth_date}': {e}")
         return "N/A"
 
+@st.cache_data(ttl=86400)
+def load_match_player_minutes():
+    """Exact per-match minutes from the Wyscout API (match_minutes.py cache),
+    PLAYER_ID_ALIASES resolved. Columns: matchId, seasonId, competitionId,
+    playerId, minutes, started, positions ('cf:83,lw:16' = percent of his
+    time at each position). Minutes are never estimated (Lucas 2026-10-20):
+    anything not in here has no minutes, not a guess."""
+    from match_minutes import load_cache
+    from precompute_minutes import resolve_aliases
+    mm = load_cache()
+    return resolve_aliases(mm) if len(mm) else mm
+
+
+@st.cache_data(ttl=86400)
+def load_excluded_match_ids():
+    """Matches left out of per-90 stats: no API minutes inside a per-match
+    season (see match_minutes.excluded_match_ids)."""
+    from match_minutes import excluded_match_ids
+    try:
+        return frozenset(excluded_match_ids(pd.read_parquet('matches_summary.parquet',
+                                                            columns=['matchId', 'seasonId'])))
+    except Exception:
+        return frozenset()
+
+
+def _api_position_minutes(match_ids, player_id=None):
+    """(playerId, Position, Minutes) from the API's per-match position
+    percentages, over the given matches."""
+    from precompute_minutes import _position_minutes
+    mm = load_match_player_minutes()
+    if mm.empty:
+        return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
+    mm = mm[mm['matchId'].isin(set(pd.to_numeric(pd.Series(list(match_ids)), errors='coerce').dropna().astype('int64')))]
+    if player_id is not None:
+        mm = mm[mm['playerId'] == int(player_id)]
+    pos = _position_minutes(mm)
+    if pos.empty:
+        return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
+    out = (pos.groupby(['playerId', 'position'])['minutes'].sum().reset_index()
+              .rename(columns={'position': 'Position', 'minutes': 'Minutes'}))
+    out['Minutes'] = out['Minutes'].round(0).astype(int)
+    return out.sort_values(['playerId', 'Minutes'], ascending=[True, False]).reset_index(drop=True)
+
+
 @st.cache_data
 def get_player_minutes_by_position(_events_df, player_id, _player_match_log_df=None):
-    """
-    Calculate estimated minutes spent at each position for a player.
-    Uses proportional allocation of events per position within each match,
-    scaled to match-log totals when available.
-    """
-    player_events = _events_df[_events_df['player.id'] == player_id].copy()
-
-    if player_events.empty or 'player.position' not in player_events.columns:
+    """Minutes at each position for one player over the matches in
+    _events_df's scope — Wyscout's own per-match minutes x position share
+    (no event-based estimate). _player_match_log_df is unused; kept for the
+    call signature."""
+    if _events_df.empty or 'matchId' not in _events_df.columns:
         return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
-
-    player_events = player_events.dropna(subset=['player.position'])
-    player_events = player_events[player_events['player.position'].astype(str).str.strip() != '']
-
-    if player_events.empty:
+    pos = _api_position_minutes(_events_df['matchId'].dropna().unique(), _resolve_pid(player_id))
+    if pos.empty:
         return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
+    pos = pos[['Position', 'Minutes']].reset_index(drop=True)
+    total = pos['Minutes'].sum()
+    pos['Percentage'] = (pos['Minutes'] / total * 100).round(1) if total > 0 else 0.0
+    return pos
 
-    # Count events per (matchId, position)
-    match_pos_counts = player_events.groupby(['matchId', 'player.position']).size().reset_index(name='event_count')
-    match_totals = match_pos_counts.groupby('matchId')['event_count'].sum().reset_index(name='total_events')
-    match_pos_counts = match_pos_counts.merge(match_totals, on='matchId')
-    match_pos_counts['proportion'] = match_pos_counts['event_count'] / match_pos_counts['total_events']
-
-    # Estimate minutes per match from events (last minute - first minute)
-    match_minutes = player_events.groupby('matchId')['minute'].agg(['min', 'max']).reset_index()
-    match_minutes['match_minutes'] = (match_minutes['max'] - match_minutes['min']).clip(lower=1)
-
-    # Scale event-derived minutes to match the match-log total for better accuracy
-    if _player_match_log_df is not None and not _player_match_log_df.empty and 'Minutes' in _player_match_log_df.columns:
-        total_from_log = pd.to_numeric(_player_match_log_df['Minutes'], errors='coerce').sum()
-        total_from_events = match_minutes['match_minutes'].sum()
-        if total_from_events > 0 and total_from_log > 0:
-            match_minutes['match_minutes'] = match_minutes['match_minutes'] * (total_from_log / total_from_events)
-
-    match_pos_counts = match_pos_counts.merge(match_minutes[['matchId', 'match_minutes']], on='matchId')
-    match_pos_counts['position_minutes'] = match_pos_counts['proportion'] * match_pos_counts['match_minutes']
-
-    # Aggregate across all matches
-    position_totals = match_pos_counts.groupby('player.position')['position_minutes'].sum().reset_index()
-    position_totals.columns = ['Position', 'Minutes']
-
-    total = position_totals['Minutes'].sum()
-    position_totals['Percentage'] = (position_totals['Minutes'] / total * 100) if total > 0 else 0
-    position_totals['Minutes'] = position_totals['Minutes'].round(0).astype(int)
-    position_totals['Percentage'] = position_totals['Percentage'].round(1)
-    position_totals = position_totals.sort_values('Minutes', ascending=False).reset_index(drop=True)
-
-    return position_totals
 
 @st.cache_data
 def get_all_players_minutes_by_position(_events_df):
-    """
-    Batch version of get_player_minutes_by_position: computes estimated
-    position-minutes for ALL players at once from event data.
-    Returns a DataFrame with columns: playerId, Position, Minutes.
-    """
-    if _events_df.empty or 'player.position' not in _events_df.columns:
+    """Batch version: (playerId, Position, Minutes) for every player over the
+    matches in _events_df's scope, from the API (see above)."""
+    if _events_df.empty or 'matchId' not in _events_df.columns:
         return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
-
-    df = _events_df.dropna(subset=['player.id', 'player.position']).copy()
-    df = df[df['player.position'].astype(str).str.strip() != '']
-    if df.empty:
-        return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
-
-    # Count events per (player, match, position)
-    match_pos_counts = df.groupby(['player.id', 'matchId', 'player.position']).size().reset_index(name='event_count')
-    match_totals = match_pos_counts.groupby(['player.id', 'matchId'])['event_count'].sum().reset_index(name='total_events')
-    match_pos_counts = match_pos_counts.merge(match_totals, on=['player.id', 'matchId'])
-    match_pos_counts['proportion'] = match_pos_counts['event_count'] / match_pos_counts['total_events']
-
-    # Estimate minutes per (player, match) from events
-    match_minutes = df.groupby(['player.id', 'matchId'])['minute'].agg(['min', 'max']).reset_index()
-    match_minutes['match_minutes'] = (match_minutes['max'] - match_minutes['min']).clip(lower=1)
-
-    match_pos_counts = match_pos_counts.merge(match_minutes[['player.id', 'matchId', 'match_minutes']], on=['player.id', 'matchId'])
-    match_pos_counts['position_minutes'] = match_pos_counts['proportion'] * match_pos_counts['match_minutes']
-
-    # Aggregate across all matches per player per position
-    result = match_pos_counts.groupby(['player.id', 'player.position'])['position_minutes'].sum().reset_index()
-    result.columns = ['playerId', 'Position', 'Minutes']
-    result['Minutes'] = result['Minutes'].round(0).astype(int)
-    result = result.sort_values(['playerId', 'Minutes'], ascending=[True, False]).reset_index(drop=True)
-
-    return result
+    return _api_position_minutes(_events_df['matchId'].dropna().unique())
 
 @st.cache_data(ttl=86400)
-def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None):
+def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None,
+                           player_id=None):
     """
     Goes through all match data and extracts the individual match stats
     for a single selected player.
+
+    'Minutes' is Wyscout's exact minutesOnField for that match (match_minutes
+    cache, looked up by player_id). The event-derived minutes stored in
+    all_match_data are never shown; with no API value the cell is empty.
     """
     player_matches = []
+    _api_mins = {}
+    if player_id is not None:
+        _mm = load_match_player_minutes()
+        if not _mm.empty:
+            _mm = _mm[_mm['playerId'] == _resolve_pid(player_id)]
+            _api_mins = dict(zip(_mm['matchId'].astype('int64'), _mm['minutes']))
 
     # Create a quick lookup map for match info
     match_info_map = _matches_summary_df.set_index('matchId').to_dict('index')
@@ -2863,6 +2831,7 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, se
         if player_stats_series is not None:
             # Convert series to a dictionary and add match info
             stats_dict = player_stats_series.to_dict()
+            stats_dict['Minutes'] = _api_mins.get(int(match_id))
             stats_dict['Match'] = opponent
             stats_dict['Date'] = match_info.get('dateutc', 'N/A')
             stats_dict['Score'] = match_info.get('score', 'N/A')
@@ -2888,9 +2857,13 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, se
     if 'Date' in match_log_df.columns:
         match_log_df['Date'] = match_log_df['Date'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A')
 
-    # Fill NaN in numeric columns only (after date is already a string)
+    # Fill NaN in the stat columns (after date is already a string) — but
+    # never in Minutes: a missing API value stays missing, not 0.
+    _mins = match_log_df['Minutes'] if 'Minutes' in match_log_df.columns else None
     match_log_df = match_log_df.fillna(0)
-    
+    if _mins is not None:
+        match_log_df['Minutes'] = pd.to_numeric(_mins, errors='coerce').astype('Int64')
+
     return match_log_df
 
 @st.cache_data
@@ -3987,6 +3960,19 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
         # the callers already handle ("Player data not available ...").
         logger.warning("[player-stats] no events for season_id=%s — returning empty stats", season_id)
         return pd.DataFrame()
+    # Numerator and denominator over the SAME matches: per-90s divide by
+    # exact API minutes (complete_player_minutes = minutes from matches WITH
+    # events), so a match Wyscout gives no minutes for (31 Liga 3 matches,
+    # 2021-26) must not contribute events either, or those players' per-90s
+    # inflate. Campeonato seasons have no per-match data at all and run on
+    # stored season totals, so they are not filtered.
+    _excl = load_excluded_match_ids()
+    if _excl and 'matchId' in _raw_events_df.columns:
+        _keep = ~pd.to_numeric(_raw_events_df['matchId'], errors='coerce').isin(_excl)
+        if not _keep.all():
+            logger.info("[player-stats] %d events in %d matches without API minutes excluded",
+                        int((~_keep).sum()), int(_raw_events_df.loc[~_keep, 'matchId'].nunique()))
+            _raw_events_df = _raw_events_df[_keep]
     # Disk cache: load pre-computed results if available
     _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     _scope_key = _stats_scope_key(season_id, _raw_events_df)

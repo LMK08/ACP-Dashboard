@@ -73,47 +73,36 @@ for trait in ['aerial', 'takeon', 'stopper', 'shield', 'press']:
     eng[f'duel_{trait}_rd'] = eng['playerId'].map(t['rd'])
     eng[f'duel_{trait}_n'] = eng['playerId'].map(t['n'])
 
-# TRUE minutes from the lineup-based dashboard source: covers the 57
-# permanently-eventless Camp matches the engine's event-derived minutes
-# miss (~116k player-minutes in Camp 25/26). Display-only — per-90
-# rates keep the event-based denominator their numerators come from.
-import pickle as _pickle
-_pm_path = _DASH / 'complete_player_minutes.pkl'
-if _pm_path.exists():
-    with open(_pm_path, 'rb') as _f:
-        _pm = _pickle.load(_f)
-    _rows = []
-    for _sid, _df in _pm.items():
-        if _df is None or len(_df) == 0:
-            continue
-        _t = _df.groupby('playerId')['totalMinutes'].sum().reset_index()
-        _t['seasonId'] = int(_sid)
-        _rows.append(_t)
-    _lm = pd.concat(_rows, ignore_index=True).rename(
-        columns={'totalMinutes': 'mins_lineup'})
-    # Manual lineup-minutes overrides — mirror app.py MINUTES_OVERRIDE so the
-    # ACP radar header matches the regular radar for Wyscout lineup-data errors
-    # a refresh can't fix. Keyed (playerId, seasonId). Manuel Pedro 23/24: 96'
-    # was a Wyscout dropped-matches gap, his id 273828 was merged on the backend
-    # so a re-fetch 404s — event record ~2,335'. (Lucas 2026-06)
-    # Camp 23/24 lineup-gap goalkeepers (2026-07): same gap family, but the
-    # c7baa3a outfielder sweep required >=500 event minutes which these GK
-    # records missed — lineup feed shows ~90' for full/partial seasons.
-    # Event-derived minutes, mirroring app.py MINUTES_OVERRIDE.
-    _MINS_OVERRIDE = {
-        (273828, 190230): 2335,   # Manuel Pedro (AD Marco 09)
-        (135928, 190230): 2933,   # André Preto (Pevidém)
-        (593057, 190230): 2627,   # Diogo Figueiredo (Amarante)
-        (553006, 190230): 2278,   # Heitor Silva (Ribeirão)
-        (413326, 190230): 1971,   # Imerson Soares (Rabo Peixe)
-        (623567, 190230): 1774,   # Pedro Teixeira (Marítimo II)
-        (553543, 190230): 458,    # Pedro Palha (Vilar de Perdizes)
-        (968986, 190230): 280,    # Caio Mendonça (Fontinhas)
-    }
-    for (_pid_o, _sid_o), _mins_o in _MINS_OVERRIDE.items():
-        _mask = (_lm['playerId'] == _pid_o) & (_lm['seasonId'] == _sid_o)
-        if _mask.any():
-            _lm.loc[_mask, 'mins_lineup'] = float(_mins_o)
+# TRUE minutes for display: every match Wyscout reports minutesOnField for,
+# INCLUDING the 57 eventless Camp 25/26 matches the per-90 denominator
+# (mins_played, exact API minutes over matches WITH events) leaves out.
+# Exact per-match API minutes, aliases resolved (match_minutes.py) — no
+# estimates and no hand-typed overrides (Lucas 2026-10-20).
+import pickle
+import sys as _sys
+_sys.path.insert(0, str(_DASH))
+from match_minutes import load_cache as _load_match_minutes  # noqa: E402
+from precompute_minutes import resolve_aliases as _resolve_aliases  # noqa: E402
+_mm = _load_match_minutes()
+if len(_mm):
+    _lm = (_resolve_aliases(_mm).groupby(['seasonId', 'playerId'], as_index=False)
+           ['minutes'].sum().rename(columns={'minutes': 'mins_lineup'}))
+    # Seasons with no per-match data (Campeonato, Wyscout access lost
+    # 2026-10): the exact stored season totals.
+    from precompute_minutes import _season_total_rows  # noqa: E402
+    from match_minutes import per_match_seasons as _per_match_seasons  # noqa: E402
+    _pms = _per_match_seasons(_DASH / 'match_player_minutes.parquet',
+                              pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['matchId', 'seasonId']))
+    _lm = _lm[_lm['seasonId'].isin(_pms)]
+    with open(_DASH / 'player_minutes_and_positions.pkl', 'rb') as _f:
+        _api_seasons = pickle.load(_f)
+    _fb = [(_season_total_rows(int(_sid), _df)[['playerId', 'totalMinutes']]
+            .assign(seasonId=int(_sid)).rename(columns={'totalMinutes': 'mins_lineup'}))
+           for _sid, _df in _api_seasons.items() if int(_sid) not in _pms]
+    if _fb:
+        _lm = pd.concat([_lm] + _fb, ignore_index=True)
+    _lm['seasonId'] = _lm['seasonId'].astype('int64')
+    _lm['playerId'] = _lm['playerId'].astype('int64')
     eng = eng.merge(_lm, on=['playerId', 'seasonId'], how='left')
     eng['mins_lineup'] = eng['mins_lineup'].fillna(eng['mins_played'])
 else:

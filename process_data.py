@@ -1366,25 +1366,11 @@ def calculate_match_data(match_df, home_team, away_team):
                 print(f"         ... No events found for {team_name}")
                 return pd.DataFrame()
 
-            # --- Minutes Played Logic ---
-            starters = team_events['player.name'].dropna().unique()[:11]
-            match_end_minute = match_df['minute'].max()
-            player_minutes = {}
-            for player in team_events['player.name'].dropna().unique():
-                player_events_for_mins = team_events[team_events['player.name'] == player]
-                if player_events_for_mins.empty:
-                    continue
-                # Use .get with default for safety
-                minutes_series = pd.to_numeric(player_events_for_mins.get('minute'), errors='coerce')
-                if player in starters:
-                     player_minutes[player] = minutes_series.max() # Max minute they appeared in
-                else:
-                    minute_on = minutes_series.min() # Min minute they appeared in
-                    if pd.notna(minute_on):
-                         player_minutes[player] = match_end_minute - minute_on
-                    else:
-                         player_minutes[player] = 0 # Assign 0 if minute_on is NaN
-
+            # --- Minutes ---
+            # Not computed here: the event-timestamp guess this block used to
+            # make is never shown (Lucas 2026-10-20). The Match Analysis page,
+            # its PDF and the player match log fill 'Minutes' from Wyscout's
+            # exact per-match minutesOnField (match_minutes.py) at display time.
 
             # --- Stat Calculation Loop ---
             player_stats_list = []
@@ -1433,9 +1419,7 @@ def calculate_match_data(match_df, home_team, away_team):
                 yellow_cards = player_events[player_events.get('infraction.yellowCard') == True].shape[0]
                 red_cards = player_events[player_events.get('infraction.redCard') == True].shape[0]
                 
-                # Ensure minutes value is valid before formatting
-                minutes_val = player_minutes.get(player)
-                minutes_display = f"{int(minutes_val)}'" if pd.notna(minutes_val) else "N/A"
+                minutes_display = "N/A"  # filled from exact API minutes at display time
 
                 # Per-match xA (split into xAOP/xASP)
                 _xa_op = 0.0; _xa_sp = 0.0
@@ -1936,8 +1920,14 @@ def main():
     else:
         print("❌ Failed to fetch player minutes for any season.")
 
-    # --- 10. PRECOMPUTE COMPLETE PLAYER MINUTES (3-source merge) ---
-    print("\nPrecomputing complete player minutes (API + lineup + event sources)...")
+    # --- 10. EXACT PER-MATCH MINUTES + COMPLETE PLAYER MINUTES ---
+    # Minutes are never estimated (Lucas 2026-10-20): complete_player_minutes
+    # is built ONLY from Wyscout's per-match minutesOnField (match_minutes.py,
+    # incremental cache match_player_minutes.parquet).
+    print("\nFetching exact per-match player minutes (Wyscout API)...")
+    from match_minutes import update_cache as update_match_minutes
+    update_match_minutes(all_matches_summary_df)
+    print("\nPrecomputing complete player minutes (exact API minutes only)...")
     from precompute_minutes import main as precompute_minutes_main
     precompute_minutes_main()
 

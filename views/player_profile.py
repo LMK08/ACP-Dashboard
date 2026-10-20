@@ -219,7 +219,7 @@ def render():
         st.stop()
 
     # --- 3. Get Player's Match Log ---
-    player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df, season_id=selected_season_id)
+    player_match_log_df = get_player_match_stats(selected_player_name, all_match_data, profile_matches_df, season_id=selected_season_id, player_id=player_id)
 
     # Enrich match log with per-match xA (xAOP/xASP) and xT (xTOP/xTSP) from raw events
     if not player_match_log_df.empty and not profile_events_df.empty:

@@ -117,16 +117,12 @@ PLAYER_ID_ALIASES = {
     # loader's keep-FROM / drop-TO minutes rule yields the correct 164',
     # not 225' (verified against the match sheets, 2026-09).
     # UPDATE 2026-10: Wyscout moved the API minutes back onto 614969 (357'
-    # through MW6) and 1361357 is left with only a 93' event estimate, so
-    # the loader now keeps whichever row is API-sourced (see below).
+    # through MW6). Minutes now come only from the per-match API
+    # (match_minutes.py), where 1361357 has none.
     1361357: 614969,
+    # Nicolás Souza at Atlético CP (26-27 Liga 3): the same mid-season
+    # duplicate as Calegari (adjacent pid, created together). 1361362
+    # ("N. Cristian de Souza", same DOB 2001-03-10) only held events; the API
+    # minutes (149' through MW6) are all on 598545.
+    1361362: 598545,
 }
-
-# Alias FROM pids whose minutes row is kept even when it is only an event
-# estimate and the canonical TO pid has an API row. Default (pids not listed):
-# when both pids have a row in a season, the API-sourced row (competitionId
-# set) wins over an event estimate (competitionId NaN); if both or neither
-# are API rows, the FROM row wins.
-#   71835 Mamadu Camará 25/26: the 1144' estimate is kept on purpose so the
-#   radar matches the ACP index (the API row says 1276').
-ALIAS_MINUTES_KEEP_FROM = {71835}

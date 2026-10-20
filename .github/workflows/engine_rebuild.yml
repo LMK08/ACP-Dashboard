@@ -78,6 +78,8 @@ jobs:
         working-directory: GPA Model Project v2
         env:
           RAW_EVENTS_PATH: ${{ github.workspace }}/Match_Reports_API/Dashboard/raw_events.parquet
+          # exact_minutes.py reads match_player_minutes.parquet + league_config.py here
+          DASHBOARD_DIR: ${{ github.workspace }}/Match_Reports_API/Dashboard
         run: python src/split_events_for_engine.py
 
       - name: Phase 1 — GPA chain (normalize → action values → export)

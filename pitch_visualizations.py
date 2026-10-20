@@ -252,7 +252,6 @@ def plot_average_positions(events_df, team_name, title=None, player_names=None,
         avg = avg.nlargest(14, 'count')
 
     is_single_match = te['matchId'].nunique() == 1
-    match_max = te['minute'].max() if is_single_match else 0
 
     pitch, fig, ax = _make_pitch()
 
@@ -283,11 +282,8 @@ def plot_average_positions(events_df, team_name, title=None, player_names=None,
                     label += f" In {sub_in_map[pid]}'"
                 if pid in sub_off_map:
                     label += f" Off {sub_off_map[pid]}'"
-            else:
-                if row['first_min'] > 5:
-                    label += f" In {int(row['first_min'])}'"
-                if row['last_min'] < match_max - 5:
-                    label += f" Off {int(row['last_min'])}'"
+            # No lineup data -> no sub minutes: they are never guessed from
+            # the first/last event (Lucas 2026-10-20).
 
         t = ax.text(row['x'], row['y'] - 3.5, label,
                     ha='center', va='top', fontsize=8, fontweight='bold',

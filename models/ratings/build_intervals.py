@@ -6,6 +6,8 @@ substitutions [{minute, playerIn, playerOut}], and red-card minutes in
 the lineup/bench card fields (Wyscout stores the MINUTE as a string in
 'redCards'; '0' = none).
 
+Full time: the longest API minutesOnField in the match (exact).
+
 Timeline: cumulative match minutes (Wyscout sub minutes and event
 `minute` are both cumulative), so intervals and events are directly
 comparable without period offsets.
@@ -33,7 +35,26 @@ ev = pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet',
                  ignore_index=True)
 ev['u'] = (pd.to_numeric(ev['minute'], errors='coerce').fillna(0)
              + pd.to_numeric(ev['second'], errors='coerce').fillna(0) / 60)
-match_end = ev.groupby('matchId')['u'].max().to_dict()
+# Full time = the longest Wyscout minutesOnField in the match (a starter who
+# played it all; includes stoppage time) — exact, never the last event
+# (Lucas 2026-10-20: minutes are never estimated). A match without API
+# minutes has no intervals.
+import sys
+sys.path.insert(0, str(_DASH))
+from match_minutes import load_cache  # noqa: E402
+_mm = load_cache()
+match_end = _mm.groupby('matchId')['minutes'].max().astype(float).to_dict()
+# Exception (Lucas 2026-10-20): seasons with NO per-match API data at all
+# (Campeonato — Wyscout access lost 2026-10) take full time from the match's
+# last event, as before, so Camp RAPM survives. It only places the end of the
+# final on-pitch segment; no player's minutes are derived from it.
+_ms = pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['matchId', 'seasonId']).dropna()
+from match_minutes import per_match_seasons  # noqa: E402
+_pm_seasons = per_match_seasons(_DASH / 'match_player_minutes.parquet', _ms)
+_ev_end = ev.groupby('matchId')['u'].max()
+for _mid, _sid in zip(_ms['matchId'].astype('int64'), _ms['seasonId'].astype('int64')):
+    if _sid not in _pm_seasons and _mid in _ev_end.index:
+        match_end[_mid] = max(float(_ev_end[_mid]), 90.0)
 team_id = (ev[['matchId', 'team.name', 'team.id']].drop_duplicates()
               .set_index(['matchId', 'team.name'])['team.id'].to_dict())
 
@@ -45,7 +66,7 @@ for mid, teams in ml.items():
     if end_u is None:
         n_no_end += 1
         continue
-    end_u = max(float(end_u), 90.0)
+    end_u = float(end_u)
     for tname, td in (teams or {}).items():
         if not isinstance(td, dict):
             continue
@@ -91,7 +112,7 @@ for mid, teams in ml.items():
 
 iv = pd.DataFrame(rows)
 print(f"  {len(iv):,} intervals across {iv['matchId'].nunique():,} matches "
-       f"({n_no_end} matches had no events)")
+       f"({n_no_end} lineup matches have no Wyscout minutes — skipped)")
 print(f"  teamId resolved by name: {iv['teamId'].notna().mean()*100:.1f}%")
 
 # Fallback for name drift between lineups and events: assign the

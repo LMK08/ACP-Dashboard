@@ -24,6 +24,11 @@ v1 reference numbers: G1 0.310, G2 wMSE 3.1479 (vs 3.1763 / 3.1813).
 
 Run from the Dashboard dir: python models/ratings/rapm_v2.py
 """
+raise SystemExit(
+    f"{__file__}: retired 2026-10-20 — its on-pitch segments came from first/"
+    "last-event timestamps, an estimate of minutes (never used now). The live "
+    "model is models/ratings/rapm_v4.py on exact intervals (build_intervals.py).")
+
 from pathlib import Path
 import numpy as np
 import pandas as pd

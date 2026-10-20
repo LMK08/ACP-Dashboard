@@ -108,7 +108,7 @@ jobs:
           git config --global user.email 'github-actions-bot@users.noreply.github.com'
 
           # Add all data files EXCEPT raw_events.parquet (too large for GitHub, lives on HF only)
-          git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet opta_ratings.parquet
+          git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet opta_ratings.parquet match_player_minutes.parquet
           git add -f models/scoreline/dc_params.json
           git add -f *.pkl
 

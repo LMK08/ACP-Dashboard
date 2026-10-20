@@ -24,6 +24,7 @@ def render():
     get_filtered_events = app.get_filtered_events
     get_season_ids_for_selection = app.get_season_ids_for_selection
     get_season_matches = app.get_season_matches
+    load_match_player_minutes = app.load_match_player_minutes
     league_selector = app.league_selector
     load_obv_viz_data = app.load_obv_viz_data
     logger = app.logger
@@ -195,6 +196,23 @@ def render():
         _ps_src = match_data.get('player_stats') or {}
         _disp_player_stats = {k: v.copy() if isinstance(v, pd.DataFrame) else v
                               for k, v in _ps_src.items()}
+        # Minutes = Wyscout's exact minutesOnField for this match. The
+        # 'Minutes' stored in all_match_data is an event-timestamp estimate
+        # and is never shown (Lucas 2026-10-20); no API value -> '-'.
+        if {'player.id', 'player.name'}.issubset(match_events_df.columns):
+            _mm = load_match_player_minutes()
+            _mm = _mm[_mm['matchId'] == int(selected_match_id)] if not _mm.empty else _mm
+            _pid_mins = dict(zip(_mm['playerId'], _mm['minutes'])) if not _mm.empty else {}
+            _nm_ids = (match_events_df.dropna(subset=['player.id', 'player.name'])
+                       .drop_duplicates('player.name'))
+            _name2pid = {n: app._resolve_pid(int(p)) for n, p in
+                         zip(_nm_ids['player.name'], _nm_ids['player.id'])}
+            for _side, _df in _disp_player_stats.items():
+                if isinstance(_df, pd.DataFrame) and 'Minutes' in _df.columns:
+                    _df['Minutes'] = [
+                        f"{int(_pid_mins[_name2pid[nm]])}'"
+                        if _name2pid.get(nm) in _pid_mins else '-'
+                        for nm in _df.index]
         _obv_cols_ok = {'player.id', 'player.name',
                         'team.id', 'team.name'}.issubset(match_events_df.columns)
         if _obv_match['players'] is not None and _obv_cols_ok:
