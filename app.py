@@ -3991,8 +3991,16 @@ def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=Non
     _REQUIRED_STAT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP'}
     _scope_key = _stats_scope_key(season_id, _raw_events_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_stats_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
+    # Minutes are part of the fingerprint: a minutes-only change (an alias
+    # fix, a corrected API value) leaves n_matches/n_events untouched, and
+    # without this the stale cache kept serving Alisson Calegari 93' after
+    # the 2026-10-20 alias fix put 357' in the minutes data.
     _data_fp = {'n_matches': int(_raw_events_df['matchId'].nunique()),
-                'n_events': int(len(_raw_events_df))}
+                'n_events': int(len(_raw_events_df)),
+                'minutes_sum': int(pd.to_numeric(
+                    _player_minutes_df['totalMinutes'], errors='coerce').fillna(0).sum())
+                if isinstance(_player_minutes_df, pd.DataFrame)
+                and 'totalMinutes' in _player_minutes_df.columns else 0}
     if os.path.exists(cache_path) and _cache_is_stale(cache_path, _data_fp):
         print(f"Player-stats cache for scope {_scope_key} predates current data — recomputing")
         os.remove(cache_path)
