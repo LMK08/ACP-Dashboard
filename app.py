@@ -693,12 +693,24 @@ def load_data():
                     _mdf = _mdf.copy()
                     _pid = pd.to_numeric(_mdf['playerId'], errors='coerce')
                     _present = set(_pid.dropna().astype(int).tolist())
-                    # drop canonical(TO) duplicate rows when the FROM row is also
-                    # present this season — the FROM record is authoritative
+                    # When both pids have a row this season, drop one of them.
+                    # An API-sourced row (competitionId set) beats an event
+                    # estimate (NaN): Wyscout can move the API minutes from one
+                    # record to the other between refreshes (Calegari 26/27:
+                    # 1361357 held them in 2026-09, 614969 holds them in
+                    # 2026-10, leaving 1361357 a 93' estimate). Otherwise the
+                    # FROM row wins; ALIAS_MINUTES_KEEP_FROM forces that.
                     _drop = pd.Series(False, index=_mdf.index)
+                    _has_comp = 'competitionId' in _mdf.columns
                     for _from, _to in _alias_items:
                         if _from in _present and _to in _present:
-                            _drop |= (_pid == _to)
+                            _drop_pid = _to
+                            if _has_comp and _from not in ALIAS_MINUTES_KEEP_FROM:
+                                _from_api = _mdf.loc[_pid == _from, 'competitionId'].notna().any()
+                                _to_api = _mdf.loc[_pid == _to, 'competitionId'].notna().any()
+                                if _to_api and not _from_api:
+                                    _drop_pid = _from
+                            _drop |= (_pid == _drop_pid)
                             # The canonical record's NAME wins, like its bio:
                             # a mid-season record switch can carry a new
                             # spelling ("A. Calegari") that the earlier
@@ -893,7 +905,7 @@ def load_data():
 # PLAYER_ID_ALIASES lives in league_config.py (shared with the value
 # calibration script, which must apply the same remap to the fee join
 # without booting Streamlit). Add new aliases THERE.
-from league_config import PLAYER_ID_ALIASES  # noqa: E402
+from league_config import PLAYER_ID_ALIASES, ALIAS_MINUTES_KEEP_FROM  # noqa: E402
 
 # MINUTES_OVERRIDE — manual corrections for known Wyscout lineup-data errors a
 # data refresh can't fix. Keyed (playerId, seasonId) -> totalMinutes. Used when

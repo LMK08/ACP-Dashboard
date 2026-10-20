@@ -116,5 +116,17 @@ PLAYER_ID_ALIASES = {
     # of the SAME Covilhã appearance (he came on at 36'), so the
     # loader's keep-FROM / drop-TO minutes rule yields the correct 164',
     # not 225' (verified against the match sheets, 2026-09).
+    # UPDATE 2026-10: Wyscout moved the API minutes back onto 614969 (357'
+    # through MW6) and 1361357 is left with only a 93' event estimate, so
+    # the loader now keeps whichever row is API-sourced (see below).
     1361357: 614969,
 }
+
+# Alias FROM pids whose minutes row is kept even when it is only an event
+# estimate and the canonical TO pid has an API row. Default (pids not listed):
+# when both pids have a row in a season, the API-sourced row (competitionId
+# set) wins over an event estimate (competitionId NaN); if both or neither
+# are API rows, the FROM row wins.
+#   71835 Mamadu Camará 25/26: the 1144' estimate is kept on purpose so the
+#   radar matches the ACP index (the API row says 1276').
+ALIAS_MINUTES_KEEP_FROM = {71835}
