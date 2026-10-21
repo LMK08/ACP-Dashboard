@@ -27,11 +27,16 @@ COMPETITIONS = {
         "env_user": "WYSCOUT_USER_NEW",
         "env_pass": "WYSCOUT_PASS_NEW",
         "seasons": {
-            192925: "2026/27",
             191779: "2025/26",
             190230: "2023/24",
         },
-        "current_season": 192925,
+        # The club's Wyscout subscription dropped the Campeonato (2026-10):
+        # every Campeonato request now 403s and 2026/27 has no data. Keep the
+        # seasons we already have; inactive = never fetched again, never
+        # simulated, and the newest season with data is "current" so the
+        # context bar never lands on an empty season.
+        "current_season": 191779,
+        "active": False,
     },
 }
 
@@ -49,6 +54,11 @@ def all_season_ids(comp_id=None):
     if comp_id is not None:
         return list(COMPETITIONS[comp_id]["seasons"].keys())
     return [sid for comp in COMPETITIONS.values() for sid in comp["seasons"]]
+
+
+def is_active(comp_id):
+    """False for a competition we can no longer fetch (see "active")."""
+    return COMPETITIONS[comp_id].get("active", True)
 
 
 def current_season_ids():

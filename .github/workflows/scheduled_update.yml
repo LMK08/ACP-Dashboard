@@ -45,7 +45,7 @@ jobs:
             -H "Authorization: Bearer ${HF_TOKEN}" \
             "https://huggingface.co/spaces/ACP-Analytics/ACP-Dashboard/resolve/main/raw_events.parquet" \
             && echo "✅ Downloaded cached raw_events.parquet ($(du -h raw_events.parquet | cut -f1))" \
-            || echo "⚠️ No cached raw_events.parquet found on HF — will fetch all events from scratch"
+            || { echo "❌ Could not download raw_events.parquet from HF — stopping. A from-scratch rebuild would lose every Campeonato event (no longer fetchable)."; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@v5

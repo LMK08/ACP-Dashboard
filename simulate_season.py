@@ -1327,7 +1327,9 @@ def main(argv=None):
     try:
         camp_season_id = COMPETITIONS[702]["current_season"]
         camp_matches = matches_df[matches_df['seasonId'] == camp_season_id]
-        if not camp_matches.empty:
+        if not COMPETITIONS[702].get("active", True):
+            print("\nCampeonato inactive (no Wyscout access) — no season to simulate.")
+        elif not camp_matches.empty:
             camp_results = simulate_campeonato(camp_matches, ScorelineSampler(model, 702), n_sims=n_sims)
             if camp_results:
                 all_results[702] = {

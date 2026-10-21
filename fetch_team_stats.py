@@ -53,6 +53,9 @@ def main():
         if not user or not password:
             print(f"⚠️ No credentials for {comp_config['name']}, skipping.")
             continue
+        if not comp_config.get("active", True):
+            print(f"{comp_config['name']}: inactive (no Wyscout access), skipping.")
+            continue
         user = user.strip().strip('"').strip("'")
         password = password.strip().strip('"').strip("'")
         auth = HTTPBasicAuth(user, password)
@@ -116,6 +119,19 @@ def main():
                 time.sleep(0.3)
 
     df = pd.DataFrame(rows)
+    # Keep previously fetched rows that this run did not refresh (a failed
+    # call used to shrink the file, e.g. 128 -> 122 rows on 2026-10-14).
+    if os.path.exists(OUTPUT_FILE):
+        old_df = pd.read_parquet(OUTPUT_FILE)
+        key = ['team_id', 'seasonId']
+        if df.empty:
+            # every call failed (API down / access lost): keep the file as is
+            print("⚠️ No team stats fetched this run — keeping the previous file.")
+            df = old_df
+        elif not old_df.empty and all(c in old_df.columns for c in key):
+            fresh = set(map(tuple, df[key].values.tolist()))
+            keep = old_df[[tuple(r) not in fresh for r in old_df[key].values.tolist()]]
+            df = pd.concat([df, keep], ignore_index=True)
     df.to_parquet(OUTPUT_FILE, index=False)
     print(f"\nSaved {len(df)} team-season records to {OUTPUT_FILE}")
 

@@ -70,7 +70,8 @@ def initialize_team_stats():
 # rebuild team strength from this year's matches alone. Prior-season blending
 # is handled separately (and now decays out fast) in simulate_season.py.
 from league_config import COMPETITIONS
-CURRENT_SEASON_IDS = {comp["current_season"] for comp in COMPETITIONS.values()}
+CURRENT_SEASON_IDS = {comp["current_season"] for comp in COMPETITIONS.values()
+                      if comp.get("active", True)}
 print(f"\nProcessing current-season matches only (seasonIds: {sorted(CURRENT_SEASON_IDS)})...")
 matches = current_matches[current_matches['seasonId'].isin(CURRENT_SEASON_IDS)].copy()
 matches = matches.sort_values('dateutc' if 'dateutc' in matches.columns else 'matchId')
@@ -260,6 +261,18 @@ for team, stats in team_stats.items():
         league_avg['venue_gpg'], t_away_gpg,
     ]
 
+    if model_data.get('feature_mode') == 'simple_strength_v1':
+        # The live model (train_simple_predictor.py) takes ONE feature: the
+        # home-minus-away strength S = mix*(xG diff/game) + (1-mix)*(goal
+        # diff/game) — the same branch views/match_predictor.py uses. A
+        # league-average side has S = 0, so the team is rated against it.
+        # (Until 2026-10-21 the 35-feature vector below was fed to this
+        # 1-feature scaler, every team raised, and team_ratings stayed empty.)
+        _mix = model_data.get('strength_mix', 0.7)
+        _s_team = _mix * (t_xgpg - t_xgapg) + (1 - _mix) * (t_gpg - t_gapg)
+        home_features = [_s_team]
+        away_features = [-_s_team]
+
     try:
         home_scaled = scaler.transform([home_features])
         away_scaled = scaler.transform([away_features])
@@ -290,6 +303,13 @@ print("\nUpdated Team Strength Ratings:")
 print("-" * 50)
 for rank, (team, r) in enumerate(sorted_ratings, 1):
     print(f"{rank:2}. {team:25} {r['overall']:.1f}")
+
+_eligible = sum(1 for _s in team_stats.values() if _s['matches'] >= 3)
+if _eligible and not team_ratings:
+    # Only teams with 3+ matches are rated, so early-season runs (MW1-2)
+    # legitimately produce none; 0 ratings for eligible teams is a bug.
+    raise SystemExit("update_model: 0 team ratings for "
+                     f"{_eligible} eligible teams — feature vector does not match the model")
 
 # Update model data
 model_data['team_stats'] = team_stats

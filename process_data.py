@@ -1038,20 +1038,14 @@ def calculate_match_data(match_df, home_team, away_team):
                 positional_attacks = 0
 
                 if not team_match_events.empty and 'possession.id' in team_match_events.columns and 'location.x' in team_match_events.columns:
-                    try: # Wrap groupby operations in try-except
-                         # Ensure location.x is numeric before min/max
-                         team_match_events['location.x_numeric'] = pd.to_numeric(team_match_events['location.x'], errors='coerce')
-                         possessions_grouped = team_match_events.groupby('possession.id')[['location.x_numeric']]
-                         # Filter out groups where min/max failed (all NaNs)
-                         valid_groups = possessions_grouped.filter(lambda x: not x['location.x_numeric'].isna().all())
-                         # Apply filter logic only to valid groups
-                         if not valid_groups.empty:
-                             final_third_entries_series = valid_groups.groupby('possession.id')['location.x_numeric'].transform(lambda x: x.min() < FINAL_THIRD_X and x.max() >= FINAL_THIRD_X)
-                             final_third_entries = final_third_entries_series[final_third_entries_series].index.get_level_values('possession.id').nunique()
-                         team_match_events.drop(columns=['location.x_numeric'], inplace=True) # Clean up temporary column
-                    except Exception as e:
-                        print(f"Warning: Could not calculate final third entries for {team} - {e}")
-                        final_third_entries = 0
+                    # Possessions that start outside the final third and reach it.
+                    # (The old groupby(...)[['location.x_numeric']].filter(...) dropped
+                    # the possession.id key, raised KeyError on every match and the
+                    # except set the stat to 0 — always 0 until 2026-10-21.)
+                    _x = pd.to_numeric(team_match_events['location.x'], errors='coerce')
+                    _span = _x.groupby(team_match_events['possession.id']).agg(['min', 'max']).dropna()
+                    final_third_entries = int(((_span['min'] < FINAL_THIRD_X)
+                                               & (_span['max'] >= FINAL_THIRD_X)).sum())
 
 
                     possessions_with_box_event = team_match_events[
@@ -1536,7 +1530,8 @@ def main():
         if not user or not password:
             continue
         ALL_SEASON_IDS_TO_FETCH.extend(comp_config["seasons"].keys())
-        CURRENT_SEASON_IDS.append(comp_config["current_season"])
+        if comp_config.get("active", True):
+            CURRENT_SEASON_IDS.append(comp_config["current_season"])
 
     HISTORICAL_SEASON_IDS = [sid for sid in ALL_SEASON_IDS_TO_FETCH if sid not in CURRENT_SEASON_IDS]
 
@@ -1567,6 +1562,9 @@ def main():
         user, password = get_credentials(comp_id)
         if not user or not password:
             continue
+        if not comp_config.get("active", True):
+            print(f"\n--- {comp_config['name']}: inactive (no Wyscout access) — cached schedule only ---")
+            continue
         comp_name = comp_config["name"]
         comp_seasons = list(comp_config["seasons"].keys())
         current_sid = comp_config["current_season"]
@@ -1585,9 +1583,25 @@ def main():
         for season_id in seasons_to_fetch:
             print(f"\n--- Fetching Schedule for {comp_name}, Season ID: {season_id} ---")
             season_schedule_df = fetch_match_schedule(user, password, comp_id, season_id)
+            cached_season = (cached_schedule_df[cached_schedule_df['seasonId'] == season_id]
+                             if cached_schedule_df is not None else pd.DataFrame())
             if not season_schedule_df.empty:
                 season_schedule_df['competitionId'] = comp_id
                 all_schedules_list.append(season_schedule_df)
+                # A fetch that comes back SHORT never deletes matches we
+                # already have (dedupe below keeps the fresh row when both).
+                if not cached_season.empty:
+                    missing = cached_season[~cached_season['matchId'].isin(season_schedule_df['matchId'])]
+                    if not missing.empty:
+                        print(f"⚠️ {comp_name} {season_id}: API returned {len(season_schedule_df)} matches, "
+                              f"{len(missing)} cached ones missing from it — keeping them.")
+                        all_schedules_list.insert(0, missing)
+            elif not cached_season.empty:
+                # One failed schedule call must never wipe a season (it used to
+                # drop all current-season matches and still deploy).
+                print(f"⚠️ Schedule fetch failed for {comp_name} season {season_id} — "
+                      f"keeping the {len(cached_season)} cached matches.")
+                all_schedules_list.append(cached_season)
             else:
                 print(f"Warning: No match schedule found for {comp_name} season {season_id}.")
 
@@ -1626,6 +1640,14 @@ def main():
 
     cached_match_ids = set()
     has_cache = os.path.exists('raw_events.parquet')
+    if not has_cache and os.environ.get('ALLOW_FULL_EVENT_REBUILD') != '1':
+        # Without the cached file this run would re-fetch every match from
+        # Wyscout. Campeonato access is gone (subscription, 2026-10), so a
+        # rebuild would silently drop every Campeonato event, get deployed,
+        # and the LFS cleanup would delete the old copy for good.
+        raise SystemExit("raw_events.parquet is missing — refusing to rebuild all events from "
+                         "scratch (Campeonato can no longer be re-fetched). Restore the file, "
+                         "or set ALLOW_FULL_EVENT_REBUILD=1 if a full rebuild is really intended.")
     if has_cache:
         print("📂 Checking cached events in raw_events.parquet...")
         cached_match_col = pq.read_table('raw_events.parquet', columns=['matchId']).to_pandas()['matchId']
@@ -1635,6 +1657,9 @@ def main():
 
     # Only fetch events for "Played" matches not already in cache
     played_matches = all_matches_summary_df[all_matches_summary_df['status'] == 'Played']
+    # Inactive competitions (no Wyscout access) are never re-requested.
+    _active_comps = {cid for cid, cfg in COMPETITIONS.items() if cfg.get("active", True)}
+    played_matches = played_matches[played_matches['competitionId'].isin(_active_comps)]
     new_match_ids = [mid for mid in played_matches['matchId'].dropna().unique() if mid not in cached_match_ids]
     print(f"   {len(new_match_ids)} new played matches need event fetching.")
 

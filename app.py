@@ -6280,15 +6280,12 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
 
         final_third_entries = 0
         if 'possession.id' in team_events.columns and 'location.x' in team_events.columns:
-            try:
-                possessions_grouped = team_events.groupby('possession.id')[['location.x']]
-                valid_groups = possessions_grouped.filter(lambda x: not x['location.x'].isna().all())
-                if not valid_groups.empty:
-                     final_third_entries_series = valid_groups.groupby('possession.id')['location.x'].transform(lambda x: x.min() < 66.6 and x.max() >= 66.6)
-                     final_third_entries = final_third_entries_series[final_third_entries_series].index.get_level_values('possession.id').nunique() / games
-            except (KeyError, ValueError) as e:
-                logger.warning(f"Failed to calculate final third entries for team: {e}")
-                final_third_entries = 0
+            # Possessions that start outside the final third and reach it, per
+            # game. (The old filter() dropped the possession.id key -> KeyError
+            # -> 0 for every team until 2026-10-21.)
+            _x = pd.to_numeric(team_events['location.x'], errors='coerce')
+            _span = _x.groupby(team_events['possession.id']).agg(['min', 'max']).dropna()
+            final_third_entries = int(((_span['min'] < 66.6) & (_span['max'] >= 66.6)).sum()) / games
         losses = losses_df[losses_df.get('team.name') == team].shape[0] / games if not losses_df.empty else 0
 
         goals_against=0; xg_against=0; shots_against=0; xg_per_shot_against=0;
