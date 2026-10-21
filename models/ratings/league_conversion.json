@@ -1,15 +1,15 @@
 {
   "reference": "L3",
-  "delta_pts_L3_minus_CAMP_descriptive": 7.842396098844368,
-  "delta_se": 1.6987875977276408,
-  "delta_pts_recruit": 7.361567775526937,
+  "delta_pts_L3_minus_CAMP_descriptive": 7.765320566823146,
+  "delta_se": 1.7225855510601855,
+  "delta_pts_recruit": 7.02029951175395,
   "anchors": {
     "A1 movers": {
-      "delta": 6.551,
-      "se": 1.908
+      "delta": 6.407,
+      "se": 1.942
     },
     "A2 teams": {
-      "delta": 12.777,
+      "delta": 12.779,
       "se": 3.731
     }
   }
