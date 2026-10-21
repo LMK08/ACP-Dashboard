@@ -473,7 +473,7 @@ STATS_CACHE_VERSION = 'v15'  # Bump when stat COLUMNS or cached VALUES change (e
                              # two 2026/27 rows into one). v13 percentiles cache served
                              # stale minutes because the percentiles layer early-returns
                              # its disk cache and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v6'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v7'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -6415,6 +6415,33 @@ def _scope_label(league=None, season=None, sep=" "):
     return sep.join(str(p) for p in (league, season) if p)
 
 
+def _as_of_date(league=None, season=None):
+    """'YYYY-MM-DD' of the last PLAYED match in the chart's scope (league
+    label / season label, as the plotters receive them). The radar and
+    scatter titles used to stamp today's date ("As of: 2026-10-21" on data
+    through 11 Oct, and on finished seasons). Falls back to today."""
+    try:
+        ms = globals().get('matches_summary_df')
+        if ms is None or len(ms) == 0:
+            raise ValueError('no schedule')
+        m = ms[ms['status'] == 'Played'] if 'status' in ms.columns else ms
+        if league:
+            _cids = [cid for cid, c in COMPETITIONS.items() if c['name'] == str(league)]
+            if _cids and 'competitionId' in m.columns:
+                m = m[m['competitionId'].isin(_cids)]
+        if season:
+            _sids = [sid for c in COMPETITIONS.values()
+                     for sid, lab in c['seasons'].items() if lab == str(season)]
+            if _sids:
+                m = m[m['seasonId'].isin(_sids)]
+        d = pd.to_datetime(m['dateutc'], errors='coerce').max()
+        if pd.notna(d):
+            return d.strftime('%Y-%m-%d')
+    except Exception:
+        pass
+    return datetime.date.today().strftime('%Y-%m-%d')
+
+
 def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, color, league=None, season=None):
     # (This is the full function from the previous step)
     num_params = len(params); angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist(); angles += angles[:1]
@@ -6431,7 +6458,7 @@ def plot_radar_chart(params, values_raw, values_pct, team_name, title_suffix, co
     for angle, value_raw, value_pct in zip(angles[:-1], values_raw, values_pct):
          raw_display = f'{value_raw}%' if '%' in str(value_raw) else f'{value_raw}'; ax.text(angle, 95, raw_display, ha='center', va='top', size=9, weight='bold', bbox=dict(boxstyle="round,pad=0.2", facecolor='white', edgecolor='none', alpha=0.7))
     footer_text = "@lucaskimball | Data via Wyscout | Values in parentheses are percentile rank vs. other teams in league"; fig.text(0.02, 0.02, footer_text, ha='left', va='bottom', fontsize=9, color='gray')
-    report_date = datetime.date.today().strftime("%Y-%m-%d"); _scope = _scope_label(league, season); full_title = f"{team_name}\n{title_suffix}{(' | ' + _scope) if _scope else ''} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
+    report_date = _as_of_date(league, season); _scope = _scope_label(league, season); full_title = f"{team_name}\n{title_suffix}{(' | ' + _scope) if _scope else ''} (As of: {report_date})"; ax.set_title(full_title, size=18, weight='bold', pad=40)
     return fig
 
 # --- Corner Analysis Plotting Function (Unchanged) ---
@@ -7061,7 +7088,7 @@ def plot_team_strength(stats_df, teams_to_include=None, league=None, season=None
     if texts: adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
     if logos_plotted == 0 and not texts: ax.scatter(stats_df_to_plot['Attacking Strength'], stats_df_to_plot['Defending Strength'], s=50, zorder=2)
 
-    report_date = datetime.date.today().strftime("%Y-%m-%d")
+    report_date = _as_of_date(league, season)
     _scope = _scope_label(league, season, sep=', ')
     ax.set_title(f'Team Strength Scatterplot{(" | " + _scope) if _scope else ""} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel('Attacking Strength (30% NP Goals, 70% NPxG)', fontsize=12)
@@ -7142,7 +7169,7 @@ def plot_custom_scatter(stats_df, x_metric, y_metric, invert_x=False, invert_y=F
          ax.scatter(stats_df_to_plot[x_metric], stats_df_to_plot[y_metric], s=50, zorder=2)
 
     # --- 5. Styling ---
-    report_date = datetime.date.today().strftime("%Y-%m-%d")
+    report_date = _as_of_date(league, season)
     _scope = _scope_label(league, season, sep=', ')
     ax.set_title(f'League Scatterplot{(" | " + _scope) if _scope else ""} (As of: {report_date})', fontsize=18, weight='bold')
     ax.set_xlabel(x_metric, fontsize=12) # Dynamic X Label

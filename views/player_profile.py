@@ -501,7 +501,7 @@ def render():
         bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
 
         age = _calculate_age(player_bio.get('birthDate'))
-        age_display = f"{age:.1f}" if isinstance(age, float) else "N/A"
+        age_display = f"{int(age)}" if isinstance(age, (int, float)) and age == age else "N/A"
         bio_row1[3].metric("Age", age_display)
 
         bio_row2 = st.columns(4)
@@ -1434,8 +1434,22 @@ def render():
 
                 _outliers_2s = []  # (metric, value, z_score, direction)
                 _outliers_3s = []
+                def _is_rate(_name):
+                    # per-90 counts get the "p90" unit; averages, shares and
+                    # ratios do not (they used to be labelled "p90" too)
+                    _n = _name.lower()
+                    return not (_n.startswith('avg') or '%' in _name or 'height' in _n
+                                or 'distance' in _n or 'per shot' in _n or 'index' in _n
+                                or 'ratio' in _n or _n.endswith(' oe'))
+
                 for _m in _all_metrics:
                     if _m not in _outlier_pop.columns:
+                        continue
+                    # an AVERAGE of 0 means the player had no such action (a
+                    # keeper's "avg defensive action height") — undefined, not
+                    # an outlier
+                    if (not _is_rate(_m) and _m.lower().startswith('avg')
+                            and float(radar_player_data_row[_m].values[0]) == 0):
                         continue
                     _pop_vals = pd.to_numeric(_outlier_pop[_m], errors='coerce').dropna()
                     if len(_pop_vals) < 5:
@@ -1465,11 +1479,11 @@ def render():
                     if _outliers_3s:
                         st.markdown("**🔴 Super-outliers (> 3σ)**")
                         for _m, _v, _z, _d in _outliers_3s:
-                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
+                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)}{' p90' if _is_rate(_m) else ''} &nbsp;({_z:+.1f}σ)")
                     if _outliers_2s:
                         st.markdown("**🟡 Outliers (> 2σ)**")
                         for _m, _v, _z, _d in _outliers_2s:
-                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)} p90 &nbsp;({_z:+.1f}σ)")
+                            st.markdown(f"&nbsp;&nbsp;{_d} **{_m}**: {fmt_val(_m, _v)}{' p90' if _is_rate(_m) else ''} &nbsp;({_z:+.1f}σ)")
                 else:
                     st.caption("No statistical outliers (all metrics within 2σ of positional mean)")
             except Exception as e:

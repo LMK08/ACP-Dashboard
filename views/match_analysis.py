@@ -89,9 +89,17 @@ def render():
     # on two "No shots found" panels.
     _match_ids_with_events = set(
         get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)['matchId'].unique())
+    # ...and, within those, OUR club's newest match (it used to open on
+    # whichever match happened to be newest, e.g. Fafe vs Trofense).
+    _our = getattr(app, 'OUR_TEAM', 'Atlético CP')
+    _is_ours = ((season_matches_df.get('homeTeamName') == _our)
+                | (season_matches_df.get('awayTeamName') == _our)
+                if {'homeTeamName', 'awayTeamName'}.issubset(season_matches_df.columns)
+                else pd.Series(False, index=season_matches_df.index))
+    _with_ev = [mid in _match_ids_with_events for mid in season_matches_df['matchId'].tolist()]
     _default_match_idx = next(
-        (i for i, mid in enumerate(season_matches_df['matchId'].tolist())
-         if mid in _match_ids_with_events), 0)
+        (i for i, (ev, ours) in enumerate(zip(_with_ev, _is_ours.tolist())) if ev and ours),
+        next((i for i, ev in enumerate(_with_ev) if ev), 0))
     # Deep link from Home ("Open match report"): open on that match.
     _nav_mid = st.session_state.pop('nav_match_id', None)
     if _nav_mid is not None:
