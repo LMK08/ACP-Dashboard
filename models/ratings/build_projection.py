@@ -26,6 +26,9 @@ and delta vs current rating, for all current-season (25/26) players.
 Run from the Dashboard dir: python models/ratings/build_projection.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS, IN_PROGRESS_SEASON_IDS  # noqa: E402
 import pickle
 import numpy as np
 import pandas as pd
@@ -35,13 +38,17 @@ from sklearn.linear_model import Ridge
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 TEST_START_YR = 2024
 ALPHAS = (10.0, 30.0, 100.0)    # chosen by 5-fold CV on TRAIN only
 
 print("[1/5] features…", flush=True)
 o = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet')
+# The projection is an off-season model: "current" = the last COMPLETED
+# season, projected one season ahead. A season still in progress is rated
+# for the dashboard but is neither a training pair nor a projection base
+# (it would age players twice and treat them as lapsed — review 2026-10-21).
+o = o[~o['seasonId'].isin(IN_PROGRESS_SEASON_IDS)].copy()
 o['yr'] = o['seasonId'].map(SEASON_YR)
 
 # NPxG + receiving value percentile

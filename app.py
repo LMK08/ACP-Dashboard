@@ -514,6 +514,19 @@ def _cache_is_stale(cache_path, fingerprint):
     return meta != fingerprint
 
 
+def _cache_is_fresh(cache_path, fingerprint):
+    """True only when the sidecar stamp exists AND matches. Unlike
+    _cache_is_stale, a cache with NO stamp counts as stale: the season-keyed
+    caches below (set pieces, cumulative team stats, expanded team stats)
+    had no stamp at all, so a file written before the season's first match
+    (2026/27 set pieces: empty, Aug 13) was served for months."""
+    try:
+        with open(_cache_meta_path(cache_path)) as f:
+            return json.load(f) == fingerprint
+    except Exception:
+        return False
+
+
 def _stats_scope_key(season_id, frame):
     """Cache-key suffix: the season_id itself, or for All-Seasons
     (season_id is None) the league(s) present in the frame, so the
@@ -4877,7 +4890,19 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     return career_stats
 
 @st.cache_data
-def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=500, season_id=None, cache_version=STATS_CACHE_VERSION, cache_scope=None):
+def _engine_build_stamp():
+    """'<built_at> <rating_version>' of the deployed engine (or '' when
+    there is none) — part of the percentiles-cache fingerprint."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), 'models', 'ratings',
+                               'player_engine_meta.json')) as f:
+            meta = json.load(f)
+        return f"{meta.get('built_at', '')} {meta.get('rating_version', '')}".strip()
+    except Exception:
+        return ''
+
+
+def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=500, season_id=None, cache_version=STATS_CACHE_VERSION, cache_scope=None, disk_cache=False):
     # cache_scope: league discriminator for the All-Seasons (season_id=None)
     # in-memory cache collision — see calculate_all_player_stats.
     """Calculates percentiles and scores for all players based on position.
@@ -4889,7 +4914,13 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     clamp from `template_pct.minutes_floor` — read it from there, never a
     literal 500. season_id is used as a cache key so Streamlit recomputes
     when the season changes."""
-    # Disk cache: load pre-computed results if available
+    # Disk cache — ONLY for the canonical scope frame (disk_cache=True from
+    # load_and_score_player_stats: GPA/DefR/engine columns merged, 500'
+    # floor). The file is keyed by season alone, so the other callers (the
+    # Opposition Report's 90' key players, the profile career view, Player
+    # Analysis best-fit) used to read AND overwrite it with their own
+    # variant — a frame without the value columns broke the similarity pool
+    # (2026-10-21). They keep the in-memory st.cache_data only.
     _REQUIRED_PCT_COLS = {'Throw-ins', 'Avg max throw-in distance', 'Throw-ins into box', 'Avg max throw-in into box distance', 'Avg max throw-in into box aerial distance', 'Defensive Area', 'Opp xT into Def Area', 'Opp Pass Success % into Def Area', 'Opp xT from Def Area', 'Territorial Dominance', 'Opp xT into Def Area OE', 'Opp xT from Def Area OE', 'Territorial Dominance OE', 'xTOP', 'xTSP', 'Touches in penalty area_percentile'}
     _scope_key = _stats_scope_key(season_id, _player_data_df)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
@@ -4900,11 +4931,18 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
                # Role scores are cached VALUES derived from the weights, so a
                # weight tweak in config.yaml must invalidate this cache too.
                'weights_hash': hashlib.md5(json.dumps(
-                   _weights, sort_keys=True, default=str).encode()).hexdigest()}
-    if os.path.exists(cache_path) and _cache_is_stale(cache_path, _pct_fp):
+                   _weights, sort_keys=True, default=str).encode()).hexdigest(),
+               # The floor decides who is ranked at all (rule changed
+               # 2026-10-21), and the cached frame carries the merged ENGINE
+               # columns (ACP Index, projection) — an engine rebuild must
+               # invalidate it too, or pages that read this cache and pages
+               # that read the engine show different ACP values.
+               'floor': int(template_pct.minutes_floor(_player_data_df, min_minutes)),
+               'engine': _engine_build_stamp()}
+    if disk_cache and os.path.exists(cache_path) and _cache_is_stale(cache_path, _pct_fp):
         print(f"Percentiles cache for scope {_scope_key} predates current data — recomputing")
         os.remove(cache_path)
-    if os.path.exists(cache_path):
+    if disk_cache and os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
         # An empty cache (written early-season when nobody met the minutes
         # floor) must not be served — treat as invalid and recompute.
@@ -4984,7 +5022,9 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
     print("✅ Player percentiles and scores calculated.")
     result = data.fillna(0)
 
-    # Save to disk cache for fast loading on restart
+    # Save to disk cache for fast loading on restart (canonical frame only)
+    if not disk_cache:
+        return result
     os.makedirs(STATS_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(STATS_CACHE_DIR, f'player_percentiles_{STATS_CACHE_VERSION}_{_scope_key}.parquet')
     try:
@@ -5023,7 +5063,8 @@ def load_and_score_player_stats(_events_df, _minutes_df, season_id, active_seaso
     player_stats_df = merge_defr_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_df = merge_engine_values_into_stats(player_stats_df, active_season_ids, comp_ids)
     player_stats_with_scores_df = calculate_player_percentiles_and_scores(
-        player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=season_id, cache_scope=_scope
+        player_stats_df, POSITION_GROUPS, WEIGHTS, INVERT_METRICS, min_minutes=500, season_id=season_id, cache_scope=_scope,
+        disk_cache=True,
     )
     return player_stats_df, player_stats_with_scores_df
 
@@ -6792,7 +6833,12 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
               prior_stats}}
     """
     cache_path = os.path.join(STATS_CACHE_DIR, f'season_cum_stats_{season_id}.pkl')
-    if os.path.exists(cache_path):
+    _cum_fp = {
+        'n_matches': int((matches_summary_df['seasonId'] == season_id).sum())
+        if 'seasonId' in matches_summary_df.columns else int(len(matches_summary_df)),
+        'n_events': int((raw_events_df['seasonId'] == season_id).sum())
+        if 'seasonId' in raw_events_df.columns else int(len(raw_events_df))}
+    if os.path.exists(cache_path) and _cache_is_fresh(cache_path, _cum_fp):
         try:
             with open(cache_path, 'rb') as f:
                 return pickle.load(f)
@@ -6951,6 +6997,7 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
     try:
         with open(cache_path, 'wb') as f:
             pickle.dump(team_stats, f)
+        _write_cache_meta(cache_path, _cum_fp)
     except Exception:
         pass
 
@@ -7407,9 +7454,15 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     season-long per-game average.
     season_id is used as a cache key so Streamlit recomputes when the season changes.
     """
+    _exp_fp = None
     if season_id is not None:
         cache_path = os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet')
-        if os.path.exists(cache_path):
+        try:
+            _sm = _matches_summary_df.loc[_matches_summary_df['seasonId'] == season_id, 'matchId']
+            _exp_fp = {'n_matches': int(sum(1 for m in _sm if m in _all_match_data))}
+        except Exception:
+            _exp_fp = {'n_matches': -1}
+        if os.path.exists(cache_path) and _cache_is_fresh(cache_path, _exp_fp):
             print(f"Loading cached expanded team stats for season {season_id}")
             return pd.read_parquet(cache_path)
     print("Calculating expanded team stats...") # Debug print
@@ -7486,7 +7539,9 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     if season_id is not None:
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
         try:
-            result.to_parquet(os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet'))
+            _p = os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet')
+            result.to_parquet(_p)
+            _write_cache_meta(_p, _exp_fp)
         except Exception:
             pass
     return result
@@ -7511,7 +7566,9 @@ def calculate_set_piece_metrics(_events_df, season_id=None, stage=None):
         cache_path = os.path.join(
             STATS_CACHE_DIR,
             f'set_piece_metrics_{_SP_CACHE_VERSION}_{season_id}{_stage_tag}.parquet')
-        if os.path.exists(cache_path):
+        _sp_fp = {'n_matches': int(_events_df['matchId'].nunique()) if 'matchId' in _events_df.columns else -1,
+                  'n_events': int(len(_events_df))}
+        if os.path.exists(cache_path) and _cache_is_fresh(cache_path, _sp_fp):
             print(f"Loading cached set piece metrics for season {season_id}{_stage_tag}")
             return pd.read_parquet(cache_path)
     # Convert minute/second to total seconds
@@ -7734,6 +7791,7 @@ def calculate_set_piece_metrics(_events_df, season_id=None, stage=None):
         os.makedirs(STATS_CACHE_DIR, exist_ok=True)
         try:
             result_df.to_parquet(cache_path)
+            _write_cache_meta(cache_path, _sp_fp)
         except Exception:
             pass
     return result_df

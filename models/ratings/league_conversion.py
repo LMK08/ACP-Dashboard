@@ -24,6 +24,9 @@ the rating and projection parquets (L3 = reference scale).
 Run from the Dashboard dir: python models/ratings/league_conversion.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS, IN_PROGRESS_SEASON_IDS  # noqa: E402
 import json
 import pickle
 import numpy as np
@@ -32,10 +35,13 @@ import pandas as pd
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 
 o = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet')
+# Estimate from COMPLETED seasons only (a season in progress would move the
+# deltas every matchday); the _abs columns below are still written for every
+# row, the live season included.
+o = o[~o['seasonId'].isin(IN_PROGRESS_SEASON_IDS)].copy()
 o['yr'] = o['seasonId'].map(SEASON_YR)
 
 # age expectation (same curve construction as build_projection, condensed)
@@ -140,9 +146,10 @@ for mid, g in xg.groupby('matchId'):
     rows.append({'team': b['team.name'], 'seasonId': sn[mid],
                    'xgd': b['shot.xg'] - a['shot.xg'], 'm': 1})
 tg = pd.DataFrame(rows).groupby(['team', 'seasonId']).sum().reset_index()
+tg = tg[~tg['seasonId'].isin(IN_PROGRESS_SEASON_IDS)]   # completed seasons only
 tg['xgd90'] = tg['xgd'] / tg['m']
 tg['yr'] = tg['seasonId'].map(SEASON_YR)
-tg['lg'] = np.where(tg['seasonId'].isin({190230, 191779}), 'CAMP', 'L3')
+tg['lg'] = np.where(tg['seasonId'].isin(CAMP_SEASON_IDS), 'CAMP', 'L3')
 # slope: team xGD/90 per team-mean-rating point (within league-season)
 evp = ev.dropna(subset=['player.id', 'team.name']).copy()
 evp['player.id'] = evp['player.id'].astype(int)

@@ -15,6 +15,9 @@ at the zone's pitch location), then the standard battery:
 Run from the Dashboard dir: python models/ratings/eval_territorial.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS  # noqa: E402
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr, chi2
@@ -186,8 +189,7 @@ METS = ['area', 'xt_into90', 'xt_into_oe', 'pass_into_pct',
          'xt_from90', 'xt_from_oe', 'terr_dom_oe']
 meta = rat[['playerId', 'seasonId', 'role', 'league', 'position_group',
               'defr_pct', 'qual_pct', 'acp_rating']].copy()
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 meta['yr'] = meta['seasonId'].map(SEASON_YR)
 H = T.merge(meta, on=['playerId', 'seasonId'])
 DEFROLES = {'Central Defender', 'Wide Defender'}

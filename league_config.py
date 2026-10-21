@@ -56,6 +56,22 @@ def all_season_ids(comp_id=None):
     return [sid for comp in COMPETITIONS.values() for sid in comp["seasons"]]
 
 
+# Season -> start year and the Campeonato season set, derived from COMPETITIONS
+# so a new season added above reaches every engine script automatically.
+# (Until 2026-10 the engine kept its own hard-coded maps and 2026/27 was
+# silently never rated: rows with no year were dropped.)
+SEASON_YEAR = {sid: int(label[:4]) for comp in COMPETITIONS.values()
+               for sid, label in comp["seasons"].items()}
+CAMP_SEASON_IDS = frozenset(COMPETITIONS[702]["seasons"])
+# Seasons still being played: RATED (live ACP Index) but never used to fit
+# anything built for completed seasons — the projection panel/refit and the
+# league-conversion estimates (half a season of 500'+ "pairs" would shift
+# them every matchday). A season leaves this set when the next one is added
+# and becomes "current_season" at the rollover.
+IN_PROGRESS_SEASON_IDS = frozenset(c["current_season"] for c in COMPETITIONS.values()
+                                   if c.get("active", True))
+
+
 def is_active(comp_id):
     """False for a competition we can no longer fetch (see "active")."""
     return COMPETITIONS[comp_id].get("active", True)

@@ -19,6 +19,9 @@ Segment construction identical to v3 (true lineup intervals).
 Run from the Dashboard dir: python models/ratings/rapm_v4.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS  # noqa: E402
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -33,9 +36,8 @@ MIN_SEG_MIN = 3.0
 MIN_PLAYER_MIN = 600.0
 ALPHAS = [1000.0, 3000.0, 10000.0, 30000.0]
 DECAYS = [1.0, 0.85, 0.7, 0.5]
-CAMP_SEASONS = {190230, 191779}
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
+CAMP_SEASONS = set(CAMP_SEASON_IDS)
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 YRS = [2021, 2022, 2023, 2024, 2025]
 
 print("[1/6] events + intervals…", flush=True)

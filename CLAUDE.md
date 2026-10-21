@@ -222,8 +222,8 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   scrollbar styling stays. Plotly charts take no `'responsive': True`
   config: Streamlit already sizes them to the container.
 - `models/templates/percentiles.py` — the minutes floor behind the template
-  percentiles (`minutes_floor`: 500', or half the current max while nobody
-  has 500' — the pipeline's early-season clamp) and `score_below_floor`,
+  percentiles (`minutes_floor`: half the current leader's minutes, capped at
+  500' — rises smoothly; it no longer jumps to 500' when one player passes it) and `score_below_floor`,
   which places a sub-floor player into the qualifying sample ON THEIR OWN
   with the pipeline's own arithmetic. RULE: `calculate_player_percentiles_
   and_scores` leaves every player under the floor at 0 in all `_percentile`

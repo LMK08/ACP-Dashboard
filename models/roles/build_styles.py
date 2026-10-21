@@ -57,6 +57,8 @@ Run from the Dashboard dir:  python models/roles/build_styles.py
                  event store; slow)
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))  # league_config
 import os
 import sys
 import numpy as np
@@ -104,8 +106,7 @@ MIN_STYLE_SHARE = 0.08
 # the label (and its fit) read the blended vector.
 LAMBDA_PRIOR = 0.5
 
-YEAR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024, 191782: 2025,
-        190230: 2023, 191779: 2025}
+from league_config import SEASON_YEAR as YEAR  # noqa: E402 (every season, incl. the current one)
 
 # ---------------------------------------------------------------------------
 # STYLE AXES — which tendency poles earn a name, per role.

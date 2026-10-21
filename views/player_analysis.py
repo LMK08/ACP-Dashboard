@@ -846,10 +846,14 @@ def render():
                         "rating). Only players with a live projection appear."
                     )
                 else:
+                    from league_config import IN_PROGRESS_SEASON_IDS as _live_sids
+                    _why = ("the season is still being played, so it is rated live but "
+                            "projections come from the last completed season"
+                            if selected_season_id in _live_sids else
+                            "the selected season is historical, so no forward projection exists")
                     st.caption(
                         "Observed ACP engine roles (data-derived from playing patterns), "
-                        "ranked by ACP **Rating** (absolute scale) — the selected season is "
-                        "historical, so no forward projection exists. **Age** is current; "
+                        f"ranked by ACP **Rating** (absolute scale) — {_why}. **Age** is current; "
                         "**Min** is total minutes in scope. **Style** = tendency-derived "
                         "archetype (descriptive, never in the rating)."
                     )
@@ -1375,6 +1379,12 @@ def render():
         # --- View-dependent rendering ---
         if _selected_view == "Overview":
             st.subheader("Distribution by Position Group")
+            # A season in progress has no projections (they come from the last
+            # completed season): default its distribution to the live rating.
+            if "player_analysis_viz_metric_overview" not in st.session_state:
+                from league_config import IN_PROGRESS_SEASON_IDS as _live_sids
+                st.session_state["player_analysis_viz_metric_overview"] = ('ACP Rating' if selected_season_id in _live_sids
+                                              else 'ACP Projection')
             _viz_metric = st.radio(
                 "Distribution metric:",
                 ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],
@@ -1453,6 +1463,12 @@ def render():
                 st.caption(f"No position list defined for template '{_template}'.")
             else:
                 st.subheader(f"{_template} distribution across seasons")
+                # A season in progress has no projections (they come from the last
+                # completed season): default its distribution to the live rating.
+                if "player_analysis_viz_metric_template" not in st.session_state:
+                    from league_config import IN_PROGRESS_SEASON_IDS as _live_sids
+                    st.session_state["player_analysis_viz_metric_template"] = ('ACP Rating' if selected_season_id in _live_sids
+                                                  else 'ACP Projection')
                 _viz_metric = st.radio(
                     "Distribution metric:",
                     ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],

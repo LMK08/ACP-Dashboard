@@ -14,6 +14,9 @@ final augmented-ridge gate):
 Run from the Dashboard dir: python models/ratings/eval_counting_predictors.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS  # noqa: E402
 import pickle
 import numpy as np
 import pandas as pd
@@ -23,8 +26,7 @@ from sklearn.linear_model import Ridge
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 
 TAGS = ['progressive_pass', 'pass_to_final_third', 'pass_to_penalty_area',
          'cross', 'through_pass', 'deep_completion', 'shot_assist', 'carry',

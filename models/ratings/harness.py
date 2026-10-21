@@ -24,6 +24,9 @@ Battery:
 Run from the Dashboard dir: python models/ratings/harness.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS  # noqa: E402
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
@@ -31,8 +34,7 @@ from scipy.stats import pearsonr, spearmanr
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 _GPA_REPO = _DASH.parent.parent / 'GPA Model Project v2'
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 
 print("[1/5] assemble candidates…", flush=True)
 g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet')

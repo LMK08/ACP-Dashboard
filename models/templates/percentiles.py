@@ -2,8 +2,8 @@
 player who is BELOW it onto the same scale.
 
 Pure pandas — no streamlit. ``app.calculate_player_percentiles_and_scores``
-ranks only the players at or above a minutes floor (500', or the
-early-season clamp from :func:`minutes_floor` while nobody has 500') and
+ranks only the players at or above a minutes floor (half the leader's
+minutes, capped at 500' — :func:`minutes_floor`) and
 leaves everyone else at 0 for every ``<metric>_percentile`` and
 ``<role>_Score`` column. That is deliberate for the leaderboards; it is not
 what a radar of such a player should show (an empty polygon, "Score 0.00,
@@ -22,18 +22,22 @@ import pandas as pd
 
 def minutes_floor(frame, min_minutes=500):
     """The floor ``calculate_player_percentiles_and_scores`` applies to
-    ``frame``: ``min_minutes``, or half the current maximum while nobody
-    has reached ``min_minutes`` (the early-season clamp). Readers of a
-    scored frame must use THIS rather than a literal 500 or they disagree
-    with the pipeline for the first weeks of a season.
+    ``frame``: half the current maximum, capped at ``min_minutes`` (the
+    early-season clamp). It rises smoothly and reaches ``min_minutes``
+    once the leader has twice that. Until 2026-10-21 the clamp switched
+    off the moment ONE player passed ``min_minutes``: 2026/27 after MW6
+    (leader 592') jumped from 296' to 500', leaving 88 of 448 players
+    ranked (5 strikers) and everyone else at 0. Readers of a scored frame
+    must use THIS rather than a literal 500 or they disagree with the
+    pipeline for the first weeks of a season.
     """
     if frame is None or 'totalMinutes' not in frame.columns:
         return int(min_minutes)
     mins = pd.to_numeric(frame['totalMinutes'], errors='coerce')
     _max = mins.max()
-    if pd.notna(_max) and _max < min_minutes:
-        return max(1, int(_max * 0.5))
-    return int(min_minutes)
+    if pd.isna(_max):
+        return int(min_minutes)
+    return int(max(1, min(min_minutes, int(_max * 0.5))))
 
 
 def _percent_rank_in_sample(sample_values, value):

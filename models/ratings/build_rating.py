@@ -42,15 +42,17 @@ Outputs models/ratings/acp_rating_per_player_season.parquet:
 Run from the Dashboard dir: python models/ratings/build_rating.py
 """
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from league_config import SEASON_YEAR, CAMP_SEASON_IDS, IN_PROGRESS_SEASON_IDS  # noqa: E402
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
-SEASON_YR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-              191782: 2025, 190230: 2023, 191779: 2025}
-CAMP = {190230, 191779}
+SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
+CAMP = set(CAMP_SEASON_IDS)
 # v3 ROLE-SPECIFIC weights over 5 axes (Lucas-confirmed design):
 #   off  = GPA Total Offensive (role-pct)
 #   resp = DefR — defensive RESPONSIBILITY ABOVE EXPECTATION (not raw
@@ -296,7 +298,11 @@ _lam_log = []
 for role, sub in df.groupby('role'):
     for c in GPA_CATS:
         P = []
-        for pid, gg in sub[sub['_cohort']].sort_values('yr').groupby('playerId'):
+        # reliability from COMPLETED seasons only: half-season pairs into a
+        # season still in progress would move every season's weights each
+        # matchday (found when 2026/27 was first rated, 2026-10-21)
+        _done = sub['_cohort'] & ~sub['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
+        for pid, gg in sub[_done].sort_values('yr').groupby('playerId'):
             rr = gg[[c + '_pct', 'yr']].to_dict('records')
             for a, b in zip(rr, rr[1:]):
                 if b['yr'] - a['yr'] == 1:

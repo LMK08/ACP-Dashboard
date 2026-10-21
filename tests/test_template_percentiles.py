@@ -87,6 +87,14 @@ def test_floor_clamps_to_half_the_max_early_season():
     assert tp.minutes_floor(None) == 500
 
 
+def test_floor_rises_smoothly_past_min_minutes():
+    # 2026/27 after MW6: leader 592'. The old clamp switched off at 500'
+    # and jumped to a 500' floor (88 of 448 ranked); now half the leader.
+    assert tp.minutes_floor(pd.DataFrame({'totalMinutes': [90, 400, 592]})) == 296
+    assert tp.minutes_floor(pd.DataFrame({'totalMinutes': [90, 999]})) == 499
+    assert tp.minutes_floor(pd.DataFrame({'totalMinutes': [90, 1000]})) == 500
+
+
 # ---------------------------------------------------------------- parity --
 
 @pytest.mark.parametrize('max_minutes', [900, 395])
@@ -97,7 +105,7 @@ def test_sub_floor_scoring_matches_the_pipeline(max_minutes):
     belongs to, mid-season (500' floor) and early season (clamped)."""
     full = _pipeline(_frame(max_minutes=max_minutes), 500)
     floor = tp.minutes_floor(full)
-    assert floor == (500 if max_minutes >= 500 else max_minutes // 2)
+    assert floor == min(500, max_minutes // 2)
     pct_cols = [c for c in full.columns if c.endswith('_percentile')]
     tot_cols = [c for c in full.columns if c.endswith('_TotalScore')]
     sc_cols = [c for c in full.columns if c.endswith('_Score')]

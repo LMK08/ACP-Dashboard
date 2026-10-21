@@ -28,6 +28,8 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
+import sys as _sys_lc
+_sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))  # league_config
 import numpy as np
 import pandas as pd
 
@@ -1020,8 +1022,7 @@ def compute_per_player(ev: pd.DataFrame,
     # player's current/most-recent system dominates, with older seasons as
     # a mild prior — mirrors the CVI career-decay approach.
     CAREER_DECAY = 0.5   # weight = mins × decay^(seasons_back)
-    SEASON_YEAR = {188221: 2021, 188222: 2022, 189147: 2023, 190090: 2024,
-                    191782: 2025, 190230: 2023, 191779: 2025}
+    from league_config import SEASON_YEAR  # every season, incl. the current one
     qual = out[(out['mins_played'].fillna(0) >= 500)
                  & out['defr_per90_vs_position'].notna()].copy()
     qual['_yr'] = qual['seasonId'].map(SEASON_YEAR)
