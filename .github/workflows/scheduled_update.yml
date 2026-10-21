@@ -107,7 +107,13 @@ jobs:
       - name: Smoke-test the refreshed data before it ships
         # The page smoke + PDF tests the code-push deploy runs, on TODAY's data:
         # a refresh that breaks a page never reaches GitHub or the Space.
-        run: python -m pytest tests -q -p no:warnings
+        run: |
+          python -m pytest tests -q -p no:warnings
+          # booting the app in the tests rewrites stats caches; those are the
+          # engine rebuild's job, so put the tree back before committing
+          # (left dirty, `git pull --rebase` below refused to run — 2026-10-21)
+          git checkout -- stats_cache/ 2>/dev/null || true
+          git clean -fdq stats_cache/ 2>/dev/null || true
 
       - name: Commit and push new data to GitHub
         run: |
@@ -122,7 +128,7 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             echo "New data found. Committing and pushing..."
             git commit -m "chore: Automated data refresh"
-            git pull --rebase
+            git pull --rebase --autostash
             git push
           else
             echo "No data changes to commit."
