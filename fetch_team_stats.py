@@ -47,6 +47,12 @@ def main():
 
     session = setup_session()
     rows = []
+    _stored_seasons = set()
+    if os.path.exists(OUTPUT_FILE):
+        try:
+            _stored_seasons = set(pd.read_parquet(OUTPUT_FILE, columns=['seasonId'])['seasonId'].astype(int))
+        except Exception:
+            _stored_seasons = set()
 
     for comp_id, comp_config in COMPETITIONS.items():
         user, password = get_credentials(comp_id)
@@ -61,6 +67,11 @@ def main():
         auth = HTTPBasicAuth(user, password)
 
         for season_id in comp_config["seasons"]:
+            # A finished season's team stats never change: re-fetch only the
+            # current season (and any season not stored yet). All 8 seasons
+            # used to be re-requested every run (~3.5 min).
+            if (season_id != comp_config["current_season"] and season_id in _stored_seasons):
+                continue
             season_events = events[events['seasonId'] == season_id]
             teams = season_events.drop_duplicates(subset='team.id')[['team.id', 'team.name']].dropna()
             if teams.empty:

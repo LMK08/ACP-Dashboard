@@ -187,19 +187,30 @@ def update_cache(matches_summary, season_ids=None, path=CACHE_PATH,
           f'({int(recent.sum())} recent re-fetches)')
     session = _session()
     new_rows, done_ids, failed = [], [], []
+    _have_real = (set(cache.loc[cache['playerId'] != 0, 'matchId'].astype('int64'))
+                  if len(cache) else set())
     t0 = time.time()
     for i, (sid, mid) in enumerate(zip(todo['seasonId'], todo['matchId']), 1):
         comp = competition_for_season(int(sid))
         user, pwd = get_credentials(comp) if comp is not None else ('', '')
+        # every branch falls through to the periodic save below (a `continue`
+        # here used to skip it — and drop rows fetched since the last save)
         if not user:
             failed.append(int(mid))
-            continue
-        try:
-            new_rows.extend(fetch_match(session, HTTPBasicAuth(user, pwd), mid))
-            done_ids.append(int(mid))
-        except Exception as e:  # keep going; the match is retried next run
-            print(f'  match {int(mid)}: {e}')
-            failed.append(int(mid))
+        else:
+            try:
+                rows = fetch_match(session, HTTPBasicAuth(user, pwd), mid)
+                if (len(rows) == 1 and rows[0]['playerId'] == 0
+                        and int(mid) in _have_real):
+                    # a re-fetch answering "no stats"/403 must never replace
+                    # real minutes we already hold (14-day refresh window)
+                    print(f'  match {int(mid)}: no-stats answer on re-fetch — keeping cached minutes')
+                else:
+                    new_rows.extend(rows)
+                    done_ids.append(int(mid))
+            except Exception as e:  # keep going; the match is retried next run
+                print(f'  match {int(mid)}: {e}')
+                failed.append(int(mid))
         if i % save_every == 0 or i == len(todo):
             if done_ids:
                 keep = cache[~cache['matchId'].astype('int64').isin(done_ids)]

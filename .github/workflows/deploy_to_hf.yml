@@ -126,7 +126,10 @@ jobs:
           # complete_player_minutes.pkl, match_lineups.pkl, player_details.pkl,
           # all_match_data.pkl, matches_summary.parquet, season_simulation.pkl,
           # gpa_player_season_values.parquet.
-          for f in $(git ls-files '*.pkl' '*.parquet' | grep -v '/'); do
+          # historical_events/matches.parquet (~95 MB) are read only by the
+          # offline train_predictor_v2.py — never by the app — so they stay on
+          # GitHub and are not shipped to the Space (removed below if present).
+          for f in $(git ls-files '*.pkl' '*.parquet' | grep -v '/' | grep -v '^historical_'); do
             cp "$f" ../hf-repo/
           done
 
@@ -164,7 +167,7 @@ jobs:
             for f in *.py *.pkl *.parquet requirements.txt config.yaml Dockerfile; do
               [ -f "$f" ] || continue
               [ "$f" = "raw_events.parquet" ] && continue
-              if [ ! -f "../github-repo/$f" ]; then
+              if [ ! -f "../github-repo/$f" ] || [[ "$f" == historical_* ]]; then
                 rm -f "$f"
                 echo "🗑  removed stale $f (deleted from GitHub repo)"
               fi

@@ -8,6 +8,7 @@ name: Engine Rebuild (ACP ratings/projections)
 
 permissions:
   contents: write
+  actions: write      # dispatches deploy_to_hf.yml after committing
 
 on:
   workflow_run:
@@ -25,9 +26,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  rebuild-engine:
-    # Only run if the upstream refresh succeeded (or when dispatched manually)
+  check-inputs:
+    # A scheduled rebuild only runs when the engine's inputs changed (the
+    # Oct 2026 refreshes logged "No new events fetched" five runs in a row
+    # and each still ran a 30-60 min rebuild + recommit). Manual runs always
+    # rebuild.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.fp.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: fp
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          pip install -q huggingface_hub
+          changed=$(python scripts/engine_inputs_fp.py --changed)
+          echo "engine inputs changed: $changed"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          if [ "$changed" = "false" ]; then
+            # This run holds the hf-deploy group, so a code-push deploy that was
+            # waiting may have been cancelled in its favour — re-dispatch one so
+            # a code push always reaches the Space (cheap: smoke + no-op deploy).
+            gh workflow run deploy_to_hf.yml --ref main
+          fi
+
+  rebuild-engine:
+    needs: check-inputs
+    if: ${{ needs.check-inputs.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -57,7 +88,9 @@ jobs:
           # explicit engine deps (in case the dashboard reqs omit them).
           # streamlit is NOT in requirements.txt (the HF Space SDK provides
           # it) but Phase 3 runs `app.py --precompute`, which imports it.
-          pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy streamlit
+          # streamlit pinned to the Space's version (an unpinned install got
+          # 1.66 while the Space runs 1.50 — Phase 3 writes the caches it reads)
+          pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy "streamlit==1.50.0" huggingface_hub
           # The dashboard pins pandas==2.3.3 for HF Space stability, but the
           # engine chain OOMs the 16 GB runner on 2.x (object-dtype strings).
           # Override to pandas 3.x HERE ONLY — Arrow-backed strings cut the
@@ -130,11 +163,15 @@ jobs:
 
       - name: Phase 3 — warm player-stats caches
         working-directory: Match_Reports_API/Dashboard
-        run: python app.py --precompute || echo 'precompute nonfatal'
+        # fatal: a failed precompute used to be swallowed and the run still
+        # committed/deployed whatever caches it had
+        run: python app.py --precompute
 
       - name: Commit refreshed engine parquets to GitHub
         if: ${{ github.event_name == 'workflow_run' || github.event.inputs.deploy == 'true' }}
         working-directory: Match_Reports_API/Dashboard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'github-actions-bot@users.noreply.github.com'
@@ -152,8 +189,16 @@ jobs:
                      models/ratings/*.parquet models/ratings/*.json \
                      models/value/*.json models/scoreline/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
-                     models/roles/*.parquet models/roles/*.joblib \
-                     models/roles/*.png season_simulation.pkl
+                     models/roles/role_features_season.parquet \
+                     models/roles/role_assignments_season.parquet \
+                     models/roles/*.joblib season_simulation.pkl
+          # (role_features_match.parquet ~62 MB, role_assignments_match and the
+          # role-atlas PNG are chain intermediates the app never reads — they
+          # are rebuilt every run and are no longer committed; the repo had
+          # grown to 2.25 GB recommitting them.)
+          # inputs fingerprint: lets the next scheduled run skip when unchanged
+          python scripts/engine_inputs_fp.py --write
+          git add -f models/ratings/engine_inputs.sha
           git add -f stats_cache/ 2>/dev/null || true
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: automated engine rebuild (ratings/projections)"
@@ -163,43 +208,13 @@ jobs:
             echo "No engine changes to commit."
           fi
 
-      - name: Deploy to Hugging Face Space
+      - name: Deploy through deploy_to_hf.yml (smoke-tested in the Space's environment)
+        # The rebuild runs pandas 3 (memory), the Space pandas 2.3.3 — so the
+        # page smoke tests must run in deploy_to_hf's Space-equivalent env.
+        # raw_events is never changed by the engine, so deploy_to_hf (which
+        # keeps the Space's raw_events) ships everything this run committed.
         if: ${{ github.event_name == 'workflow_run' || github.event.inputs.deploy == 'true' }}
         working-directory: Match_Reports_API/Dashboard
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          DEPLOY_DIR=$(mktemp -d)
-          rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
-                   --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
-                   . "$DEPLOY_DIR/"
-          # HF's pre-receive hook rejects raw binary images; strip diagnostic
-          # plots + all images before the push (same as deploy_to_hf.yml — the
-          # app renders charts in-process and tolerates missing image files).
-          find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
-          # icons/ is exempt: team crests the app loads at runtime, shipped via LFS below.
-          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -not -path '*/icons/*' -delete 2>/dev/null || true
-          cd "$DEPLOY_DIR"
-          git init -b main
-          git lfs install
-          git lfs track "*.parquet"
-          git lfs track "*.pkl"
-          git lfs track "icons/*.png"
-          git add .gitattributes
-          git add -A
-          git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
-              commit -m "Engine rebuild deploy"
-          git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
-          git push hf main --force
-          echo "✅ Deployed engine rebuild to HF Space"
-
-      - name: Clean up orphaned HF LFS objects
-        # Force-push deploys orphan the previous deploy's LFS blobs, which
-        # still count against the Space's 1 GB storage cap until permanently
-        # deleted. See hf_lfs_cleanup.py in the dashboard repo.
-        working-directory: Match_Reports_API/Dashboard
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install -q huggingface_hub
-          python hf_lfs_cleanup.py
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy_to_hf.yml --ref main

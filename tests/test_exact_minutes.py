@@ -50,9 +50,10 @@ def test_build_season_uses_api_minutes_only(monkeypatch):
                          'primaryPosition': 'RCB', 'totalMinutes': 999}])
     df = pm.build_season(5, mm, api, details={}, lineup_teams={})
     row = df.iloc[0]
-    # minutes = the per-match API sum; the season row only labels the player
+    # minutes = the per-match API sum; labels come from the season's events
+    # first (they follow mid-season transfers), the API season row second
     assert row['totalMinutes'] == 164
-    assert row['playerName'] == 'API Name' and row['teamName'] == 'API Team'
+    assert row['playerName'] == 'Ev Name' and row['teamName'] == 'Ev Team'
 
 
 def test_build_season_no_minutes_no_row(monkeypatch):

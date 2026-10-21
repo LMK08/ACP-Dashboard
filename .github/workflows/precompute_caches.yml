@@ -8,6 +8,7 @@ name: Precompute Stats Caches
 
 permissions:
   contents: write
+  actions: write
 
 on:
   workflow_dispatch:
@@ -36,7 +37,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           # streamlit (HF SDK provides it, not in requirements) + stats deps
-          pip install streamlit xgboost scikit-learn scipy pyarrow joblib pandas numpy
+          pip install "streamlit==1.50.0" xgboost scikit-learn scipy pyarrow joblib pandas numpy
 
       - name: Download canonical raw_events from HF
         env:
@@ -51,14 +52,20 @@ jobs:
         run: python app.py --precompute
 
       - name: Verify all expected cache scopes were written
+        # Version and seasons come from the app/config (this check used to
+        # hard-code v15 and a season list without 2026/27).
         run: |
-          missing=0
-          for s in 188221 188222 189147 190090 191782 all_43324 190230 191779 all_702; do
-            if [ ! -f "stats_cache/player_stats_v15_${s}.parquet" ]; then
-              echo "MISSING: stats_cache/player_stats_v15_${s}.parquet"; missing=1
-            fi
-          done
-          [ "$missing" = "0" ] && echo "all 9 scopes present" || (echo "::error::missing cache scopes"; exit 1)
+          python - <<'PY'
+          import re, os, sys
+          from league_config import COMPETITIONS
+          ver = re.search(r"^STATS_CACHE_VERSION = '([^']+)'", open('app.py').read(), re.M).group(1)
+          scopes = [str(s) for c in COMPETITIONS.values() for s in c['seasons']]
+          scopes += [f"all_{cid}" for cid in COMPETITIONS]
+          missing = [s for s in scopes if not os.path.exists(f"stats_cache/player_stats_{ver}_{s}.parquet")]
+          print(f"{len(scopes) - len(missing)}/{len(scopes)} scopes present ({ver})")
+          if missing:
+              print("::error::missing cache scopes: " + ", ".join(missing)); sys.exit(1)
+          PY
 
       - name: Commit refreshed caches to GitHub
         run: |
@@ -73,25 +80,10 @@ jobs:
             echo "No cache changes to commit."
           fi
 
-      - name: Deploy to Hugging Face Space
+      - name: Deploy through deploy_to_hf.yml
+        # one deploy path for code, engine and caches: smoke-tested, keeps the
+        # Space's raw_events and the team crests (this workflow's own
+        # force-push used to delete every PNG, crests included)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          DEPLOY_DIR=$(mktemp -d)
-          rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
-                   --exclude='.DS_Store' --exclude='.env' --exclude='.gitignore' \
-                   . "$DEPLOY_DIR/"
-          find "$DEPLOY_DIR" -type d -name plots -exec rm -rf {} + 2>/dev/null || true
-          find "$DEPLOY_DIR" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) -delete 2>/dev/null || true
-          cd "$DEPLOY_DIR"
-          git init -b main
-          git lfs install
-          git lfs track "*.parquet"
-          git lfs track "*.pkl"
-          git add .gitattributes
-          git add -A
-          git -c user.name="GitHub Actions" -c user.email="actions@github.com" \
-              commit -m "Cache refresh deploy"
-          git remote add hf https://LMK08:${HF_TOKEN}@huggingface.co/spaces/ACP-Analytics/ACP-Dashboard
-          git push hf main --force
-          echo "✅ Deployed cache refresh to HF Space"
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy_to_hf.yml --ref main

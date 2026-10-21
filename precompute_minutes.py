@@ -104,9 +104,13 @@ def build_season(season_id, mm_season, api_season, details, lineup_teams):
         a = api_id.get(pid, (None, None, None))
         e = ev_id.get(pid, (None, None, None))
         d = details.get(pid, {})
-        name = next((v for v in (a[0], e[0], d.get('shortName')) if _ok(v)), 'Unknown')
-        team = next((v for v in (a[1], e[1], lineup_teams.get(pid)) if _ok(v)), 'Unknown')
-        position = next((v for v in (a[2], top_pos.get(pid), e[2]) if _ok(v)), 'Unknown')
+        # Labels: the season's own events first (they follow mid-season
+        # transfers; the stored season-API frame is no longer refreshed for
+        # live seasons), then the API frame, then the bio. Position: the
+        # API's per-match position shares first.
+        name = next((v for v in (e[0], a[0], d.get('shortName')) if _ok(v)), 'Unknown')
+        team = next((v for v in (e[1], a[1], lineup_teams.get(pid)) if _ok(v)), 'Unknown')
+        position = next((v for v in (top_pos.get(pid), a[2], e[2]) if _ok(v)), 'Unknown')
         rows.append({'playerId': int(pid), 'playerName': name, 'teamName': team,
                      'primaryPosition': position, 'totalMinutes': int(mins),
                      'competitionId': competition_for_season(season_id)})

@@ -193,7 +193,8 @@ def fetch_events(username, password, match_ids, required_match_ids=None):
 # ==============================================================================
 # PLAYER MINUTES: Using Player Advanced Stats Endpoint (Direct Minutes)
 # ==============================================================================
-def fetch_official_player_minutes(username, password, match_ids, raw_events_df, competition_id=43324, season_id=191782):
+def fetch_official_player_minutes(username, password, match_ids, raw_events_df, competition_id=43324, season_id=191782,
+                                   fetch_player_stats=True, known_lineups=None):
     """
     Fetches player minutes directly from Wyscout Player Advanced Stats endpoint.
 
@@ -240,6 +241,12 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
 
     print(f"\n🔍 Collecting player IDs from {len(match_ids)} matches...")
 
+    # Lineups of a match never change once it is in the cache: only scan new
+    # matches (the refresh used to re-request every current-season match).
+    if known_lineups:
+        # an EMPTY entry is a match scanned before it was played (no
+        # formation yet) — it must be scanned again once it has been
+        match_ids = [m for m in match_ids if not known_lineups.get(m)]
     for match_id in tqdm(match_ids, desc="Scanning Lineups"):
         url = f"{base_url_v3}/matches/{match_id}"
         try:
@@ -291,6 +298,14 @@ def fetch_official_player_minutes(username, password, match_ids, raw_events_df, 
 
     print(f"✅ Found {len(unique_player_ids)} unique players.")
     print(f"✅ Captured lineup/substitution data for {len(match_lineups)} matches.")
+
+    if not fetch_player_stats:
+        # Minutes come from the per-match cache (match_minutes.py) and labels
+        # from events, so the ~500 per-player season calls (~12 min a run)
+        # are skipped for live seasons; the stored season frame is kept.
+        print("   (per-player season stats skipped — minutes come from match_minutes.py)")
+        return (pd.DataFrame(columns=['playerId', 'playerName', 'teamName', 'primaryPosition', 'totalMinutes']),
+                match_lineups)
 
     # --- STEP 3: Fetch minutes from Player Advanced Stats endpoint ---
     print(f"\n🚀 Fetching player stats from Advanced Stats endpoint...")
@@ -1661,6 +1676,20 @@ def main():
     _active_comps = {cid for cid, cfg in COMPETITIONS.items() if cfg.get("active", True)}
     played_matches = played_matches[played_matches['competitionId'].isin(_active_comps)]
     new_match_ids = [mid for mid in played_matches['matchId'].dropna().unique() if mid not in cached_match_ids]
+    # Matches Wyscout answered "no statistical data" for (match_minutes
+    # sentinels) and that were played over 30 days ago never get events:
+    # 31 Liga 3 matches were re-requested every run.
+    try:
+        from match_minutes import matches_without_stats
+        _no_stats = matches_without_stats()
+        _old = set(played_matches.loc[pd.to_datetime(played_matches['dateutc'], errors='coerce', utc=True)
+                                      < pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=30), 'matchId'])
+        _skip = {m for m in new_match_ids if m in _no_stats and m in _old}
+        if _skip:
+            print(f"   skipping {len(_skip)} old matches Wyscout has no stats for")
+            new_match_ids = [m for m in new_match_ids if m not in _skip]
+    except Exception as _e:
+        print(f"   (could not read match_minutes sentinels: {_e})")
     print(f"   {len(new_match_ids)} new played matches need event fetching.")
 
     # TEST_LIMIT: set env var to cap new matches per competition (e.g. TEST_FETCH_LIMIT=10)
@@ -1908,13 +1937,19 @@ def main():
             season_match_ids,
             season_events,
             competition_id=comp_id,
-            season_id=season_id
+            season_id=season_id,
+            # per-player season stats only for a season we have never stored
+            # (labels/backup); live seasons are covered by match_minutes.py
+            fetch_player_stats=season_id not in player_minutes_by_season,
+            known_lineups=all_match_lineups,
         )
 
         if not season_minutes_df.empty:
             season_minutes_df['competitionId'] = comp_id
             player_minutes_by_season[season_id] = season_minutes_df
             print(f"✅ Season {season_id}: {len(season_minutes_df)} player records.")
+        elif season_id in player_minutes_by_season:
+            print(f"   Season {season_id}: keeping the stored season frame.")
         else:
             print(f"⚠️ Season {season_id}: No player minutes data.")
 
