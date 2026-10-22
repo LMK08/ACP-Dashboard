@@ -18,14 +18,36 @@ STORED = os.path.join('models', 'ratings', 'engine_inputs.sha')
 FILES = ['match_player_minutes.parquet', 'match_lineups.pkl', 'matches_summary.parquet']
 
 
+def _content_hash(f):
+    """Hash of the CONTENT that matters, not the file bytes: the refresh
+    rewrites these files every run (parquet metadata, pickle ordering), so a
+    byte hash changed daily and triggered a full rebuild with no new data
+    (first live test, 2026-10-21)."""
+    import pandas as pd
+    if not os.path.exists(f):
+        return 'missing'
+    if f == 'matches_summary.parquet':
+        d = pd.read_parquet(f, columns=['matchId', 'status', 'score'])
+        d = d[d['status'] == 'Played'].astype(str).sort_values(['matchId']).to_csv(index=False)
+    elif f == 'match_player_minutes.parquet':
+        d = pd.read_parquet(f).astype(str).sort_values(['matchId', 'playerId']).to_csv(index=False)
+    elif f == 'match_lineups.pkl':
+        import pickle
+        with open(f, 'rb') as fh:
+            lu = pickle.load(fh)
+        d = repr(sorted((int(k), bool(v)) for k, v in lu.items()))
+    else:
+        return hashlib.sha256(open(f, 'rb').read()).hexdigest()
+    return hashlib.sha256(d.encode()).hexdigest()
+
+
 def fingerprint():
     from huggingface_hub import HfApi
     info = HfApi(token=os.environ.get('HF_TOKEN') or None).get_paths_info(
         'ACP-Analytics/ACP-Dashboard', ['raw_events.parquet'], repo_type='space')
     parts = [f"raw_events={info[0].lfs.sha256 if info and info[0].lfs else 'missing'}"]
     for f in FILES:
-        h = hashlib.sha256(open(f, 'rb').read()).hexdigest() if os.path.exists(f) else 'missing'
-        parts.append(f"{f}={h}")
+        parts.append(f"{f}={_content_hash(f)}")
     return '\n'.join(parts) + '\n'
 
 
