@@ -134,9 +134,21 @@ for (mid, tname), gg in iv[unres].groupby(['matchId', 'teamName']):
     tids = [t for t in tids if t is not None]
     if tids:
         fixes[(mid, tname)] = pd.Series(tids).mode().iloc[0]
-iv.loc[unres, 'teamId'] = [fixes.get((m, t)) for m, t in
-                             zip(iv.loc[unres, 'matchId'], iv.loc[unres, 'teamName'])]
+# numeric, NaN for groups with no fix: a raw list mixing ids and None
+# becomes an object array, which pandas 3 (the CI engine env) refuses to
+# write into the float teamId column (rebuild failure 2026-10-26)
+iv.loc[unres, 'teamId'] = pd.to_numeric(pd.Series(
+    [fixes.get((m, t)) for m, t in zip(iv.loc[unres, 'matchId'], iv.loc[unres, 'teamName'])],
+    dtype=object), errors='coerce').to_numpy(dtype=float)
 print(f"  teamId after player-majority fallback: {iv['teamId'].notna().mean()*100:.1f}%")
+# Still unresolved = a match whose lineup exists but whose events have not
+# arrived yet (Wyscout lag, e.g. one MW7 match on 2026-10-26): no events, no
+# xG segments, nothing for RAPM to use — and rapm_v4 casts teamId to int.
+_nores = iv['teamId'].isna()
+if _nores.any():
+    print(f"  dropping {int(_nores.sum())} intervals in {iv.loc[_nores, 'matchId'].nunique()} "
+          f"match(es) with no team id (no events yet)")
+    iv = iv[~_nores].copy()
 print(f"  how_out mix: {iv['how_out'].value_counts(normalize=True).round(3).to_dict()}")
 
 print("[3/3] sanity vs event spans…", flush=True)
