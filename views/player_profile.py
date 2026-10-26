@@ -32,6 +32,8 @@ def render():
     DEFR_RADAR_MAP = app.DEFR_RADAR_MAP
     DRIBBLING_METRICS = app.DRIBBLING_METRICS
     ENGINE_DISPLAY_METRICS = app.ENGINE_DISPLAY_METRICS
+    ENGINE_METRIC_HELP = app.ENGINE_METRIC_HELP
+    engine_metric_help_md = app.engine_metric_help_md
     GOALKEEPING_METRICS = app.GOALKEEPING_METRICS
     INVERT_METRICS = app.INVERT_METRICS
     MPL_LOCK = app.MPL_LOCK
@@ -763,18 +765,19 @@ def render():
 
             # component bars
             _comp_cols = st.columns(6)
-            for _i, (_lbl, _col) in enumerate([
-                    ("Offensive Value", 'off_pct'),
-                    ("Def Quality Grade", 'qual_pct'),
-                    ("RAPM", 'rapm_pct'),
-                    ("Def Volume Grade", 'defr_pct'),
-                    ("Off Duel Grade", 'datt_pct'),
-                    ("Set piece", 'setpiece_pct')]):
+            for _i, (_lbl, _col, _hk) in enumerate([
+                    ("Offensive Value", 'off_pct', 'Offensive Value %'),
+                    ("Def Quality Grade", 'qual_pct', 'Def Quality Grade %'),
+                    ("RAPM", 'rapm_pct', 'Engine RAPM %'),
+                    ("Def Volume Grade", 'defr_pct', 'Def Volume Grade %'),
+                    ("Off Duel Grade", 'datt_pct', 'Off Duel Grade %'),
+                    ("Set piece", 'setpiece_pct', 'Engine Set Piece %')]):
                 _v = _e.get(_col)
                 with _comp_cols[_i]:
                     if pd.notna(_v):
                         st.progress(min(max(float(_v), 0.0), 1.0))
-                        st.caption(f"{_lbl} · {float(_v)*100:.0f}")
+                        st.caption(f"{_lbl} · {float(_v)*100:.0f}",
+                                   help=ENGINE_METRIC_HELP[_hk])
                     else:
                         st.caption(f"{_lbl} · —")
             # --- ACP Index radar card: cached PNG render (see
@@ -2063,6 +2066,16 @@ def render():
                         .applymap(_percentile_color, subset=['Percentile'])
                         .format({'Percentile': lambda v: f"{int(round(v))}" if pd.notna(v) else '—'})
                     )
+                    if group_name == "ACP Index":
+                        # dataframe rows carry no tooltips, and a hover
+                        # tooltip clips at 300 px — the definitions of the
+                        # metrics shown go in a popover beside the table
+                        st.caption(
+                            "% values are within-role percentiles (50 = "
+                            "typical for the role); the Percentile column "
+                            "ranks that value against same-position players.")
+                        with st.popover("What each metric measures"):
+                            st.markdown(engine_metric_help_md(stats_subset.index))
                     st.dataframe(_styled, use_container_width=True)
 
 

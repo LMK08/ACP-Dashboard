@@ -227,6 +227,9 @@ footer, footer::before { display: none !important; }
 /* === MAIN === */
 [data-testid="stMainBlockContainer"] { background: var(--bg); padding-top: 2rem; }
 .main { background: var(--bg); }
+/* Help (?) icons: Streamlit strokes them for its dark base theme
+   (rgba(250,250,250,.6)), invisible on the cream main area. */
+[data-testid="stMain"] [data-testid="stTooltipIcon"] svg { stroke: var(--ink-3); }
 
 /* Scrollbar */
 /* Thin scrollbars are LAYOUT-TAKING in Chrome once ::-webkit-scrollbar is
@@ -452,6 +455,15 @@ pre code { background: transparent !important; padding: 0 !important; }
 /* === MISC === */
 ::selection { background: var(--ink); color: #fff; }
 [data-testid="stMarkdownContainer"] { color: var(--ink) !important; }
+/* Tooltip and popover bodies stay dark (Streamlit's base theme): the
+   cream-page ink rules (p, stMarkdownContainer) made their text
+   dark-on-dark. */
+[data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"],
+[data-testid="stTooltipContent"] p,
+[data-testid="stTooltipContent"] li,
+[data-testid="stPopoverBody"] [data-testid="stMarkdownContainer"],
+[data-testid="stPopoverBody"] p,
+[data-testid="stPopoverBody"] li { color: var(--bg) !important; }
 [role="dialog"] { background: var(--card) !important; border: 1px solid var(--border) !important; }
 .stApp > header { background: var(--bg) !important; }
 
@@ -1642,6 +1654,122 @@ ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'Receiving Grade %', 'Dribbling Grade %',
                            'Aerial WOE /90', 'Ground WOE /90',
                            'Engine Value EUR']
+
+# Hover help for the ACP Index metrics (selectbox / column-header / caption
+# tooltips on Player Analysis and the Player Profile). Every '%' metric is a
+# within-role percentile from models/ratings/build_rating.py (role_pct) —
+# keep this copy in step with that file when an axis changes.
+_ROLE_PCT_HELP = (" Within-role percentile, 0–100 — not a success rate: 50 = "
+                  "typical for the player's role in this league and season, "
+                  "80 = above 80% of them. Reference group: same-role players "
+                  "with 500+ minutes.")
+ENGINE_METRIC_HELP = {
+    'ACP Rating': "Role-weighted blend of attacking value, defending and "
+                  "plus-minus. Scale: 50 = league average, ±17 ≈ one "
+                  "standard deviation (≈85 elite) — not a percentile. "
+                  "Thin-minutes players are pulled toward replacement level.",
+    'ACP Rating (abs)': "ACP Rating on one cross-league scale (Liga 3 "
+                        "equivalent): a Campeonato rating shifts down by the "
+                        "league gap fitted at each engine rebuild (≈7–8 "
+                        "points).",
+    'ACP Projection': "Forecast of next season's ACP Rating from career "
+                      "form, how far that record can be trusted (Evidence "
+                      "Weight) and an age curve peaking around 26. Same "
+                      "50 ± 17 scale.",
+    'ACP Projection (abs)': "ACP Projection on the Liga 3-equivalent scale: "
+                            "a Campeonato projection shifts down by the "
+                            "recruit league gap, fitted separately from the "
+                            "rating's.",
+    'Projection Band': "± uncertainty on the projection, in rating points: "
+                       "one standard deviation of past forecast error for "
+                       "the role. Wider when the last rated season is older.",
+    'Evidence Weight': "How much the projection trusts the player's own "
+                       "record, 0–1, from career minutes. Low = the "
+                       "projection leans on the league and the age curve.",
+    'Offensive Value %': "Ranks on-ball attacking value per 90: shooting, "
+                         "creating, linking, receiving and dribbling value "
+                         "(GPA, in goals), each weighted by its reliability "
+                         "and its importance for the role. Pulled toward 50 "
+                         "under 2,500 minutes (a 500′ player keeps about a "
+                         "third of the distance)." + _ROLE_PCT_HELP,
+    'Def Quality Grade %': "Ranks how well the player wins defensive "
+                           "contests: Aerial Grade and Ground Def Grade "
+                           "combined, weighted by how many of each they "
+                           "contest. Quality, where Def Volume Grade is "
+                           "quantity." + _ROLE_PCT_HELP,
+    'Aerial Grade %': "Ranks aerial duels won above expectation (given the "
+                      "opponent's aerial strength), averaged with an "
+                      "opponent-adjusted aerial duel rating." + _ROLE_PCT_HELP,
+    'Ground Def Grade %': "Ranks defensive ground duels won above "
+                          "expectation (given the attacker, the action and "
+                          "the pitch zone), averaged with opponent-adjusted "
+                          "tackling and pressing duel ratings."
+                          + _ROLE_PCT_HELP,
+    'Engine RAPM %': "Ranks the team's xG difference while the player is on "
+                     "the pitch, adjusted for teammates and opponents "
+                     "(regularised plus-minus over this and earlier seasons, "
+                     "recent ones weighted more). Catches impact the event "
+                     "data misses." + _ROLE_PCT_HELP,
+    'Def Volume Grade %': "Ranks how much defending the player takes on "
+                          "compared with what's expected for their role and "
+                          "where they play — responsibility above "
+                          "expectation, not a raw tackle count."
+                          + _ROLE_PCT_HELP,
+    'Off Duel Grade %': "Ranks opponent-adjusted ratings for take-ons and "
+                        "shielding the ball: 1v1 attacking and press "
+                        "resistance (30+ contests of a type to count)."
+                        + _ROLE_PCT_HELP,
+    'Engine Set Piece %': "Ranks set-piece delivery value per 90. Shown on "
+                          "its own — not part of the ACP Rating."
+                          + _ROLE_PCT_HELP,
+    'Shooting Grade %': "Ranks on-ball value from shots per 90 (GPA)."
+                        + _ROLE_PCT_HELP,
+    'Creating Grade %': "Ranks value per 90 from open-play passes into "
+                        "dangerous areas: into the final third or box, "
+                        "crosses, through balls, shot assists (GPA)."
+                        + _ROLE_PCT_HELP,
+    'Linking Grade %': "Ranks value per 90 from all other open-play passes — "
+                       "build-up and circulation (GPA)." + _ROLE_PCT_HELP,
+    'Receiving Grade %': "Ranks value per 90 from receiving the ball in "
+                         "dangerous positions (GPA)." + _ROLE_PCT_HELP,
+    'Dribbling Grade %': "Ranks value per 90 from carries and take-ons "
+                         "(GPA)." + _ROLE_PCT_HELP,
+    'Aerial WOE /90': "Aerial duels won over expectation per 90 (given the "
+                      "opponent's aerial strength), damped when there are "
+                      "few duels. The raw input behind Aerial Grade %.",
+    'Ground WOE /90': "Defensive ground duels won over expectation per 90, "
+                      "damped when there are few duels. The raw input behind "
+                      "Ground Def Grade %.",
+    'Engine Value EUR': "Model market value in EUR from the ACP Projection "
+                        "(Liga 3 scale), age, role and competition. "
+                        "Outfielders only.",
+}
+
+
+def engine_metric_select_help(key, options, index=0):
+    """ENGINE_METRIC_HELP for the option a keyed selectbox is ABOUT to show
+    (its tooltip is drawn before it returns the pick). Streamlit 1.50 keeps
+    a keyed selectbox's value only while its options are unchanged (identity
+    = key + options) and otherwise resets it to `index`, so the stored value
+    is trusted only when the options match last run's."""
+    _opts_key = f"_{key}_help_opts"
+    _same = st.session_state.get(_opts_key) == tuple(options)
+    st.session_state[_opts_key] = tuple(options)
+    _cur = st.session_state.get(key)
+    if not _same or _cur not in options:
+        _cur = options[index]
+    return ENGINE_METRIC_HELP.get(_cur)
+
+
+def engine_metric_help_md(metrics):
+    """ENGINE_METRIC_HELP for a table whose ROWS are metrics (dataframe rows
+    carry no tooltips) as one markdown list for a popover; the shared
+    percentile note is said once above it instead of on every % metric."""
+    _items = [f"- **{m}** — {ENGINE_METRIC_HELP[m].replace(_ROLE_PCT_HELP, '')}"
+              for m in metrics if m in ENGINE_METRIC_HELP]
+    if not _items:
+        return None
+    return "**% metrics:**" + _ROLE_PCT_HELP + "\n\n" + "\n".join(_items)
 
 
 # Shared "How these ratings work" copy — rendered in an expander on the Player

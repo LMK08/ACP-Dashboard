@@ -23,6 +23,8 @@ def render():
     DEFR_DISPLAY_METRICS = app.DEFR_DISPLAY_METRICS
     DRIBBLING_METRICS = app.DRIBBLING_METRICS
     ENGINE_DISPLAY_METRICS = app.ENGINE_DISPLAY_METRICS
+    ENGINE_METRIC_HELP = app.ENGINE_METRIC_HELP
+    engine_metric_select_help = app.engine_metric_select_help
     ENGINE_VALUE_TEMPER = app.ENGINE_VALUE_TEMPER
     FIGURE_CACHE_VERSION = app.FIGURE_CACHE_VERSION
     engine_rows_for_scope = app.engine_rows_for_scope
@@ -970,9 +972,10 @@ def render():
             if not opts:
                 return None
             idx = opts.index(default_metric) if default_metric in opts else 0
+            _key = f"peer_scatter_metric_{axis_label}"
             return st.sidebar.selectbox(
-                f"{axis_label} metric:", opts, index=idx,
-                key=f"peer_scatter_metric_{axis_label}")
+                f"{axis_label} metric:", opts, index=idx, key=_key,
+                help=engine_metric_select_help(_key, opts, idx))
 
         _sc_x = _sc_metric_picker("X", "Defensive", "Interceptions")
         _sc_y = _sc_metric_picker("Y", "Output", "npxG")
@@ -1122,7 +1125,9 @@ def render():
         selected_metric = st.sidebar.selectbox(
             "Select Metric:",
             available_metrics,
-            key="player_analysis_metric_v2"
+            key="player_analysis_metric_v2",
+            help=engine_metric_select_help("player_analysis_metric_v2",
+                                           available_metrics)
         )
 
         all_positions = sorted(filtered_df['primaryPosition'].dropna().unique().tolist())
@@ -1148,7 +1153,10 @@ def render():
         _sort_ascending = selected_metric in INVERT_METRICS
         sorted_df = metric_filtered_df.sort_values(by=selected_metric, ascending=_sort_ascending).head(num_players)
 
-        st.subheader(f"Top Players by {selected_metric} (per 90)")
+        # engine metrics are levels / percentiles, not per-90 rates
+        _per90_txt = ("" if selected_metric in ENGINE_DISPLAY_METRICS
+                      else " (per 90)")
+        st.subheader(f"Top Players by {selected_metric}{_per90_txt}")
 
         related_metrics = []
         if selected_metric in OUTPUT_METRICS:
@@ -1208,7 +1216,9 @@ def render():
             use_container_width=True,
             on_select="rerun",
             selection_mode="single-row",
-            key="individual_metric_table"
+            key="individual_metric_table",
+            column_config={c: st.column_config.Column(help=ENGINE_METRIC_HELP[c])
+                           for c in display_df.columns if c in ENGINE_METRIC_HELP}
         )
         _handle_row_selection(selection, player_ids)
 
