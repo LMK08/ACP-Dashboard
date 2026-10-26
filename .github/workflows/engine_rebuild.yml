@@ -45,8 +45,13 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          pip install -q huggingface_hub
-          changed=$(python scripts/engine_inputs_fp.py --changed)
+          # Same pandas as the rebuild job that WRITES the stored fingerprint
+          # (content hashes go through pandas' text formatting). Missing
+          # pandas crashed this check 22-26 Oct and silently skipped 4 rebuilds.
+          pip install -q huggingface_hub "pandas==3.0.3" pyarrow
+          # Fail OPEN: if the check itself errors, rebuild rather than skip.
+          changed=$(python scripts/engine_inputs_fp.py --changed) || {
+            echo "::warning::engine input check failed — rebuilding to be safe"; changed=true; }
           echo "engine inputs changed: $changed"
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           if [ "$changed" = "false" ]; then
