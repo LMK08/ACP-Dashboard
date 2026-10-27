@@ -91,6 +91,7 @@ def render():
     load_player_engine = app.load_player_engine
     load_eur_calibration = app.load_eur_calibration
     engine_rows_for_scope = app.engine_rows_for_scope
+    engine_card_row = app.engine_card_row
     logger = app.logger
     make_opta_team_strength_lookup = app.make_opta_team_strength_lookup
     matches_summary_df = app.matches_summary_df
@@ -576,27 +577,11 @@ def render():
     # --- ACP Engine card: rating + projection + components ---------
     try:
         _eng_df, _eng_meta = load_player_engine()
-        _erows = _eng_df[_eng_df['playerId'] == int(selected_player_id)] if not _eng_df.empty else pd.DataFrame()
-        # active_season_ids can be None (All Seasons), an int, or a list
-        if isinstance(active_season_ids, (list, tuple, set)):
-            _e_sids = [int(s) for s in active_season_ids if s is not None]
-        elif active_season_ids is not None:
-            _e_sids = [int(active_season_ids)]
-        else:
-            _e_sids = None
-        _career_view = False
-        if _erows.empty:
-            _escope = _erows
-        elif _e_sids:
-            _escope = _erows[_erows['seasonId'].isin(_e_sids)]
-        else:   # All Seasons → CAREER view: aggregate every rated season
-            _escope = _erows
-            _career_view = len(_erows) > 1
-        _eng_stale = False
-        if _escope.empty and not _erows.empty:
-            # not rated in the selected scope — fall back to last rated season
-            _escope = _erows[_erows['seasonId'] == _erows['seasonId'].max()]
-            _eng_stale = True
+        # ONE row-pick rule for the card (models/ratings/card_scope.py) —
+        # the Player Comparison page reads the same one.
+        _card = engine_card_row(_eng_df, int(selected_player_id), active_season_ids)
+        _erows, _escope, _e_sids = _card['erows'], _card['escope'], _card['e_sids']
+        _career_view, _eng_stale = _card['career_view'], _card['stale']
         _is_gk_card = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
         st.subheader("Goalkeeper Rating (legacy system)" if _is_gk_card
                       else "ACP Index")
@@ -635,59 +620,18 @@ def render():
                         "(below the 90-minute floor, or no "
                         "role assignment yet).")
         else:
-            _e = _escope.sort_values('mins_played').iloc[-1]
+            # card_row: the scope's highest-minutes row (career view:
+            # minutes-weighted across every rated season), projection from
+            # the row that carries one
+            _e = _card['e']
             if _career_view:
-                # All-seasons CAREER view: representative row = highest-
-                # minutes season (for role/league/shares); rating + every
-                # percentile/grade aggregated minutes-weighted across all
-                # the player's rated seasons.
-                _e = _e.copy()
-                _wts = pd.to_numeric(_escope['mins_played'], errors='coerce').fillna(0.0).to_numpy()
-                _pct_cols = ['off_pct', 'qual_pct', 'rapm_pct', 'defr_pct',
-                              'datt_pct', 'setpiece_pct', 'aerial_grade_pct',
-                              'ground_grade_pct', 'Shooting_pct', 'Creating_pct',
-                              'Linking_pct', 'Receiving_pct', 'Dribbling_pct',
-                              'career_asof', 'w_evidence']
-                for _c in _pct_cols:
-                    if _c in _escope.columns and _wts.sum() > 0:
-                        _v = pd.to_numeric(_escope[_c], errors='coerce').to_numpy()
-                        _m = ~np.isnan(_v)
-                        if _m.any():
-                            _e[_c] = float(np.average(_v[_m], weights=_wts[_m]))
-                if pd.notna(_e.get('acp_rating_career')):
-                    _e['acp_rating'] = float(_e['acp_rating_career'])
-                _e['mins_played'] = float(_wts.sum())
-                # projection = the LATEST season's forward look; lineup
-                # minutes = career total (for the radar header)
-                _latest_row = _escope.sort_values('seasonId').iloc[-1]
-                for _pc in ('projection', 'projection_abs', 'band_sd',
-                             'proj_delta', 'seasons_ago', 'age'):
-                    if _pc in _latest_row:
-                        _e[_pc] = _latest_row[_pc]
-                if 'mins_lineup' in _escope.columns:
-                    _e['mins_lineup'] = float(pd.to_numeric(
-                        _escope['mins_lineup'], errors='coerce').fillna(0.0).sum())
                 st.caption(f"📚 Career view — minutes-weighted across "
                            f"{len(_escope)} rated seasons "
-                           f"({int(_wts.sum())} total minutes). Select a "
+                           f"({int(_e['mins_played'])} total minutes). Select a "
                            f"single season for that season's rating.")
             if _eng_stale:
                 st.caption(f"⏳ Not rated in the selected season — showing "
                            f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
-            # The projection is a single player-level forward-look anchored to
-            # the player's most-recent season. seasonId is NOT chronological
-            # across leagues (Camp 23/24 = 190230 > L3 24/25 = 190090), so the
-            # in-scope "latest" row picked above can be the wrong one and carry
-            # no projection (e.g. M. Konaté). Always source the projection from
-            # the row that actually has one. (Lucas 2026-06-24)
-            _proj_src = (_erows[_erows['projection'].notna()]
-                         if not _erows.empty else _erows)
-            if not _proj_src.empty:
-                _pr = _proj_src.sort_values('seasonId').iloc[-1]
-                for _pc in ('projection', 'projection_abs', 'band_sd',
-                             'proj_delta', 'seasons_ago'):
-                    if _pc in _pr.index:
-                        _e[_pc] = _pr[_pc]
             _ec1, _ec2, _ec3, _ec4 = st.columns(4)
             _abs_note = (f"abs {_e['acp_rating_abs']:.0f}"
                          if pd.notna(_e.get('acp_rating_abs'))

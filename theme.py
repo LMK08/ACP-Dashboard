@@ -56,6 +56,11 @@ RADAR_COLORS = {
     'Set Piece': RADAR_SET_PIECE,
 }
 
+# Player Comparison: Player A / Player B on the overlaid radar, and the same
+# two colours on the page's player cards and stats tables
+COMPARE_A = '#0077b6'      # blue
+COMPARE_B = '#A67B5B'      # light coffee
+
 # ---------------------------------------------------------------------------
 # Colour ramps
 # ---------------------------------------------------------------------------

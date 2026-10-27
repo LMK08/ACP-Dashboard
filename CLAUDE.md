@@ -235,6 +235,19 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   the floor from `minutes_floor`, never a literal 500 (the raw-mode
   population and the distribution panels did, and were empty for the first
   weeks of 2026/27). Tests: `tests/test_template_percentiles.py`.
+- Player Comparison (`views/player_comparison.py`, 2026-10) mirrors the
+  profile two-up: header (value + likely-fee range, role / style), ACP
+  Index, template radar (percentile / raw mean ± 2σ, DefR), ACP Index cards
+  + tendencies, grouped stats (per 90 / totals). RULE: both players are
+  ranked against ONE sample — the selected template's group at/above
+  `minutes_floor` — via `template_pct.rank_in_template` (a qualifying
+  in-group player keeps the pipeline's numbers; sub-floor / out-of-group
+  players are placed and the page says so); the profile ranks a player in
+  his own group. The ACP Index card row (scope pick, All-Seasons career
+  aggregation, projection source) is `models/ratings/card_scope.card_row`
+  (`app.engine_card_row`), shared by both pages — change it there, never
+  inline. Keep the comparison's feature set in step when the profile gains
+  a player-level section.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 - Match Predictor "Team Strength Ratings" = the Dixon-Coles attack /
   defence parameters (`DixonColes.strength_table` → `scoreline_ui.

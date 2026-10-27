@@ -129,3 +129,72 @@ def score_below_floor(frame, scored, position_groups, weights, invert_metrics, f
             out.loc[i, role + '_Score'] = (
                 (total[i] - lo) / (hi - lo) * 100.0 if hi != lo else 0.0)
     return out
+
+
+def rank_in_template(frame, scored, template, position_groups, weights,
+                     invert_metrics, floor, extra_metrics=()):
+    """Return ``(out, placed)``: a copy of ``frame`` in which every row is
+    ranked against ONE sample — the template's position group at or above
+    ``floor`` in ``scored`` — and the playerIds whose score had to be placed.
+
+    This is what a radar that overlays two players needs. The pipeline ranks
+    each player in their OWN position group (a metric shared by two roles
+    keeps the last role's ranking, see :func:`score_below_floor`), so two
+    players on one chart could be ranked against different samples, and a
+    sub-floor or out-of-group player has no numbers for the template at all.
+
+    * percentiles: every row, every template metric plus ``extra_metrics``
+      (columns outside the template, e.g. the DefR axes), average-method percent rank within the sample WITHOUT the row's own
+      player plus the row — so a qualifying in-group player gets exactly the
+      pipeline's ranking for that group; inverted metrics flipped;
+    * score: kept from the pipeline for a player who qualifies in the group
+      (it is the leaderboards' number); otherwise placed like
+      :func:`score_below_floor` — the weighted sum of the template
+      percentiles, min-max scaled onto the group's ``_TotalScore`` range with
+      the player's own total counted in that range.
+
+    Players are matched on ``playerId`` (merges upstream reset indices).
+    ``scored`` is never modified.
+    """
+    out = frame.copy()
+    placed = []
+    group = position_groups.get(template, [])
+    if out.empty or not group or 'playerId' not in out.columns:
+        return out, placed
+    metrics = list(weights[template]) + [m for m in extra_metrics if m not in weights[template]]
+    s_mins = pd.to_numeric(scored['totalMinutes'], errors='coerce').fillna(0)
+    in_group = scored['primaryPosition'].isin(group)
+    sample = scored[in_group & (s_mins >= floor)]
+    sample_pids = set(pd.to_numeric(sample['playerId'], errors='coerce').dropna().astype(int))
+
+    for i in out.index:
+        pid = int(out.at[i, 'playerId'])
+        own = sample[pd.to_numeric(sample['playerId'], errors='coerce') != pid]
+        for metric in metrics:
+            if metric not in own.columns or metric not in out.columns:
+                continue
+            pop_vals = pd.to_numeric(own[metric], errors='coerce').fillna(0).to_numpy()
+            if len(pop_vals) == 0:
+                continue
+            v = pd.to_numeric(pd.Series([out.at[i, metric]]), errors='coerce').fillna(0).iloc[0]
+            p = _percent_rank_in_sample(pop_vals, float(v))
+            out.at[i, metric + '_percentile'] = 1.0 - p if metric in invert_metrics else p
+
+        if pid in sample_pids:
+            continue
+        placed.append(pid)
+        total = 0.0
+        for metric, weight in weights[template].items():
+            pct = out.at[i, metric + '_percentile'] if metric + '_percentile' in out.columns else 0.0
+            total += (0.0 if pd.isna(pct) else float(pct)) * weight
+        out.at[i, template + '_TotalScore'] = total
+        total_col = template + '_TotalScore'
+        others = scored[in_group & (pd.to_numeric(scored['playerId'], errors='coerce') != pid)]
+        if total_col in scored.columns and len(others):
+            others_tot = pd.to_numeric(others[total_col], errors='coerce').dropna()
+            lo = min(others_tot.min(), total) if len(others_tot) else total
+            hi = max(others_tot.max(), total) if len(others_tot) else total
+        else:
+            lo = hi = total
+        out.at[i, template + '_Score'] = (total - lo) / (hi - lo) * 100.0 if hi != lo else 0.0
+    return out, placed

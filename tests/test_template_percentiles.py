@@ -158,3 +158,56 @@ def test_percent_rank_matches_pandas_rank_with_ties():
     for v in (0.0, 1.0, 2.0, 3.0, 7.0, 9.0):
         expected = pd.Series(np.append(sample, v)).rank(pct=True).iloc[-1]
         assert tp._percent_rank_in_sample(sample, v) == pytest.approx(expected)
+
+
+# ------------------------------------------------- one-sample comparison ---
+
+def test_rank_in_template_reproduces_the_pipeline_for_qualifying_group_players():
+    """A qualifying player of the template's group gets the pipeline's own
+    percentiles and score back — nothing is placed."""
+    full = _pipeline(_frame(seed=7), 500)
+    floor = tp.minutes_floor(full)
+    rows = full[(full['totalMinutes'] >= floor) & full['primaryPosition'].isin(['LB', 'RB'])]
+    assert len(rows) > 3
+    out, placed = tp.rank_in_template(rows, full, 'Full Back', POSITION_GROUPS, WEIGHTS,
+                                      INVERT, floor)
+    assert placed == []
+    cols = [m + '_percentile' for m in WEIGHTS['Full Back']] + ['Full Back_Score']
+    np.testing.assert_allclose(out[cols].astype(float).values,
+                               rows[cols].astype(float).values, atol=1e-12)
+
+
+def test_rank_in_template_places_sub_floor_players_like_score_below_floor():
+    full = _pipeline(_frame(seed=8), 500)
+    floor = tp.minutes_floor(full)
+    below = full[(full['totalMinutes'] < floor) & full['primaryPosition'].isin(['LB', 'RB'])]
+    assert len(below) > 0
+    out, placed = tp.rank_in_template(below, full, 'Full Back', POSITION_GROUPS, WEIGHTS,
+                                      INVERT, floor)
+    ref = tp.score_below_floor(below, full, POSITION_GROUPS, WEIGHTS, INVERT, floor)
+    assert sorted(placed) == sorted(below['playerId'].tolist())
+    cols = [m + '_percentile' for m in WEIGHTS['Full Back']] + ['Full Back_Score']
+    np.testing.assert_allclose(out[cols].astype(float).values,
+                               ref[cols].astype(float).values, atol=1e-12)
+
+
+def test_rank_in_template_ranks_an_out_of_group_player_against_the_template_sample():
+    """A centre-back on the Full Back template: ranked against the full-back
+    sample (not his own), with a placed score on the full backs' range."""
+    full = _pipeline(_frame(seed=9), 500)
+    floor = tp.minutes_floor(full)
+    cb = full[(full['totalMinutes'] >= floor) & full['primaryPosition'].isin(['CB', 'RCB'])].iloc[[0]]
+    out, placed = tp.rank_in_template(cb, full, 'Full Back', POSITION_GROUPS, WEIGHTS,
+                                      INVERT, floor)
+    assert placed == [int(cb['playerId'].iloc[0])]
+    fb = full[(full['totalMinutes'] >= floor) & full['primaryPosition'].isin(['LB', 'RB'])]
+    v = float(cb['Passes'].iloc[0])
+    expected = pd.Series(np.append(fb['Passes'].to_numpy(), v)).rank(pct=True).iloc[-1]
+    assert out['Passes_percentile'].iloc[0] == pytest.approx(expected)
+    assert 0.0 <= out['Full Back_Score'].iloc[0] <= 100.0
+    # extra metrics (e.g. DefR axes) are ranked for everyone, scores untouched
+    out2, _ = tp.rank_in_template(cb, full, 'Full Back', POSITION_GROUPS, WEIGHTS, INVERT,
+                                  floor, extra_metrics=['Aerial duels'])
+    assert 'Aerial duels_percentile' in out2.columns
+    assert out2['Full Back_Score'].iloc[0] == pytest.approx(out['Full Back_Score'].iloc[0])
+    pd.testing.assert_frame_equal(full, _pipeline(_frame(seed=9), 500))

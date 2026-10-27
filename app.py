@@ -3372,6 +3372,7 @@ INVERT_METRICS = ['Loss index', 'goalsConceded', 'Dribbled past %', 'Dribbled pa
 from models.value.cvi import *
 from models.similarity import similar_players  # like-for-like search (pure)
 from models.strength import sos as sos_model  # strength-of-schedule adjustment (pure)
+from models.ratings.card_scope import card_row as engine_card_row  # ACP Index card row-pick (pure)
 from models.templates import percentiles as template_pct  # minutes floor + sub-floor radar scoring (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
@@ -6125,51 +6126,82 @@ def bulk_export_radars(export_df, full_pop_df, radar_mode='percentile',
     return zip_target.getvalue(), rendered, skipped, resumed_count
 
 
-def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template):
-    """
-    Creates a 2-player comparison radar styled to replicate the user-provided image.
-    (Layout V15: Moving metric labels closer)
+def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_template,
+                          radar_mode='percentile', population_data=None,
+                          season_label=None, note=None):
+    """Two-player overlay radar for the Player Comparison page.
+
+    Both rows must already be ranked against ONE sample
+    (`template_pct.rank_in_template`): `<metric>_percentile` and
+    `<template>_Score` are read as given. radar_mode 'raw' plots raw per-90
+    values on the mean ± 2σ scale of `population_data` (the template's
+    qualifying sample — the scale of the profile's raw radar,
+    `_create_base_radar_chart`); the labels show value + percentile in both
+    modes. `note` is an extra line in the bottom-left info block (e.g. which
+    player is provisional).
     """
     fig = ax.figure # Get the figure object for fig.text
-    
+
     num_metrics = len(metrics)
     angles = [n / float(num_metrics) * 2 * pi for n in range(num_metrics)]
     angles += angles[:1]
-    
+
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([])  
+    ax.set_xticklabels([])
 
-    # --- Player A Values ---
-    values_a = []
-    for metric in metrics:
-        col = metric + '_percentile'
-        val = float(player_a_data[col].values[0]) if col in player_a_data.columns else 0.0
-        values_a.append(np.nan_to_num(val, nan=0.0) * 100)
-    values_a += values_a[:1]
+    def _cell(row, col):
+        if col not in row.columns:
+            return np.nan
+        return pd.to_numeric(pd.Series([row[col].values[0]]), errors='coerce').iloc[0]
 
-    # --- Player B Values ---
-    values_b = []
-    for metric in metrics:
-        col = metric + '_percentile'
-        val = float(player_b_data[col].values[0]) if col in player_b_data.columns else 0.0
-        values_b.append(np.nan_to_num(val, nan=0.0) * 100)
-    values_b += values_b[:1]
+    raw_mode = radar_mode == 'raw' and population_data is not None
+    _means, _stds = {}, {}
+    if raw_mode:
+        for metric in metrics:
+            vals = (pd.to_numeric(population_data[metric], errors='coerce').dropna()
+                    if metric in population_data.columns else pd.Series(dtype=float))
+            _means[metric] = vals.mean() if len(vals) > 0 else 0
+            _stds[metric] = vals.std() if len(vals) > 1 else 1
+            if not _stds[metric] or pd.isna(_stds[metric]):
+                _stds[metric] = 1  # prevent division by zero
+
+    def _radii(row):
+        out = []
+        for metric in metrics:
+            if raw_mode:
+                raw_val = np.nan_to_num(_cell(row, metric), nan=0.0)
+                z = (raw_val - _means[metric]) / _stds[metric]
+                # 0 = mean - 2σ, 50 = mean, 100 = mean + 2σ; inverted metrics flip
+                mapped = 50 - z * 25 if metric in INVERT_METRICS else 50 + z * 25
+                out.append(float(np.clip(mapped, 0, 100)))
+            else:
+                out.append(np.nan_to_num(_cell(row, metric + '_percentile'), nan=0.0) * 100)
+        return out + out[:1]
+
+    values_a = _radii(player_a_data)
+    values_b = _radii(player_b_data)
 
     # --- Plot Polygons ---
-    color_a = '#0077b6' # Blue
-    color_b = '#A67B5B' # Light Coffee
-    
+    color_a = theme.COMPARE_A
+    color_b = theme.COMPARE_B
+
     player_a_name = player_a_data['playerName'].values[0]
     player_b_name = player_b_data['playerName'].values[0]
 
-    ax.plot(angles, values_a, linewidth=2, linestyle='solid', color=color_a, zorder=3, label=player_a_name)  
+    ax.plot(angles, values_a, linewidth=2, linestyle='solid', color=color_a, zorder=3, label=player_a_name)
     ax.fill(angles, values_a, color_a, alpha=0.2, zorder=2)
-    
-    ax.plot(angles, values_b, linewidth=2, linestyle='solid', color=color_b, zorder=3, label=player_b_name)  
+
+    ax.plot(angles, values_b, linewidth=2, linestyle='solid', color=color_b, zorder=3, label=player_b_name)
     ax.fill(angles, values_b, color_b, alpha=0.2, zorder=2)
 
     # --- Plot Metric Names and Values (Radius-based) ---
     category_colors = {'output': 'green', 'passing': 'orange', 'defensive': 'red', 'dribbling': 'purple', 'goalkeeping': 'cyan', 'off_ball_defending': '#7ECE2B'}
+
+    def _label(row, metric):
+        pct = _cell(row, metric + '_percentile')
+        _p = int(round(pct * 100)) if pd.notna(pct) else None
+        pct_txt = f" ({_p}{get_percentile_suffix(_p)})" if _p is not None else ""
+        return f"{fmt_val(metric, np.nan_to_num(_cell(row, metric), nan=0.0))}{pct_txt}"
 
     for i, metric in enumerate(metrics):
         angle_rad = angles[i]
@@ -6182,101 +6214,95 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
         elif metric in DRIBBLING_METRICS: color = category_colors['dribbling']
         elif metric in GOALKEEPING_METRICS: color = category_colors['goalkeeping']
         else: color = 'grey'
-        # --- FIX: Moved radius to 116, kept size 11 ---
-        ax.text(angle_rad, 117, metric, size=11, ha='center', va='center', rotation=0, color=color, fontweight='bold')
+        ax.text(angle_rad, 117, _metric_display(metric), size=11, ha='center', va='center', rotation=0, color=color, fontweight='bold')
 
-        # Player A stats (raw and percentile)
-        val_a_raw = player_a_data.get(metric, 0).values[0]
-        val_a_pct = player_a_data.get(metric + '_percentile', 0).values[0]
-        label_a = f"{fmt_val(metric, val_a_raw)} ({int(val_a_pct*100)}th)"
+        # Raw-mode scale: the raw value at each gridline (-1σ, mean, +1σ, +2σ)
+        if raw_mode:
+            for lvl, sig in zip([25, 50, 75, 100], [-1, 0, 1, 2]):
+                grid_raw = (_means[metric] - sig * _stds[metric] if metric in INVERT_METRICS
+                            else _means[metric] + sig * _stds[metric])
+                ax.text(angle_rad, lvl + 3, fmt_val(metric, grid_raw), size=7.5,
+                        ha='center', va='bottom', color='grey')
 
-        # Player B stats (raw and percentile)
-        val_b_raw = player_b_data.get(metric, 0).values[0]
-        val_b_pct = player_b_data.get(metric + '_percentile', 0).values[0]
-        label_b = f"{fmt_val(metric, val_b_raw)} ({int(val_b_pct*100)}th)"
-        
         # --- DYNAMIC PLACEMENT TO AVOID OVERLAP ---
         angle_deg = np.degrees(angle_rad) % 360
-        
-        # --- FIX: Tighter stack at 90 and 78 ---
         outer_radius = 89
         inner_radius = 70
-
-        if (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
-            radius_a = inner_radius 
-            radius_b = outer_radius 
-        elif (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360): # Right side
-            radius_a = outer_radius 
-            radius_b = inner_radius 
+        if (0 <= angle_deg <= 20) or (340 <= angle_deg <= 360): # Right side
+            radius_a, radius_b = outer_radius, inner_radius
+        elif (80 < angle_deg < 100) or (260 < angle_deg < 280): # Left side
+            radius_a, radius_b = inner_radius, outer_radius
         else: # Top and Bottom (stack normally)
-            radius_a = outer_radius
-            radius_b = inner_radius
+            radius_a, radius_b = outer_radius, inner_radius
 
-        ax.text(angle_rad, radius_a, label_a, size=9, ha='center', va='center', color=color_a, fontweight='bold')
-        ax.text(angle_rad, radius_b, label_b, size=9, ha='center', va='center', color=color_b, fontweight='bold')
+        ax.text(angle_rad, radius_a, _label(player_a_data, metric), size=9, ha='center', va='center', color=color_a, fontweight='bold')
+        ax.text(angle_rad, radius_b, _label(player_b_data, metric), size=9, ha='center', va='center', color=color_b, fontweight='bold')
 
     ax.set_rlabel_position(0)
-    plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)  
-    plt.ylim(0, 100)  
+    if raw_mode:
+        plt.yticks([25, 50, 75, 100], ["", "", "", ""], color="grey", size=7, zorder=1)
+    else:
+        plt.yticks([25, 50, 75, 100], ["25%", "50%", "75%", "100%"], color="grey", size=7, zorder=1)
+    plt.ylim(0, 100)
 
     # --- Titles and Info (Using fig.transAxes for layout) ---
     player_a_team = player_a_data['teamName'].values[0]
     player_a_mins = player_a_data['totalMinutes'].values[0]
     player_a_pos = player_a_data['primaryPosition'].values[0]
-    
+
     player_b_team = player_b_data['teamName'].values[0]
     player_b_mins = player_b_data['totalMinutes'].values[0]
     player_b_pos = player_b_data['primaryPosition'].values[0]
-    
+
     # --- Score Box & Player Info (Top-Left) ---
     score_col = position_template + '_Score'
-    score_a = player_a_data[score_col].values[0] if score_col in player_a_data.columns else 0.0
-    score_b = player_b_data[score_col].values[0] if score_col in player_b_data.columns else 0.0
-    
+    score_a = np.nan_to_num(_cell(player_a_data, score_col), nan=0.0)
+    score_b = np.nan_to_num(_cell(player_b_data, score_col), nan=0.0)
+
     outside_background_color = (0.95, 0.92, 0.87); inside_radar_color = (0.99, 0.98, 0.95); score_box_color = (1.0, 0.99, 0.97)
     ax.set_facecolor(inside_radar_color)
     fig.patch.set_facecolor(outside_background_color)
-    
+
     # --- Build the info box line-by-line ---
     box_x = 0.01
     box_y_start = 0.98
-    line_height = 0.025 
-    font_size_large = 13 
-    font_size_small = 11 
-    
+    line_height = 0.025
+    font_size_large = 13
+    font_size_small = 11
+
     # Player A (Blue)
-    fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
+    fig.text(box_x, box_y_start, f"{player_a_name} | {player_a_team}",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_large,
              fontweight='bold', color=color_a, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*0.8), f"{player_a_pos} | {player_a_mins:.0f} minutes played", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+    fig.text(box_x, box_y_start - (line_height*0.8), f"{player_a_pos} | {player_a_mins:.0f} minutes played",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small,
              color='black', transform=fig.transFigure)
 
-    # Player B (Pink)
-    fig.text(box_x, box_y_start - (line_height*1.8), f"{player_b_name} | {player_b_team}", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_large, 
+    # Player B (Coffee)
+    fig.text(box_x, box_y_start - (line_height*1.8), f"{player_b_name} | {player_b_team}",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_large,
              fontweight='bold', color=color_b, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*2.6), f"{player_b_pos} | {player_b_mins:.0f} minutes played", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+    fig.text(box_x, box_y_start - (line_height*2.6), f"{player_b_pos} | {player_b_mins:.0f} minutes played",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small,
              color='black', transform=fig.transFigure)
 
     # Template & Scores
-    fig.text(box_x, box_y_start - (line_height*3.8), f"Template: *{position_template}*", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+    fig.text(box_x, box_y_start - (line_height*3.8), f"Template: *{position_template}*",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small,
              style='italic', color='black', transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*4.8), f"{player_a_name}: {score_a:.2f}", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+    fig.text(box_x, box_y_start - (line_height*4.8), f"{player_a_name}: {score_a:.2f}",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small,
              fontweight='bold', color=color_a, transform=fig.transFigure)
-    fig.text(box_x, box_y_start - (line_height*5.6), f"{player_b_name}: {score_b:.2f}", 
-             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small, 
+    fig.text(box_x, box_y_start - (line_height*5.6), f"{player_b_name}: {score_b:.2f}",
+             horizontalalignment='left', verticalalignment='top', fontsize=font_size_small,
              fontweight='bold', color=color_b, transform=fig.transFigure)
-    
+
     # Add the background box manually
     box_height = 0.16
     fig.patches.extend([plt.Rectangle((0.005, 0.985 - box_height), 0.18, box_height, # x, y, width, height
                                       facecolor=score_box_color, alpha=0.5,
                                       transform=fig.transFigure, zorder=-1)])
-    
+
     # --- Metric Legend (Top-Right) ---
     _has_off_ball = any(m in OFF_BALL_DEFENDING_METRICS for m in metrics)
     legend_labels = ['Output Metrics', 'Passing Metrics', 'Defensive Metrics', 'Dribbling Metrics', 'Goalkeeping Metrics']
@@ -6288,12 +6314,16 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
 
     fig.legend(patches, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98),
                frameon=False)
-    
+
     # --- General Info (Bottom-Left) ---
     today = datetime.date.today()
-    info_text = f'Stats are per 90 mins\nData via Wyscout\n@lucaskimball\nDate: {today}'
-    fig.text(0.01, 0.01, info_text, 
-             horizontalalignment='left', verticalalignment='bottom', 
+    _mode_label = "Raw per 90 (mean ± 2σ)" if raw_mode else "Percentile"
+    info_text = (f'Stats are per 90 mins\n{_mode_label} vs {position_template} positions\n'
+                 f'{season_label or ""}\nData via Wyscout\n@lucaskimball\nDate: {today}')
+    if note:
+        info_text += f'\n{note}'
+    fig.text(0.01, 0.01, info_text,
+             horizontalalignment='left', verticalalignment='bottom',
              fontsize=10, color='black', transform=fig.transFigure)
 
 # --- Radar Stats Calculation ---
