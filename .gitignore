@@ -23,7 +23,6 @@ __pycache__/
 !match_lineups.pkl
 !player_details.pkl
 !history_player_minutes.pkl
-!match_predictor_model.pkl
 !season_simulation.pkl
 !transferred_players.json
 !match_ids_for_season_191782.csv

@@ -94,9 +94,6 @@ jobs:
         # Cheap (~16 MB download + parse, runs in <10s) so it runs every refresh.
         run: python fetch_opta_ratings.py
 
-      - name: Update prediction model
-        run: python update_model.py
-
       - name: Simulate season probabilities
         # Every remaining fixture is drawn from the Dixon-Coles scoreline
         # model, refitted here on today's matches with the hyperparameters

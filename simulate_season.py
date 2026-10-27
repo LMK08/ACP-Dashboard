@@ -19,9 +19,10 @@ odds rest on is recorded in the pickle under 'model'.
     python simulate_season.py --sims 500        # quick local run
 
 The tier-aware priors and feature blend (build_prior_strengths,
-calculate_prediction_features) stay in this module for the Match Predictor's
-"Predict Match Outcome" button and train_simple_predictor.py; the season
-simulation itself no longer uses the simple predictor.
+calculate_prediction_features) stay in this module for the offline
+train_simple_predictor.py; nothing in the app uses the simple predictor
+any more (the Match Predictor's "Predict Match Outcome" button was
+retired 2026-10 so the page shows one model).
 """
 
 import argparse
