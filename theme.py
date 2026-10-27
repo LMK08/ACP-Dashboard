@@ -11,6 +11,7 @@ re-render.
 Two creams and two inks are deliberate: the page ground / text (CSS) and the
 figure ground / ink (matplotlib) were tuned separately and are kept as-is.
 """
+import re
 
 # ---------------------------------------------------------------------------
 # Grounds and ink
@@ -92,3 +93,46 @@ SHADOW_TAG_COLORS = {
 # Figure conventions
 # ---------------------------------------------------------------------------
 DPI = 200
+
+
+# ---------------------------------------------------------------------------
+# Metric cards: word values fit whole
+# ---------------------------------------------------------------------------
+# A st.metric value is bold Source Sans at up to 1.7rem and wraps at word
+# breaks (app.py CSS). A row of cards inside a container keyed
+# metric_fit_key(...) caps that font at card width / its longest word's
+# width in em (one CSS rule per half-em bucket, metric_fit_css), so
+# 'Conventional' or 'Mozambique' never breaks mid-letter in a narrow card
+# while a row of short values keeps the full size. Letter widths measured
+# from the font (2026-10): i / l / t / r 0.28-0.40 em, capitals up to
+# 0.68, m / w / M / W / % 0.76-0.86 — each class is rounded up, so the
+# estimate runs ~7-12% wide ('Conventional' 6.3 em vs 5.9 measured).
+_FIT_NARROW = set("fijlrtI\u00ed.,-\u00b7'\u2019:")
+_FIT_WIDE = set("mwMW%")
+METRIC_FIT_TENTHS = range(30, 85, 5)     # 3.0 ... 8.0 em, half-em steps
+
+
+def _word_em(word):
+    return sum(0.34 if ch in _FIT_NARROW else 0.86 if ch in _FIT_WIDE
+               else 0.68 if ch.isupper() else 0.58 for ch in word)
+
+
+def metric_fit_key(name, *values):
+    """Container key ('mfit<tenths of an em>_<name>') sizing the metric
+    values inside it so the longest word among `values` fits its card.
+    A line breaks after a hyphen, so 'Guinea-Bissau' counts as two words."""
+    words = [w for v in values for w in re.split(r'(?<=-)|\s+', str(v)) if w]
+    em = max((_word_em(w) for w in words), default=0.0)
+    tenths = next((t for t in METRIC_FIT_TENTHS if em * 10 <= t),
+                  METRIC_FIT_TENTHS[-1])
+    return f"mfit{tenths}_{name}"
+
+
+def metric_fit_css():
+    """The bucket rules metric_fit_key's keys select (cqi = 1% of the
+    card's width; a key's class is 'st-key-<key>')."""
+    return "\n".join(
+        f'[class*="st-key-mfit{t}_"] [data-testid="stMetric"] '
+        f'[data-testid="stMetricValue"] > div '
+        f'{{ font-size: clamp(1rem, {1000 / t:.2f}cqi, 1.7rem); }}'
+        for t in METRIC_FIT_TENTHS)

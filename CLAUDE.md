@@ -251,7 +251,16 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   aggregation, projection source) is `models/ratings/card_scope.card_row`
   (`app.engine_card_row`), shared by both pages — change it there, never
   inline. Keep the comparison's feature set in step when the profile gains
-  a player-level section.
+  a player-level section. The template dropdown offers only the templates
+  for Player A's position (all of them only if A's position is in none).
+- Metric cards (RULE): `st.metric` text wraps at word breaks (app.py CSS),
+  never '…'. A row of cards holding WORDS (team, nationality, role, style)
+  is created inside `st.container(key=theme.metric_fit_key(name, *values))`
+  — the key's bucket caps the value font so the row's longest word fits
+  its card whole (`theme.metric_fit_css`, cqi units on the card; the width
+  estimate is calibrated on measured font widths, tests/test_metric_fit.py).
+  Put a caption under the row, not inside a column: a row whose columns
+  each hold ONE element keeps its cards one height.
 - `scripts/config_migrations/` — spent one-shot config.yaml scripts (README).
 - Match Predictor "Team Strength Ratings" = the Dixon-Coles attack /
   defence parameters (`DixonColes.strength_table` → `scoreline_ui.

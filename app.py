@@ -279,6 +279,38 @@ p { color: var(--ink-2); line-height: 1.65; }
     text-transform: uppercase;
     letter-spacing: 0.4px;
 }
+/* Long values / labels wrap at word breaks instead of ending in '…'
+   (Streamlit's inner div is nowrap + ellipsis: 'Atlétic…', 'Wide Defen…'
+   on narrow cards); the value shrinks with the card (cqi = 1% of the
+   card's width) below ~110 px so a word rarely has to break mid-letter. */
+[data-testid="stMetric"] { container-type: inline-size; }
+[data-testid="stMetric"] [data-testid="stMetricValue"] > div,
+[data-testid="stMetric"] [data-testid="stMetricLabel"] > div {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: break-word;
+}
+[data-testid="stMetric"] [data-testid="stMetricValue"] > div {
+    font-size: clamp(1.05rem, 24cqi, 1.7rem);
+    line-height: 1.2;
+}
+/* small windows: 1.4rem of padding was half a 93 px card */
+@media (max-width: 1200px) {
+    [data-testid="stMetric"] { padding: 1rem 0.75rem; }
+}
+/* ...and a row whose columns each hold ONE element keeps its metric cards
+   one height when a value wraps (rows with a caption under a card are
+   left alone — stretching would pull the other cards past it). */
+[data-testid="stHorizontalBlock"]:not(:has(> [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > :nth-child(2)))
+  > [data-testid="stColumn"] > [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] > [data-testid="stMetric"]),
+[data-testid="stHorizontalBlock"]:not(:has(> [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > :nth-child(2)))
+  > [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(> [data-testid="stMetric"]),
+[data-testid="stHorizontalBlock"]:not(:has(> [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > :nth-child(2)))
+  > [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] > [data-testid="stMetric"] {
+    height: 100%;
+    box-sizing: border-box;
+}
 
 /* === TABLES === */
 [data-testid="stDataFrame"] {
@@ -476,6 +508,9 @@ pre code { background: transparent !important; padding: 0 !important; }
 
 </style>
 """, unsafe_allow_html=True)
+# metric rows keyed theme.metric_fit_key: value font capped so the row's
+# longest word fits its card whole
+st.markdown(f"<style>{theme.metric_fit_css()}</style>", unsafe_allow_html=True)
 
 # ==============================================================================
 # 1B. SEASON CONSTANTS

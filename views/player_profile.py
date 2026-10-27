@@ -18,6 +18,7 @@ import sys
 
 import context_bar
 import eur_interval_ui
+import theme
 
 
 def _app():
@@ -499,56 +500,67 @@ def render():
 
     with col2_bio:
         st.subheader("Player Information")
-        bio_row1 = st.columns(4)
-        bio_row1[0].metric("Team", current_team)
-        bio_row1[1].metric("Position", current_pos)
-        bio_row1[2].metric("Nationality", player_bio.get('passportArea', 'N/A'))
-
         age = _calculate_age(player_bio.get('birthDate'))
         age_display = f"{int(age)}" if isinstance(age, (int, float)) and age == age else "N/A"
-        bio_row1[3].metric("Age", age_display)
-
-        bio_row2 = st.columns(4)
         foot_value = player_bio.get('foot')
         foot_display = "N/A"
         if foot_value and not pd.isna(foot_value):
             foot_display = foot_value.capitalize()
-        bio_row2[0].metric("Foot", foot_display)
-        bio_row2[1].metric("Height", f"{player_bio.get('height', 0)} cm")
-        bio_row2[2].metric("Weight", f"{player_bio.get('weight', 0)} kg")
-        bio_row2[3].metric("Birthplace", player_bio.get('birthArea', 'N/A'))
+        _bio_cards = [("Team", current_team),
+                      ("Position", current_pos),
+                      ("Nationality", player_bio.get('passportArea', 'N/A')),
+                      ("Age", age_display),
+                      ("Foot", foot_display),
+                      ("Height", f"{player_bio.get('height', 0)} cm"),
+                      ("Weight", f"{player_bio.get('weight', 0)} kg"),
+                      ("Birthplace", player_bio.get('birthArea', 'N/A'))]
+        # Rows keyed theme.metric_fit_key: the values scale so the longest
+        # word fits its card whole ('Atlétic…' / 'Wide Defen…' before). The
+        # two bio rows share one size.
+        _bio_values = [v for _, v in _bio_cards]
+        for _r, _row_cards in enumerate((_bio_cards[:4], _bio_cards[4:])):
+            with st.container(key=theme.metric_fit_key(f"profile_bio{_r}", *_bio_values)):
+                _row = st.columns(4)
+            for _c, (_lbl, _v) in zip(_row, _row_cards):
+                _c.metric(_lbl, _v)
 
         # Headline value — ENGINE projected value for outfielders;
         # GOALKEEPERS keep the prior CVI→EUR value (Lucas) since the
         # outfield engine does not cover keepers.
         _is_gk = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
-        bio_row3 = st.columns(3)
-        if _is_gk:
-            bio_row3[0].metric(
-                "Projected value",
-                ("—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}"),
-                help=eur_interval_ui.help_text(_eurcal, gk=True),
-            )
-        else:
-            bio_row3[0].metric(
-                "Projected value",
-                ("—" if _eng_proj_eur is None else f"€{_eng_proj_eur:,.0f}"),
-                help=eur_interval_ui.help_text(_eurcal),
-            )
-            # The likely-fee range goes in a caption, NOT the metric delta:
-            # Streamlit draws an up-arrow for any non-negative delta text.
-            _rng_line = eur_interval_ui.range_sentence(
-                _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
-            if _rng_line:
-                bio_row3[0].caption(_rng_line)
-            # Observed role + style in the header (Lucas 2026-07-17).
-            # Scope-aware; hidden when the player has no style row (GKs
-            # never reach here, sub-300' players degrade gracefully).
+        # Observed role + style in the header (Lucas 2026-07-17).
+        # Scope-aware; hidden when the player has no style row (GKs
+        # never get one, sub-300' players degrade gracefully).
+        _hdr_style = None
+        if not _is_gk:
             try:
                 _hdr_style = get_scoped_style(int(selected_player_id),
                                               active_season_ids)
             except Exception:
                 _hdr_style = None
+        _value_eur = _tv_projected_eur if _is_gk else _eng_proj_eur
+        _value_txt = "—" if _value_eur is None else f"€{_value_eur:,.0f}"
+        with st.container(key=theme.metric_fit_key(
+                "profile_head", _value_txt,
+                *((_hdr_style.get('role'), _hdr_style.get('style')) if _hdr_style else ()))):
+            bio_row3 = st.columns(3)
+        if _is_gk:
+            bio_row3[0].metric(
+                "Projected value", _value_txt,
+                help=eur_interval_ui.help_text(_eurcal, gk=True),
+            )
+        else:
+            bio_row3[0].metric(
+                "Projected value", _value_txt,
+                help=eur_interval_ui.help_text(_eurcal),
+            )
+            # The likely-fee range goes in a caption, NOT the metric delta:
+            # Streamlit draws an up-arrow for any non-negative delta text.
+            # Under the whole row (the three cards keep one height).
+            _rng_line = eur_interval_ui.range_sentence(
+                _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
+            if _rng_line:
+                st.caption(_rng_line)
             if _hdr_style:
                 bio_row3[1].metric(
                     "Role", str(_hdr_style.get('role') or '—'),

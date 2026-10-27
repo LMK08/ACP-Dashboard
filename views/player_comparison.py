@@ -211,11 +211,14 @@ def render():
     selected_player_a_name = player_a_data.iloc[0]['playerName']
 
     # --- Step B: Select Template ---
-    all_templates = sorted(list(POSITION_GROUPS.keys()))
-
-    # Find Player A's best-fit template as default
+    # Only the templates for Player A's position (Lucas 2026-10-27) — an RB
+    # gets Full Back / Wingback / Inverted Full Back, not all 22. Every
+    # template only if A's position is in none of them.
     primary_pos_a = player_a_data.iloc[0]['primaryPosition']
     eligible_groups_a = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos_a in pos_roles]
+    all_templates = sorted(eligible_groups_a) or sorted(POSITION_GROUPS.keys())
+
+    # Find Player A's best-fit template as default
     highest_score = -1; default_template = all_templates[0]
     for group in eligible_groups_a:
         score_col = group + '_Score'
@@ -245,6 +248,7 @@ def render():
         "Select Comparison Template:",
         all_templates,
         key=_tpl_key,
+        help=f"The templates for Player A's position ({primary_pos_a}).",
     )
 
     # --- Step C: Filter Player B list based on Template ---
@@ -388,6 +392,10 @@ def render():
     st.subheader(f"Comparing: {selected_player_a_name} vs. {selected_player_b_name}")
 
     _head_cols = st.columns(2, gap="large")
+    # Role / style rows keyed theme.metric_fit_key on BOTH players' words,
+    # so the two sides share one size and the longest word fits whole
+    _rs_words = [w for c in players if c['style']
+                 for w in (c['style'].get('role'), c['style'].get('style'))]
     for ctx, col in zip(players, _head_cols):
         bio = ctx['bio']
         with col:
@@ -413,8 +421,10 @@ def render():
                 st.session_state.nav_to_profile = True
                 st.rerun()
 
-            _m = st.columns(3)
-            _m[0].metric(
+            # Value on its own row (the fee-range caption reads at full
+            # width), role + style below: three cards in half the page left
+            # 'Projected value' and the style no room below ~1400 px.
+            st.metric(
                 "Projected value",
                 "—" if ctx['value'] is None else f"€{ctx['value']:,.0f}",
                 help=eur_interval_ui.help_text(_eurcal, gk=ctx['is_gk']))
@@ -424,14 +434,16 @@ def render():
                 _rng = eur_interval_ui.range_sentence(
                     ctx['value'], _eurcal, w_evidence=ctx['w_ev'], mins=ctx['eng_mins'])
                 if _rng:
-                    _m[0].caption(_rng)
+                    st.caption(_rng)
             _sty = ctx['style']
             if _sty:
-                _m[1].metric("Role", str(_sty.get('role') or '—'),
+                with st.container(key=theme.metric_fit_key(f"cmp_style_{ctx['slot']}", *_rs_words)):
+                    _m = st.columns(2)
+                _m[0].metric("Role", str(_sty.get('role') or '—'),
                              help="Observed engine role — learned from where his events "
                                   "actually happen match by match, not the lineup-card position.")
                 _fit = _sty.get('style_fit')
-                _m[2].metric("Style", str(_sty.get('style') or '—'),
+                _m[1].metric("Style", str(_sty.get('style') or '—'),
                              delta=(f"{float(_fit):.0f}% fit"
                                     if _fit is not None and pd.notna(_fit) else None),
                              delta_color="off",
