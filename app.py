@@ -316,6 +316,13 @@ button:hover { opacity: 0.85 !important; box-shadow: var(--shadow-sm) !important
 button:active { opacity: 1 !important; }
 
 [data-testid="stDownloadButton"] button { background: var(--ink) !important; }
+/* A button's label is a <p> in a markdown container, and the cream-page ink
+   rules (p, stMarkdownContainer) beat the white the button sets: every
+   button label was grey on near-black (~2.4:1). Tabs keep their own colours. */
+[data-testid^="stBaseButton"] p,
+[data-testid^="stBaseButton"] [data-testid="stMarkdownContainer"],
+[data-testid="stPopoverButton"] p,
+[data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"] { color: inherit !important; }
 
 /* === INPUTS === */
 [data-testid="stSelectbox"] div[role="combobox"],
