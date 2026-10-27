@@ -21,6 +21,7 @@ import streamlit as st
 import sys
 
 import eur_interval_ui
+import pitch_interactive
 import theme
 
 _PLACEHOLDER_IMG = ("https://t3.ftcdn.net/jpg/05/16/27/58/"
@@ -543,6 +544,33 @@ def render():
         f"data through {_eng_meta.get('data_through', '?')} · "
         f"ratings within league × season × role cohort (each player in his own); "
         f"set piece shown separately (not in the rating)")
+
+    # --- Career & projection: the profile's outlook fan, both players on one
+    # chart (same data step, pitch_interactive.projection_series) ---
+    _career_axis = st.radio("Career chart x-axis", ["Season", "Age"], horizontal=True,
+                            key="cmp_career_axis",
+                            help="Season lines the two careers up on the calendar; Age lines "
+                                 "them up by age, to compare development curves.")
+    try:
+        _fan, _fan_left = pitch_interactive.plotly_projection_overlay(
+            [(c['name'], c['card']['erows'], c['colour']) for c in players],
+            SEASON_ID_MAP, x_axis=_career_axis.lower())
+    except Exception:
+        logger.exception("comparison career overlay failed")
+        _fan, _fan_left = None, []
+    if _fan is not None:
+        st.plotly_chart(_fan, use_container_width=True, config={'displayModeBar': False})
+        st.caption(
+            "Career ratings by season flowing into next season's projection (diamond; shaded "
+            "fan = ±1 SD). Both players share one scale — L3-equivalent when the careers span "
+            "more than one league (CAMP seasons discounted by the league conversion; hover a "
+            "dot for the native rating). A faded segment bridges seasons missing from our "
+            "data; shaded band = typical peak ages for the role. On the Age axis, age at each "
+            "season is the engine's current age minus the years back."
+            + (f" Not drawn: {', '.join(_fan_left)}." if _fan_left else ""))
+    else:
+        st.caption("No career ratings to chart for these players"
+                   + (f" ({', '.join(_fan_left)})." if _fan_left else "."))
 
     st.divider()
 

@@ -237,8 +237,12 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   weeks of 2026/27). Tests: `tests/test_template_percentiles.py`.
 - Player Comparison (`views/player_comparison.py`, 2026-10) mirrors the
   profile two-up: header (value + likely-fee range, role / style), ACP
-  Index, template radar (percentile / raw mean ± 2σ, DefR), ACP Index cards
-  + tendencies, grouped stats (per 90 / totals). RULE: both players are
+  Index, career & projection overlay (`pitch_interactive.
+  plotly_projection_overlay`, Season / Age x-axis — one data step with the
+  profile's fan, `projection_series`; both players on ONE rating scale,
+  L3-equivalent whenever the careers span two leagues), template radar
+  (percentile / raw mean ± 2σ, DefR), ACP Index cards + tendencies,
+  grouped stats (per 90 / totals). RULE: both players are
   ranked against ONE sample — the selected template's group at/above
   `minutes_floor` — via `template_pct.rank_in_template` (a qualifying
   in-group player keeps the pipeline's numbers; sub-floor / out-of-group
