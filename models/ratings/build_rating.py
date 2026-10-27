@@ -52,6 +52,23 @@ from scipy.stats import pearsonr, spearmanr
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
+
+# v7.0 lookahead test hook (tests/test_rating_no_lookahead.py): ACP_MAX_YEAR
+# drops every season after that year from every input, ACP_ENGINE_OUT
+# redirects the output. A rating with no lookahead is identical for every
+# season <= ACP_MAX_YEAR whether or not the later seasons exist.
+import os as _os
+_MAX_YR = int(_os.environ['ACP_MAX_YEAR']) if _os.environ.get('ACP_MAX_YEAR') else None
+_OUT = Path(_os.environ.get('ACP_ENGINE_OUT', str(_HERE)))
+
+
+def _read(path, **kw):
+    """read_parquet, truncated to seasons <= ACP_MAX_YEAR when it is set."""
+    frame = pd.read_parquet(path, **kw)
+    if _MAX_YR is None:
+        return frame
+    yr = pd.to_numeric(frame['seasonId'], errors='coerce').map(SEASON_YEAR)
+    return frame[yr <= _MAX_YR].copy()
 CAMP = set(CAMP_SEASON_IDS)
 # v3 ROLE-SPECIFIC weights over 5 axes (Lucas-confirmed design):
 #   off  = GPA Total Offensive (role-pct)
@@ -152,40 +169,37 @@ MIN_MINS_ELIG = 90        # rating ELIGIBILITY floor (Lucas 2026-06): rate sub-c
                           # reference scale is unmoved.
 
 print("[1/4] assemble components…", flush=True)
-g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
+g = _read(_DASH / 'gpa_player_season_values.parquet',
                       columns=['playerId', 'seasonId', 'name', 'position_group',
                                 'mins_played', 'Total Offensive Value'] + GPA_RAW_CATS)
 g['DeadBall'] = (g['SetPiece'] + g['Corner'] + g['FreeKick'] + g['ThrowIn'])
 g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
 g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
-ps = pd.read_parquet(_HERE / 'pass_split.parquet')
+ps = _read(_HERE / 'pass_split.parquet')
 g = g.merge(ps.rename(columns={'Creating Value': 'Creating',
                                   'Linking Value': 'Linking'}),
               on=['playerId', 'seasonId'], how='left')
 g[['Creating', 'Linking']] = g[['Creating', 'Linking']].fillna(0.0)
-d = pd.read_parquet(_DASH / 'models/defr/defr_per_player_season.parquet',
+d = _read(_DASH / 'models/defr/defr_per_player_season.parquet',
                       columns=['playerId', 'seasonId', 'defr_adj', 'defr_dwae',
                                 'dwae_n'])
-r = pd.read_parquet(_DASH / 'models/roles/role_assignments_season.parquet',
+r = _read(_DASH / 'models/roles/role_assignments_season.parquet',
                       columns=['playerId', 'seasonId', 'primary_role_name', 'side',
                                 'primary_role'] + [f'role_share_{k}' for k in range(6)])
 _idn = r.dropna(subset=['primary_role', 'primary_role_name']).drop_duplicates('primary_role')
 ROLE_ID2NAME = dict(zip(_idn['primary_role'].astype(int), _idn['primary_role_name']))
 # v6.6 (Lucas): RAPM per (player, season) — leak-free walk-forward with
 # 0.7/yr decay (rapm_v4.py); replaces the single career coefficient
-rapm = pd.read_parquet(_HERE / 'rapm_v4_per_season.parquet')
-duels = pd.read_parquet(_DASH / 'models/duels/duel_ratings.parquet')
-duels = duels[(duels['playerId'] > 0) & (duels['n'] >= 30)]
-duelw = duels.pivot_table(index='playerId', columns='trait',
-                            values=['rating', 'n'], aggfunc='first')
+rapm = _read(_HERE / 'rapm_v4_per_season.parquet')
+# v7.0 NO LOOKAHEAD: the Glicko duel ladders (models/duels/duel_ratings.parquet)
+# are no longer read here. They are ONE career rating per player per trait
+# (as of the latest contest), and v6.9 mapped them onto every season row —
+# a 2021/22 rating carried duels from every later season. Every duel input
+# below is the season's own contests with as-of expectations.
 
 df = (g.merge(d, on=['playerId', 'seasonId'], how='left')
         .merge(r, on=['playerId', 'seasonId'], how='left')
         .merge(rapm, on=['playerId', 'seasonId'], how='left'))
-TRAITS = ['aerial', 'takeon', 'stopper', 'shield', 'press']
-for t in TRAITS:
-    df[f'duel_{t}'] = df['playerId'].map(duelw[('rating', t)])
-    df[f'dueln_{t}'] = df['playerId'].map(duelw[('n', t)])
 df['role'] = df['primary_role_name'].fillna(df['position_group'])
 df['league'] = np.where(df['seasonId'].isin(CAMP), 'CAMP', 'L3')
 df['yr'] = df['seasonId'].map(SEASON_YR)
@@ -302,19 +316,36 @@ for role, sub in df.groupby('role'):
         # season still in progress would move every season's weights each
         # matchday (found when 2026/27 was first rated, 2026-10-21)
         _done = sub['_cohort'] & ~sub['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
-        for pid, gg in sub[_done].sort_values('yr').groupby('playerId'):
+        # a winter mover has two rows in one year (one per league); pairs use
+        # his MAIN row (most minutes). v6.9 paired whichever an unstable sort
+        # put first, so LATER seasons' rows could decide it (caught by the
+        # lookahead test)
+        _main = (sub[_done].sort_values(['yr', 'mins_played', 'seasonId'], kind='stable')
+                 .groupby(['playerId', 'yr']).tail(1))
+        for pid, gg in _main.sort_values('yr', kind='stable').groupby('playerId'):
             rr = gg[[c + '_pct', 'yr']].to_dict('records')
             for a, b in zip(rr, rr[1:]):
                 if b['yr'] - a['yr'] == 1:
-                    P.append((a[c + '_pct'], b[c + '_pct']))
-        P = pd.DataFrame(P)
-        lam = _pr(P[0], P[1])[0] if len(P) >= 30 else 0.15
-        lam = float(np.clip(lam, 0.05, 1.0))
+                    P.append((a[c + '_pct'], b[c + '_pct'], b['yr']))
+        P = pd.DataFrame(P, columns=['a', 'b', 'yr'])
+        # v7.0 NO LOOKAHEAD: reliability AS-OF each season-year — a row is
+        # weighted with pairs ending in its own season or earlier only (v6.9
+        # pooled every completed season, so 2021/22 offence was weighted
+        # with reliabilities measured on 2022-26). < 30 pairs -> the 0.15
+        # prior, as before. The current season is unchanged (all its prior
+        # pairs are complete seasons either way).
+        lam_y = {}
+        for y in sorted(sub['yr'].unique()):
+            Py = P[P['yr'] <= y]
+            lam = _pr(Py['a'], Py['b'])[0] if len(Py) >= 30 else 0.15
+            lam_y[y] = float(np.clip(lam, 0.05, 1.0)) if np.isfinite(lam) else 0.15
+        lam_row = sub['yr'].map(lam_y)
         _cm = (sub[c + '90'].where(sub['_cohort'])
                  .groupby([sub['league'], sub['seasonId']]).transform('mean'))
         dev = (sub[c + '90'] - _cm).fillna(0.0)
         rel = ROLE_CAT_RELEVANCE.get(role, {}).get(c, 1.0)
-        _off_adj.loc[sub.index] += rel * lam * dev
+        _off_adj.loc[sub.index] += rel * lam_row * dev
+        lam = lam_y[max(lam_y)]          # log the latest season's weights
         _lam_log.append({'role': role, 'cat': c.replace(' Value', ''),
                            'lam': round(lam, 2), 'rel': rel,
                            'infl': rel * lam * float(dev.std())})
@@ -335,24 +366,10 @@ df['dwae_shrunk_p90'] = (df['defr_dwae'] * df['dwae_n']
                            / df['mins_played'] * 90.0)
 df['dwae_pct'] = role_pct('dwae_shrunk_p90')
 df['rapm_pct'] = role_pct('rapm_v4')
-# duel composites split by side: defensive ladders feed QUALITY (merged
-# with DWAE); take-on/shield are their own small axis
-def duel_composite(traits):
-    num = 0.0; den = 0.0
-    for t in traits:
-        pct_t = role_pct(f'duel_{t}').where(df[f'duel_{t}'].notna())
-        w_t = df[f'dueln_{t}'].fillna(0.0) * pct_t.notna()
-        num = num + pct_t.fillna(0.5) * w_t
-        den = den + w_t
-    return np.where(den > 0, num / den.replace(0, 1), 0.5)
-
-df['ddef_pct'] = duel_composite(['aerial', 'stopper', 'press'])
-# composites are averages of percentiles -> their spread is compressed
-# (an average of two uniforms cannot reach the tails), so RE-PERCENTILE
-# them within role x league x season before weighting (v4.1 fix: the
-# heaviest defensive axis could never say "elite").
-df['datt_raw'] = duel_composite(['takeon', 'shield'])
-df['datt_pct'] = role_pct('datt_raw')
+# duel axes split by side: defensive contests feed QUALITY (Aerial + Ground
+# Grade, below); take-on/shield (attacking side) are their own small axis,
+# Off Duel Grade (datt_pct), also below. v7.0: both from the season's own
+# contests — the v6.9 career-ladder composites (duel_composite) are gone.
 
 # v6.9 TYPE-MATCHED Def Quality (Lucas): pair the fresh wins-above-
 # expectation signal with the opponent-adjusted ladder PER CONTEST TYPE
@@ -394,7 +411,7 @@ df['datt_pct'] = role_pct('datt_raw')
 # dashboard's Defensive metrics. IF REVISITED: try danger-weighting only
 # own-third take-ons (where the swing concentrates), gate on the xGA
 # outcome link, not YoY.
-_ct = pd.read_parquet(_DASH / 'models/duels/contests.parquet',
+_ct = _read(_DASH / 'models/duels/contests.parquet',
                         columns=['ladder', 'seasonId', 'playerA', 'playerB',
                                   'scoreA', 'att_kind', 'zx', 'phase'])
 _ct['league'] = np.where(_ct['seasonId'].isin(CAMP), 'CAMP', 'L3')
@@ -421,16 +438,41 @@ _s_att = _asof_strength(
     _g[['playerB', 'cyr']].assign(w=1 - _g['scoreA']).rename(columns={'playerB': 'p'}))
 _g['bucket'] = (_g['att_kind'].astype(str) + '|' + _g['zx'].astype(str)
                  + '|' + _g['phase'].astype(str) + '|' + _g['league'])
-_g['mu_b'] = _g.groupby('bucket')['scoreA'].transform('mean')
+# v7.0 NO LOOKAHEAD: the bucket's expected defender win rate is AS-OF the
+# contest's season-year (cumulative through it), like the opponent
+# strengths, and strengths are centred on their own year's mean — v6.9
+# pooled both over every season, so a 2021/22 duel was judged against
+# averages that included 2025/26.
+_mb = (_g.groupby(['bucket', 'cyr'])['scoreA'].agg(['sum', 'size'])
+         .reset_index().sort_values('cyr'))
+_mb[['S', 'N']] = _mb.groupby('bucket')[['sum', 'size']].cumsum()
+_mb['mu_b'] = _mb['S'] / _mb['N']
+_g = _g.merge(_mb[['bucket', 'cyr', 'mu_b']], on=['bucket', 'cyr'], how='left')
 _g['s_opp'] = pd.Series(
     _g.set_index(['playerB', 'cyr']).index.map(_s_att), index=_g.index)
-_g['s_opp'] = _g['s_opp'].fillna(float(_g['s_opp'].mean()))
-_g['phat'] = (_g['mu_b'] - (_g['s_opp'] - float(_g['s_opp'].mean()))
-               ).clip(0.05, 0.95)
+_yr_mean = _g.groupby('cyr')['s_opp'].transform('mean')
+_g['s_opp'] = _g['s_opp'].fillna(_yr_mean)
+_g['phat'] = (_g['mu_b'] - (_g['s_opp'] - _yr_mean)).clip(0.05, 0.95)
 _g['woe'] = _g['scoreA'] - _g['phat']
 _grd = (_g.groupby(['playerA', 'seasonId'])['woe']
           .agg(woe_ground='sum', n_ground='size').reset_index()
           .rename(columns={'playerA': 'playerId'}))
+# v7.0 Off Duel Grade, season-only: the ATTACKER side of the same ground
+# contests ('dribble' = take-on, 'offensive_duel' = shield / press
+# resistance). Expected attacker win = 1 - what an average attacker gets vs
+# THIS defender (bucket rate + the defender's as-of strength), so beating a
+# strong defender earns more — the mirror of the defensive WOE above.
+_s_def = _asof_strength(
+    _g[['playerA', 'cyr']].assign(w=_g['scoreA']).rename(columns={'playerA': 'p'}))
+_g['s_def'] = pd.Series(
+    _g.set_index(['playerA', 'cyr']).index.map(_s_def), index=_g.index)
+_yr_mean_d = _g.groupby('cyr')['s_def'].transform('mean')
+_g['s_def'] = _g['s_def'].fillna(_yr_mean_d)
+_g['pdef'] = (_g['mu_b'] + (_g['s_def'] - _yr_mean_d)).clip(0.05, 0.95)
+_g['woe_att'] = _g['pdef'] - _g['scoreA']    # (1 - scoreA) - (1 - pdef)
+_att = (_g.groupby(['playerB', 'seasonId'])['woe_att']
+          .agg(woe_att='sum', n_att='size').reset_index()
+          .rename(columns={'playerB': 'playerId'}))
 _a2 = _a.copy()
 _a2['_sB'] = pd.Series(
     _a2.set_index(['playerB', 'cyr']).index.map(_s_aer), index=_a2.index)
@@ -447,17 +489,27 @@ _aer = (pd.concat([_sA, _sB]).groupby(['playerA', 'seasonId'])['woe']
           .rename(columns={'playerA': 'playerId'}))
 df = df.merge(_grd, on=['playerId', 'seasonId'], how='left')
 df = df.merge(_aer, on=['playerId', 'seasonId'], how='left')
-for _t in ('aerial', 'ground'):
+df = df.merge(_att, on=['playerId', 'seasonId'], how='left')
+for _t in ('aerial', 'ground', 'att'):
     _nn = df[f'n_{_t}'].fillna(0.0)
     df[f'woe_{_t}_p90'] = (df[f'woe_{_t}'].fillna(0.0) * _nn / (_nn + 60.0)
                             / df['mins_played'] * 90.0)
 df['aer_woe_pct'] = role_pct('woe_aerial_p90')
 df['grd_woe_pct'] = role_pct('woe_ground_p90')
-df['aerial_grade_raw'] = (df['aer_woe_pct'] + duel_composite(['aerial'])) / 2.0
-df['aerial_grade_pct'] = role_pct('aerial_grade_raw')
-df['ground_grade_raw'] = (df['grd_woe_pct']
-                            + duel_composite(['stopper', 'press'])) / 2.0
-df['ground_grade_pct'] = role_pct('ground_grade_raw')
+df['datt_pct'] = role_pct('woe_att_p90')
+# v7.0 (prototype, 2026-10-27 evaluation): the grades are the SEASON's wins
+# over expectation only. v6.9 averaged each with a duel-ladder percentile,
+# but the ladders (models/duels/duel_ratings.parquet) are ONE career rating
+# per player per trait, mapped to every season: half of Def Quality was a
+# career constant (historical rows also saw later seasons' duels), which
+# made it look stable (YoY 0.57; the season half alone is 0.32, 0.09 at
+# 300-900') and is why it escaped the minutes shrink below. Career duel
+# information belongs in the projection, not the descriptive season index —
+# NOT moved there yet: qual_pct was the projection's only route to the
+# ladders (build_projection.py FEATS), and a leak-free as-of ladder feature
+# has to be built first (the stored ladders include later seasons' duels).
+df['aerial_grade_pct'] = df['aer_woe_pct']
+df['ground_grade_pct'] = df['grd_woe_pct']
 _n_a = df['n_aerial'].fillna(0.0)
 _n_g = df['n_ground'].fillna(0.0)
 _den_t = (_n_a + _n_g)
@@ -467,7 +519,9 @@ df['qual_raw'] = np.where(
     / _den_t.replace(0, 1),
     0.5)
 df['qual_pct'] = role_pct('qual_raw')
-df['duel_pct'] = df['ddef_pct']    # kept for backward compat in exports
+# kept for backward compat in exports (nothing reads it): v7.0 = the
+# season's defensive duel grade before the minutes shrink, not a ladder
+df['duel_pct'] = df['qual_pct']
 
 _lt = pd.DataFrame(_lam_log)
 _lt['infl_share'] = _lt['infl'] / _lt.groupby('role')['infl'].transform('sum')
@@ -495,6 +549,15 @@ print((_lt.pivot(index='role', columns='cat', values='infl_share') * 100)
 _anchor = 2500.0 / (2500.0 + 2000.0)
 _s_off = np.minimum((df['mins_played'] / (df['mins_played'] + 2000.0)) / _anchor, 1.0)
 df['off_pct'] = 0.5 + (df['off_pct'] - 0.5) * _s_off
+# v7.0 (prototype): the two DEFENSIVE axes get the same shrink. Exempting
+# them rested on Def Quality's flat reliability, which was the career
+# ladder's; season-only it is the noisiest axis at low minutes. Exempt,
+# they carried more of the rating than their weights (CB off:qual variance
+# 1.8:1 without the off shrink -> 1.1:1 with it, vs 1.3:1 nominal).
+# Off Duel Grade joins them: season-only now (no career ladder), it carries
+# the same low-minutes noise. RAPM keeps its own multi-season ridge shrink.
+for _c in ('qual_pct', 'defr_pct', 'datt_pct'):
+    df[_c] = 0.5 + (df[_c] - 0.5) * _s_off
 
 print("[2/4] role-weighted blend + minutes shrink…", flush=True)
 AXES = {'off': 'off_pct', 'resp': 'defr_pct', 'qual': 'qual_pct',
@@ -528,7 +591,7 @@ df['acp_rating'] = np.clip(50.0 + 17.0 * zsh, 1.0, 99.0)
 
 print("[3/4] recency-weighted career rating…", flush=True)
 car_rows = []
-for pid, gg in df.sort_values('yr').groupby('playerId'):
+for pid, gg in df.sort_values(['yr', 'league', 'seasonId'], kind='stable').groupby('playerId'):
     gg = gg.reset_index(drop=True)
     latest = gg['yr'].max()
     w = gg['mins_played'].to_numpy() * (CAREER_DECAY ** (latest - gg['yr'].to_numpy()))
@@ -551,11 +614,11 @@ out_cols = ['playerId', 'seasonId', 'name', 'role', 'side', 'league',
 out_cols = out_cols + [c + '_pct' for c in GPA_CATS]
 # v6.9 type-matched defensive sub-grades + their raw WOE halves
 out_cols = out_cols + ['aerial_grade_pct', 'ground_grade_pct',
-                         'woe_aerial_p90', 'woe_ground_p90']
+                         'woe_aerial_p90', 'woe_ground_p90', 'woe_att_p90']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v6.9.2'
-out.to_parquet(_HERE / 'acp_rating_per_player_season.parquet')
+out['rating_version'] = 'v7.0'
+out.to_parquet(_OUT / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
 print("[4/4] validation…", flush=True)
@@ -569,14 +632,14 @@ def yoy(col):
             if b['yr'] - a['yr'] == 1 and a['position_group'] == b['position_group']:
                 P.append((a[col], b[col]))
     P = pd.DataFrame(P, columns=['a', 'b'])
-    return pearsonr(P['a'], P['b'])[0], len(P)
+    return (pearsonr(P['a'], P['b'])[0] if len(P) >= 3 else float('nan')), len(P)
 
 r_s, n = yoy('acp_rating')
 print(f"  acp_rating YoY (same pos): r = {r_s:.3f} (n={n})")
 # futi adoption #4: ratings should hold when players SWITCH TEAMS
 # within a league — the cleanest test that we measure players, not
 # team contexts.
-_pt = pd.read_parquet(_HERE / 'player_teams.parquet')
+_pt = _read(_HERE / 'player_teams.parquet')
 df = df.merge(_pt, on=['playerId', 'seasonId'], how='left')
 _sw = {'stay': [], 'switch': []}
 for pid, gg in df.sort_values('yr').groupby('playerId'):
@@ -589,12 +652,14 @@ for pid, gg in df.sort_values('yr').groupby('playerId'):
                 (a['acp_rating'], b['acp_rating']))
 for k, v in _sw.items():
     V = pd.DataFrame(v)
-    print(f"  YoY team-{k:<7}: r = {pearsonr(V[0], V[1])[0]:.3f} (n={len(V)})")
+    if len(V) >= 3:   # a truncated (ACP_MAX_YEAR) build can have too few pairs
+        print(f"  YoY team-{k:<7}: r = {pearsonr(V[0], V[1])[0]:.3f} (n={len(V)})")
 # component contribution check: corr of each component with the rating
 cur = df[df['seasonId'].isin({191782, 191779})]
 print("  component corr with rating (25/26):")
 for c in ['off_pct', 'defr_pct', 'qual_pct', 'datt_pct', 'rapm_pct']:
-    print(f"    {c:<10} {pearsonr(cur[c], cur['acp_rating'])[0]:+.2f}")
+    if len(cur) >= 3:
+        print(f"    {c:<10} {pearsonr(cur[c], cur['acp_rating'])[0]:+.2f}")
 print(f"\n  Top 12 by career rating (>=2 seasons):")
 top = (df.drop_duplicates('playerId')
          .query('n_seasons >= 2')

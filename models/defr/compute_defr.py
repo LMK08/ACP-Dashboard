@@ -36,6 +36,12 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 DASHBOARD_DIR = HERE.parent.parent
 
+# v7.0 lookahead test hook (as in build_rating.py): ACP_MAX_YEAR drops every
+# season after that year from the events, ACP_DEFR_OUT redirects the outputs.
+import os as _os
+_MAX_YR = int(_os.environ['ACP_MAX_YEAR']) if _os.environ.get('ACP_MAX_YEAR') else None
+_OUT = Path(_os.environ.get('ACP_DEFR_OUT', str(HERE)))
+
 # ----- Tunables ------------------------------------------------------------
 # Time window (seconds) after an opposition event in which we count a
 # defensive action as the "response" to that event. v2: tightened from
@@ -255,6 +261,10 @@ def load_events() -> pd.DataFrame:
     df['player.id'] = df['player.id'].astype(int)
     df['team.id'] = df['team.id'].astype(int)
     df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
+    from league_config import SEASON_YEAR
+    df['_yr'] = df['seasonId'].map(lambda v: SEASON_YEAR.get(int(v)) if pd.notna(v) else np.nan)
+    if _MAX_YR is not None:
+        df = df[df['_yr'] <= _MAX_YR].copy()
     df['_t'] = df.apply(event_time_seconds, axis=1)
     # v2 — for each event, the EFFECTIVE LOCATION for defensive responsibility:
     #   pass:  pass.endLocation (where the ball ends up = defensive demand)
@@ -504,7 +514,9 @@ def compute_modal_slots(ev: pd.DataFrame):
     player_slot = (e.dropna(subset=['slot'])
                      .groupby(['player.id', 'seasonId', 'slot'])
                      .size().reset_index(name='n')
-                     .sort_values('n', ascending=False)
+                     # ties broken by slot name: an unstable sort let LATER
+                     # seasons' rows decide a tied season (v7.0 lookahead check)
+                     .sort_values(['n', 'slot'], ascending=[False, True], kind='stable')
                      .drop_duplicates(['player.id', 'seasonId'])
                      [['player.id', 'seasonId', 'slot']])
     psl = player_slot.set_index(['player.id', 'seasonId'])['slot'].to_dict()
@@ -700,19 +712,26 @@ def build_defensive_engagements(ev: pd.DataFrame) -> pd.DataFrame:
     eng['phase'] = eng['_phase']
 
     # EB-shrunk expected win rate: (etype,oppgrp,zx,phase) -> (etype,oppgrp) -> (etype)
-    g1 = eng.groupby('etype')['won'].agg(['sum', 'size'])
-    p1 = (g1['sum'] / g1['size']).to_dict()
-    g2 = eng.groupby(['etype', 'oppgrp'])['won'].agg(['sum', 'size']).reset_index()
-    g2['p1'] = g2['etype'].map(p1)
-    g2['p2'] = (g2['sum'] + DWAE_K_MID * g2['p1']) / (g2['size'] + DWAE_K_MID)
-    p2 = g2.set_index(['etype', 'oppgrp'])['p2'].to_dict()
-    g4 = (eng.groupby(['etype', 'oppgrp', 'zx', 'phase'])['won']
-             .agg(['sum', 'size']).reset_index())
-    g4['p2'] = [p2[(e, o)] for e, o in zip(g4['etype'], g4['oppgrp'])]
-    g4['p_win'] = (g4['sum'] + DWAE_K_FINE * g4['p2']) / (g4['size'] + DWAE_K_FINE)
-    pw = g4.set_index(['etype', 'oppgrp', 'zx', 'phase'])['p_win'].to_dict()
-    eng['p_win'] = [pw[(e, o, a, c)] for e, o, a, c in
-                      zip(eng['etype'], eng['oppgrp'], eng['zx'], eng['phase'])]
+    # v7.0 NO LOOKAHEAD: the rates for a season-year come from engagements
+    # in that year and earlier only (v6.9 pooled every season).
+    eng['p_win'] = np.nan
+    for y in sorted(eng['_yr'].dropna().unique()):
+        h = eng[eng['_yr'] <= y]
+        g1 = h.groupby('etype')['won'].agg(['sum', 'size'])
+        p1 = (g1['sum'] / g1['size']).to_dict()
+        g2 = h.groupby(['etype', 'oppgrp'])['won'].agg(['sum', 'size']).reset_index()
+        g2['p1'] = g2['etype'].map(p1)
+        g2['p2'] = (g2['sum'] + DWAE_K_MID * g2['p1']) / (g2['size'] + DWAE_K_MID)
+        p2 = g2.set_index(['etype', 'oppgrp'])['p2'].to_dict()
+        g4 = (h.groupby(['etype', 'oppgrp', 'zx', 'phase'])['won']
+                 .agg(['sum', 'size']).reset_index())
+        g4['p2'] = [p2[(e, o)] for e, o in zip(g4['etype'], g4['oppgrp'])]
+        g4['p_win'] = (g4['sum'] + DWAE_K_FINE * g4['p2']) / (g4['size'] + DWAE_K_FINE)
+        pw = g4.set_index(['etype', 'oppgrp', 'zx', 'phase'])['p_win'].to_dict()
+        rows = eng['_yr'] == y
+        eng.loc[rows, 'p_win'] = [pw[(e, o, a, c)] for e, o, a, c in zip(
+            eng.loc[rows, 'etype'], eng.loc[rows, 'oppgrp'],
+            eng.loc[rows, 'zx'], eng.loc[rows, 'phase'])]
     eng = eng.rename(columns={'player.id': 'playerId'})
     return eng[['playerId', 'seasonId', 'matchId', 'etype', 'oppgrp', 'won', 'p_win']]
 
@@ -945,6 +964,16 @@ def compute_per_player(ev: pd.DataFrame,
     # goalkeeper data.
     out = out[out['position'] != 'GK'].reset_index(drop=True)
 
+    return out
+
+
+def finalize_defr(out: pd.DataFrame) -> pd.DataFrame:
+    """Position-fair DefR (defr_per90_vs_position, defr_adj) and the career
+    aggregate. v7.0 NO LOOKAHEAD: a season-year's position medians come from
+    rows of that year and earlier only, and defr_career / n_seasons are the
+    career AS OF that season (v6.9 pooled the medians over every season and
+    merged one all-seasons career value onto every row)."""
+    from league_config import SEASON_YEAR  # every season, incl. the current one
     # v4 — position-fair DefR with minutes shrinkage.
     #
     # Stability analysis (year-over-year Pearson r on same-position pairs):
@@ -966,30 +995,31 @@ def compute_per_player(ev: pd.DataFrame,
     SEASON_LEAGUE = {190230: 'CAMP', 191779: 'CAMP'}   # everything else L3
     out['league'] = out['seasonId'].map(
         lambda s: SEASON_LEAGUE.get(int(s), 'L3') if pd.notna(s) else 'L3')
-    valid = out[(out['mins_played'].fillna(0) >= 800) & out['defr_per90'].notna()]
-    med_lg = valid.groupby(['position', 'league'])['defr_per90'].median().to_dict()
-    n_lg = valid.groupby(['position', 'league']).size().to_dict()
-    med_pooled = valid.groupby('position')['defr_per90'].median().to_dict()
+    out['_yr'] = out['seasonId'].map(
+        lambda s: SEASON_YEAR.get(int(s)) if pd.notna(s) else np.nan)
+    out['defr_per90_vs_position'] = np.nan
+    for y in sorted(out['_yr'].dropna().unique()):
+        hist = out[out['_yr'] <= y]
+        valid = hist[(hist['mins_played'].fillna(0) >= 800) & hist['defr_per90'].notna()]
+        med_lg = valid.groupby(['position', 'league'])['defr_per90'].median().to_dict()
+        n_lg = valid.groupby(['position', 'league']).size().to_dict()
+        med_pooled = valid.groupby('position')['defr_per90'].median().to_dict()
 
-    def _pos_median(r):
-        key = (r['position'], r['league'])
-        if n_lg.get(key, 0) >= 8:
-            return med_lg[key]
-        return med_pooled.get(r['position'], 0)
+        def _pos_median(pos, lg):
+            if n_lg.get((pos, lg), 0) >= 8:
+                return med_lg[(pos, lg)]
+            return med_pooled.get(pos, 0)
 
-    out['defr_per90_vs_position'] = out.apply(
-        lambda r: (r['defr_per90'] - _pos_median(r))
-                    if pd.notna(r['defr_per90']) else np.nan,
-        axis=1,
-    )
+        rows = out['_yr'] == y
+        out.loc[rows, 'defr_per90_vs_position'] = [
+            (v - _pos_median(p, lg)) if pd.notna(v) else np.nan
+            for v, p, lg in zip(out.loc[rows, 'defr_per90'], out.loc[rows, 'position'],
+                                out.loc[rows, 'league'])]
     # Minutes-shrunk position-fair DefR — single-season display metric.
-    out['defr_adj'] = out.apply(
-        lambda r: (r['defr_per90_vs_position']
-                     * (r['mins_played'] / (r['mins_played'] + SHRINK_K)))
-                    if pd.notna(r['defr_per90_vs_position'])
-                    and pd.notna(r['mins_played']) else np.nan,
-        axis=1,
-    )
+    _ok = out['defr_per90_vs_position'].notna() & out['mins_played'].notna()
+    out['defr_adj'] = np.where(
+        _ok, out['defr_per90_vs_position'] * (out['mins_played'] / (out['mins_played'] + SHRINK_K)),
+        np.nan)
 
     # ===== RELIABILITY & VALIDATION FINDINGS (v10, measured) =====
     # Within-season split-half (odd/even matches, each half ≥450 min,
@@ -1022,25 +1052,22 @@ def compute_per_player(ev: pd.DataFrame,
     # player's current/most-recent system dominates, with older seasons as
     # a mild prior — mirrors the CVI career-decay approach.
     CAREER_DECAY = 0.5   # weight = mins × decay^(seasons_back)
-    from league_config import SEASON_YEAR  # every season, incl. the current one
     qual = out[(out['mins_played'].fillna(0) >= 500)
-                 & out['defr_per90_vs_position'].notna()].copy()
-    qual['_yr'] = qual['seasonId'].map(SEASON_YEAR)
-    qual = qual.dropna(subset=['_yr'])
-    car_rows = []
-    for pid, g in qual.groupby('playerId'):
-        latest = g['_yr'].max()
-        w = (g['mins_played'].to_numpy()
-              * (CAREER_DECAY ** (latest - g['_yr'].to_numpy())))
-        v = g['defr_per90_vs_position'].to_numpy()
-        if w.sum() > 0:
-            car_rows.append({'playerId': pid,
-                              'defr_career': float((v * w).sum() / w.sum()),
-                              'n_seasons': int(g['seasonId'].nunique())})
-    car = pd.DataFrame(car_rows)
-    out = out.merge(car, on='playerId', how='left')
-
-    return out
+                 & out['defr_per90_vs_position'].notna()].dropna(subset=['_yr'])
+    hist = {pid: g for pid, g in qual.groupby('playerId')}
+    car, nse = [], []
+    for pid, y in zip(out['playerId'], out['_yr']):
+        g = hist.get(pid)
+        g = g[g['_yr'] <= y] if g is not None and y == y else None
+        if g is None or g.empty:
+            car.append(np.nan); nse.append(np.nan); continue
+        w = g['mins_played'].to_numpy() * (CAREER_DECAY ** (y - g['_yr'].to_numpy()))
+        car.append(float((g['defr_per90_vs_position'].to_numpy() * w).sum() / w.sum())
+                   if w.sum() > 0 else np.nan)
+        nse.append(int(g['seasonId'].nunique()))
+    out['defr_career'] = car
+    out['n_seasons'] = nse
+    return out.drop(columns=['_yr'])
 
 
 # ----- Main ----------------------------------------------------------------
@@ -1069,15 +1096,35 @@ def main():
     resp['responder_modal'] = [
         psl.get((int(p), s)) if pd.notna(p) else None
         for p, s in zip(resp['responder_pid'], resp['seasonId'])]
-    presence_fine, presence_coarse = build_presence_tables(
-        resp, match_teams, def_team_players, pmt_lookup, psl)
-    print(f"  Presence tables: {len(presence_fine):,} fine cells.")
+    # v7.0 NO LOOKAHEAD: P(slot responds | ctx) for a season-year is
+    # estimated from that year and earlier only (v6.9 pooled every season).
+    # Presence counts are additive, so they are built once per season and
+    # summed per year.
+    from league_config import SEASON_YEAR
+    resp['_yr'] = resp['seasonId'].map(
+        lambda v: SEASON_YEAR.get(int(v)) if pd.notna(v) else np.nan)
+    pres_by_season = {}
+    for sid, rs in resp.groupby('seasonId'):
+        pres_by_season[sid] = build_presence_tables(
+            rs, match_teams, def_team_players, pmt_lookup, psl)
+    print(f"  Presence tables built for {len(pres_by_season)} seasons.")
 
-    print("\n[4/5] Estimating presence-conditioned P(slot responds | ctx)…",
-            flush=True)
-    prob = build_prob_table(resp, presence_fine, presence_coarse)
-    ptype_lookup = build_prob_table_by_type(resp, presence_fine, presence_coarse)
-    print(f"  Probability table: {len(prob):,} bucket × slot combinations.")
+    print("\n[4/5] Estimating presence-conditioned P(slot responds | ctx), "
+          "as of each season-year…", flush=True)
+    years = sorted(resp['_yr'].dropna().unique())
+    tables = {}
+    for y in years:
+        fine, coarse = {}, {}
+        for sid, (f_s, c_s) in pres_by_season.items():
+            if SEASON_YEAR.get(int(sid), 9999) <= y:
+                for k, v in f_s.items():
+                    fine[k] = fine.get(k, 0) + v
+                for k, v in c_s.items():
+                    coarse[k] = coarse.get(k, 0) + v
+        r_y = resp[resp['_yr'] <= y]
+        tables[y] = (build_prob_table(r_y, fine, coarse),
+                     build_prob_table_by_type(r_y, fine, coarse))
+        print(f"  {int(y)}: {len(tables[y][0]):,} bucket × slot combinations.")
 
     print("\n[5/5] Computing per-(player, season) expected + actual…", flush=True)
     # DefR-OBV value source: per-event GPA action values (our OBV analog).
@@ -1094,9 +1141,14 @@ def main():
     except Exception as _ve:
         print(f"  [warn] action values unavailable ({_ve}) — DefR-OBV will be 0.")
         value_map = None
-    out = compute_per_player(ev, resp, prob, ptype_lookup, player_slot, psl,
-                               match_teams, def_team_players, pmt_lookup,
-                               value_map=value_map)
+    parts = []
+    for y in years:
+        prob, ptype_lookup = tables[y]
+        parts.append(compute_per_player(
+            ev[ev['_yr'] == y], resp[resp['_yr'] == y], prob, ptype_lookup,
+            player_slot, psl, match_teams, def_team_players, pmt_lookup,
+            value_map=value_map))
+    out = finalize_defr(pd.concat(parts, ignore_index=True))
     print(f"  {len(out):,} (player, season) rows produced.")
 
     # Calibration: with presence-conditioned probs + concurrent splitting,
@@ -1109,7 +1161,7 @@ def main():
 
     print("\n[+] Defensive quality — wins above expectation (DWAE)…", flush=True)
     eng = build_defensive_engagements(ev)
-    eng.to_parquet(HERE / 'defensive_engagements.parquet')
+    eng.to_parquet(_OUT / 'defensive_engagements.parquet')
     agg = (eng.groupby(['playerId', 'seasonId'])
               .agg(dwae_n=('won', 'size'), dwae_wins=('won', 'sum'),
                     dwae_exp=('p_win', 'sum')).reset_index())
@@ -1129,7 +1181,7 @@ def main():
     print(f"  {len(eng):,} engagements; league DWAE sum = "
            f"{agg['defr_dwae'].sum():+.1f} (≈0 by construction)")
 
-    out_path = HERE / 'defr_per_player_season.parquet'
+    out_path = _OUT / 'defr_per_player_season.parquet'
     out.to_parquet(out_path)
     print(f"\n✅ Saved {out_path}")
 

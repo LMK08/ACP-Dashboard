@@ -9,7 +9,8 @@ step; app code never needs to change when the engine version bumps.
 Outputs:
   player_engine.parquet      one row per rated player-season
   player_engine_meta.json    {data_through, rating_version,
-                              projection_version, built_at, n_rows}
+                              projection_version, built_at, n_rows,
+                              gpa_values: per-season walk-forward provenance}
 
 Run from the Dashboard dir: python models/ratings/build_player_engine.py
 """
@@ -65,13 +66,10 @@ eng['raw_dwae90'] = eng['raw_dwae90'] / eng['mins_played'] * 90.0
 r4 = pd.read_parquet(_HERE / 'rapm_v4_per_season.parquet')
 eng = eng.merge(r4.rename(columns={'rapm_v4': 'raw_rapm'}),
                   on=['playerId', 'seasonId'], how='left')
-duels = pd.read_parquet(_DASH / 'models/duels/duel_ratings.parquet')
-duels = duels[duels['playerId'] > 0]
-for trait in ['aerial', 'takeon', 'stopper', 'shield', 'press']:
-    t = duels[duels['trait'] == trait].set_index('playerId')
-    eng[f'duel_{trait}'] = eng['playerId'].map(t['rating'])
-    eng[f'duel_{trait}_rd'] = eng['playerId'].map(t['rd'])
-    eng[f'duel_{trait}_n'] = eng['playerId'].map(t['n'])
+# v7.0 NO LOOKAHEAD: the career Glicko duel ladders are no longer copied onto
+# every season row (a 2021/22 row carried duels from every later season).
+# The radar's Off Duel Grade raw value is the season's take-on / shield wins
+# over expectation per 90 (woe_att_p90, from the rating table).
 
 # TRUE minutes for display: every match Wyscout reports minutesOnField for,
 # INCLUDING the 57 eventless Camp 25/26 matches the per-90 denominator
@@ -129,6 +127,13 @@ meta = {
     'built_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
     'n_rows': int(len(eng)),
 }
+# v7.0: which GPA models valued each season (walk-forward provenance —
+# every season's training seasons are earlier than the season itself)
+_wf_manifest = _DASH.parent.parent / 'GPA Model Project v2' / 'models' / 'walkforward' / 'manifest.json'
+if _wf_manifest.exists():
+    meta['gpa_values'] = {
+        sid: {'trained_on': e.get('trained_on'), 'frozen': bool(e.get('frozen', False))}
+        for sid, e in json.loads(_wf_manifest.read_text()).get('seasons', {}).items()}
 (_HERE / 'player_engine_meta.json').write_text(json.dumps(meta, indent=2))
 print(f"  player_engine.parquet: {len(eng):,} rows x {len(eng.columns)} cols")
 print(f"  meta: {meta}")

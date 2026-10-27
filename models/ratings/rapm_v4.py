@@ -37,6 +37,13 @@ MIN_PLAYER_MIN = 600.0
 ALPHAS = [1000.0, 3000.0, 10000.0, 30000.0]
 DECAYS = [1.0, 0.85, 0.7, 0.5]
 CAMP_SEASONS = set(CAMP_SEASON_IDS)
+# v7.0 NO LOOKAHEAD: (DECAY, ALPHA) are FROZEN at the values the walk-forward
+# search chose on 2026-10-26. Re-selecting them every rebuild (with each new
+# season's data) moved every past season's coefficients; like the role
+# taxonomy they are a yardstick, re-chosen only deliberately: RAPM_RETUNE=1.
+import os as _os
+FROZEN_DECAY, FROZEN_ALPHA = 0.7, 3000.0
+RETUNE = _os.environ.get('RAPM_RETUNE') == '1'
 SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 YRS = [2021, 2022, 2023, 2024, 2025]
 
@@ -54,7 +61,14 @@ ev['xg'] = np.where(ev['type.primary'] == 'shot',
 ev['goal'] = ((ev['shot.isGoal'] == True)
                 | (ev['type.primary'] == 'own_goal')).astype(int)
 
+# v7.0 lookahead test hook (as in build_rating.py): ACP_MAX_YEAR drops every
+# season after that year, ACP_RAPM_OUT redirects the output.
+_MAX_YR = int(_os.environ['ACP_MAX_YEAR']) if _os.environ.get('ACP_MAX_YEAR') else None
+if _MAX_YR is not None:
+    ev = ev[ev['seasonId'].map(SEASON_YR) <= _MAX_YR].copy()
 iv = pd.read_parquet(_HERE / 'player_match_intervals.parquet')
+if _MAX_YR is not None:
+    iv = iv[iv['matchId'].isin(set(ev['matchId']))].copy()
 iv['teamId'] = iv['teamId'].astype(int)
 iv['mins'] = iv['u_out'] - iv['u_in']
 total_min = iv.groupby('playerId')['mins'].sum().to_dict()
@@ -112,6 +126,7 @@ segs['yr'] = segs['seasonId'].map(SEASON_YR)
 print(f"  {len(segs):,} segments from {segs['matchId'].nunique():,} matches; "
        f"median {segs['w'].median():.1f} min")
 
+# diagnostics only (the split-half gate below): career-minutes inclusion
 players = sorted([p for p, m in total_min.items() if m >= MIN_PLAYER_MIN])
 pidx = {p: i for i, p in enumerate(players)}
 REPL_H, REPL_A = len(players), len(players) + 1
@@ -129,6 +144,43 @@ CTX = ['camp', 'score_diff', 'man_adv']
 YR_ARR = segs['yr'].to_numpy(float)
 
 
+# v7.0 NO LOOKAHEAD: who gets an own column is decided PER WINDOW, from
+# minutes through T (v6.9 used career minutes over every season, so later
+# seasons decided whether a player had a 2021/22 coefficient). Everyone
+# else plays as the window's replacement bucket.
+iv['_yr'] = iv['matchId'].map(ev[['matchId', 'seasonId']].drop_duplicates()
+                                .set_index('matchId')['seasonId']).map(SEASON_YR)
+_XT = {}
+
+
+def included_through(T):
+    m = iv[iv['_yr'] <= T].groupby('playerId')['mins'].sum()
+    return set(m[m >= MIN_PLAYER_MIN].index)
+
+
+def build_X(row_mask, idx):
+    """Design matrix for segs[row_mask]: own columns for the players in `idx`
+    (player -> column), the home / away replacement buckets for everyone else."""
+    rh, ra = len(idx), len(idx) + 1
+    rows, cx, vals = [], [], []
+    for i, r in enumerate(segs[row_mask].itertuples(index=False)):
+        for p in r.home_p:
+            rows.append(i); cx.append(idx.get(p, rh)); vals.append(1.0)
+        for p in r.away_p:
+            rows.append(i); cx.append(idx.get(p, ra)); vals.append(-1.0)
+    return sparse.csr_matrix((vals, (rows, cx)), shape=(int(np.sum(row_mask)), len(idx) + 2))
+
+
+def X_window(T):
+    """(design matrix for segments with yr <= T, player -> column). Columns
+    exist only for this window's included players, so a window's fit is
+    byte-identical whether or not later seasons are loaded."""
+    if T not in _XT:
+        idx = {p: i for i, p in enumerate(sorted(included_through(T)))}
+        _XT[T] = (build_X(YR_ARR <= T, idx), idx)
+    return _XT[T]
+
+
 def fit_window(T, decay, alpha):
     """Fit context + ridge on segments with yr <= T, decayed toward T."""
     m = YR_ARR <= T
@@ -138,13 +190,14 @@ def fit_window(T, decay, alpha):
     s1.fit(sub[CTX], sub['y'], sample_weight=wts)
     res = sub['y'].to_numpy() - s1.predict(sub[CTX])
     rg = Ridge(alpha=alpha, fit_intercept=False)
-    rg.fit(X_ALL[np.flatnonzero(m)], res, sample_weight=wts)
+    rg.fit(X_window(T)[0], res, sample_weight=wts)
     return s1, rg.coef_
 
 
-print("[3/6] walk-forward selection of (decay, alpha)…", flush=True)
+print("[3/6] (decay, alpha): " + ("walk-forward re-selection (RAPM_RETUNE=1)…"
+                                     if RETUNE else "frozen"), flush=True)
 best = None
-for decay in DECAYS:
+for decay in (DECAYS if RETUNE else []):
     for alpha in ALPHAS:
         se = wsum = 0.0
         for T in YRS[:-1]:
@@ -153,7 +206,7 @@ for decay in DECAYS:
                 continue
             s1, coef = fit_window(T, decay, alpha)
             sub = segs[nxt]
-            pred = s1.predict(sub[CTX]) + X_ALL[np.flatnonzero(nxt)] @ coef
+            pred = s1.predict(sub[CTX]) + build_X(nxt, X_window(T)[1]) @ coef
             w = sub['w'].to_numpy()
             se += float(np.sum(w * (sub['y'].to_numpy() - pred) ** 2))
             wsum += float(np.sum(w))
@@ -161,8 +214,12 @@ for decay in DECAYS:
         print(f"  decay={decay:<5} alpha={alpha:>6.0f}  walk-forward wMSE={wmse:.4f}")
         if best is None or wmse < best[2]:
             best = (decay, alpha, wmse)
-DECAY, ALPHA, WF = best
-print(f"  chosen: decay={DECAY}, alpha={ALPHA:.0f} (wMSE {WF:.4f})")
+if RETUNE:
+    DECAY, ALPHA, WF = best
+    print(f"  chosen: decay={DECAY}, alpha={ALPHA:.0f} (wMSE {WF:.4f})")
+else:
+    DECAY, ALPHA = FROZEN_DECAY, FROZEN_ALPHA
+    print(f"  frozen: decay={DECAY}, alpha={ALPHA:.0f}")
 
 print("[4/6] per-season coefficients (leak-free)…", flush=True)
 iv['seasonId'] = iv['matchId'].map(seasons)
@@ -173,10 +230,11 @@ for sid, T in SEASON_YR.items():
     if pres.empty:
         continue
     _, coef = fit_window(T, DECAY, ALPHA)
+    idx = X_window(T)[1]
     for p in pres['playerId']:
-        if p in pidx:
+        if p in idx:
             out_rows.append({'playerId': p, 'seasonId': sid,
-                               'rapm_v4': float(coef[pidx[p]])})
+                               'rapm_v4': float(coef[idx[p]])})
 out = pd.DataFrame(out_rows)
 print(f"  {len(out):,} player-season coefficients across {out['seasonId'].nunique()} seasons")
 
@@ -225,5 +283,5 @@ for c in ['Total Value', 'defr_adj', 'defr_dwae_p90']:
     ok = cur.dropna(subset=[c, 'rapm_v4'])
     print(f"  corr(RAPM_v4, {c:<14}) = {spearmanr(ok['rapm_v4'], ok[c])[0]:+.3f}")
 
-out.to_parquet(_HERE / 'rapm_v4_per_season.parquet')
+out.to_parquet(Path(_os.environ.get('ACP_RAPM_OUT', str(_HERE))) / 'rapm_v4_per_season.parquet')
 print(f"\nsaved rapm_v4_per_season.parquet (decay={DECAY}, alpha={ALPHA:.0f})")

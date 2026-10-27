@@ -22,6 +22,7 @@ Pipeline:
 
 Run from the Dashboard dir: python models/roles/cluster_roles.py
 """
+import os
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -54,41 +55,61 @@ mat = pd.read_parquet(_HERE / 'role_features_match.parquet')
 print(f"season rows {len(sea):,}  match rows {len(mat):,}")
 
 # ---- 1. taxonomy sample + features ----------------------------------------
+# v7.0 NO LOOKAHEAD: the role taxonomy is FROZEN — fit once, stored in
+# role_model.joblib, then only APPLIED. Refitting it on every rebuild redefined
+# past seasons' roles whenever new matches arrived (refit on seasons <= 2023/24
+# only: 21% of 2021-24 player-seasons change primary role and 'Advanced
+# Midfielder' disappears). A taxonomy is a yardstick, so it is fixed and
+# versioned instead; ROLE_REFIT=1 refits it deliberately (a new engine version).
+_FROZEN_PATH = _HERE / 'role_model.joblib'
+FROZEN = _FROZEN_PATH.exists() and os.environ.get('ROLE_REFIT') != '1'
 tax = sea[(sea['mins_played'].fillna(0) >= TAXONOMY_MIN_MINS)].copy()
 X_maps = tax[MAP_COLS].fillna(0).to_numpy()
-nmf = NMF(n_components=N_NMF, init='nndsvda', random_state=RANDOM_STATE,
-            max_iter=600)
-W = nmf.fit_transform(X_maps)
-feat = np.column_stack([W, tax['def_share'].fillna(0).to_numpy(),
-                          tax[RANK_COLS].fillna(0.5).to_numpy()])
-scaler = StandardScaler().fit(feat)
-Z = scaler.transform(feat)
-Z[:, N_NMF] *= DEF_SHARE_WEIGHT
-print(f"taxonomy sample: {len(tax):,} player-seasons, NMF reconstruction "
-       f"err {nmf.reconstruction_err_:.3f}")
+if FROZEN:
+    _m = joblib.load(_FROZEN_PATH)
+    assert (_m['map_cols'] == MAP_COLS and _m['rank_cols'] == RANK_COLS
+            and _m['n_nmf'] == N_NMF and _m['def_share_weight'] == DEF_SHARE_WEIGHT)
+    nmf, scaler, km, K = _m['nmf'], _m['scaler'], _m['kmeans'], _m['k']
+    _Wt = nmf.transform(X_maps)
+    Z = scaler.transform(np.column_stack([_Wt, tax['def_share'].fillna(0).to_numpy(),
+                                            tax[RANK_COLS].fillna(0.5).to_numpy()]))
+    Z[:, N_NMF] *= DEF_SHARE_WEIGHT
+    tax['role_id'] = km.predict(Z)
+    print(f"FROZEN taxonomy from role_model.joblib (k={K}) — ROLE_REFIT=1 to refit")
+if not FROZEN:
+    nmf = NMF(n_components=N_NMF, init='nndsvda', random_state=RANDOM_STATE,
+                max_iter=600)
+    W = nmf.fit_transform(X_maps)
+    feat = np.column_stack([W, tax['def_share'].fillna(0).to_numpy(),
+                              tax[RANK_COLS].fillna(0.5).to_numpy()])
+    scaler = StandardScaler().fit(feat)
+    Z = scaler.transform(feat)
+    Z[:, N_NMF] *= DEF_SHARE_WEIGHT
+    print(f"taxonomy sample: {len(tax):,} player-seasons, NMF reconstruction "
+           f"err {nmf.reconstruction_err_:.3f}")
 
-# ---- 2. k sweep -------------------------------------------------------------
-print("\nk sweep (silhouette | seed-stability ARI):")
-results = {}
-for k in range(6, 15):
-    km = KMeans(n_clusters=k, n_init=10, random_state=RANDOM_STATE).fit(Z)
-    sil = silhouette_score(Z, km.labels_, sample_size=3000,
-                             random_state=RANDOM_STATE)
-    aris = []
-    for seed in (11, 23, 47):
-        km2 = KMeans(n_clusters=k, n_init=10, random_state=seed).fit(Z)
-        aris.append(adjusted_rand_score(km.labels_, km2.labels_))
-    results[k] = (sil, np.mean(aris), km)
-    print(f"  k={k:2d}  sil={sil:.3f}  ARI={np.mean(aris):.3f}")
+    # ---- 2. k sweep -------------------------------------------------------------
+    print("\nk sweep (silhouette | seed-stability ARI):")
+    results = {}
+    for k in range(6, 15):
+        km = KMeans(n_clusters=k, n_init=10, random_state=RANDOM_STATE).fit(Z)
+        sil = silhouette_score(Z, km.labels_, sample_size=3000,
+                                 random_state=RANDOM_STATE)
+        aris = []
+        for seed in (11, 23, 47):
+            km2 = KMeans(n_clusters=k, n_init=10, random_state=seed).fit(Z)
+            aris.append(adjusted_rand_score(km.labels_, km2.labels_))
+        results[k] = (sil, np.mean(aris), km)
+        print(f"  k={k:2d}  sil={sil:.3f}  ARI={np.mean(aris):.3f}")
 
-# pick: best silhouette among k with ARI >= 0.75 (stable solutions only)
-stable = {k: v for k, v in results.items() if v[1] >= 0.75}
-if not stable:
-    stable = results
-K = max(stable, key=lambda k: stable[k][0])
-sil, ari, km = results[K]
-print(f"\nchosen k={K} (sil={sil:.3f}, ARI={ari:.3f})")
-tax['role_id'] = km.labels_
+    # pick: best silhouette among k with ARI >= 0.75 (stable solutions only)
+    stable = {k: v for k, v in results.items() if v[1] >= 0.75}
+    if not stable:
+        stable = results
+    K = max(stable, key=lambda k: stable[k][0])
+    sil, ari, km = results[K]
+    print(f"\nchosen k={K} (sil={sil:.3f}, ARI={ari:.3f})")
+    tax['role_id'] = km.labels_
 
 # ---- programmatic naming hints ---------------------------------------------
 def role_hint(g):
@@ -186,8 +207,10 @@ print("\nrole x lineup-bucket (row-normalized):")
 print((ct * 100).round(0).to_string())
 
 # ---- naming: carry names from the previous model when clusters correspond ---
-ROLE_FALLBACK = None
+ROLE_FALLBACK = _m['role_names'] if FROZEN else None
 try:
+    if FROZEN:
+        raise RuntimeError('frozen taxonomy keeps its own names')
     prev = pd.read_parquet(_HERE / 'role_assignments_season.parquet')
     if 'primary_role_name' in prev.columns:
         j = season_roles.merge(prev[['playerId', 'seasonId', 'primary_role_name']]
@@ -209,7 +232,8 @@ if ROLE_FALLBACK:
     mat['role_name'] = mat['role_id'].map(ROLE_FALLBACK)
 
 # ---- 5. save + atlas ----------------------------------------------------------
-joblib.dump({'nmf': nmf, 'scaler': scaler, 'kmeans': km, 'k': K,
+if not FROZEN:   # the frozen model is never rewritten
+  joblib.dump({'nmf': nmf, 'scaler': scaler, 'kmeans': km, 'k': K,
               'def_share_weight': DEF_SHARE_WEIGHT, 'map_cols': MAP_COLS,
               'rank_cols': RANK_COLS, 'n_nmf': N_NMF,
               'role_names': ROLE_FALLBACK, 'hints': hints},
