@@ -114,7 +114,7 @@ def _fig_png(fig):
 #   * FIGURE_CACHE_VERSION (from app.py) is in every key so a drawing-code
 #     change invalidates it — the keys describe DATA, so nothing else would.
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=96)
-# mpl_locked INSIDE cache_data: a cache hit returns the PNG pair without
+# mpl_locked INSIDE cache_data: a cache hit returns the PNG without
 # touching matplotlib or the lock; only an actual (re)build serialises.
 # Every figure in this file is built inside this function (AST-verified),
 # so this one decorator is the file's whole lock story.
@@ -187,7 +187,7 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
     on is comp_key, and the call site now passes a matching league scope_key
     to calculate_xg_history_data so the frame actually follows it.
 
-    Returns the PNG pair, or None when the plotter produced no figure.
+    Returns the PNG bytes, or None when the plotter produced no figure.
     """
     app = _get_app()
     if kind == 'radar':

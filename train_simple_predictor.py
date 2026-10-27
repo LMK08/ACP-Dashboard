@@ -12,9 +12,10 @@ RandomForest on every metric (log-loss 1.078 vs 1.113, Brier 0.653 vs
 0.675, accuracy 41.3% vs 36.3%) — small data favors the simple model.
 See calibrate_strength_metrics.py / calibrate_blend_decay.py.
 
-Writes match_predictor_model.pkl with feature_mode='simple_strength_v1';
-update_model.py keeps refreshing team_stats nightly as before. Override
-the output path with MODEL_OUT for experiments.
+Writes match_predictor_model.pkl with feature_mode='simple_strength_v1'.
+Offline only since 2026-10: the app's 'Predict Match Outcome' button and
+the nightly update_model.py refresh were retired. Override the output
+path with MODEL_OUT for experiments.
 """
 import os
 import pickle

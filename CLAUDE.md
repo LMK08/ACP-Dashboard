@@ -118,9 +118,11 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   the switch). Several tags on one column → one TagIndex, `.has()` each.
   Tests: `tests/test_event_tags.py` (byte-identical to the old lambdas).
 - Cold-render rules: the rest of a cold Opposition Report is matplotlib
-  rendering its ~27 cached PNG figures (screen + PDF pair) — per opponent,
-  once per day. The boot prewarm (`_prewarm_scope_caches` in app.py) warms
-  each league's LANDING season (newest with ≥ MIN_MATCHES_FOR_DEFAULT_SEASON
+  rendering its ~23 cached PNG figures — per opponent, once per day; one
+  200-dpi PNG serves screen and PDF, and the figures the screen shows as
+  Plotly are drawn for the PDF only when it is generated (2026-10). The
+  boot prewarm (`_prewarm_scope_caches` in app.py) warms each league's
+  LANDING season (newest with ≥ MIN_MATCHES_FOR_DEFAULT_SEASON
   matches of events — `current_season` is fixtures-only early on and warmed
   nothing) including `compute_team_season_metrics`, whose cache key comes
   from `season_report_cache_key()` on both team pages and in the prewarm:

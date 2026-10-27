@@ -2049,11 +2049,7 @@ def render():
                             return f"{x:.0f}"
                         return f"{x:.2f}"
 
-                    # Build display DataFrame: Value + Percentile, both
-                    # formatted str. Streamlit draws an empty cell as a grey
-                    # "None" whatever the Styler format says, so a missing
-                    # percentile is the string '—'; the colours come from
-                    # the numbers kept in _pcts.
+                    # Build display DataFrame: Value (formatted str) + Percentile (numeric)
                     _rows, _pcts = [], []
                     for _metric in stats_subset_series.index:
                         _disp_val = stats_subset_series[_metric]
@@ -2065,13 +2061,24 @@ def render():
                         _rows.append({
                             'Metric': _metric,
                             'Value': _fmt_stat(_metric, _disp_val),
-                            'Percentile': '—' if _pct is None else f"{int(round(_pct))}",
+                            'Percentile': _pct,
                         })
                     stats_subset = pd.DataFrame(_rows).set_index('Metric')
+                    if group_name == "ACP Index":
+                        # the '%' rows have no Percentile, and Streamlit draws
+                        # an empty cell as a grey "None" whatever the Styler
+                        # format says — so this group's column is text with
+                        # '—' (other groups stay numeric, for sorting)
+                        stats_subset['Percentile'] = [
+                            '—' if p is None else f"{int(round(p))}" for p in _pcts]
 
-                    _styled = stats_subset.style.apply(
-                        lambda _col, _p=_pcts: [_percentile_color(v) for v in _p],
-                        subset=['Percentile'])
+                    _styled = (
+                        stats_subset.style
+                        .apply(lambda _col, _p=_pcts: [_percentile_color(v) for v in _p],
+                               subset=['Percentile'])
+                        .format({'Percentile': lambda v: v if isinstance(v, str)
+                                 else (f"{int(round(v))}" if pd.notna(v) else '—')})
+                    )
                     if group_name == "ACP Index":
                         # dataframe rows carry no tooltips, and a hover
                         # tooltip clips at 300 px — the definitions of the
