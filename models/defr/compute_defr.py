@@ -392,7 +392,10 @@ def build_response_table(ev: pd.DataFrame) -> pd.DataFrame:
     zsx = 100.0 / N_ZONE_X
     zsy = 100.0 / N_ZONE_Y
     for mid, mdf in ev.groupby('matchId'):
-        mdf = mdf.sort_values('_t').reset_index(drop=True)
+        # stable: same-time events keep Wyscout's file order. The default
+        # quicksort orders ties differently on x86 CI and ARM laptops, and
+        # the forward responder scan below depends on that order.
+        mdf = mdf.sort_values('_t', kind='stable').reset_index(drop=True)
         teams = mdf['team.id'].unique()
         if len(teams) < 2:
             continue
