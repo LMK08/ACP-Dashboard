@@ -215,7 +215,7 @@ o['p_npxg_st'] = np.where(o['role'] == 'Striker', o['p_npxg'], 0.5)
 
 print("[2/5] panel…", flush=True)
 rows = []
-for pid, gg in o.sort_values('yr').groupby('playerId'):
+for pid, gg in o.sort_values('yr', kind='stable').groupby('playerId'):
     rr = gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
         # panel pinned to the historic >=500' regime — sub-floor rows

@@ -626,7 +626,7 @@ print("[4/4] validation…", flush=True)
 
 def yoy(col):
     P = []
-    for pid, gg in df.sort_values('yr').groupby('playerId'):
+    for pid, gg in df.sort_values('yr', kind='stable').groupby('playerId'):
         rr = gg.dropna(subset=[col]).to_dict('records')
         for a, b in zip(rr, rr[1:]):
             if b['yr'] - a['yr'] == 1 and a['position_group'] == b['position_group']:
@@ -642,7 +642,7 @@ print(f"  acp_rating YoY (same pos): r = {r_s:.3f} (n={n})")
 _pt = _read(_HERE / 'player_teams.parquet')
 df = df.merge(_pt, on=['playerId', 'seasonId'], how='left')
 _sw = {'stay': [], 'switch': []}
-for pid, gg in df.sort_values('yr').groupby('playerId'):
+for pid, gg in df.sort_values('yr', kind='stable').groupby('playerId'):
     rr = gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
         if (b['yr'] - a['yr'] == 1 and a['position_group'] == b['position_group']

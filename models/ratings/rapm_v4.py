@@ -259,7 +259,7 @@ print(f"  split-half (2025 window, n={int(mask.sum())}): r = {r_sh:.3f}  (v3 car
 t = out.copy()
 t['yr'] = t['seasonId'].map(SEASON_YR)
 P = []
-for pid, gg in t.sort_values('yr').groupby('playerId'):
+for pid, gg in t.sort_values('yr', kind='stable').groupby('playerId'):
     rr = gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
         if b['yr'] - a['yr'] == 1:
