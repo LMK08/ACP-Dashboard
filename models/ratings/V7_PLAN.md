@@ -109,7 +109,7 @@ Dashboard: a new branch `engine-v7` cut from current `origin/main`:
    - `main` has moved two commits, and they overlap only in `app.py` (different hunks).
 6. **`engine_rebuild.yml`:**
    - Phase 1: run `walkforward_predict.py` after `action_values.py`. Prefix `loso_player_ratings.py` and `export_to_dashboard.py` with `GPA_VALUES=walkforward`.
-   - Pin `xgboost==3.1.3`, the trainer's version. scikit-learn is already pinned to 1.9.0, which wrote `role_model.joblib`.
+   - Pin `xgboost==3.2.0`, the version CI already ran. The walk-forward models were trained with 3.1.3 but predict bit-identically under 3.2.0 + pandas 3. 3.1.3 itself breaks `xpass.py` on pandas 3: the first validation run, 40583311737, failed there. scikit-learn is already pinned to 1.9.0, which wrote `role_model.joblib`.
    - Install `pytest` in the engine job. Today only `deploy_to_hf` installs it.
    - After Phase 2: run `tests/test_rating_no_lookahead.py` (~25 s). This is a gate: a lookahead regression fails the run before anything is committed.
    - New dispatch inputs:
