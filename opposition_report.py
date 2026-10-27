@@ -73,36 +73,25 @@ SET_PIECE_METRICS_RADAR = [
 # ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
-def _fig_to_png_bytes(fig):
-    """Convert a matplotlib figure to PNG bytes (for PDF embedding)."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
-                facecolor=fig.get_facecolor())
-    buf.seek(0)
-    return buf.getvalue()
+def _fig_png(fig):
+    """PNG bytes of one figure, then close it — shown on screen AND embedded
+    in the PDF.
 
-
-def _fig_png_pair(fig):
-    """(display PNG, PDF PNG) from one figure, then close it.
-
-    Two renders because this page needs both and should only BUILD once:
-      [0] dpi=200, no explicit facecolor — byte-for-byte what st.pyplot hands
-          savefig (streamlit/elements/pyplot.py), so st.image() of it is
-          pixel-identical to the st.pyplot() it replaces.
-      [1] dpi=150 + explicit facecolor — what _fig_to_png_bytes was already
-          writing into pdf_figures at each call site, kept exactly so the
-          generated PDF is unchanged by this commit.
-    Both live under one cache entry, so a hit skips the build AND both
-    savefigs. pdf_figures is rebuilt on every rerun (the Generate PDF button
-    just reruns the script), so caching only the display bytes would leave the
-    PDF capture paying full price on every rerun anyway.
+    dpi=200, no explicit facecolor: byte-for-byte what st.pyplot hands
+    savefig (streamlit/elements/pyplot.py), so st.image() of it is
+    pixel-identical to the st.pyplot() it replaces; the unset facecolor falls
+    through to rcParams['savefig.facecolor'] ('auto' = the figure's own).
+    Until 2026-10 the PDF got a second savefig at dpi=150 with that same
+    facecolor passed explicitly — the same picture at lower resolution, paid
+    on every cold page view (~2 s of the Opposition Report's) whether or not
+    anyone generated a PDF.
 
     The close is in a finally so a savefig raise can't leak the figure.
     """
     try:
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
-        return buf.getvalue(), _fig_to_png_bytes(fig)
+        return buf.getvalue()
     finally:
         plt.close(fig)
 
@@ -132,7 +121,7 @@ def _fig_png_pair(fig):
 @mpl_locked
 def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key,
                            fig_ver, _events_df, _matches_df, _payload):
-    """One Opposition Report figure -> (display PNG, PDF PNG). See _fig_png_pair.
+    """One Opposition Report figure -> PNG bytes (screen and PDF). See _fig_png.
 
     KEY: (kind, season_key, comp_key, team_name, extra, day_key,
           FIGURE_CACHE_VERSION).
@@ -264,7 +253,7 @@ def _render_opp_figure_png(kind, season_key, comp_key, team_name, extra, day_key
             _p['team_season'], _p['team_id'], team_name)
     else:
         raise ValueError(f"unknown opposition figure kind: {kind!r}")
-    return _fig_png_pair(fig) if fig is not None else None
+    return _fig_png(fig) if fig is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -879,9 +868,11 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     # --- Cached-PNG figure plumbing for this page ---------------------------
     # Every figure below goes through _show_opp_png -> _render_opp_figure_png,
-    # which caches (display PNG, PDF PNG) on the key documented there. The
-    # display bytes are st.image()'d and the PDF bytes go straight into
-    # pdf_figures, so a cache hit costs neither the build nor either savefig.
+    # which caches one PNG on the key documented there. The bytes are
+    # st.image()'d and go straight into pdf_figures, so a cache hit costs
+    # neither the build nor the savefig. Figures the screen shows as Plotly
+    # are matplotlib for the PDF only: _pdf_png queues them and they are
+    # built when 'Generate PDF Report' is clicked, not on every page view.
     #
     # width="stretch" on every st.image is deliberate and NOT
     # cosmetic: st.pyplot defaults to width="stretch" whereas st.image
@@ -893,26 +884,37 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     def _show_opp_png(kind, pdf_key=None, extra=(), payload=None,
                       team=None, _team_set=False):
-        _pair = _render_opp_figure_png(
+        _png = _render_opp_figure_png(
             kind, _fig_season_key, _fig_comp_key,
             team if _team_set else selected_opponent,
             extra, _fig_day_key, app.FIGURE_CACHE_VERSION,
             season_events_df, season_matches_df, payload)
-        if not _pair:
+        if not _png:
             return
-        st.image(_pair[0], width="stretch")
+        st.image(_png, width="stretch")
         if pdf_key:
-            pdf_figures[pdf_key] = _pair[1]
+            pdf_figures[pdf_key] = _png
+
+    _pdf_only = []   # (kind, pdf_key, payload) — built by the PDF button
 
     def _pdf_png(kind, pdf_key, payload=None):
-        """Build (and cache) the matplotlib PNG for the PDF only — the screen
-        shows the interactive version of this figure."""
-        _pair = _render_opp_figure_png(
-            kind, _fig_season_key, _fig_comp_key, selected_opponent,
-            (), _fig_day_key, app.FIGURE_CACHE_VERSION,
-            season_events_df, season_matches_df, payload)
-        if _pair:
-            pdf_figures[pdf_key] = _pair[1]
+        """Queue the matplotlib PNG the PDF needs for a figure the screen
+        shows as Plotly; it is built (and cached) only when the PDF is."""
+        _pdf_only.append((kind, pdf_key, payload))
+
+    def _build_pdf_only_figures():
+        for _kind, _key, _payload in _pdf_only:
+            try:
+                _png = _render_opp_figure_png(
+                    _kind, _fig_season_key, _fig_comp_key, selected_opponent,
+                    (), _fig_day_key, app.FIGURE_CACHE_VERSION,
+                    season_events_df, season_matches_df, _payload)
+            except Exception as e:
+                # one figure the PDF can't draw is left out, as before
+                st.caption(f"Could not render {_key} for the PDF: {e}")
+                continue
+            if _png:
+                pdf_figures[_key] = _png
 
     def _open_team(team):
         st.session_state['nav_opponent'] = team
@@ -1647,6 +1649,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             from generate_pdf import generate_opposition_report_pdf
 
             with st.spinner("Generating PDF..."):
+                _build_pdf_only_figures()
                 pdf_bytes = generate_opposition_report_pdf(
                     opponent_name=selected_opponent,
                     match_date=m_date,
