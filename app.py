@@ -521,10 +521,12 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 192831  # Liga 3 default (2026/27)
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v15'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
+STATS_CACHE_VERSION = 'v16'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
                              # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
                              # override; v15 = the 2026-09 Calegari alias, which merges
-                             # two 2026/27 rows into one). v13 percentiles cache served
+                             # two 2026/27 rows into one; v16 = multi-season scopes take
+                             # the MOST-PLAYED position, not the newest season's —
+                             # precompute_minutes.combine_season_minutes). v13 percentiles cache served
                              # stale minutes because the percentiles layer early-returns
                              # its disk cache and only this version key invalidates it.
 FIGURE_CACHE_VERSION = 'v7'  # Bump when any DRAWING code behind the cached-PNG figure
@@ -2523,6 +2525,7 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
     If season_id is None, combine all seasons (filtered by comp_ids if provided).
     Accepts a single season_id (int) or a list of season_ids.
     """
+    from precompute_minutes import combine_season_minutes
     if isinstance(player_minutes_data, pd.DataFrame):
         return player_minutes_data
     if season_id is None:
@@ -2535,25 +2538,14 @@ def _season_player_minutes_impl(player_minutes_data, season_id, comp_ids=None):
                     all_dfs.append(df)
         if not all_dfs:
             return _empty_minutes_df()
-        combined = pd.concat(all_dfs)
-        return combined.groupby('playerId').agg({
-            'playerName': 'first',
-            'teamName': 'first',
-            'primaryPosition': 'first',
-            'totalMinutes': 'sum'
-        }).reset_index()
+        # most-played position over the seasons, not the newest season's
+        return combine_season_minutes(all_dfs)
     if isinstance(season_id, list):
         dfs = [player_minutes_data.get(sid, pd.DataFrame()) for sid in season_id]
         dfs = [df for df in dfs if isinstance(df, pd.DataFrame) and not df.empty]
         if not dfs:
             return _empty_minutes_df()
-        combined = pd.concat(dfs)
-        return combined.groupby('playerId').agg({
-            'playerName': 'first',
-            'teamName': 'first',
-            'primaryPosition': 'first',
-            'totalMinutes': 'sum'
-        }).reset_index()
+        return combine_season_minutes(dfs)
     result = player_minutes_data.get(season_id)
     if not isinstance(result, pd.DataFrame) or result.empty:
         return _empty_minutes_df()

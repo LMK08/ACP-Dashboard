@@ -60,3 +60,34 @@ def test_build_season_no_minutes_no_row(monkeypatch):
     monkeypatch.setattr(pm, '_event_identity', lambda sid: {8: ('Only Events', 'X', 'CF')})
     df = pm.build_season(5, _mm([]), None, details={}, lineup_teams={})
     assert df.empty  # a player with events but no API minutes is missing, not guessed
+
+
+def _season(rows):
+    return pd.DataFrame(rows, columns=['playerId', 'playerName', 'teamName',
+                                       'primaryPosition', 'totalMinutes'])
+
+
+def test_seasons_combine_to_the_most_played_position():
+    # newest season first, as the app passes them (Nicolás Souza, 2026-10:
+    # 194' at LAMF this season after three seasons at CF)
+    newest = _season([(1, 'N. Souza', 'Atlético CP', 'LAMF', 194), (2, 'B', 'X', 'RB', 900)])
+    older = _season([(1, 'N. Souza', 'Atlético CP', 'CF', 1732), (2, 'B', 'Y', 'RB', 100)])
+    oldest = _season([(1, 'Nicolás Souza', 'Lusitânia', 'CF', 1573)])
+    out = pm.combine_season_minutes([newest, older, oldest]).set_index('playerId')
+    assert out.loc[1, 'primaryPosition'] == 'CF'
+    assert out.loc[1, 'totalMinutes'] == 194 + 1732 + 1573
+    assert (out.loc[1, 'playerName'], out.loc[1, 'teamName']) == ('N. Souza', 'Atlético CP')
+    assert (out.loc[2, 'primaryPosition'], out.loc[2, 'teamName']) == ('RB', 'X')
+    assert list(out.columns) == ['playerName', 'teamName', 'primaryPosition', 'totalMinutes']
+
+
+def test_a_tie_goes_to_the_newest_season_and_a_placeholder_never_wins():
+    newest = _season([(1, 'A', 'T', 'LW', 500), (3, 'C', 'T', 'Unknown', 2000),
+                      (4, 'D', 'T', 'Unknown', 300), (5, 'E', 'T', 0, 800)])
+    older = _season([(1, 'A', 'T', 'RW', 500), (3, 'C', 'T', 'CB', 100),
+                     (5, 'E', 'T', 'DMF', 50)])
+    out = pm.combine_season_minutes([newest, older]).set_index('playerId')
+    assert out.loc[1, 'primaryPosition'] == 'LW'          # 500 vs 500: newest
+    assert out.loc[3, 'primaryPosition'] == 'CB'          # 'Unknown' never votes
+    assert out.loc[4, 'primaryPosition'] == 'Unknown'     # nothing else: label kept
+    assert out.loc[5, 'primaryPosition'] == 'DMF'         # fillna's int 0 is no position

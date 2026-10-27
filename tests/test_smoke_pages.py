@@ -13,11 +13,15 @@ suite can run on a code-only checkout.
 Run:  python -m pytest tests/test_smoke_pages.py -v      (about 2 minutes)
 """
 import os
+import re
 import sys
 
 import pytest
 
 DASHBOARD_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# the stats-cache version the app writes (no literal to bump by hand)
+STATS_VER = re.search(r"^STATS_CACHE_VERSION = '([^']+)'",
+                      open(os.path.join(DASHBOARD_DIR, 'app.py')).read(), re.M).group(1)
 REQUIRED_DATA = ['raw_events.parquet', 'matches_summary.parquet',
                  'all_match_data.pkl', 'player_details.pkl']
 
@@ -308,7 +312,7 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
     sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
                 if v == season_label), None)
-    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v15_{sid}.parquet')
+    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_{STATS_VER}_{sid}.parquet')
     if sid is None or not os.path.exists(cache):
         pytest.skip(f'percentiles cache for {season_label} not present')
     t = pq.read_table(cache, columns=['playerId', 'playerName', 'totalMinutes']).to_pandas()
@@ -343,7 +347,7 @@ def test_shadow_queue_adds_in_scope_players_and_keeps_others(app):
     season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
     sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
                 if v == season_label), None)
-    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_v15_{sid}.parquet')
+    cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_{STATS_VER}_{sid}.parquet')
     if sid is None or not os.path.exists(cache):
         pytest.skip(f'percentiles cache for {season_label} not present')
     t = pq.read_table(cache, columns=['playerId', 'playerName', 'totalMinutes']).to_pandas()

@@ -255,11 +255,25 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   every position Player A PLAYED in the scope (exact API minutes,
   `app.get_player_minutes_by_position`, >= 10% of his minutes) plus his
   stats-frame position; most-played position first, default = his best
-  fit there via `rank_in_template`. Never the frame's position alone: an
-  All-Seasons row keeps ONE position, the newest season's (groupby
-  'first' in `_season_player_minutes_impl`) — a career striker on LAMF
-  this season was offered only winger templates (Nicolás Souza,
+  fit there via `rank_in_template`. Never the frame's position alone: a
+  row keeps ONE position, so a career striker playing LAMF this season
+  would be offered only winger templates in 2026/27 (Nicolás Souza,
   2026-10-27).
+- Multi-season position (RULE, v16): an All-Seasons / multi-season
+  minutes row takes the MOST-PLAYED position —
+  `precompute_minutes.combine_season_minutes`: each season row's minutes
+  credited to that season's primaryPosition (its most-played position by
+  exact API minutes), ties to the earlier frame (newest season first
+  within a league; the both-leagues scope lists every Liga 3 season before
+  the Campeonato's), 'Unknown' / 0 never vote; name and team stay the
+  first frame's. Until v16 it was groupby
+  'first' — the newest season's position however few minutes: 207 Liga 3
+  and 70 Campeonato players with 500'+ were ranked in the wrong template
+  group (João Tarzan, 10,580' of 10,752' at CF, ranked as LAMF). Every
+  live multi-season combine goes through that function (still 'first',
+  and read by nothing: app.get_combined_career_minutes, no callers;
+  process_data.py's all_time_player_minutes.pkl, overwritten by
+  precompute_minutes right after).
 - Widget seeding (RULE, 1.50 too): a keyed selectbox whose OPTIONS change
   between runs is a new widget and falls back to index 0 unless its key is
   set in THAT run — even when its value is still a valid option

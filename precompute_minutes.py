@@ -79,6 +79,40 @@ def _event_identity(season_id):
         g['player.position'].agg(_mode))}
 
 
+_NO_POSITION = ('', 'Unknown', 'nan', 'None', '0')
+
+
+def combine_season_minutes(dfs):
+    """One row per player over several seasons' minutes frames: minutes
+    summed, name / team from the first frame he appears in (the callers pass
+    the newest season first within a league; the both-leagues scope lists
+    Liga 3 before the Campeonato), and primaryPosition the position he played
+    MOST — each season row's minutes credited to that season's
+    primaryPosition (itself his most-played position that season, exact API
+    minutes), ties to the earlier frame. Until 2026-10 the position was
+    'first' like the labels — the newest season's, however few minutes he
+    had there: a career striker with 194' of LAMF this season was ranked
+    with the wingers in All Seasons (232 of the 1,380 All-Seasons players
+    with 500'+ sat in another template group)."""
+    combined = pd.concat(dfs, ignore_index=True)
+    out = combined.groupby('playerId').agg({
+        'playerName': 'first', 'teamName': 'first',
+        'primaryPosition': 'first', 'totalMinutes': 'sum',
+    }).reset_index()
+    pos = combined['primaryPosition']
+    vote = combined.assign(
+        _mins=pd.to_numeric(combined['totalMinutes'], errors='coerce').fillna(0),
+        _order=range(len(combined)),
+    )[pos.notna() & ~pos.astype(str).isin(_NO_POSITION)]
+    best = (vote.groupby(['playerId', 'primaryPosition'])
+                .agg(_mins=('_mins', 'sum'), _order=('_order', 'min')).reset_index()
+                .sort_values(['_mins', '_order'], ascending=[False, True])
+                .drop_duplicates('playerId').set_index('playerId')['primaryPosition'])
+    # a player with no real position anywhere keeps the old label
+    out['primaryPosition'] = out['playerId'].map(best).fillna(out['primaryPosition'])
+    return out
+
+
 def build_season(season_id, mm_season, api_season, details, lineup_teams):
     if mm_season.empty:
         return pd.DataFrame(columns=OUT_COLUMNS)
@@ -208,10 +242,7 @@ def main():
 
     all_dfs = [d for d in complete.values() if not d.empty]
     if all_dfs:
-        all_time = pd.concat(all_dfs).groupby('playerId').agg({
-            'playerName': 'first', 'teamName': 'first',
-            'primaryPosition': 'first', 'totalMinutes': 'sum',
-        }).reset_index()
+        all_time = combine_season_minutes(all_dfs)
         all_time.to_pickle('all_time_player_minutes.pkl')
         print(f'Saved all_time_player_minutes.pkl with {len(all_time)} players')
 

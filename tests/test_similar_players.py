@@ -1,6 +1,7 @@
 """models/similarity/similar_players — pure checks on a synthetic pool plus
 data-backed checks on the committed caches (skipped without them)."""
 import os
+import re
 import subprocess
 import sys
 
@@ -156,7 +157,9 @@ def test_unknown_competition_and_zero_ratings_are_normalised():
 
 
 # --- data-backed ---------------------------------------------------------------
-_CACHES = [os.path.join(DASH, 'stats_cache', f'player_percentiles_v15_{sid}.parquet')
+_STATS_VER = re.search(r"^STATS_CACHE_VERSION = '([^']+)'",
+                       open(os.path.join(DASH, 'app.py')).read(), re.M).group(1)
+_CACHES = [os.path.join(DASH, 'stats_cache', f'player_percentiles_{_STATS_VER}_{sid}.parquet')
            for sid in (190090, 191782)]
 _HAS_DATA = all(os.path.exists(p) for p in _CACHES)
 
