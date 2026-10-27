@@ -859,7 +859,7 @@ def render():
                         "**Min** is total minutes in scope. **Style** = tendency-derived "
                         "archetype (descriptive, never in the rating)."
                     )
-                st.dataframe(_erole_df, use_container_width=True)
+                st.dataframe(_erole_df, width="stretch")
                 st.markdown("---")
             elif _sel_style != 'All styles':
                 st.subheader("Best Players by Role")
@@ -940,7 +940,7 @@ def render():
                     "🟩 Projected Value = " + _eur_curve_txt + _eur_range_txt
                     + (" Sort is by Projected Value." if sort_by_cvi else "")
                 )
-            st.dataframe(overview_df, use_container_width=True)
+            st.dataframe(overview_df, width="stretch")
         else:
             st.warning("No players match current filters.")
 
@@ -1213,7 +1213,7 @@ def render():
         st.caption("Click on a row to view that player's profile")
         selection = st.dataframe(
             display_df.set_index('Rank'),
-            use_container_width=True,
+            width="stretch",
             on_select="rerun",
             selection_mode="single-row",
             key="individual_metric_table",
@@ -1238,7 +1238,7 @@ def render():
             st.caption("Click on a row to view that player's profile")
             selection = st.dataframe(
                 display_df.set_index('Rank'),
-                use_container_width=True,
+                width="stretch",
                 on_select="rerun",
                 selection_mode="single-row",
                 key="template_detail_table"
@@ -1255,7 +1255,7 @@ def render():
                 with st.expander("Template Weights", expanded=False):
                     weight_df = pd.DataFrame(weighted_items, columns=['Metric', 'Weight'])
                     weight_df['Weight'] = weight_df['Weight'].apply(lambda w: f"{w:.1f}")
-                    st.dataframe(weight_df, use_container_width=True, hide_index=True, column_config=auto_column_config(weight_df))
+                    st.dataframe(weight_df, width="stretch", hide_index=True, column_config=auto_column_config(weight_df))
         else:
             st.warning(f"No players found for {selected_template} template with current filters.")
 
@@ -1668,7 +1668,7 @@ def render():
             key="bulk_export_min_mins",
             help="Default uses the Minimum Minutes Played slider above."
         )
-        _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", use_container_width=True)
+        _bulk_generate = st.button("Generate ZIP", key="bulk_export_btn", width="stretch")
 
         if _bulk_generate:
             # Resolve the multi-select group labels to raw position codes.
@@ -1778,7 +1778,7 @@ def render():
                     _progress.empty()
                     import traceback as _tb
                     st.error(f"Render failed: {type(_gen_exc).__name__}: {_gen_exc}")
-                    with st.popover("Traceback (for debugging)", use_container_width=True):
+                    with st.popover("Traceback (for debugging)", width="stretch"):
                         st.code(_tb.format_exc())
 
         # --- Cached Renders section — always shown. ---
@@ -1842,7 +1842,7 @@ def render():
                     file_name=f"radars__{_meta.get('label', 'export')}.zip",
                     mime="application/zip",
                     key=_zip_btn_key,
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 # If we have stale cached bytes, surface that so the
@@ -1856,7 +1856,7 @@ def render():
                     except Exception:
                         pass
                 if st.button(f"📦 Prepare ZIP ({_png_count} files, ~{_size_mb:.0f} MB)",
-                              key=_prep_key, use_container_width=True):
+                              key=_prep_key, width="stretch"):
                     try:
                         with st.spinner("Building ZIP from rendered PNGs…"):
                             st.session_state[_zip_bytes_key] = _build_zip_from_dir(_rd)
@@ -1867,7 +1867,7 @@ def render():
                                  f"{type(_zip_exc).__name__}: {_zip_exc}")
             if _meta.get('skipped'):
                 _sk = _meta['skipped']
-                with st.popover(f"View skipped ({len(_sk)})", use_container_width=True):
+                with st.popover(f"View skipped ({len(_sk)})", width="stretch"):
                     for _name, _reason in _sk[:50]:
                         st.caption(f"• **{_name}** — {_reason}")
                     if len(_sk) > 50:
@@ -1875,7 +1875,7 @@ def render():
 
         # --- Diagnostics: surfaces the actual on-disk state ---
         # popover instead of expander — Streamlit forbids nested expanders.
-        with st.popover("🔍 Diagnostics", use_container_width=True):
+        with st.popover("🔍 Diagnostics", width="stretch"):
             st.caption(f"Cache dir: `{_BULK_CACHE_DIR}`")
             if _BULK_CACHE_ERROR:
                 st.error(f"Cache dir setup error: {_BULK_CACHE_ERROR}")
@@ -1917,7 +1917,7 @@ def render():
                             _rows.append({'entry': _en, 'type': '?',
                                           'pngs': 0, 'size_MB': '?', 'mtime': '?'})
                     st.dataframe(pd.DataFrame(_rows),
-                                 use_container_width=True, hide_index=True)
+                                 width="stretch", hide_index=True)
             except Exception as _diag_exc:
                 st.error(f"Cannot list cache dir: "
                          f"{type(_diag_exc).__name__}: {_diag_exc}")

@@ -211,4 +211,4 @@ def render():
             selected_template
         )
 
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")

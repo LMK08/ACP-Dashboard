@@ -155,7 +155,7 @@ def render():
             _fig_stage_key, extra, FIGURE_CACHE_VERSION,
             team_events_df, team_matches_df, payload)
         if _png:
-            st.image(_png, use_container_width=True)
+            st.image(_png, width="stretch")
 
     def _show_team_radar(title, params, values_raw, values_pct, color):
         # The plotted values ride in `extra` (hashed), not just the scope:
@@ -385,7 +385,7 @@ def render():
             st.write("**Squad Roster** (click to view profile):")
             selection = st.dataframe(
                 roster_df,
-                use_container_width=True,
+                width="stretch",
                 on_select="rerun",
                 selection_mode="single-row",
                 key="team_roster_table",

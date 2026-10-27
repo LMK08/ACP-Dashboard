@@ -883,7 +883,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # display bytes are st.image()'d and the PDF bytes go straight into
     # pdf_figures, so a cache hit costs neither the build nor either savefig.
     #
-    # use_container_width=True on every st.image is deliberate and NOT
+    # width="stretch" on every st.image is deliberate and NOT
     # cosmetic: st.pyplot defaults to width="stretch" whereas st.image
     # defaults to width="content", so the sites that called st.pyplot(fig)
     # with no flag still need it here to render at the size they always have.
@@ -900,7 +900,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             season_events_df, season_matches_df, payload)
         if not _pair:
             return
-        st.image(_pair[0], use_container_width=True)
+        st.image(_pair[0], width="stretch")
         if pdf_key:
             pdf_figures[pdf_key] = _pair[1]
 
@@ -1144,7 +1144,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                     rm = {k: v for k, v in rename_map.items() if k in subs_df.columns}
                     st.dataframe(
                         subs_df.rename(columns=rm),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
                     pdf_texts['subs'] = subs_df.rename(columns=rm)
                 else:
@@ -1294,7 +1294,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                                         st.dataframe(
                                             pd.DataFrame(rows),
                                             hide_index=True,
-                                            use_container_width=True,
+                                            width="stretch",
                                         )
                             else:
                                 st.caption(
@@ -1410,7 +1410,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         sp_table = pd.DataFrame(sp_data)
         for c in ['xG For', 'xG Conceded']:
             sp_table[c] = sp_table[c].round(2)
-        st.dataframe(sp_table, use_container_width=True, hide_index=True)
+        st.dataframe(sp_table, width="stretch", hide_index=True)
         pdf_texts['set_piece_table'] = sp_table
 
         col_l, col_r = st.columns(2)
@@ -1490,7 +1490,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         ]
         ft.columns = ['Date', 'Opponent', 'Score', 'Result', 'H/A']
         ft['Date'] = pd.to_datetime(ft['Date']).dt.strftime('%d %b %Y')
-        st.dataframe(ft, use_container_width=True, hide_index=True)
+        st.dataframe(ft, width="stretch", hide_index=True)
         pdf_texts['form_results'] = form_results
 
     # xG history

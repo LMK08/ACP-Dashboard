@@ -249,7 +249,7 @@ def render_eur_calibration_section(calib=None, key='eurcal'):
             'Fee ÷ value': rows['ratio'].map(lambda r: f"×{r:.2f}"),
             'Inside 50%': rows['score'].map(lambda s: '✓' if s <= (lv.get('0.50', {}).get('q') or 0) else '—'),
         }).sort_values('Fee ÷ value')
-        st.dataframe(t, hide_index=True, use_container_width=True, key=f'{key}_sales')
+        st.dataframe(t, hide_index=True, width="stretch", key=f'{key}_sales')
     strata = pd.DataFrame(calib.get('strata') or [])
     if not strata.empty and not rows.empty:
         # in-sample counts inside the POOLED band per slice (the same ≤ q rule
@@ -273,7 +273,7 @@ def render_eur_calibration_section(calib=None, key='eurcal'):
             'In 50% band': [_inside(k, nm, q50) for k, nm in zip(strata['kind'], strata['name'])],
             'In 80% band': [_inside(k, nm, q80) for k, nm in zip(strata['kind'], strata['name'])],
         })
-        st.dataframe(s, hide_index=True, use_container_width=True, key=f'{key}_strata')
+        st.dataframe(s, hide_index=True, width="stretch", key=f'{key}_strata')
         st.caption(f"Counts inside the one pooled band per slice (in-sample, not a test). One width "
                    f"for everyone: a slice earns its own width only from "
                    f"{calib.get('strata', [{}])[0].get('eligible_at_n', 15)} sales, and none is there yet. "

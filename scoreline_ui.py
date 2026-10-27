@@ -140,7 +140,7 @@ def render_strength_table(league_id, teams, played=None, league_name=None, seaso
     if played is not None:
         show['P'] = [int(played.get(t, 0)) for t in tbl['team']]
     st.dataframe(
-        show, hide_index=True, use_container_width=True,
+        show, hide_index=True, width="stretch",
         column_config={
             'Rank': st.column_config.NumberColumn('Rank', width='small'),
             'Scores ×': st.column_config.NumberColumn('Scores ×', format='%.2f',
@@ -202,7 +202,7 @@ def render_scoreline_section(home, away, league_id, season_id_map, key='dc'):
     with right:
         st.markdown('**Most likely scorelines**')
         top = pd.DataFrame([{'Score': s, 'Probability': round(100 * p, 1)} for s, p in pr['top_scores']])
-        st.dataframe(top, hide_index=True, use_container_width=True,
+        st.dataframe(top, hide_index=True, width="stretch",
                      column_config={'Probability': st.column_config.ProgressColumn(
                          'Probability', min_value=0.0, max_value=float(top['Probability'].max()),
                          format='%.1f%%')})
@@ -238,7 +238,7 @@ def render_scoreline_section(home, away, league_id, season_id_map, key='dc'):
             rows.append({'Season': f"{season_id_map.get(int(sid), sid)} {leagues}".strip(), 'Matches': r['n'],
                          'Log loss': round(r['log_loss'], 3), 'Base rate': round(r['base_rate']['log_loss'], 3),
                          'Brier': round(r['brier'], 3), 'Accuracy': f"{r['accuracy']:.0%}"})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         psc = bt.get('promoted_side_calibration') or {}
         chosen, zero = psc.get('chosen') or [], psc.get('zero_prior') or []
         if chosen:

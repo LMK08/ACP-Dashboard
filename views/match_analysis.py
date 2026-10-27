@@ -194,7 +194,7 @@ def render():
                 match_events_df, selected_match_info, lineup,
                 _obv=_obv_match)
             if _png:
-                st.image(_png, use_container_width=True)
+                st.image(_png, width="stretch")
 
         # ---- Merge engine OBV into the match stats tables ----
         # Display-time COPIES (the cached all_match_data frames must not

@@ -279,7 +279,7 @@ def render():
                 role_scores = get_player_role_scores(player_row, slot)
                 if role_scores:
                     scores_df = pd.DataFrame(list(role_scores.items()), columns=['Role', 'Score'])
-                    st.dataframe(scores_df, use_container_width=True, hide_index=True, column_config=auto_column_config(scores_df))
+                    st.dataframe(scores_df, width="stretch", hide_index=True, column_config=auto_column_config(scores_df))
                 else:
                     st.caption("No role scores available for this slot.")
                 # Recruitment entry point: like-for-like alternatives for

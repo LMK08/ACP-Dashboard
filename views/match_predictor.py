@@ -120,7 +120,7 @@ def render():
                 ratings_combined['SOS Net'] = (ratings_combined['SOS Att'] - ratings_combined['SOS Def']).round(3)
                 ratings_combined = ratings_combined.sort_values('SOS Net', ascending=False).reset_index(drop=True)
                 ratings_combined['Rank'] = range(1, len(ratings_combined) + 1)
-                st.dataframe(ratings_combined, use_container_width=True, hide_index=True, column_config=auto_column_config(ratings_combined))
+                st.dataframe(ratings_combined, width="stretch", hide_index=True, column_config=auto_column_config(ratings_combined))
                 st.caption(
                     "Att / Def Strength = 30% goals + 70% xG per match (Def: lower is better). "
                     "SOS columns credit a tough schedule: attack × (league conceded ÷ opponents' conceded), "

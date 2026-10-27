@@ -197,7 +197,7 @@ def render():
                 rows.append({'GW': row.get('gameweek', ''), 'Date': _fmt_date(row['_date']),
                              'Opponent': row['awayTeamName'] if home else row['homeTeamName'],
                              'H/A': 'H' if home else 'A', 'Score': f"{gf}–{ga}", 'Result': outcome})
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
     # ------------------------------------------------------------------
     # Players in form (ACP Index, newest rated season for our squad)
@@ -215,7 +215,7 @@ def render():
             selection = st.dataframe(
                 top.drop(columns=['playerId']).rename(columns={
                     'name': 'Player', 'role': 'Role', 'mins_played': 'Minutes', 'acp_rating': 'ACP Index'}),
-                hide_index=True, use_container_width=True,
+                hide_index=True, width="stretch",
                 on_select='rerun', selection_mode='single-row', key='home_squad_table',
                 column_config={
                     'Minutes': st.column_config.NumberColumn(format='%d'),
@@ -239,11 +239,11 @@ def render():
     # ------------------------------------------------------------------
     st.divider()
     q1, q2, q3 = st.columns(3)
-    if q1.button("Team report", use_container_width=True, key="home_q_team"):
+    if q1.button("Team report", width="stretch", key="home_q_team"):
         context_bar.set_context(league_name, season_label)
         navigation.go_to('Team Analysis')
-    if q2.button("League table & strength", use_container_width=True, key="home_q_league"):
+    if q2.button("League table & strength", width="stretch", key="home_q_league"):
         context_bar.set_context(league_name, season_label)
         navigation.go_to('League Analysis')
-    if q3.button("Promotion probabilities", use_container_width=True, key="home_q_pred"):
+    if q3.button("Promotion probabilities", width="stretch", key="home_q_pred"):
         navigation.go_to('Match Predictor')

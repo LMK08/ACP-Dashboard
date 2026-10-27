@@ -123,7 +123,7 @@ def render():
              season_label or _season_label_page, _league_label),
             _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
         if _png:
-            st.image(_png, use_container_width=True)
+            st.image(_png, width="stretch")
 
     def _show_scatter_png(stats_df, x_metric, y_metric, invert_x, invert_y,
                           season_label=None):
@@ -133,7 +133,7 @@ def render():
              _league_label, season_label or _season_label_page),
             _fig_day_key, FIGURE_CACHE_VERSION, stats_df)
         if _png:
-            st.image(_png, use_container_width=True)
+            st.image(_png, width="stretch")
 
     # --- 3. League Tables ---
     st.subheader("League Standings")
@@ -156,15 +156,15 @@ def render():
         with col_table_a:
             st.markdown("**Group A**")
             table_a = calculate_league_table(league_matches_df, GROUP_A_TEAMS)
-            st.dataframe(table_a, use_container_width=True, hide_index=True, column_config=league_table_config)
+            st.dataframe(table_a, width="stretch", hide_index=True, column_config=league_table_config)
         with col_table_b:
             st.markdown("**Group B**")
             table_b = calculate_league_table(league_matches_df, GROUP_B_TEAMS)
-            st.dataframe(table_b, use_container_width=True, hide_index=True, column_config=league_table_config)
+            st.dataframe(table_b, width="stretch", hide_index=True, column_config=league_table_config)
     else:
         st.markdown("**All Teams**")
         table_all = calculate_league_table(league_matches_df, all_season_teams)
-        st.dataframe(table_all, use_container_width=True, hide_index=True, column_config=league_table_config)
+        st.dataframe(table_all, width="stretch", hide_index=True, column_config=league_table_config)
 
     # --- 4. Strength Charts ---
     if has_groups:

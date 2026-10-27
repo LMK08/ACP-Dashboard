@@ -794,7 +794,7 @@ def render():
                 _career_view,
                 _eng_df, _e, _eng_meta)
             if _card_png:
-                st.image(_card_png, use_container_width=True)
+                st.image(_card_png, width="stretch")
 
             # --- Tendencies panel: futi-style bipolar sliders ----------
             # The role's menu of attempt-composition leanings, each a
@@ -1388,7 +1388,7 @@ def render():
                     season_label=_radar_season_label,
                     radar_mode=_radar_mode
                 )
-                st.pyplot(fig_radar, use_container_width=True)
+                st.pyplot(fig_radar, width="stretch")
 
         # Career radar section disabled to reduce memory usage
         # TODO: Re-enable when Streamlit Cloud resources are upgraded
@@ -1413,7 +1413,7 @@ def render():
                         ),
                     },
                     hide_index=True,
-                    use_container_width=False,
+                    width="content",
                 )
 
         with _col_outliers:
@@ -1702,7 +1702,7 @@ def render():
             _display_career = career_df.drop(columns=[c for c in career_df.columns if c.startswith('_')])
             if 'Action V/90' in _display_career.columns:
                 _display_career['Action V/90'] = _display_career['Action V/90'].round(3)
-            st.dataframe(_display_career, use_container_width=True, hide_index=True, column_config=auto_column_config(_display_career))
+            st.dataframe(_display_career, width="stretch", hide_index=True, column_config=auto_column_config(_display_career))
 
             # ---- 5) Per-season strip plots with player highlighted ----
             _chart_y_candidates = [m for m in ('Action V/90', 'Best-fit Rating')
@@ -2084,7 +2084,7 @@ def render():
                             "players.")
                         with st.popover("What each metric measures"):
                             st.markdown(engine_metric_help_md(stats_subset.index))
-                    st.dataframe(_styled, use_container_width=True)
+                    st.dataframe(_styled, width="stretch")
 
 
     elif _active_tab == "Value":
@@ -2121,7 +2121,7 @@ def render():
                     _src_view['value_eur'] = _src_view['value_eur'].apply(
                         lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
                     )
-                    st.dataframe(_src_view, use_container_width=True, hide_index=True, column_config=auto_column_config(_src_view))
+                    st.dataframe(_src_view, width="stretch", hide_index=True, column_config=auto_column_config(_src_view))
                     if len(_tv_valuations_rows) > len(_src_view):
                         with st.expander(f"Full history ({len(_tv_valuations_rows)} entries)"):
                             _hist_view = _tv_valuations_rows[
@@ -2130,7 +2130,7 @@ def render():
                             _hist_view['value_eur'] = _hist_view['value_eur'].apply(
                                 lambda v: f"€{v:,.0f}" if pd.notna(v) else "—"
                             )
-                            st.dataframe(_hist_view, use_container_width=True,
+                            st.dataframe(_hist_view, width="stretch",
                                           hide_index=True,
                                           column_config=auto_column_config(_hist_view))
 
@@ -2393,7 +2393,7 @@ def render():
                 'SCA': 'Creating Action'
             }).sort_values(by='#', ascending=False) # Show newest first (highest number)
 
-            st.dataframe(table_display, use_container_width=True, height=380, hide_index=True, column_config=auto_column_config(table_display))
+            st.dataframe(table_display, width="stretch", height=380, hide_index=True, column_config=auto_column_config(table_display))
 
             # --- NEW: SUMMARY TABLES ---
             st.markdown("---")
@@ -2408,7 +2408,7 @@ def render():
                 ).sort_values(by='Total_xG', ascending=False)
                 body_summary['xG/Shot'] = (body_summary['Total_xG'] / body_summary['Shots']).round(2)
                 body_summary['Total_xG'] = body_summary['Total_xG'].round(2)
-                st.dataframe(body_summary, use_container_width=True, column_config=auto_column_config(body_summary))
+                st.dataframe(body_summary, width="stretch", column_config=auto_column_config(body_summary))
 
             with col_sum2:
                 st.markdown("**Stats by Creating Action**")
@@ -2419,7 +2419,7 @@ def render():
                 ).sort_values(by='Total_xG', ascending=False)
                 sca_summary['xG/Shot'] = (sca_summary['Total_xG'] / sca_summary['Shots']).round(2)
                 sca_summary['Total_xG'] = sca_summary['Total_xG'].round(2)
-                st.dataframe(sca_summary, use_container_width=True, column_config=auto_column_config(sca_summary))
+                st.dataframe(sca_summary, width="stretch", column_config=auto_column_config(sca_summary))
 
         else:
             st.info("No shots recorded for this player.")
@@ -2488,7 +2488,7 @@ def render():
                     profile_events_df, current_team,
                     player_name=selected_player_name,
                 )
-                st.pyplot(fig_sa_player, use_container_width=True)
+                st.pyplot(fig_sa_player, width="stretch")
                 plt.close(fig_sa_player)
         except Exception as e:
             st.caption(f"Could not render shot assists & dribbles: {e}")
@@ -2535,7 +2535,7 @@ def render():
                     peer_density_stack=_peer_stack,
                     include_recoveries=True,
                 )
-                st.pyplot(fig_def_heatmap, use_container_width=True)
+                st.pyplot(fig_def_heatmap, width="stretch")
                 plt.close(fig_def_heatmap)
             st.caption(f"Colour intensity normalised across **{_heatmap_peer_label}** peers.")
         except Exception as e:

@@ -221,7 +221,7 @@ def render(app, player_id, selected_season_id, key='sim', current_pos=None, stat
                             for r in records],
     })
     event = st.dataframe(
-        table, hide_index=True, use_container_width=True, key=f'{key}_table',
+        table, hide_index=True, width="stretch", key=f'{key}_table',
         on_select='rerun', selection_mode='single-row',
         column_config={
             'Similarity': st.column_config.ProgressColumn(
