@@ -251,8 +251,25 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   aggregation, projection source) is `models/ratings/card_scope.card_row`
   (`app.engine_card_row`), shared by both pages — change it there, never
   inline. Keep the comparison's feature set in step when the profile gains
-  a player-level section. The template dropdown offers only the templates
-  for Player A's position (all of them only if A's position is in none).
+  a player-level section. The template dropdown offers the templates of
+  every position Player A PLAYED in the scope (exact API minutes,
+  `app.get_player_minutes_by_position`, >= 10% of his minutes) plus his
+  stats-frame position; most-played position first, default = his best
+  fit there via `rank_in_template`. Never the frame's position alone: an
+  All-Seasons row keeps ONE position, the newest season's (groupby
+  'first' in `_season_player_minutes_impl`) — a career striker on LAMF
+  this season was offered only winger templates (Nicolás Souza,
+  2026-10-27).
+- Widget seeding (RULE, 1.50 too): a keyed selectbox whose OPTIONS change
+  between runs is a new widget and falls back to index 0 unless its key is
+  set in THAT run — even when its value is still a valid option
+  (tests/test_widget_reseed.py). A selector whose options follow the scope
+  or another selector re-sets its session-state value every run before it
+  draws (Player Comparison A / template / B; 'Paulinho vs Paulinho').
+- `@st.cache_data` never hashes an underscore argument: a helper cached
+  on `_events_df` serves the first scope computed for every scope. Key
+  such helpers on a hashable scope (`app._scope_match_ids`) — the
+  position-minutes helpers were wrong this way until 2026-10-27.
 - Metric cards (RULE): `st.metric` text wraps at word breaks (app.py CSS),
   never '…'. A row of cards holding WORDS (team, nationality, role, style)
   is created inside `st.container(key=theme.metric_fit_key(name, *values))`

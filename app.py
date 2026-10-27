@@ -2966,15 +2966,31 @@ def _api_position_minutes(match_ids, player_id=None):
     return out.sort_values(['playerId', 'Minutes'], ascending=[True, False]).reset_index(drop=True)
 
 
-@st.cache_data
-def get_player_minutes_by_position(_events_df, player_id, _player_match_log_df=None):
+def _scope_match_ids(events_df):
+    """The matches in an events frame's scope as a sorted tuple — the cache
+    key of the position-minutes helpers below. st.cache_data never hashes an
+    underscore argument, so keyed on `_events_df` they served the FIRST
+    scope computed for every scope (a player's minutes by position stayed on
+    the season first viewed; the all-players table on the process's first)."""
+    if events_df is None or events_df.empty or 'matchId' not in events_df.columns:
+        return ()
+    ids = pd.to_numeric(pd.Series(events_df['matchId'].dropna().unique()), errors='coerce')
+    return tuple(sorted(ids.dropna().astype('int64').tolist()))
+
+
+def get_player_minutes_by_position(events_df, player_id, _player_match_log_df=None):
     """Minutes at each position for one player over the matches in
-    _events_df's scope — Wyscout's own per-match minutes x position share
+    events_df's scope — Wyscout's own per-match minutes x position share
     (no event-based estimate). _player_match_log_df is unused; kept for the
     call signature."""
-    if _events_df.empty or 'matchId' not in _events_df.columns:
+    return _player_minutes_by_position(_scope_match_ids(events_df), player_id)
+
+
+@st.cache_data
+def _player_minutes_by_position(match_ids, player_id):
+    if not match_ids:
         return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
-    pos = _api_position_minutes(_events_df['matchId'].dropna().unique(), _resolve_pid(player_id))
+    pos = _api_position_minutes(match_ids, _resolve_pid(player_id))
     if pos.empty:
         return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
     pos = pos[['Position', 'Minutes']].reset_index(drop=True)
@@ -2983,13 +2999,17 @@ def get_player_minutes_by_position(_events_df, player_id, _player_match_log_df=N
     return pos
 
 
-@st.cache_data
-def get_all_players_minutes_by_position(_events_df):
+def get_all_players_minutes_by_position(events_df):
     """Batch version: (playerId, Position, Minutes) for every player over the
-    matches in _events_df's scope, from the API (see above)."""
-    if _events_df.empty or 'matchId' not in _events_df.columns:
+    matches in events_df's scope, from the API (see above)."""
+    return _all_players_minutes_by_position(_scope_match_ids(events_df))
+
+
+@st.cache_data
+def _all_players_minutes_by_position(match_ids):
+    if not match_ids:
         return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
-    return _api_position_minutes(_events_df['matchId'].dropna().unique())
+    return _api_position_minutes(match_ids)
 
 @st.cache_data(ttl=86400)
 def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None,

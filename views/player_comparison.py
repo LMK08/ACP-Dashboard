@@ -123,6 +123,7 @@ def render():
     engine_metric_help_md = app.engine_metric_help_md
     engine_rows_for_scope = app.engine_rows_for_scope
     get_filtered_events = app.get_filtered_events
+    get_player_minutes_by_position = app.get_player_minutes_by_position
     get_scoped_style = app.get_scoped_style
     get_scoped_tendencies = app.get_scoped_tendencies
     get_season_ids_for_selection = app.get_season_ids_for_selection
@@ -195,8 +196,14 @@ def render():
             st.sidebar.warning("The player sent here is not in this league/season scope — "
                                "showing the default comparison instead.")
             _seed_b = None
-    if st.session_state.get('player_comparison_a') not in _a_options:
-        st.session_state['player_comparison_a'] = _a_options[_default_a_idx] if _a_options else None
+    # Each selector's value is re-set EVERY run, kept or not: in 1.50 a
+    # keyed selectbox whose options changed is a new widget and falls back
+    # to index 0 unless its key was set in this run (a scope change left
+    # B's label valid, B snapped to the group's first player — Player A —
+    # 'Paulinho vs Paulinho', All Seasons 2026-10-27).
+    _a_val = st.session_state.get('player_comparison_a')
+    st.session_state['player_comparison_a'] = _a_val if _a_val in _a_options else (
+        _a_options[_default_a_idx] if _a_options else None)
     selected_player_a_display = st.sidebar.selectbox(
         "Select Player A:",
         _a_options,
@@ -211,21 +218,43 @@ def render():
     selected_player_a_name = player_a_data.iloc[0]['playerName']
 
     # --- Step B: Select Template ---
-    # Only the templates for Player A's position (Lucas 2026-10-27) — an RB
-    # gets Full Back / Wingback / Inverted Full Back, not all 22. Every
-    # template only if A's position is in none of them.
+    # The templates for the positions Player A PLAYED in this scope (Lucas
+    # 2026-10-27): exact API minutes per position, each kept at >= 10% of his
+    # minutes, plus the stats frame's position (the group the pipeline ranks
+    # him in). The frame keeps ONE position per player — in All Seasons the
+    # newest season's — so a career striker on LAMF this season offered only
+    # winger templates. Most-played position first; every template only if
+    # none of his positions has one.
     primary_pos_a = player_a_data.iloc[0]['primaryPosition']
-    eligible_groups_a = [pos_group for pos_group, pos_roles in POSITION_GROUPS.items() if primary_pos_a in pos_roles]
-    all_templates = sorted(eligible_groups_a) or sorted(POSITION_GROUPS.keys())
+    _pos_mins_a = get_player_minutes_by_position(comp_events_df, int(selected_player_a_id))
+    _played_a = [str(p) for p, share in zip(_pos_mins_a['Position'], _pos_mins_a['Percentage'])
+                 if share >= 10]
+    if primary_pos_a not in _played_a:
+        _played_a.append(primary_pos_a)
+    all_templates = []
+    for _p in _played_a:
+        all_templates += sorted(g for g, pos in POSITION_GROUPS.items()
+                                if _p in pos and g not in all_templates)
+    if not all_templates:
+        all_templates = sorted(POSITION_GROUPS.keys())
 
-    # Find Player A's best-fit template as default
-    highest_score = -1; default_template = all_templates[0]
-    for group in eligible_groups_a:
-        score_col = group + '_Score'
-        if score_col in player_a_data.columns:
-            player_score = player_a_data[score_col].values[0]
-            if player_score > highest_score:
-                highest_score = player_score; default_template = group
+    # one floor for the whole page (template percentiles, radar, stats)
+    _floor = template_pct.minutes_floor(player_stats_with_scores_df)
+
+    # Default: A's best fit among his most-played position's templates —
+    # scored with rank_in_template, which keeps the pipeline's score where
+    # he qualifies in the group and places him where he does not.
+    _main_templates = [g for g in all_templates if _played_a[0] in POSITION_GROUPS.get(g, [])] \
+        or all_templates
+    highest_score = -1; default_template = _main_templates[0]
+    for group in _main_templates:
+        _fit, _ = template_pct.rank_in_template(
+            player_a_data, player_stats_with_scores_df, group, POSITION_GROUPS, WEIGHTS,
+            INVERT_METRICS, _floor)
+        player_score = pd.to_numeric(_fit[group + '_Score'], errors='coerce').fillna(-1).iloc[0] \
+            if group + '_Score' in _fit.columns else -1
+        if player_score > highest_score:
+            highest_score = player_score; default_template = group
 
     # Template: default to Player A's best-fit template on first visit / a
     # change of Player A; a seeded Player B forces a template both fit.
@@ -244,11 +273,16 @@ def render():
                 if _b_pos in POSITION_GROUPS.get(_t, []):
                     st.session_state[_tpl_key] = _t
                     break
+    st.session_state[_tpl_key] = st.session_state[_tpl_key]   # re-set every run (above)
     selected_template = st.sidebar.selectbox(
         "Select Comparison Template:",
         all_templates,
         key=_tpl_key,
-        help=f"The templates for Player A's position ({primary_pos_a}).",
+        help="The templates for the positions Player A played in this scope: " + (
+            ", ".join(f"{p} {int(m):,}′ ({s:.0f}%)" for p, m, s in zip(
+                _pos_mins_a['Position'], _pos_mins_a['Minutes'], _pos_mins_a['Percentage'])
+                if str(p) in _played_a)
+            or str(primary_pos_a)) + ".",
     )
 
     # --- Step C: Filter Player B list based on Template ---
@@ -277,9 +311,10 @@ def render():
             st.sidebar.warning("The second player sent here is not in this scope or position "
                                "group — showing the default Player B instead.")
     # (B is moved off A too: a player against himself compares nothing)
-    if st.session_state.get('player_comparison_b') in (None, selected_player_a_display) \
-            or st.session_state.get('player_comparison_b') not in _b_options:
-        st.session_state['player_comparison_b'] = _b_default
+    _b_val = st.session_state.get('player_comparison_b')
+    st.session_state['player_comparison_b'] = (
+        _b_default if _b_val in (None, selected_player_a_display) or _b_val not in _b_options
+        else _b_val)      # re-set every run (see Player A)
 
     # --- Step D: Select Player B (from filtered list) ---
     selected_player_b_display = st.sidebar.selectbox(
@@ -457,9 +492,6 @@ def render():
     with st.expander("ℹ️ How these ratings work"):
         st.markdown(RATINGS_EXPLAINER_MD)
     st.subheader("ACP Index")
-
-    # one floor for the whole page (template percentiles, radar, stats)
-    _floor = template_pct.minutes_floor(player_stats_with_scores_df)
 
     def _gk_legacy(row_df):
         # a keeper under the floor sits at the pipeline's placeholder 0 —

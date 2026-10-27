@@ -319,7 +319,8 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     box_a = [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0]
     assert str(box_a.value).startswith(str(seed['playerName'])), (box_a.value, seed['playerName'])
     assert not _problems(app), _problems(app)
-    # the template dropdown offers only the templates for A's position
+    # the template dropdown offers the templates of the positions A played:
+    # all of his stats position's, and nothing for a position he never held
     import yaml
     with open(os.path.join(DASHBOARD_DIR, 'config.yaml')) as f:
         groups = yaml.safe_load(f)['position_groups']
@@ -327,8 +328,9 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     pos_a = pos.loc[pos['playerId'] == int(seed['playerId']), 'primaryPosition'].iloc[0]
     tpl = [s for s in app.sidebar.selectbox if s.label == 'Select Comparison Template:'][0]
     if any(pos_a in v for v in groups.values()):
-        assert sorted(tpl.options) == sorted(g for g, v in groups.items() if pos_a in v), \
-            (pos_a, tpl.options)
+        own = {g for g, v in groups.items() if pos_a in v}
+        assert own <= set(tpl.options), (pos_a, tpl.options)
+        assert len(tpl.options) < len(groups), tpl.options
 
 
 def test_shadow_queue_adds_in_scope_players_and_keeps_others(app):
