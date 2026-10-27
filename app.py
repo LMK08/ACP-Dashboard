@@ -1655,6 +1655,22 @@ ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'Aerial WOE /90', 'Ground WOE /90',
                            'Engine Value EUR']
 
+def _league_gap_pts():
+    """The Liga 3 − Campeonato gaps (rating, projection) the last engine
+    rebuild fitted (models/ratings/league_conversion.json), as copy:
+    '7.7' each, or '≈7–8' when the file can't be read."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), 'models', 'ratings',
+                               'league_conversion.json')) as f:
+            _lc = json.load(f)
+        return (f"{float(_lc['delta_pts_L3_minus_CAMP_descriptive']):.1f}",
+                f"{float(_lc['delta_pts_recruit']):.1f}")
+    except (OSError, ValueError, KeyError, TypeError):
+        return "≈7–8", "≈7–8"
+
+
+_RATING_GAP_PTS, _PROJECTION_GAP_PTS = _league_gap_pts()
+
 # Hover help for the ACP Index metrics (selectbox / column-header / caption
 # tooltips on Player Analysis and the Player Profile). Every '%' metric is a
 # within-role percentile from models/ratings/build_rating.py (role_pct) —
@@ -1670,16 +1686,16 @@ ENGINE_METRIC_HELP = {
                   "Thin-minutes players are pulled toward replacement level.",
     'ACP Rating (abs)': "ACP Rating on one cross-league scale (Liga 3 "
                         "equivalent): a Campeonato rating shifts down by the "
-                        "league gap fitted at each engine rebuild (≈7–8 "
-                        "points).",
+                        "league gap fitted at each engine rebuild "
+                        f"({_RATING_GAP_PTS} points).",
     'ACP Projection': "Forecast of next season's ACP Rating from career "
                       "form, how far that record can be trusted (Evidence "
                       "Weight) and an age curve peaking around 26. Same "
                       "50 ± 17 scale.",
     'ACP Projection (abs)': "ACP Projection on the Liga 3-equivalent scale: "
                             "a Campeonato projection shifts down by the "
-                            "recruit league gap, fitted separately from the "
-                            "rating's.",
+                            f"recruit league gap ({_PROJECTION_GAP_PTS} "
+                            "points), fitted separately from the rating's.",
     'Projection Band': "± uncertainty on the projection, in rating points: "
                        "one standard deviation of past forecast error for "
                        "the role. Wider when the last rated season is older.",
@@ -1745,6 +1761,12 @@ ENGINE_METRIC_HELP = {
                         "Outfielders only.",
 }
 
+# The '%' metrics: their value is already a within-role percentile, so the
+# profile's Percentile column (a second ranking, vs same-position players)
+# stays blank for them.
+ENGINE_ROLE_PCT_METRICS = frozenset(
+    m for m, h in ENGINE_METRIC_HELP.items() if h.endswith(_ROLE_PCT_HELP))
+
 
 def engine_metric_select_help(key, options, index=0):
     """ENGINE_METRIC_HELP for the option a keyed selectbox is ABOUT to show
@@ -1774,13 +1796,14 @@ def engine_metric_help_md(metrics):
 
 # Shared "How these ratings work" copy — rendered in an expander on the Player
 # Profile (above the engine card) and the Player Analysis role board.
-RATINGS_EXPLAINER_MD = """
+RATINGS_EXPLAINER_MD = f"""
 Both ratings sit on a **0–100 scale where 50 = league average and ±17 ≈ one
 standard deviation** (≈85 is elite, ≈30 well below average), and both are
 **role-fair** — a player is only compared to others in the same role, so a
 defender is never docked for not scoring. **(abs)** puts Campeonato and Liga 3
-on one scale (a Camp rating is shifted ~7 pts down to its Liga-3 equivalent) for
-cross-league comparison.
+on one scale (a Camp rating is shifted {_RATING_GAP_PTS} pts down to its
+Liga-3 equivalent, a gap refitted at each engine rebuild) for cross-league
+comparison.
 
 **ACP Index — how good has this player been?** *(descriptive)*
 

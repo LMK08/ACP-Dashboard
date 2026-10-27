@@ -33,6 +33,7 @@ def render():
     DRIBBLING_METRICS = app.DRIBBLING_METRICS
     ENGINE_DISPLAY_METRICS = app.ENGINE_DISPLAY_METRICS
     ENGINE_METRIC_HELP = app.ENGINE_METRIC_HELP
+    ENGINE_ROLE_PCT_METRICS = app.ENGINE_ROLE_PCT_METRICS
     engine_metric_help_md = app.engine_metric_help_md
     GOALKEEPING_METRICS = app.GOALKEEPING_METRICS
     INVERT_METRICS = app.INVERT_METRICS
@@ -2048,32 +2049,39 @@ def render():
                             return f"{x:.0f}"
                         return f"{x:.2f}"
 
-                    # Build display DataFrame: Value (formatted str) + Percentile (numeric)
-                    _rows = []
+                    # Build display DataFrame: Value + Percentile, both
+                    # formatted str. Streamlit draws an empty cell as a grey
+                    # "None" whatever the Styler format says, so a missing
+                    # percentile is the string '—'; the colours come from
+                    # the numbers kept in _pcts.
+                    _rows, _pcts = [], []
                     for _metric in stats_subset_series.index:
                         _disp_val = stats_subset_series[_metric]
                         _p90_val = per_90_stats.get(_metric, np.nan)
-                        _pct = _percentile_for(_metric, _p90_val)
+                        # a '%' engine metric is already a percentile
+                        _pct = (None if _metric in ENGINE_ROLE_PCT_METRICS
+                                else _percentile_for(_metric, _p90_val))
+                        _pcts.append(_pct)
                         _rows.append({
                             'Metric': _metric,
                             'Value': _fmt_stat(_metric, _disp_val),
-                            'Percentile': _pct,
+                            'Percentile': '—' if _pct is None else f"{int(round(_pct))}",
                         })
                     stats_subset = pd.DataFrame(_rows).set_index('Metric')
 
-                    _styled = (
-                        stats_subset.style
-                        .applymap(_percentile_color, subset=['Percentile'])
-                        .format({'Percentile': lambda v: f"{int(round(v))}" if pd.notna(v) else '—'})
-                    )
+                    _styled = stats_subset.style.apply(
+                        lambda _col, _p=_pcts: [_percentile_color(v) for v in _p],
+                        subset=['Percentile'])
                     if group_name == "ACP Index":
                         # dataframe rows carry no tooltips, and a hover
                         # tooltip clips at 300 px — the definitions of the
                         # metrics shown go in a popover beside the table
                         st.caption(
-                            "% values are within-role percentiles (50 = "
-                            "typical for the role); the Percentile column "
-                            "ranks that value against same-position players.")
+                            "% values are already within-role percentiles "
+                            "(50 = typical for the role), so they get no "
+                            "second Percentile (—); for the other rows it "
+                            "ranks the value against same-position "
+                            "players.")
                         with st.popover("What each metric measures"):
                             st.markdown(engine_metric_help_md(stats_subset.index))
                     st.dataframe(_styled, use_container_width=True)
