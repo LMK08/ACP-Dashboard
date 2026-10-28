@@ -141,7 +141,9 @@ mat['role_margin'] = np.sort(d, axis=1)[:, 1] - np.sort(d, axis=1)[:, 0]
 
 # season distribution over match roles
 def season_mix(g):
-    mix = g['role_id'].value_counts(normalize=True)
+    # explicit stable order (pandas 3 does this already; 2.x sorted unstably)
+    mix = (g['role_id'].value_counts(normalize=True, sort=False)
+           .sort_values(ascending=False, kind='stable'))
     out = {'n_matches': len(g),
             'primary_role': int(mix.index[0]),
             'primary_share': float(mix.iloc[0])}

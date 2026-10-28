@@ -162,6 +162,11 @@ Only a push to the Dashboard's `main` deploys (`deploy_to_hf.yml`). The GPA repo
   - **Projection:** `build_projection` paired rows with the next season after `sort_values('yr')`. For winter movers (two rows in one year) the CPU chose the training row.
   - Fixed with `kind='stable'`, which keeps ties in Wyscout's file order: 46b2cd0 (DefR, two role-feature sorts) and c32b617 (projection, plus YoY diagnostics that are printed only).
   - v6.9.2 on main has the same bug. GitHub runners vary in CPU, so its DefR could move between nightlies with no new data.
+  - **A fresh-context review scanned the whole CI chain, live-season-only paths included.** Two more were hardened:
+    - GPA `exact_minutes.py`: duplicate-record tie at lines 72 and 138.
+    - `cluster_roles` primary role: pandas 3 was already stable here; pandas 2.x was not.
+    - Neither changes any output beyond float rounding (4 `primary_share` values at 1e-16).
+    - A stable sort's result is fixed by its input, so the run-4 match still holds for CI.
 - **Effect on v7's numbers:**
   - Ratings move by at most 0.25 and projections by at most 0.3.
   - Every headline in V7_PROTOTYPE.md is unchanged except the projection gate: 0.461 vs carry-rating 0.458, still a tie.
