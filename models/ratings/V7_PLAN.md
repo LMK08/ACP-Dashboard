@@ -174,7 +174,15 @@ Only a push to the Dashboard's `main` deploys (`deploy_to_hf.yml`). The GPA repo
 - **Pre-existing, not v7:** Phase 3 logs 10 `[precompute] … Cannot hash argument` lines. The step passes, and main's last nightly (40343018781) logs the same 10.
 - **Differ between CI and local by design:** the GK handling columns of `gpa_player_season_values`. They come from production GPA values, retrained every run on all data (see Decisions). So does `Total Value` on the 3 rows that include them. No rating input reads either; `rapm_v4` reads `Total Value` only in a printed check after its output is saved.
 
-### C. Ship (a separate yes from Lucas; this IS the deploy)
+### C. Ship (a separate yes from Lucas; this IS the deploy) — DONE 2026-10-28
+
+Lucas, 2026-10-27: "Yes, ship v7 now … Leave the display pages on production values for now."
+- GPA `main` 75c484d: merge of `walk-forward-v7`.
+- Dashboard `main` 4efd8a6: merge of `engine-v7` onto bcb4d44. `app.py` auto-merged; the suite passed on the merged tree (176 passed, 2 skipped). Its code deploy passed the smoke test.
+- Engine rebuild 40622807464 (`deploy=true`, 50 min) committed 6bad65f: `rating_version` v7.0, 4,890 rows, data through 2026-10-25. The lookahead gate passed in the run.
+- **All Seasons rating** (`acp_rating_career`) vs the v6.9.2 build on the same data, players with ≥ 900' career:
+  - Median |change| 3.0 points, p90 8.0, 88 players move 10 or more points; rank correlation 0.940.
+  - Players whose last season was 2021 or 2022 move most (p90 11–13); 2025/26 players least (p90 6.5).
 
 Do this on a day without a data update: `scheduled_update` runs at 05:00 UTC on Sun/Mon and at 06:00 UTC on Wed/Thu. Check `gh run list` first to make sure no run is pending in `hf-deploy`.
 

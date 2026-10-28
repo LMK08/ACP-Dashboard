@@ -1,4 +1,4 @@
-# ACP Rating v7.0 — no lookahead (branch `engine-v7`, not deployed)
+# ACP Rating v7.0 — no lookahead (live since 2026-10-28)
 
 **Rule:** a player's season-S rating never depends on anything that happened after season S.
 Plan and proofs: `V7_PLAN.md`.
@@ -102,5 +102,5 @@ These set how things are measured, not any player's value. Refitting them per ye
 - **The DefR OBV columns** still use production GPA values. They are not part of the rating.
 - **The projection ridge** loses to the baselines without the leaked inputs. The shipped 'full' model is unchanged, and the gate winner, marcel (0.486), also wins on v6.9.2.
 - **`eur_interval_calibration.json`** drifts with the new projections. The engine rebuild regenerates it.
-- **The committed parquets/json on this branch are a local build.** Adoption steps are in `V7_PLAN.md`.
-- **Do not merge as is.** CI's engine rebuild does not train or read the walk-forward values. `build_pass_split.py` now stops with a clear message when the walk-forward files are missing, rather than mixing them with production values.
+- **The numbers in this file come from local builds.** The live values come from CI's engine rebuild (run 40622807464, commit 6bad65f). Completed seasons match the local build exactly; see `V7_PLAN.md` step B.
+- `build_pass_split.py` stops with a clear message when the walk-forward files are missing, rather than mixing them with production values.
