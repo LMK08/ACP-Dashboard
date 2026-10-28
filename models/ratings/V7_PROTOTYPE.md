@@ -1,4 +1,4 @@
-# ACP Rating v7.0 — no lookahead (branch `engine-v7-proto`, not deployed)
+# ACP Rating v7.0 — no lookahead (branch `engine-v7`, not deployed)
 
 **Rule:** a player's season-S rating never depends on anything that happened after season S.
 Plan and proofs: `V7_PLAN.md`.
@@ -19,7 +19,7 @@ Plan and proofs: `V7_PLAN.md`.
    - **Projection:** `n_seasons` is dropped. It was a whole-career count.
 5. **Proof:** a build with every season after a cutoff removed gives identical values for the earlier seasons.
    - `tests/test_rating_no_lookahead.py` covers the rating builder at cutoffs 2023 and 2024.
-   - `tests/test_engine_no_lookahead_upstream.py` covers DefR and RAPM at cutoff 2023. It is opt-in because it takes about 7 minutes, so CI does not run it.
+   - `tests/test_engine_no_lookahead_upstream.py` covers DefR and RAPM at cutoff 2023. It is opt-in because it takes about 7 minutes locally (9–13 in CI). CI runs it on validate-only runs (`slow_checks=true`), not nightly.
    - **What the tests cannot see:**
      - GPA values and `pass_split`. These are leak-free by how they are trained (the manifest lists each season's training seasons), not by a truncation test.
      - `acp_rating_abs`. Its per-Camp-season gap was checked by review.
@@ -27,6 +27,7 @@ Plan and proofs: `V7_PLAN.md`.
 
 Both versions were built locally in the CI engine environment (pandas 3.0.3), from the same event data (dated 2026-10-20).
 The headline numbers use completed seasons, 2021/22–2025/26. The local 2026/27 data has only 60 of about 70 matches.
+The v7.0 column is the build with the stable-sort fixes (46b2cd0, c32b617; see V7_PLAN.md step B). They changed no number in this file except the projection row.
 
 ## Before / after
 
@@ -39,7 +40,7 @@ The headline numbers use completed seasons, 2021/22–2025/26. The local 2026/27
 | Rating YoY r (n=401) | 0.492 | 0.340 |
 | Team test: prior-season ratings vs Liga 3 team xGD, r (n=57) | +0.45 | +0.38 |
 | ↳ beyond last season's team xGD (n=50, `stages.py`) | +0.36 ± 0.15 | +0.29 ± 0.16 |
-| Projection G1 Spearman: shipped 'full' / carry-rating baseline | 0.569 / 0.546 | 0.468 / 0.469 |
+| Projection G1 Spearman: shipped 'full' / carry-rating baseline | 0.569 / 0.546 | 0.461 / 0.458 |
 | League gap L3 − CAMP | 7.7 | 7.6 (as-of: 6.0 for Camp 23/24) |
 
 Effective weight = weight × within-league-season spread, rows ≥ 500'.

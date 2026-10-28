@@ -134,7 +134,7 @@ Dashboard: a new branch `engine-v7` cut from current `origin/main`:
 - Every completed-season value must equal today's v7 build.
 - The full test suite must pass.
 
-### B. Validate in CI without deploying (needs Lucas's yes: pushes two branches)
+### B. Validate in CI without deploying (needs Lucas's yes: pushes two branches) — DONE 2026-10-27
 
 Only a push to the Dashboard's `main` deploys (`deploy_to_hf.yml`). The GPA repo has no workflows.
 
@@ -144,8 +144,30 @@ Only a push to the Dashboard's `main` deploys (`deploy_to_hf.yml`). The GPA repo
    - It runs in its own concurrency group (see A.6), so it never blocks or cancels a data update.
    - Confirm in the log that the slow test ran rather than skipped.
 3. Download the artifact and compare it with the local v7 build.
-   - Completed seasons should match within the known local/CI drift (median 0.1 pt).
-   - 2026/27 differs because CI has the full data.
+   - Completed seasons must match exactly. CI has 8 more 2026/27 matches (68 vs 60), so an exact match is also a no-lookahead check on the whole chain.
+   - 2026/27 differs because CI has more data.
+
+**Results (2026-10-27).** Four validate-only runs. None committed or deployed.
+
+| run | code | result |
+|---|---|---|
+| 40583311737 | 0210c80 | Failed in `xpass.py`: xgboost 3.1.3 can't fit on pandas 3 strings. Pinned 3.2.0 (94223da) after proving the walk-forward models predict bit-identically under it. |
+| 40585321492 | 94223da | Passed. Completed seasons matched exactly in offence, quality, duel attack and RAPM, but not DefR (rating off by up to 0.4). |
+| 40596437247 | 46b2cd0 | Passed. Ratings matched exactly; projections off by up to 0.026. |
+| 40602698150 | c32b617 | **Passed. Every completed-season value matches the local build exactly:** rating, all five components, `acp_rating_abs`, projection (max 1.8e-13), projection gate G1. |
+
+- Every run: all 4 lookahead tests passed in CI, the slow DefR/RAPM one included (it ran rather than skipped). 2026/27 was valued by the `wf_2026` models.
+- **The "local/CI drift" was a bug, not data.** Single-key `sort_values` uses quicksort, which orders ties differently on CI's x86 runners and an ARM Mac.
+  - **DefR:** `compute_defr` sorted each match's events by time, and its responder scan only looks forward, so tie order changed the matches: 563,676 responses on CI vs 571,128 locally, from identical events.
+  - **Projection:** `build_projection` paired rows with the next season after `sort_values('yr')`. For winter movers (two rows in one year) the CPU chose the training row.
+  - Fixed with `kind='stable'`, which keeps ties in Wyscout's file order: 46b2cd0 (DefR, two role-feature sorts) and c32b617 (projection, plus YoY diagnostics that are printed only).
+  - v6.9.2 on main has the same bug. GitHub runners vary in CPU, so its DefR could move between nightlies with no new data.
+- **Effect on v7's numbers:**
+  - Ratings move by at most 0.25 and projections by at most 0.3.
+  - Every headline in V7_PROTOTYPE.md is unchanged except the projection gate: 0.461 vs carry-rating 0.458, still a tie.
+  - The suite still passes: 172 passed, 2 skipped.
+- **Pre-existing, not v7:** Phase 3 logs 10 `[precompute] … Cannot hash argument` lines. The step passes, and main's last nightly (40343018781) logs the same 10.
+- **Differ between CI and local by design:** the GK handling columns of `gpa_player_season_values`. They come from production GPA values, retrained every run on all data (see Decisions). So does `Total Value` on the 3 rows that include them. No rating input reads either; `rapm_v4` reads `Total Value` only in a printed check after its output is saved.
 
 ### C. Ship (a separate yes from Lucas; this IS the deploy)
 
