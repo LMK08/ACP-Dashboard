@@ -2,8 +2,8 @@
   "data_through": "2026-10-25",
   "rating_version": "v7.0",
   "projection_version": "v2.1-full",
-  "built_at": "2026-10-28 03:32",
-  "n_rows": 4890,
+  "built_at": "2026-10-28 13:08",
+  "n_rows": 4894,
   "gpa_values": {
     "188221": {
       "trained_on": "cross-fit within season (5 match folds)",
