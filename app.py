@@ -9263,6 +9263,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         import time as _t
         import gc as _gc
         print('[precompute] warming per-season stats caches...', flush=True)
+        _failed = []
         # Current-season (and All-Seasons, which include it) disk caches go
         # stale as matches accrue — the cache key carries no data fingerprint,
         # so a cache written at matchweek 1 would be served all season. CI is
@@ -9307,8 +9308,10 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                             calculate_team_strength(_ev, matches_summary_df, season_id=_sid)
                         except Exception as _te:
                             print(f'[precompute] team_strength {_label} FAILED: {_te}', flush=True)
+                            _failed.append(f'team_strength {_label}')
                 except Exception as _e:
                     print(f'[precompute] season {_label} FAILED: {_e}', flush=True)
+                    _failed.append(f'season {_label} ({_cid})')
                 finally:
                     # Release this scope's in-memory frames before the next one.
                     # The per-scope parquet is already on disk (load_and_score_
@@ -9329,6 +9332,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
                     st.cache_resource.clear()
                     _gc.collect()
         print('[precompute] done.', flush=True)
+        if _failed:
+            # Non-zero so CI stops before committing: the stale caches dropped
+            # above are gone, and committing would ship their deletion (the
+            # 2026-10 nightlies lost 10 caches that way). A "no data" skip is
+            # not a failure — a configured season can lack events for a while.
+            print(f'[precompute] FAILED: {", ".join(_failed)}', flush=True)
+            sys.exit(1)
         sys.exit(0)
 
     # Boot-time pre-warm: warm every scope's in-memory caches in the background
