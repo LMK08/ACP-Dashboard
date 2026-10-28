@@ -1,7 +1,74 @@
 {
   "data_through": "2026-10-25",
-  "rating_version": "v6.9.2",
+  "rating_version": "v7.0",
   "projection_version": "v2.1-full",
-  "built_at": "2026-10-26 15:40",
-  "n_rows": 4884
+  "built_at": "2026-10-28 03:32",
+  "n_rows": 4890,
+  "gpa_values": {
+    "188221": {
+      "trained_on": "cross-fit within season (5 match folds)",
+      "frozen": true
+    },
+    "188222": {
+      "trained_on": [
+        188221
+      ],
+      "frozen": true
+    },
+    "189147": {
+      "trained_on": [
+        188221,
+        188222
+      ],
+      "frozen": true
+    },
+    "190230": {
+      "trained_on": [
+        188221,
+        188222
+      ],
+      "frozen": true
+    },
+    "190090": {
+      "trained_on": [
+        188221,
+        188222,
+        189147,
+        190230
+      ],
+      "frozen": true
+    },
+    "191779": {
+      "trained_on": [
+        188221,
+        188222,
+        189147,
+        190090,
+        190230
+      ],
+      "frozen": true
+    },
+    "191782": {
+      "trained_on": [
+        188221,
+        188222,
+        189147,
+        190090,
+        190230
+      ],
+      "frozen": true
+    },
+    "192831": {
+      "trained_on": [
+        188221,
+        188222,
+        189147,
+        190090,
+        190230,
+        191779,
+        191782
+      ],
+      "frozen": false
+    }
+  }
 }
