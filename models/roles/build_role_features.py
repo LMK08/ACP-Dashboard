@@ -173,7 +173,7 @@ def rank_features(ev, gk):
         # match (duel bookkeeping) — keep the dominant team's row so the
         # (player, match) key stays unique and the channel merge doesn't
         # cartesian-expand.
-        g = (g.sort_values(f'_n_{name}', ascending=False)
+        g = (g.sort_values(f'_n_{name}', ascending=False, kind='stable')
                 .drop_duplicates(['playerId', 'matchId', 'seasonId']))
         g = g[['playerId', 'matchId', 'seasonId', name, f'_n_{name}']]
         out_m = g if out_m is None else out_m.merge(
@@ -208,7 +208,7 @@ def main():
     # Modal raw position per (player, season) — for validation only, the
     # model never uses it as a feature.
     modal = (ev.groupby(['player.id', 'seasonId', 'player.position']).size()
-               .reset_index(name='n').sort_values('n', ascending=False)
+               .reset_index(name='n').sort_values('n', ascending=False, kind='stable')
                .drop_duplicates(['player.id', 'seasonId'])
                .rename(columns={'player.id': 'playerId',
                                   'player.position': 'raw_pos'})

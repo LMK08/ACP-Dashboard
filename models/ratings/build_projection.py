@@ -7,7 +7,8 @@ measured evidence:
     resp EXCLUDED, beta .00; setpiece excluded, beta negative)
   - NPxG replaces Shooting Value (more stable in every role)
   - receiving percentile included (best single offence predictor)
-  - career_asof (leak-free) + n_seasons
+  - career_asof (leak-free); n_seasons dropped in v7.0 (a whole-career count —
+    it told a 2021 row how many seasons the player WOULD play)
   - minutes (coach-revealed info), age + age^2 (player_details.pkl)
   - model: ridge on standardized features, role interactions only where
     the category matrix justified them. Deliberately boring.
@@ -207,14 +208,14 @@ o['age_delta'] = o.apply(_blended_age_delta, axis=1)
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
 FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
-          'career_asof', 'n_seasons', 'mins_played', 'eff_mins', 'eff8',
+          'career_asof', 'mins_played', 'eff_mins', 'eff8',
           'eff9', 'eff10', 'age_delta', 'p_drib_wide', 'p_npxg_st']
 o['p_drib_wide'] = np.where(o['role'].isin(WIDE), o['p_drib'], 0.5)
 o['p_npxg_st'] = np.where(o['role'] == 'Striker', o['p_npxg'], 0.5)
 
 print("[2/5] panel…", flush=True)
 rows = []
-for pid, gg in o.sort_values('yr').groupby('playerId'):
+for pid, gg in o.sort_values('yr', kind='stable').groupby('playerId'):
     rr = gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
         # panel pinned to the historic >=500' regime — sub-floor rows

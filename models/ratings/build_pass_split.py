@@ -23,9 +23,21 @@ _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
 
 print("[1/3] join pass values with pass context…", flush=True)
-av = pd.read_parquet(_GPA_DATA / 'events_with_action_values.parquet',
-                       columns=['matchId', 'id', 'seasonId', 'player.id',
-                                 'type.primary', 'action_value'])
+# v7.0 NO LOOKAHEAD: pass values from the WALK-FORWARD valuation — every
+# season valued by models trained only on earlier seasons (GPA repo,
+# src/walkforward_train.py). v6.9 read the production model, which valued
+# 21/22-23/24 in-sample and 21/22-22/23 with later seasons in its training.
+_WF = _GPA_DATA / 'walkforward'
+_wf_files = sorted(_WF.glob('events_with_action_values_wf_*.parquet'))
+if not _wf_files:
+    # never fall back to production values: the rating would mix leaky GPA
+    # with walk-forward pass splits. CI needs the adoption steps in V7_PLAN.md.
+    raise SystemExit(f"no walk-forward GPA values in {_WF} — run the GPA repo's "
+                     "src/walkforward_train.py (see models/ratings/V7_PLAN.md)")
+av = pd.concat([pd.read_parquet(f, columns=['matchId', 'id', 'seasonId', 'player.id',
+                                            'type.primary', 'action_value'])
+                for f in _wf_files],
+               ignore_index=True)
 av = av[(av['type.primary'] == 'pass') & av['action_value'].notna()
           & av['player.id'].notna()]
 av['player.id'] = av['player.id'].astype(int)

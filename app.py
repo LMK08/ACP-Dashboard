@@ -1752,19 +1752,18 @@ ENGINE_METRIC_HELP = {
                          "and its importance for the role. Pulled toward 50 "
                          "under 2,500 minutes (a 500′ player keeps about a "
                          "third of the distance)." + _ROLE_PCT_HELP,
-    'Def Quality Grade %': "Ranks how well the player wins defensive "
-                           "contests: Aerial Grade and Ground Def Grade "
-                           "combined, weighted by how many of each they "
-                           "contest. Quality, where Def Volume Grade is "
-                           "quantity." + _ROLE_PCT_HELP,
-    'Aerial Grade %': "Ranks aerial duels won above expectation (given the "
-                      "opponent's aerial strength), averaged with an "
-                      "opponent-adjusted aerial duel rating." + _ROLE_PCT_HELP,
+    'Def Quality Grade %': "Ranks how well the player won defensive "
+                           "contests this season: Aerial Grade and Ground "
+                           "Def Grade combined, weighted by how many of each "
+                           "they contest. Quality, where Def Volume Grade is "
+                           "quantity. Pulled toward 50 under 2,500 minutes, "
+                           "like Offensive Value %." + _ROLE_PCT_HELP,
+    'Aerial Grade %': "Ranks aerial duels won above expectation this season "
+                      "(given the opponent's aerial strength)."
+                      + _ROLE_PCT_HELP,
     'Ground Def Grade %': "Ranks defensive ground duels won above "
-                          "expectation (given the attacker, the action and "
-                          "the pitch zone), averaged with opponent-adjusted "
-                          "tackling and pressing duel ratings."
-                          + _ROLE_PCT_HELP,
+                          "expectation this season (given the attacker, the "
+                          "action and the pitch zone)." + _ROLE_PCT_HELP,
     'Engine RAPM %': "Ranks the team's xG difference while the player is on "
                      "the pitch, adjusted for teammates and opponents "
                      "(regularised plus-minus over this and earlier seasons, "
@@ -1773,8 +1772,8 @@ ENGINE_METRIC_HELP = {
     'Def Volume Grade %': "Ranks how much defending the player takes on "
                           "compared with what's expected for their role and "
                           "where they play — responsibility above "
-                          "expectation, not a raw tackle count."
-                          + _ROLE_PCT_HELP,
+                          "expectation, not a raw tackle count. Pulled "
+                          "toward 50 under 2,500 minutes." + _ROLE_PCT_HELP,
     'Off Duel Grade %': "Ranks opponent-adjusted ratings for take-ons and "
                         "shielding the ball: 1v1 attacking and press "
                         "resistance (30+ contests of a type to count)."
@@ -5428,16 +5427,10 @@ def _render_acp_index_card_png(player_id, season_scope_key, stats_cache_ver,
     Radar: RAW per-90 values on a mean ± 2σ scale vs the player's
     league × season × role cohort, with per-axis cohort distributions on the
     right — mirrors the traditional radar's raw mode + KDE panels.
-    Set piece removed (Lucas); Duel-att raw = n-weighted take-on/shield
-    Glicko; Def Quality raw = DWAE/90.
+    Set piece removed (Lucas); Duel-att raw = the season's take-on/shield
+    wins over expectation per 90 (woe_att_p90); Def Quality raw = DWAE/90.
     """
     _eng_rad_df = _eng_df.copy()
-    _nt = _eng_rad_df['duel_takeon_n'].fillna(0.0)
-    _ns = _eng_rad_df['duel_shield_n'].fillna(0.0)
-    _eng_rad_df['_datt_glicko'] = (
-        (_eng_rad_df['duel_takeon'].fillna(0.0) * _nt
-         + _eng_rad_df['duel_shield'].fillna(0.0) * _ns)
-        / (_nt + _ns).replace(0.0, np.nan))
     if 'aerial_grade_pct' in _eng_rad_df.columns:
         _eng_rad_df['_aer_grade100'] = _eng_rad_df['aerial_grade_pct'] * 100.0
         _eng_rad_df['_grd_grade100'] = _eng_rad_df['ground_grade_pct'] * 100.0
@@ -5447,7 +5440,7 @@ def _render_acp_index_card_png(player_id, season_scope_key, stats_cache_ver,
         ('Creating', 'raw_Creating90', 'passing', '{:.2f}'),
         ('Linking', 'raw_Linking90', 'passing', '{:.2f}'),
         ('Dribbling', 'raw_Dribbling90', 'dribbling', '{:.2f}'),
-        ('Off Duel Grade', '_datt_glicko', 'dribbling', '{:.0f}'),
+        ('Off Duel Grade', 'woe_att_p90', 'dribbling', '{:.2f}'),
         ('Aerial Grade', '_aer_grade100', 'defensive', '{:.0f}'),
         ('Ground Def Grade', '_grd_grade100', 'defensive', '{:.0f}'),
         ('Def Volume', 'raw_resp', 'defensive', '{:.2f}'),
@@ -5600,9 +5593,9 @@ def _render_acp_index_card_png(player_id, season_scope_key, stats_cache_ver,
         plt.figtext(0.04, 0.035,
                      f"Raw per-90 values vs {_e['role']} cohort "
                      f"({_e['league']}, current season, 500+ mins) · "
-                     f"Aerial/Ground Def Grade = wins-above-expectation "
-                     f"+ opponent-adjusted duel ladder, 0-100 in cohort · "
-                     f"Off Duel Grade raw = take-on/shield Glicko · "
+                     f"Aerial/Ground Def Grade = season wins above "
+                     f"expectation, 0-100 in cohort · "
+                     f"Off Duel Grade raw = season take-on/shield wins above expectation /90 · "
                      f"RAPM = on-pitch xGD/90 · "
                      f"Engine {_eng_meta.get('rating_version', '')} · "
                      f"Data via Wyscout · @lucaskimball · "

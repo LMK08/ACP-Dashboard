@@ -1,10 +1,15 @@
 name: Engine Rebuild (ACP ratings/projections)
 
-# Rebuilds the ACP engine (rating v6.9.x, projection v2.1) from the
+# Rebuilds the ACP engine (rating v7.x, projection v2.1) from the
 # canonical raw_events.parquet (Option D). Runs AFTER the scheduled data
 # refresh so the engine never drifts behind the data. Reads the engine
 # pipeline code from the private GPA-Model-Engine repo (read-only deploy
 # key) and writes the engine output parquets back into this repo + HF.
+#
+# v7 no lookahead: GPA values are WALK-FORWARD — completed seasons are
+# frozen files committed to the GPA repo, the season in progress is valued
+# by the committed year models (walkforward_predict.py). CI never trains;
+# the yearly rollover is in models/ratings/V7_PLAN.md.
 
 permissions:
   contents: write
@@ -20,9 +25,20 @@ on:
         description: 'Commit + deploy results (false = validate only)'
         required: false
         default: 'false'
+      gpa_ref:
+        description: 'GPA-Model-Engine branch to build from (blank = default branch)'
+        required: false
+        default: ''
+      slow_checks:
+        description: 'Also run the ~7 min DefR/RAPM lookahead test'
+        required: false
+        default: 'false'
 
 concurrency:
-  group: hf-deploy          # share with deploy/refresh — never push HF simultaneously
+  # share with deploy/refresh — never push HF simultaneously. A validate-only
+  # dispatch never pushes, so it gets its own group: holding hf-deploy for an
+  # hour would let a newer pending run cancel a pending data update.
+  group: ${{ (github.event_name == 'workflow_dispatch' && inputs.deploy != 'true') && format('engine-validate-{0}', github.run_id) || 'hf-deploy' }}
   cancel-in-progress: false
 
 jobs:
@@ -76,6 +92,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LMK08/GPA-Model-Engine
+          ref: ${{ inputs.gpa_ref }}    # empty (scheduled runs) = default branch
           ssh-key: ${{ secrets.GPA_DEPLOY_KEY }}
           path: GPA Model Project v2
 
@@ -95,7 +112,12 @@ jobs:
           # it) but Phase 3 runs `app.py --precompute`, which imports it.
           # streamlit pinned to the Space's version (an unpinned install got
           # 1.66 while the Space runs 1.50 — Phase 3 writes the caches it reads)
-          pip install xgboost scikit-learn scipy pyarrow joblib pandas numpy "streamlit==1.50.0" huggingface_hub
+          # xgboost pinned: the committed walk-forward models (trained with
+          # 3.1.3, their .ubj carries the training categories) predict
+          # bit-identically under 3.2.0 + pandas 3 — checked 2026-10-27. Not
+          # 3.1.3 itself: it fails xpass.py's fit on pandas 3. pytest runs the
+          # lookahead gate after Phase 2.
+          pip install "xgboost==3.2.0" scikit-learn scipy pyarrow joblib pandas numpy "streamlit==1.50.0" huggingface_hub pytest
           # The dashboard pins pandas==2.3.3 for HF Space stability, but the
           # engine chain OOMs the 16 GB runner on 2.x (object-dtype strings).
           # Override to pandas 3.x HERE ONLY — Arrow-backed strings cut the
@@ -124,6 +146,9 @@ jobs:
         working-directory: GPA Model Project v2
         env:
           DASHBOARD_DIR: ${{ github.workspace }}/Match_Reports_API/Dashboard
+          # the rating's GPA values: walk-forward, never LOSO/production
+          # (read by loso_player_ratings.py and export_to_dashboard.py only)
+          GPA_VALUES: walkforward
         run: |
           set -e
           python src/normalize_events.py liga3
@@ -131,7 +156,11 @@ jobs:
           python src/targets.py
           python src/features.py
           python src/xpass.py
+          # production values: OBV, phases, viz and GK displays (not the rating)
           python src/action_values.py
+          # walk-forward values for the unfrozen seasons, from the committed
+          # year models (predict only)
+          python src/walkforward_predict.py
           python src/export_viz_aggregates.py
           python src/phases.py
           python src/gk_shotstopping.py || echo "gk_shotstopping nonzero (continuing)"
@@ -165,6 +194,30 @@ jobs:
           # dc_params.json never leaves the promotion odds and the scoreline
           # forecast on different parameters until the next data refresh.
           python simulate_season.py --no-refit || echo "simulate_season nonzero (continuing — the committed pickle stays)"
+
+      - name: Lookahead gate (no season's rating may depend on a later season)
+        working-directory: Match_Reports_API/Dashboard
+        env:
+          # the DefR/RAPM truncation test (~7 min) on request; it skips itself
+          # without ACP_SLOW_TESTS=1
+          ACP_SLOW_TESTS: ${{ inputs.slow_checks == 'true' && '1' || '0' }}
+        run: |
+          python -m pytest tests/test_rating_no_lookahead.py tests/test_engine_no_lookahead_upstream.py \
+            -v -p no:cacheprovider -rs
+
+      - name: Keep the engine outputs (validate-only runs)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-outputs
+          retention-days: 7
+          path: |
+            Match_Reports_API/Dashboard/gpa_player_season_values.parquet
+            Match_Reports_API/Dashboard/models/ratings/*.parquet
+            Match_Reports_API/Dashboard/models/ratings/*.json
+            Match_Reports_API/Dashboard/models/defr/defr_per_player_season.parquet
+            Match_Reports_API/Dashboard/models/roles/role_assignments_season.parquet
+            GPA Model Project v2/models/walkforward/manifest.json
 
       - name: Phase 3 — warm player-stats caches
         working-directory: Match_Reports_API/Dashboard
