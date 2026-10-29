@@ -158,6 +158,45 @@ def engine_value_eur_frame(engine_df):
                                    r.get('regular_factor', 1.0)), axis=1)
 
 
+def engine_values(engine_df):
+    """(now, season): two EUR Series aligned to engine_df.index (2026-10-29).
+
+    season — each row's value as of its own season: the as-of projection
+      (asof_abs, build_player_engine) at the as-of age and the row's own
+      playing-time factor. A live row only once live_ok (its club has played
+      enough league matches); NaN before.
+    now — the player's value today, on the row engine_value_eur_frame values
+      (the one carrying `projection`): his live value when one of his live rows
+      is live_ok, else today's projection. A player with no projection row
+      carries it on that live row.
+    Both rank in today's projection pool (sorted_pool), so the fee-calibrated
+    curve is unchanged. Without as-of columns (an older engine file): season
+    is NaN and now == engine_value_eur_frame."""
+    now = pd.to_numeric(engine_value_eur_frame(engine_df), errors='coerce')
+    season = pd.Series(np.nan, index=engine_df.index)
+    if 'asof_abs' not in engine_df.columns:
+        return now, season
+    pool = sorted_pool(engine_df)
+    live = engine_df['asof_live'].fillna(False).astype(bool)
+    ok = engine_df['asof_abs'].notna() & (~live | engine_df['live_ok'].fillna(False).astype(bool))
+    # a projection row's as-of projection IS its projection, computed on another
+    # frame (differs by ~1e-13): snap it, or it ranks one place below its own
+    # pool entry and the two values differ by a pool step
+    proj = pd.to_numeric(engine_df['projection_abs'], errors='coerce')
+    x = engine_df['asof_abs'].where(~((engine_df['asof_abs'] - proj).abs() < 1e-9), proj)
+    season[ok] = [engine_value_eur(xi, pool, r.get('role'), r.get('asof_age'),
+                                   r.get('seasonId'), r.get('regular_factor', 1.0))
+                  for xi, (_, r) in zip(x[ok], engine_df[ok].iterrows())]
+    season = pd.to_numeric(season, errors='coerce')
+    lv = engine_df[ok & live].assign(_v=season[ok & live])
+    lv = lv.dropna(subset=['_v']).sort_values('mins_played').drop_duplicates('playerId', keep='last')
+    has_proj = engine_df['projection_abs'].notna()
+    for pid, v, i in zip(lv['playerId'], lv['_v'], lv.index):
+        rows = engine_df.index[(engine_df['playerId'] == pid) & has_proj]
+        now.loc[rows if len(rows) else [i]] = v
+    return now, season
+
+
 def conformal_k(n, level):
     """Order index of the split-conformal quantile for coverage `level`."""
     return int(math.ceil((n + 1) * float(level)))
@@ -312,6 +351,10 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
         eng['playerId'] = eng['playerId'].map(
             lambda p: aliases.get(int(p), int(p)) if pd.notna(p) else p).astype('Int64')
     pool = sorted_pool(eng)
+    # as-of values (2026-10-29): each sale meets the value as of its own
+    # pre-transfer season — no look-ahead, and a player who kept playing in our
+    # leagues after the sale still has a value for that season
+    season = engine_values(eng)[1] if 'asof_abs' in eng.columns else None
     fees = fees_df.copy()
     fees['playerId'] = pd.to_numeric(fees['playerId'], errors='coerce')
     if aliases:
@@ -328,7 +371,8 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             pid, sid = None, None
         er = (eng[(eng['playerId'] == pid) & (eng['seasonId'] == sid)]
               if pid is not None else eng.iloc[0:0])
-        er = er.dropna(subset=['projection_abs']) if len(er) else er
+        if len(er):
+            er = er[season.loc[er.index].notna()] if season is not None else er.dropna(subset=['projection_abs'])
         value = role = mins = w_ev = age_at_sale = eng_team = None
         seasons_ago = 0
         from_team = str(f.get('from_team') or '').strip()
@@ -341,23 +385,28 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             r = er.sort_values('mins_played').iloc[-1]
             role = r.get('role')
             eng_team = str(r.get('team') or '').strip() or None
-            # build_projection forwards a lapsed row's age to the current
-            # season (age + seasons_ago). The sale happened in the row's own
-            # season, so value it at the age back then — otherwise the older
-            # sales (5 of 14 in 2026-09) are valued rich by the age curve.
-            # Only the value curve's age effect is back-dated: the row's
-            # projection is still today's (later-horizon) projection ranked
-            # in today's pool. That residual look-ahead is documented in the
-            # panel, not corrected.
-            sa = r.get('seasons_ago')
-            seasons_ago = int(sa) if sa is not None and not pd.isna(sa) else 0
-            age_row = r.get('age')
-            age_at_sale = (float(age_row) - seasons_ago
-                           if age_row is not None and not pd.isna(age_row) else age_row)
-            value = engine_value_eur(r.get('projection_abs'), pool, role,
-                                     age_at_sale, r.get('seasonId'),
-                                     r.get('regular_factor', 1.0))
-            mp, we = r.get('mins_played'), r.get('w_evidence')
+            # As-of engine (2026-10-29): the row's own as-of value — the
+            # projection made from everything known at the end of the sale's
+            # season, at the age then. No look-ahead.
+            # Older engine files (fallback below): build_projection forwards a
+            # lapsed row's age to the current season (age + seasons_ago), so it
+            # is back-dated to the sale's season; the projection itself stays
+            # today's (later-horizon) one — a residual look-ahead.
+            if season is not None:
+                # the row's own as-of value: its season's projection at its age
+                age_at_sale, value = r.get('asof_age'), float(season.loc[r.name])
+                we = r.get('asof_w_evidence')
+            else:
+                sa = r.get('seasons_ago')
+                seasons_ago = int(sa) if sa is not None and not pd.isna(sa) else 0
+                age_row = r.get('age')
+                age_at_sale = (float(age_row) - seasons_ago
+                               if age_row is not None and not pd.isna(age_row) else age_row)
+                value = engine_value_eur(r.get('projection_abs'), pool, role,
+                                         age_at_sale, r.get('seasonId'),
+                                         r.get('regular_factor', 1.0))
+                we = r.get('w_evidence')
+            mp = r.get('mins_played')
             mins = float(mp) if mp is not None and not pd.isna(mp) else None
             w_ev = float(we) if we is not None and not pd.isna(we) else None
         if flag is None or pd.isna(flag):

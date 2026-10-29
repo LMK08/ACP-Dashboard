@@ -1451,7 +1451,16 @@ def load_player_engine():
         # The interval around it
         # (projected_eur_interval) is derived at display time from the
         # point and the shipped calibration, so no cached column changes.
-        df['engine_value_eur'] = engine_value_eur_frame(df)
+        # Live season (2026-10-29, eur_intervals.engine_values):
+        #   engine_value_eur        his value TODAY (live once his club has
+        #                           played enough matches; else today's
+        #                           projection) — on the projection row
+        #   engine_value_eur_season every row's value as of its own season
+        #   engine_value_eur_now    today's value on all his rows (the
+        #                           live season's fallback before it is valued)
+        df['engine_value_eur'], df['engine_value_eur_season'] = engine_values(df)
+        df['engine_value_eur_now'] = df['playerId'].map(
+            df.groupby('playerId')['engine_value_eur'].max())
         meta = {}
         if os.path.exists(meta_path):
             with open(meta_path) as f:
@@ -2109,6 +2118,68 @@ def engine_rows_for_scope(season_ids=None):
              .drop(columns='_has_proj'))
 
 
+def engine_value_for_scope(rows, season_ids):
+    """The value to show for engine rows picked by engine_rows_for_scope:
+    All Seasons (None) -> today's value; a season -> the row's value as of
+    that season, the live season falling back to today's value until it is
+    valued. (Older engine files without season values: today's value.)"""
+    if season_ids is None or 'engine_value_eur_season' not in rows.columns:
+        return rows['engine_value_eur']
+    live = rows.get('asof_live', pd.Series(False, index=rows.index)).fillna(False).astype(bool)
+    return rows['engine_value_eur_season'].where(
+        rows['engine_value_eur_season'].notna() | ~live, rows['engine_value_eur_now'])
+
+
+def engine_value_for_player(player_id, season_ids):
+    """The profile header's projected value for the selected scope — the same
+    row pick and value as the analysis tables (engine_rows_for_scope +
+    engine_value_for_scope). Returns dict(value, w_evidence, mins, label) or
+    None. label says what the value is: '25/26' (as of that season),
+    '26/27 live', or for today's value 'today · 26/27 live' / 'today · from
+    25/26'. The live season with no row of his: today's value."""
+    from league_config import SEASON_YEAR, IN_PROGRESS_SEASON_IDS
+    eng, _meta = load_player_engine()
+    if eng is None or eng.empty:
+        return None
+    pid = int(player_id)
+
+    def lab(sid):
+        y = SEASON_YEAR.get(int(sid)) if sid is not None and pd.notna(sid) else None
+        return f"{y % 100:02d}/{(y + 1) % 100:02d}" if y else ''
+
+    def today():
+        mine = eng[eng['playerId'] == pid]
+        live = (mine[mine['live_ok'].fillna(False).astype(bool)] if 'live_ok' in mine.columns
+                else mine.iloc[0:0])
+        if len(live):
+            r = live.sort_values('mins_played').iloc[-1]
+            return {'value': r['engine_value_eur_season'], 'w_evidence': r.get('asof_w_evidence'),
+                    'mins': r.get('mins_played'), 'label': f"today · {lab(r['seasonId'])} live"}
+        p = mine.dropna(subset=['engine_value_eur'])
+        if p.empty:
+            return None
+        r = p.sort_values('mins_played').iloc[-1]
+        return {'value': r['engine_value_eur'], 'w_evidence': r.get('w_evidence'),
+                'mins': r.get('mins_played'), 'label': f"today · from {lab(r['seasonId'])}"}
+
+    if season_ids is None:
+        return today()
+    sids = {int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set)) else [season_ids])}
+    rows = engine_rows_for_scope(season_ids)
+    rows = rows[rows['playerId'] == pid] if not rows.empty else rows
+    if rows.empty:
+        return today() if sids <= set(IN_PROGRESS_SEASON_IDS) else None
+    r = rows.iloc[0]
+    if 'engine_value_eur_season' in rows.columns and pd.isna(r.get('engine_value_eur_season')):
+        # the live season before it is valued -> today's; a past season -> none
+        return today() if bool(r.get('asof_live', False)) else None
+    if 'engine_value_eur_season' not in rows.columns:
+        return today()
+    live = bool(r.get('asof_live', False))
+    return {'value': float(r['engine_value_eur_season']), 'w_evidence': r.get('asof_w_evidence'),
+            'mins': r.get('mins_played'), 'label': f"{lab(r['seasonId'])}{' live' if live else ''}"}
+
+
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
     """Merge ACP engine columns (rating / projection / axis percentiles)
     into the stats DF on playerId. Scope-aware: keeps engine rows from
@@ -2120,6 +2191,8 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     if e is None or e.empty:
         return player_stats_df
     out = pd.DataFrame({
+        # value: All Seasons -> today's; a season -> as of that season (the
+        # live season before it is valued -> today's)
         'playerId': e['playerId'],
         'ACP Rating': e['acp_rating'],
         'ACP Rating (abs)': e['acp_rating_abs'],
@@ -2133,7 +2206,7 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         'Def Volume Grade %': e['defr_pct'] * 100.0,
         'Off Duel Grade %': e['datt_pct'] * 100.0,
         'Engine Set Piece %': e['setpiece_pct'] * 100.0,
-        'Engine Value EUR': e['engine_value_eur'],
+        'Engine Value EUR': engine_value_for_scope(e, season_ids),
         'Aerial Grade %': e['aerial_grade_pct'] * 100.0,
         'Ground Def Grade %': e['ground_grade_pct'] * 100.0,
         'Shooting Grade %': e['Shooting_pct'] * 100.0,
@@ -3483,7 +3556,7 @@ from models.templates import percentiles as template_pct  # minutes floor + sub-
 from models.value import availability as value_availability  # engine value's playing-time factor (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
-    engine_value_eur_frame, projected_eur_interval,
+    engine_value_eur_frame, engine_values, projected_eur_interval,
     load_calibration as load_eur_calibration, format_eur_short, format_eur_range)  # noqa: F401,F403
 
 
@@ -5169,6 +5242,9 @@ def _engine_build_stamp():
     except Exception:
         return ''
     av_stamp = value_availability.stamp()
+    # value:asof — season-scoped 'Engine Value EUR' is the as-of / live value
+    # (2026-10-29); a change to that rule must invalidate the cached frames
+    base = f"{base} value:asof1"
     return f"{base} avail:{av_stamp}" if av_stamp else base
 
 

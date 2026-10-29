@@ -106,6 +106,44 @@ if len(_mm):
 else:
     eng['mins_lineup'] = eng['mins_played']
 
+# ---- as-of projections: a value per season, and the live value (2026-10-29) ----
+# acp_projection_asof (build_projection): next season's level from everything
+# known at the end of each row's season — for the season in progress, at the
+# data date. A live row's value starts once his club has played
+# MIN_LIVE_MATCHES league matches (before that the summer value stands):
+# live_ok. `projection` (today's forecast for boards and cards) is unchanged.
+# Replay-tested on 2024/25 and 2023/24: ACP_Official/live_value_plan_2026-10-29.md.
+MIN_LIVE_MATCHES = 6
+_asof_path = _HERE / 'acp_projection_asof.parquet'
+if _asof_path.exists():
+    import unicodedata
+    from league_config import IN_PROGRESS_SEASON_IDS  # noqa: E402
+
+    def _norm(name):
+        s = unicodedata.normalize('NFKD', str(name))
+        return ' '.join(''.join(c for c in s if not unicodedata.combining(c)).casefold().split())
+
+    a = pd.read_parquet(_asof_path)
+    if 'projection_asof_abs' not in a.columns:   # league_conversion not run: L3 scale
+        a['projection_asof_abs'] = a['projection_asof']
+    a = a[['playerId', 'seasonId', 'projection_asof', 'projection_asof_abs', 'age', 'w_evidence',
+           'is_live', 'as_of_date']].rename(columns={
+        'projection_asof_abs': 'asof_abs', 'age': 'asof_age', 'w_evidence': 'asof_w_evidence',
+        'is_live': 'asof_live', 'as_of_date': 'asof_date'})
+    eng = eng.merge(a, on=['playerId', 'seasonId'], how='left')
+    eng['asof_live'] = eng['asof_live'].fillna(False).astype(bool)
+    _ms = pd.read_parquet(_DASH / 'matches_summary.parquet',
+                          columns=['seasonId', 'status', 'homeTeamName', 'awayTeamName'])
+    _ms = _ms[_ms['seasonId'].isin(IN_PROGRESS_SEASON_IDS) & _ms['status'].eq('Played')]
+    _played = pd.concat([_ms['homeTeamName'], _ms['awayTeamName']]).map(_norm).value_counts()
+    eng['live_club_matches'] = [(_played.get(_norm(t)) if lv and pd.notna(t) else None)
+                                for t, lv in zip(eng['team'], eng['asof_live'])]
+    eng['live_club_matches'] = pd.to_numeric(eng['live_club_matches'], errors='coerce')
+    eng['live_ok'] = eng['asof_live'] & (eng['live_club_matches'] >= MIN_LIVE_MATCHES)
+    print(f"  as-of projections on {int(eng['asof_abs'].notna().sum()):,} rows; live rows "
+          f"{int(eng['asof_live'].sum())}, valued live {int(eng['live_ok'].sum())} "
+          f"(club >= {MIN_LIVE_MATCHES} league matches)")
+
 print("[3/4] data-through stamp…", flush=True)
 # latest match date actually inside the engine = matches with lineup
 # intervals (the rating's minute source)

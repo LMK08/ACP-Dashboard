@@ -34,11 +34,11 @@
   }
  },
  "n_fee_rows": 33,
- "n_calibration": 12,
- "n_mid_season": 3,
+ "n_calibration": 14,
+ "n_mid_season": 4,
  "excluded": {
   "synthetic": 16,
-  "no_engine_row": 3,
+  "no_engine_row": 1,
   "post_transfer_row": 1,
   "offer": 1
  },
@@ -52,16 +52,6 @@
    "player_name": "H\u00e9lder Suker",
    "season_id": 191782,
    "exclusion": "post_transfer_row"
-  },
-  {
-   "player_name": "Juan Perea",
-   "season_id": 189147,
-   "exclusion": "no_engine_row"
-  },
-  {
-   "player_name": "Miguel Rebelo",
-   "season_id": 189147,
-   "exclusion": "no_engine_row"
   }
  ],
  "support": {
@@ -69,8 +59,8 @@
   "min_mins_played": 1002.0,
   "min_w_evidence": 0.410840534171249,
   "value_range_eur": [
-   25231.226124853027,
-   440151.248238045
+   2128.322996441091,
+   442517.8835192698
   ]
  },
  "centre_drift": {
@@ -82,46 +72,46 @@
  "levels": {
   "0.50": {
    "level": 0.5,
-   "k": 7,
-   "q": 0.8662622028564729,
-   "factor": 2.37800571811686,
+   "k": 8,
+   "q": 0.8808566072584189,
+   "factor": 2.4129657853878315,
    "shipped": true,
-   "loo_hits": 6,
-   "loo_n": 12,
+   "loo_hits": 7,
+   "loo_n": 14,
    "loo_coverage": 0.5,
    "coverage_ok": true
   },
   "0.80": {
    "level": 0.8,
-   "k": 11,
+   "k": 12,
    "q": 1.417924060694833,
    "factor": 4.128540937663716,
-   "shipped": false,
-   "loo_hits": 10,
-   "loo_n": 12,
-   "loo_coverage": 0.833,
+   "shipped": true,
+   "loo_hits": 12,
+   "loo_n": 14,
+   "loo_coverage": 0.857,
    "coverage_ok": true
   },
   "0.90": {
    "level": 0.9,
-   "k": 12,
-   "q": 1.5137840457013376,
-   "factor": 4.543892600568859,
+   "k": 14,
+   "q": 3.8498358419848593,
+   "factor": 46.98534957674026,
    "shipped": false,
-   "loo_hits": 11,
-   "loo_n": 12,
-   "loo_coverage": 0.917,
+   "loo_hits": 13,
+   "loo_n": 14,
+   "loo_coverage": 0.929,
    "coverage_ok": true
   }
  },
  "coverage_ok": true,
  "bias": {
   "pooled": {
-   "n": 12,
-   "median_ratio": 1.0415405375536075
+   "n": 14,
+   "median_ratio": 1.031803009100464
   },
   "L3": {
-   "n": 9,
+   "n": 11,
    "median_ratio": 1.1395345555838396
   },
   "Camp": {
@@ -139,38 +129,38 @@
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
    "loo_coverage_0.50": 0.667,
-   "loo_hits_0.80": 2,
-   "loo_coverage_0.80": 0.667,
+   "loo_hits_0.80": 3,
+   "loo_coverage_0.80": 1.0,
    "loo_hits_0.90": 3,
    "loo_coverage_0.90": 1.0
   },
   {
    "kind": "league",
    "name": "L3",
-   "n": 9,
+   "n": 11,
    "median_ratio": 1.1395345555838396,
    "conditioned": false,
    "eligible_at_n": 15,
-   "loo_hits_0.50": 4,
-   "loo_coverage_0.50": 0.444,
-   "loo_hits_0.80": 8,
-   "loo_coverage_0.80": 0.889,
-   "loo_hits_0.90": 8,
-   "loo_coverage_0.90": 0.889
+   "loo_hits_0.50": 5,
+   "loo_coverage_0.50": 0.455,
+   "loo_hits_0.80": 9,
+   "loo_coverage_0.80": 0.818,
+   "loo_hits_0.90": 10,
+   "loo_coverage_0.90": 0.909
   },
   {
    "kind": "role_group",
    "name": "AM_WG",
-   "n": 7,
-   "median_ratio": 1.0036325193722342,
+   "n": 8,
+   "median_ratio": 0.9681356085002741,
    "conditioned": false,
    "eligible_at_n": 15,
-   "loo_hits_0.50": 4,
-   "loo_coverage_0.50": 0.571,
-   "loo_hits_0.80": 6,
-   "loo_coverage_0.80": 0.857,
-   "loo_hits_0.90": 6,
-   "loo_coverage_0.90": 0.857
+   "loo_hits_0.50": 5,
+   "loo_coverage_0.50": 0.625,
+   "loo_hits_0.80": 7,
+   "loo_coverage_0.80": 0.875,
+   "loo_hits_0.90": 8,
+   "loo_coverage_0.90": 1.0
   },
   {
    "kind": "role_group",
@@ -189,8 +179,36 @@
   {
    "kind": "role_group",
    "name": "ST",
+   "n": 5,
+   "median_ratio": 1.059973498828694,
+   "conditioned": false,
+   "eligible_at_n": 15,
+   "loo_hits_0.50": 2,
+   "loo_coverage_0.50": 0.4,
+   "loo_hits_0.80": 4,
+   "loo_coverage_0.80": 0.8,
+   "loo_hits_0.90": 4,
+   "loo_coverage_0.90": 0.8
+  },
+  {
+   "kind": "value_band",
+   "name": "< EUR 100k",
    "n": 4,
-   "median_ratio": 0.7664303228109877,
+   "median_ratio": 2.5872256866006778,
+   "conditioned": false,
+   "eligible_at_n": 15,
+   "loo_hits_0.50": 1,
+   "loo_coverage_0.50": 0.25,
+   "loo_hits_0.80": 3,
+   "loo_coverage_0.80": 0.75,
+   "loo_hits_0.90": 3,
+   "loo_coverage_0.90": 0.75
+  },
+  {
+   "kind": "value_band",
+   "name": "> EUR 300k",
+   "n": 4,
+   "median_ratio": 1.0360866266060769,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -202,34 +220,6 @@
   },
   {
    "kind": "value_band",
-   "name": "< EUR 100k",
-   "n": 3,
-   "median_ratio": 2.37800571811686,
-   "conditioned": false,
-   "eligible_at_n": 15,
-   "loo_hits_0.50": 0,
-   "loo_coverage_0.50": 0.0,
-   "loo_hits_0.80": 3,
-   "loo_coverage_0.80": 1.0,
-   "loo_hits_0.90": 3,
-   "loo_coverage_0.90": 1.0
-  },
-  {
-   "kind": "value_band",
-   "name": "> EUR 300k",
-   "n": 3,
-   "median_ratio": 1.1395345555838396,
-   "conditioned": false,
-   "eligible_at_n": 15,
-   "loo_hits_0.50": 2,
-   "loo_coverage_0.50": 0.667,
-   "loo_hits_0.80": 2,
-   "loo_coverage_0.80": 0.667,
-   "loo_hits_0.90": 2,
-   "loo_coverage_0.90": 0.667
-  },
-  {
-   "kind": "value_band",
    "name": "EUR 100k-300k",
    "n": 6,
    "median_ratio": 0.8862028753966562,
@@ -237,26 +227,47 @@
    "eligible_at_n": 15,
    "loo_hits_0.50": 4,
    "loo_coverage_0.50": 0.667,
-   "loo_hits_0.80": 5,
-   "loo_coverage_0.80": 0.833,
+   "loo_hits_0.80": 6,
+   "loo_coverage_0.80": 1.0,
    "loo_hits_0.90": 6,
    "loo_coverage_0.90": 1.0
   }
  ],
  "sensitivity": {
-  "n_with_synthetic": 27,
+  "n_with_synthetic": 29,
   "q_with_synthetic_0.50": 0.8130263362123774,
-  "q_with_synthetic_0.80": 1.5137840457013376,
+  "q_with_synthetic_0.80": 1.5084215811779385,
   "q_with_synthetic_0.90": 3.266455370279773,
   "asymmetric_headline_band": {
-   "m_lo": 0.7687732314210783,
-   "m_hi": 2.37800571811686
+   "m_lo": 0.45341208988699444,
+   "m_hi": 2.4129657853878315
   }
  },
  "prospective": {
-  "history": [],
-  "n": 0,
-  "n_0.50": 0,
+  "history": [
+   {
+    "playerId": 807307,
+    "player_name": "Juan Perea",
+    "season_id": 189147,
+    "fee_eur": 100000.0,
+    "value_eur": 2128.322996441091,
+    "score": 3.8498358419848593,
+    "scored_against_built": "2026-10-29",
+    "hit_0.50": false
+   },
+   {
+    "playerId": 852792,
+    "player_name": "Miguel Rebelo",
+    "season_id": 189147,
+    "fee_eur": 90000.0,
+    "value_eur": 346708.894008016,
+    "score": 1.3486758353573596,
+    "scored_against_built": "2026-10-29",
+    "hit_0.50": false
+   }
+  ],
+  "n": 2,
+  "n_0.50": 2,
   "hits_0.50": 0,
   "n_0.80": 0,
   "hits_0.80": 0,
@@ -299,9 +310,9 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-07-15",
    "fee_eur": 60000.0,
-   "value_eur": 25231.226124853027,
-   "ratio": 2.37800571811686,
-   "seasons_ago": 1,
+   "value_eur": 27842.075561316597,
+   "ratio": 2.1550117507533524,
+   "seasons_ago": 0,
    "age_at_sale": 28.627397260273938,
    "mins_played": 2661.0,
    "w_evidence": 0.6395097332372026,
@@ -309,8 +320,8 @@
    "to_team": "CSKA 1948",
    "engine_team": "Atl\u00e9tico CP",
    "mid_season": false,
-   "log_error": 0.8662622028564729,
-   "score": 0.8662622028564729
+   "log_error": 0.7677961763266231,
+   "score": 0.7677961763266231
   },
   {
    "playerId": 709015,
@@ -323,9 +334,9 @@
    "synthetic_flag": 0,
    "as_of_date": "2024-01-15",
    "fee_eur": 250000.0,
-   "value_eur": 231599.73550548562,
-   "ratio": 1.0794485557349809,
-   "seasons_ago": 2,
+   "value_eur": 235854.95323822563,
+   "ratio": 1.059973498828694,
+   "seasons_ago": 0,
    "age_at_sale": 23.1232876712329,
    "mins_played": 1002.0,
    "w_evidence": 0.6474006374996474,
@@ -333,8 +344,56 @@
    "to_team": "Portimonense",
    "engine_team": "Felgueiras 1932",
    "mid_season": true,
-   "log_error": 0.07645031419564043,
-   "score": 0.07645031419564043
+   "log_error": 0.05824390670643724,
+   "score": 0.05824390670643724
+  },
+  {
+   "playerId": 807307,
+   "player_name": "Juan Perea",
+   "season_id": 189147,
+   "league": "L3",
+   "role": "Striker",
+   "role_group": "ST",
+   "transfer_type": "permanent",
+   "synthetic_flag": 0,
+   "as_of_date": "2024-07-15",
+   "fee_eur": 100000.0,
+   "value_eur": 2128.322996441091,
+   "ratio": 46.98534957674027,
+   "seasons_ago": 0,
+   "age_at_sale": 24.361643835616405,
+   "mins_played": 2405.0,
+   "w_evidence": 0.6782427765503336,
+   "from_team": "Acad\u00e9mica",
+   "to_team": "Lokomotiv Plovdiv",
+   "engine_team": "Acad\u00e9mica",
+   "mid_season": false,
+   "log_error": 3.8498358419848593,
+   "score": 3.8498358419848593
+  },
+  {
+   "playerId": 852792,
+   "player_name": "Miguel Rebelo",
+   "season_id": 189147,
+   "league": "L3",
+   "role": "Wide Attacker",
+   "role_group": "AM_WG",
+   "transfer_type": "permanent",
+   "synthetic_flag": 0,
+   "as_of_date": "2024-01-15",
+   "fee_eur": 90000.0,
+   "value_eur": 346708.894008016,
+   "ratio": 0.25958376481083056,
+   "seasons_ago": 0,
+   "age_at_sale": 20.298630136986276,
+   "mins_played": 1161.0,
+   "w_evidence": 0.6227269297517544,
+   "from_team": "Caldas",
+   "to_team": "Moreirense",
+   "engine_team": "Caldas",
+   "mid_season": true,
+   "log_error": -1.3486758353573596,
+   "score": 1.3486758353573596
   },
   {
    "playerId": 650811,
@@ -347,9 +406,9 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-01-15",
    "fee_eur": 450000.0,
-   "value_eur": 180347.94406104545,
-   "ratio": 2.49517676701477,
-   "seasons_ago": 1,
+   "value_eur": 186492.49099388797,
+   "ratio": 2.4129657853878315,
+   "seasons_ago": 0,
    "age_at_sale": 22.298630136986276,
    "mins_played": 1046.0,
    "w_evidence": 0.410840534171249,
@@ -357,8 +416,8 @@
    "to_team": "Moreirense",
    "engine_team": "Anadia",
    "mid_season": true,
-   "log_error": 0.9143595751967593,
-   "score": 0.9143595751967593
+   "log_error": 0.8808566072584189,
+   "score": 0.8808566072584189
   },
   {
    "playerId": 846557,
@@ -371,9 +430,9 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-07-15",
    "fee_eur": 300000.0,
-   "value_eur": 320226.7817346711,
-   "ratio": 0.9368360709085528,
-   "seasons_ago": 1,
+   "value_eur": 321667.97363533743,
+   "ratio": 0.9326386976283142,
+   "seasons_ago": 0,
    "age_at_sale": 21.854794520548012,
    "mins_played": 2139.0,
    "w_evidence": 0.5877988458367683,
@@ -381,8 +440,8 @@
    "to_team": "Segunda Liga (TBD)",
    "engine_team": "Varzim",
    "mid_season": false,
-   "log_error": -0.0652469630541733,
-   "score": 0.0652469630541733
+   "log_error": -0.06973740112145936,
+   "score": 0.06973740112145936
   },
   {
    "playerId": 776749,
@@ -395,9 +454,9 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-07-15",
    "fee_eur": 2000000.0,
-   "value_eur": 440151.248238045,
-   "ratio": 4.543892600568859,
-   "seasons_ago": 1,
+   "value_eur": 442517.8835192698,
+   "ratio": 4.51959135322247,
+   "seasons_ago": 0,
    "age_at_sale": 19.78630136986294,
    "mins_played": 1631.0,
    "w_evidence": 0.6760413112119943,
@@ -405,8 +464,8 @@
    "to_team": "Lyon (FRA L1)",
    "engine_team": "Sporting CP II",
    "mid_season": false,
-   "log_error": 1.5137840457013376,
-   "score": 1.5137840457013376
+   "log_error": 1.5084215811779385,
+   "score": 1.5084215811779385
   },
   {
    "playerId": 1038698,

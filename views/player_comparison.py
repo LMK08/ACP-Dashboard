@@ -121,7 +121,7 @@ def render():
     cvi_to_projected_eur = app.cvi_to_projected_eur
     engine_card_row = app.engine_card_row
     engine_metric_help_md = app.engine_metric_help_md
-    engine_rows_for_scope = app.engine_rows_for_scope
+    engine_value_for_player = app.engine_value_for_player
     get_filtered_events = app.get_filtered_events
     get_player_minutes_by_position = app.get_player_minutes_by_position
     get_scoped_style = app.get_scoped_style
@@ -344,11 +344,6 @@ def render():
         _eng_df, _eng_meta = pd.DataFrame(), {}
     _eng_meta = _eng_meta or {}
     _eurcal = load_eur_calibration()
-    try:
-        _eng_value_rows = engine_rows_for_scope(None)
-    except Exception:
-        logger.exception("engine value rows failed")
-        _eng_value_rows = pd.DataFrame()
     _tv_comp_id = competition_for_season(selected_season_id) if selected_season_id else None
 
     def _legacy_gk_value(row_df, pid, pos, bio):
@@ -404,12 +399,17 @@ def render():
         ctx['value'] = ctx['w_ev'] = ctx['eng_mins'] = None
         if ctx['is_gk']:
             ctx['value'] = _legacy_gk_value(row_df, pid, pos, bio)
-        elif not _eng_value_rows.empty:
-            _v = _eng_value_rows[_eng_value_rows['playerId'] == pid].dropna(subset=['engine_value_eur'])
-            if not _v.empty:
-                ctx['value'] = float(_v['engine_value_eur'].iloc[0])
-                ctx['w_ev'] = _v['w_evidence'].iloc[0]
-                ctx['eng_mins'] = _v['mins_played'].iloc[0]
+        else:
+            # the selected season's value, as on the profile (live during the
+            # current season; All Seasons -> today's)
+            try:
+                _v = engine_value_for_player(pid, active_season_ids)
+            except Exception:
+                logger.exception("engine value failed")
+                _v = None
+            if _v and _v['value'] is not None and pd.notna(_v['value']):
+                ctx['value'] = float(_v['value'])
+                ctx['w_ev'], ctx['eng_mins'] = _v['w_evidence'], _v['mins']
         try:
             ctx['style'] = None if ctx['is_gk'] else get_scoped_style(pid, active_season_ids)
         except Exception:

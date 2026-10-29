@@ -93,6 +93,7 @@ def render():
     load_player_engine = app.load_player_engine
     load_eur_calibration = app.load_eur_calibration
     engine_rows_for_scope = app.engine_rows_for_scope
+    engine_value_for_player = app.engine_value_for_player
     engine_card_row = app.engine_card_row
     logger = app.logger
     make_opta_team_strength_lookup = app.make_opta_team_strength_lookup
@@ -469,24 +470,20 @@ def render():
                       if _tv_projected_eur is not None and _tv_true_eur is not None
                       else None)
 
-    # Engine projected value — computed centrally in
-    # load_player_engine() (engine_value_eur); just look it up.
+    # Engine projected value for the SELECTED season (Lucas 2026-10-29:
+    # everything in the header follows the season) — app.engine_value_for_player
+    # uses the analysis tables' row pick and value, so the pages can't disagree:
+    # a season -> as of that season (the live one live once valued), All
+    # Seasons -> today's value.
     _eng_proj_eur = None
     _eng_w_ev = _eng_mins = None   # support inputs for the likely-fee range
+    _eng_value_label = None
     try:
-        _eng_tv_df, _ = load_player_engine()
-        if not _eng_tv_df.empty:
-            # ONE row-pick rule for engine columns (app.engine_rows_for_scope:
-            # projection-first, then seasonId, then minutes) — the row the
-            # analysis tables merge, so the two pages can never disagree.
-            _p_rows = engine_rows_for_scope(None)
-            _p_rows = (_p_rows[_p_rows['playerId'] == int(selected_player_id)]
-                       .dropna(subset=['engine_value_eur']) if not _p_rows.empty else _p_rows)
-            if not _p_rows.empty:
-                _p_row = _p_rows.iloc[0]
-                _eng_proj_eur = float(_p_row['engine_value_eur'])
-                _eng_w_ev = _p_row.get('w_evidence')
-                _eng_mins = _p_row.get('mins_played')
+        _ev = engine_value_for_player(int(selected_player_id), active_season_ids)
+        if _ev and _ev['value'] is not None and pd.notna(_ev['value']):
+            _eng_proj_eur = float(_ev['value'])
+            _eng_w_ev, _eng_mins = _ev['w_evidence'], _ev['mins']
+            _eng_value_label = _ev['label']
     except Exception:
         logger.exception("engine projected value failed")
     _eurcal = load_eur_calibration()
@@ -570,15 +567,23 @@ def render():
         else:
             bio_row3[0].metric(
                 "Projected value", _value_txt,
-                help=eur_interval_ui.help_text(_eurcal),
+                help=eur_interval_ui.help_text(_eurcal)
+                     + " It follows the selected season: the value as of the end "
+                       "of that season, live during the current one once his "
+                       "club has played 6 league matches; All Seasons shows "
+                       "today's value.",
             )
-            # The likely-fee range goes in a caption, NOT the metric delta:
-            # Streamlit draws an up-arrow for any non-negative delta text.
-            # Under the whole row (the cards keep one height).
+            # The likely-fee range and the value's basis go in a caption, NOT
+            # the metric delta: Streamlit draws an up-arrow for any
+            # non-negative delta text. Under the whole row (the cards keep
+            # one height).
             _rng_line = eur_interval_ui.range_sentence(
                 _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
-            if _rng_line:
-                st.caption(_rng_line)
+            _cap = " · ".join(x for x in (
+                f"Value {_eng_value_label}" if _eng_value_label and _eng_proj_eur is not None else None,
+                _rng_line) if x)
+            if _cap:
+                st.caption(_cap)
             if _hdr_style:
                 bio_row3[2].metric(
                     "Role", str(_hdr_style.get('role') or '—'),
