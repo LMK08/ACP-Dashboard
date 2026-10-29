@@ -176,6 +176,32 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   JSON that lands mid-rebuild can conflict its rebase — rerun the rebuild).
   Tests: `tests/test_eur_intervals.py` (incl. bit-for-bit parity with the
   old closure and the stale-artifact check against a fresh build).
+- **Live / per-season engine value (2026-10-29).** Replay-tested first; see
+  ACP_Official/live_value_plan_2026-10-29.md.
+  - **build_projection** also writes `acp_projection_asof.parquet`: the
+    shipped predictor applied to EVERY player-season.
+    - It projects next season from everything known at the end of that
+      season.
+    - For the season in progress, it uses data up to the data date, at his
+      age on that date.
+    - `projection` (boards, cards) is unchanged.
+  - **build_player_engine** merges it (asof_abs / asof_age /
+    asof_w_evidence / asof_live). `live_ok` = his club has played ≥ 6
+    league matches.
+  - **eur_intervals.engine_values → (today, season)**, both ranked in
+    today's projection pool, so the curve is unchanged.
+    - `engine_value_eur` is TODAY's value: live once valued, else the
+      summer projection.
+    - `engine_value_eur_season` is each row's value as of its season.
+  - **The app follows the selected season:**
+    - `engine_value_for_scope` (Analysis tables) and
+      `engine_value_for_player` (profile, comparison) use the season value.
+    - The live season falls back to today's value until it is valued.
+    - All Seasons shows today's value.
+  - **Fees** pair with the value as of the sale's season (no look-ahead).
+  - The stats-cache stamp carries `value:asof1`; bump it when that rule
+    changes.
+  - Tests: `tests/test_live_value.py`.
 - `models/value/availability.py` — the engine value's PLAYING-TIME FACTOR
   (`regular_factor`, 2026-10). The projection can't tell a cameo from a
   regular: a 95' player inherited a starter's value (Rafinha Monteiro, €218k).

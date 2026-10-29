@@ -1937,6 +1937,15 @@ we trust it** (an evidence weight from career minutes), and an **age curve**
 *In short: the **Index** shows who's been best; the **Projection** shows who's
 the best bet going forward, with the uncertainty made explicit.*
 
+**Projected value — follows the selected season, live during the current one.**
+The euro value comes from the same projection, made from everything known *at
+the end of the selected season* — so a past season shows what he was worth
+then. During the season in progress it is **live**: rebuilt from the matches
+played so far, once his club has played 6 league matches (before that, the
+summer value stands). **All Seasons** shows his value today. Replaying 2024/25
+match by match, the live value predicted the next season better than the
+summer value at every checkpoint, and the gain grew as the season went on.
+
 **Roles, Tendencies & Styles — *what kind* of player, not how good** *(descriptive, never in the rating)*
 
 Separate from the quality question, we describe *how* a player plays:
