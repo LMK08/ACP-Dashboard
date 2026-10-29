@@ -128,15 +128,21 @@ def test_two_clubs_without_dates_get_one_season():
     assert _avail(inp, 6)['avail_mins'] == pytest.approx(30 * L)
 
 
-def test_lineup_january_arrival_only_without_any_record():
+def test_nothing_is_inferred_from_the_lineups():
+    # first squad after 1 January with 5+ team matches before, but no dated
+    # move: no window (the January-arrival rule was removed 2026-10-29)
     jan = [i for i, d in enumerate(DAYS) if d >= pd.Timestamp('2026-01-01')]
-    apps = [(T1, i, 'S') for i in jan]
-    inp, _ = _inputs({7: apps})
+    inp, _ = _inputs({7: [(T1, i, 'S') for i in jan]})
     r = _avail(inp, 7)
-    assert r['window_cut'] and r['avail_mins'] == pytest.approx(len(jan) * L)
-    # a record with no in-season move: the record wins, no inferred arrival
-    inp2, _ = _inputs({7: apps}, transfers=[(7, '2025-07-01', 555, T1)])
-    assert not _avail(inp2, 7)['window_cut']
+    assert not r['window_cut'] and r['avail_mins'] == pytest.approx(30 * L)
+
+
+def test_a_renewal_is_not_a_move():
+    # a record from the club to itself mid-season must not cut the window
+    inp, _ = _inputs({9: [(T1, i, 'S') for i in range(20, 30)]},
+                     transfers=[(9, DAYS[20].strftime('%Y-%m-%d'), T1, T1)])
+    r = _avail(inp, 9)
+    assert not r['window_cut'] and r['avail_mins'] == pytest.approx(30 * L)
 
 
 def test_sub_fraction_counts_appearances_only():

@@ -191,7 +191,11 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     than one season (two clubs, or both leagues in one year).
   - **Club identity:** events `team.id`. NEVER the lineup file's team names,
     which are wrong in some matches.
-  - **Never inferred:** a departure, from lineups ("left" vs "dropped").
+  - **Nothing inferred from lineups:** no dated move means the whole season.
+    A lineup January-arrival rule was tested and removed on 2026-10-29: it
+    over-credited arrivals, 19% became regulars vs 35% predicted, with no
+    gain. Lineups can't tell "left" from "dropped" either. A record from a
+    club to itself (a renewal) is ignored.
   - **Not excused:** red-card suspensions and injury-like gaps were tested
     and didn't help.
   - **Pipeline:** runs in the engine rebuild right after

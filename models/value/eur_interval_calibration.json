@@ -1,6 +1,6 @@
 {
  "version": "eur_interval_v1",
- "built": "2026-10-28",
+ "built": "2026-10-29",
  "method": "split-conformal-log",
  "engine_meta": {
   "data_through": "2026-10-25",
@@ -23,9 +23,9 @@
   },
   "availability": {
    "coef": [
-    0.2759,
-    0.6181,
-    -0.2755
+    0.2873,
+    0.6358,
+    -0.2221
    ],
    "anchor_share": 0.36,
    "share_eps": 0.002,
@@ -74,7 +74,7 @@
   ]
  },
  "centre_drift": {
-  "L3_median_ratio": 1.1433263065228398,
+  "L3_median_ratio": 1.1395345555838396,
   "flag": false,
   "note": "centred"
  },
@@ -118,11 +118,11 @@
  "bias": {
   "pooled": {
    "n": 12,
-   "median_ratio": 1.0456521505477603
+   "median_ratio": 1.0427430056320222
   },
   "L3": {
    "n": 9,
-   "median_ratio": 1.1433263065228398
+   "median_ratio": 1.1395345555838396
   },
   "Camp": {
    "n": 3,
@@ -148,7 +148,7 @@
    "kind": "league",
    "name": "L3",
    "n": 9,
-   "median_ratio": 1.1433263065228398,
+   "median_ratio": 1.1395345555838396,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 4,
@@ -176,7 +176,7 @@
    "kind": "role_group",
    "name": "FB",
    "n": 1,
-   "median_ratio": 3.054518279403727,
+   "median_ratio": 2.996313786957885,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 0,
@@ -190,7 +190,7 @@
    "kind": "role_group",
    "name": "ST",
    "n": 4,
-   "median_ratio": 0.7705419358051404,
+   "median_ratio": 0.7676327908894024,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -218,7 +218,7 @@
    "kind": "value_band",
    "name": "> EUR 300k",
    "n": 3,
-   "median_ratio": 1.1433263065228398,
+   "median_ratio": 1.1395345555838396,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -323,8 +323,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2024-01-15",
    "fee_eur": 250000.0,
-   "value_eur": 229848.75051544022,
-   "ratio": 1.0876717817232864,
+   "value_eur": 231084.89446462033,
+   "ratio": 1.0818534918918103,
    "seasons_ago": 2,
    "age_at_sale": 23.1232876712329,
    "mins_played": 1002.0,
@@ -333,8 +333,8 @@
    "to_team": "Portimonense",
    "engine_team": "Felgueiras 1932",
    "mid_season": true,
-   "log_error": 0.0840394317116233,
-   "score": 0.0840394317116233
+   "log_error": 0.07867576635031248,
+   "score": 0.07867576635031248
   },
   {
    "playerId": 650811,
@@ -347,8 +347,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-01-15",
    "fee_eur": 450000.0,
-   "value_eur": 180396.85967115004,
-   "ratio": 2.4945001859806,
+   "value_eur": 181296.50416315228,
+   "ratio": 2.4821217710576273,
    "seasons_ago": 1,
    "age_at_sale": 22.298630136986276,
    "mins_played": 1046.0,
@@ -357,8 +357,8 @@
    "to_team": "Moreirense",
    "engine_team": "Anadia",
    "mid_season": true,
-   "log_error": 0.9140883828752161,
-   "score": 0.9140883828752161
+   "log_error": 0.9091137472459849,
+   "score": 0.9091137472459849
   },
   {
    "playerId": 846557,
@@ -443,8 +443,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 500000.0,
-   "value_eur": 437320.4719837448,
-   "ratio": 1.1433263065228398,
+   "value_eur": 438775.63655261457,
+   "ratio": 1.1395345555838396,
    "seasons_ago": 0,
    "age_at_sale": 18.032876712328743,
    "mins_played": 1190.0,
@@ -453,8 +453,8 @@
    "to_team": "Sporting Lisbon",
    "engine_team": "Atl\u00e9tico CP",
    "mid_season": false,
-   "log_error": 0.13394182659246193,
-   "score": 0.13394182659246193
+   "log_error": 0.13061989445998404,
+   "score": 0.13061989445998404
   },
   {
    "playerId": 873635,
@@ -467,8 +467,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 200000.0,
-   "value_eur": 65476.77299840616,
-   "ratio": 3.054518279403727,
+   "value_eur": 66748.68328896126,
+   "ratio": 2.996313786957885,
    "seasons_ago": 0,
    "age_at_sale": 20.884931506849398,
    "mins_played": 1281.0,
@@ -477,8 +477,8 @@
    "to_team": "Ukraine Premier League (TBD)",
    "engine_team": "CF Os Belenenses",
    "mid_season": false,
-   "log_error": 1.116621897507433,
-   "score": 1.116621897507433
+   "log_error": 1.097382795470309,
+   "score": 1.097382795470309
   },
   {
    "playerId": 693095,

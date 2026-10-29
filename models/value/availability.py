@@ -26,14 +26,20 @@ departure dated inside the season (more than EDGE_DAYS from either end) cuts
 the window; the window always covers every match he was in that club's
 matchday squad; a window under MIN_WINDOW matches falls back to the full
 season; a season's availability never exceeds one season (two clubs, or both
-leagues in one year). No record at all: a January arrival is inferred from
-the lineups (first squad after 1 Jan with 5+ team matches before); a departure
-is never inferred (lineups can't tell "left" from "dropped").
+leagues in one year). No transfer record: no window — nothing is inferred
+from the lineups (a January-arrival rule — first squad after 1 Jan with 5+
+team matches before — was tested and REMOVED 2026-10-29: those players became
+regulars 19% of the time against 35% predicted, and dropping it changed
+nothing measurable; lineups can't tell "left" from "dropped" either). A record
+from a club to itself (a renewal) is not a move and is ignored.
 
 Validated 2026-10-28 (Liga 3 2022/23 + 2024/25, non-reserve, cross-season):
 log-loss 0.6426 -> 0.6393, AUC 0.633 -> 0.643 against the full-season
 schedule; excusing red-card suspensions or injury-like gaps did not help and
-is not done. Plan + evidence: ACP_Official/value_minutes_plan_2026-10-28.md.
+is not done. Audit 2026-10-29 on years never used to choose the model (L3
+2021/22 + 2023/24): windows beat the schedule, log-loss -0.0047 (95% CI
+-0.0084 to -0.0010); AUC +0.008 (CI includes 0) — a real but small gain.
+Plan + evidence: ACP_Official/value_minutes_plan_2026-10-28.md.
 
 COEF is pinned; refit at the yearly rollover with `--fit` (prints the
 coefficients and the cross-season check) and regenerate the fee calibration
@@ -62,7 +68,7 @@ OUT = HERE / 'availability.parquet'
 ENGINE_PATH = DASH / 'models' / 'ratings' / 'player_engine.parquet'
 
 # logit p(regular next season) = a + b log(share + EPS) + c sub_frac
-COEF = (0.2759, 0.6181, -0.2755)  # --fit 2026-10-28: 927 rows, cross-season log-loss 0.6401, AUC 0.6415
+COEF = (0.2873, 0.6358, -0.2221)  # --fit 2026-10-29 (no lineup rule): 927 rows, cross-season log-loss 0.6392, AUC 0.6409
 SHARE_EPS = 0.002       # ~5'; immaterial above the engine's 90' floor (3.3% share)
 ANCHOR_SHARE = 0.36     # ~1,000' of a typical 2,744' season: factor 1 at/above
 REGULAR_NEXT = 900.0    # the outcome the curve is fitted to
@@ -140,25 +146,27 @@ def availability_table(inp):
     tr = inp['tr'].copy()
     tr['sd'] = pd.to_datetime(tr['startDate'], errors='coerce')
     tr = tr.dropna(subset=['sd', 'playerId'])
+    # a club to itself is a renewal / re-registration, not a move: read as an
+    # arrival it would cut the window at the renewal date
+    same_club = tr['fromTeamId'].notna() & tr['toTeamId'].notna() & (tr['fromTeamId'] == tr['toTeamId'])
+    tr = tr[~same_club.fillna(False).astype(bool)]
     tr_by = {int(p): g for p, g in tr.groupby('playerId')}
 
-    def window(pid, sid, tid, seq):
+    def window(pid, sid, tid):
+        """(start, end) of his time at the club this season from his dated
+        moves; (None, None) = the whole season (no record, or no move inside it)."""
+        if pid not in tr_by:
+            return None, None
         b = bounds[sid]
         lo, hi = b['min'] + pd.Timedelta(days=EDGE_DAYS), b['max'] - pd.Timedelta(days=EDGE_DAYS)
-        if pid in tr_by:
-            g = tr_by[pid]
-            arr = g[(g['toTeamId'] == tid) & (g['sd'] > lo) & (g['sd'] < hi)]
-            dep = g[(g['fromTeamId'] == tid) & (g['sd'] > lo) & (g['sd'] < hi)]
-            start = arr['sd'].min() if len(arr) else None
-            end = dep['sd'].max() if len(dep) else None
-            if start is not None and end is not None and end <= start:   # left, came back: the later stint
-                end = None
-            return start, end
-        seen = [i for i, (_, m) in enumerate(seq) if (pid, m) in pres]
-        jan = pd.Timestamp(f'{SEASON_YEAR[sid] + 1}-01-01')
-        if seen and seen[0] >= 5 and seq[seen[0]][0] >= jan:
-            return jan, None
-        return None, None
+        g = tr_by[pid]
+        arr = g[(g['toTeamId'] == tid) & (g['sd'] > lo) & (g['sd'] < hi)]
+        dep = g[(g['fromTeamId'] == tid) & (g['sd'] > lo) & (g['sd'] < hi)]
+        start = arr['sd'].min() if len(arr) else None
+        end = dep['sd'].max() if len(dep) else None
+        if start is not None and end is not None and end <= start:   # left, came back: the later stint
+            end = None
+        return start, end
 
     rows = []
     for (pid, sid), tids in clubs.items():
@@ -170,7 +178,7 @@ def availability_table(inp):
             seq = sched.get((sid, tid), [])
             if not seq:
                 continue
-            start, end = window(pid, sid, tid, seq)
+            start, end = window(pid, sid, tid)
             seen_d = [d for d, m in seq if (pid, m) in pres]
             if seen_d:       # never cut away a match he was in this club's squad for
                 if start is not None and seen_d[0] < start:
