@@ -49,7 +49,11 @@ o = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 # season, projected one season ahead. A season still in progress is rated
 # for the dashboard but is neither a training pair nor a projection base
 # (it would age players twice and treat them as lapsed — review 2026-10-21).
-o = o[~o['seasonId'].isin(IN_PROGRESS_SEASON_IDS)].copy()
+# Its rows DO get features (per-season percentiles and the leak-free career
+# loop never look forward, so completed rows are unchanged): the AS-OF
+# projections at the end use them; everything else runs on `o` = completed.
+o = o.copy()
+o['_live'] = o['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
 o['yr'] = o['seasonId'].map(SEASON_YR)
 
 # NPxG + receiving value percentile
@@ -182,7 +186,7 @@ def std_age_delta(age, role=None):
 
 # observed bin deltas printed for REFERENCE only (not used):
 _dp = []
-for _pid, _gg in o.dropna(subset=['age']).groupby('playerId'):
+for _pid, _gg in o[~o['_live']].dropna(subset=['age']).groupby('playerId'):
     rr = _gg.to_dict('records')
     for a, b in zip(rr, rr[1:]):
         if b['yr'] - a['yr'] == 1:
@@ -212,6 +216,10 @@ FEATS = ['qual_pct', 'rapm_pct', 'off_pct', 'datt_pct', 'p_npxg', 'p_recv',
           'eff9', 'eff10', 'age_delta', 'p_drib_wide', 'p_npxg_st']
 o['p_drib_wide'] = np.where(o['role'].isin(WIDE), o['p_drib'], 0.5)
 o['p_npxg_st'] = np.where(o['role'] == 'Striker', o['p_npxg'], 0.5)
+# every row (live season included) for the as-of projections; the panel, the
+# fit and today's projections use completed seasons only, as before
+o_all = o
+o = o_all[~o_all['_live']].copy()
 
 print("[2/5] panel…", flush=True)
 rows = []
@@ -382,7 +390,10 @@ print("[4/5] G2 role-specific bands (test residuals of SHIPPED predictor)…",
 print("[5/5] project all current-season players…", flush=True)
 final = Ridge(alpha=ALPHA).fit(
     (P[FEATS] - mu) / sd, P['next_rating'])    # refit on ALL pairs for production
-cur = o[(o['seasonId'].isin({191782, 191779})) & o[FEATS].notna().all(axis=1)].copy()
+# the base = the latest COMPLETED season-year (was hard-coded {191782, 191779}
+# / 2025 — the same seasons today; derived so a replay or a rollover can't miss)
+CUR_YR = int(o['yr'].max())
+cur = o[(o['yr'] == CUR_YR) & o[FEATS].notna().all(axis=1)].copy()
 cur['seasons_ago'] = 0
 # Non-current players (Lucas 2026-06-24): project EVERY player with an eligible
 # (>=90') season off their MOST RECENT one — not just the one-season-lapsed.
@@ -407,7 +418,7 @@ if len(_missing):
         print(f"     MISSING|{int(_m['playerId'])}|{int(_m['seasonId'])}|"
                f"{_m.get('role')}|{_m['mins_played']:.0f}|{_m['_miss']}")
 _stale = _stale[_stale[FEATS].notna().all(axis=1)].copy()
-_stale['seasons_ago'] = (2025 - _stale['yr']).clip(lower=1).astype(int)
+_stale['seasons_ago'] = (CUR_YR - _stale['yr']).clip(lower=1).astype(int)
 _stale['age'] = _stale['age'] + _stale['seasons_ago']            # forward to current (25/26) age
 _stale['age_delta'] = _stale.apply(_blended_age_delta, axis=1)   # ONE step: current age -> 26/27
 # idle-year evidence decay REMOVED (Lucas 2026-06-24, "minimize"): eff_mins /
@@ -417,27 +428,30 @@ cur = pd.concat([cur, _stale], ignore_index=True)
 print(f"  +{len(_stale)} non-current players projected off their latest season "
        f"(seasons_ago {int(_stale['seasons_ago'].min()) if len(_stale) else 0}"
        f"-{int(_stale['seasons_ago'].max()) if len(_stale) else 0})")
-if SHIP == 'ridge':
-    cur['projection'] = final.predict((cur[FEATS] - mu) / sd)
-elif SHIP == 'marcel':
-    cur['projection'] = cur['career_asof'] + cur['age_delta']
-elif SHIP == 'replacement':
-    _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
-    cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
-        cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cr)
-elif SHIP == 'full':
-    _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
-    cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc,
-        cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cf
-        + cur['age_delta'].values)
-elif SHIP == 'full2':
-    _wc = (cur[EVID_COL] / (cur[EVID_COL] + EVID_K)).values
-    _wsc = (cur['season_mins'] / (cur['season_mins'] + 900.0)).values
-    cur['projection'] = (np.column_stack([np.ones(len(cur)), _wc, _wsc,
-        cur['career_asof'].values, cur['career_asof'].values * _wc]) @ _cf2
-        + cur['age_delta'].values)
-else:
-    cur['projection'] = cur['career_asof']
+def _ship_predict(d):
+    """The SHIPPED predictor on any feature frame (today's projections and
+    the as-of ones below share it)."""
+    if SHIP == 'ridge':
+        return final.predict((d[FEATS] - mu) / sd)
+    if SHIP == 'marcel':
+        return (d['career_asof'] + d['age_delta']).values
+    _wc = (d[EVID_COL] / (d[EVID_COL] + EVID_K)).values
+    if SHIP == 'replacement':
+        return (np.column_stack([np.ones(len(d)), _wc,
+            d['career_asof'].values, d['career_asof'].values * _wc]) @ _cr)
+    if SHIP == 'full':
+        return (np.column_stack([np.ones(len(d)), _wc,
+            d['career_asof'].values, d['career_asof'].values * _wc]) @ _cf
+            + d['age_delta'].values)
+    if SHIP == 'full2':
+        _wsc = (d['season_mins'] / (d['season_mins'] + 900.0)).values
+        return (np.column_stack([np.ones(len(d)), _wc, _wsc,
+            d['career_asof'].values, d['career_asof'].values * _wc]) @ _cf2
+            + d['age_delta'].values)
+    return d['career_asof'].values
+
+
+cur['projection'] = _ship_predict(cur)
 te = te.copy()   # slice of P — write on a copy (silences SettingWithCopyWarning)
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
                        else marcel_te if SHIP == 'marcel'
@@ -473,3 +487,35 @@ print("\n  biggest SELL-HIGH flags (rating >> proj, >=1200 min):")
 for _, x in out[out['mins_played'] >= 1200].nsmallest(5, 'proj_delta').iterrows():
     print(f"    {str(x['name'])[:22]:<24}{x['role'][:16]:<17}age {x['age']:.0f}  "
            f"rating {x['acp_rating']:.0f} -> proj {x['projection']:.0f}")
+
+# ---- AS-OF projections (live-season value, 2026-10-29) ----------------------
+# The shipped predictor on EVERY player-season: next season's level from
+# everything known at the end of that season — for the season in progress,
+# known at the DATA DATE (its rows hold the matches played so far; the career
+# rating and evidence weigh them by their minutes). A completed season keeps
+# its midpoint age + one step; a live row takes his age at the data date + one
+# step, so nobody is aged twice. For the per-season / live engine value;
+# `projection` above (today's forecast, boards and cards) is unchanged.
+# Replay-tested on 2024/25: ACP_Official/live_value_plan_2026-10-29.md.
+_ms = pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['seasonId', 'dateutc', 'status'])
+_live_d = pd.to_datetime(_ms.loc[_ms['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
+                                  & _ms['status'].eq('Played'), 'dateutc'], errors='coerce', utc=True)
+AS_OF = _live_d.max().tz_convert(None).normalize() if _live_d.notna().any() else None
+asof = o_all.copy()
+_lv = asof['_live']
+if AS_OF is not None and _lv.any():
+    asof.loc[_lv, 'age'] = (AS_OF - asof.loc[_lv, 'birth']).dt.days / 365.25
+    asof.loc[_lv, 'age_delta'] = asof.loc[_lv].apply(_blended_age_delta, axis=1)
+asof = asof[asof[FEATS].notna().all(axis=1)].copy()
+asof['projection_asof'] = _ship_predict(asof)
+asof['w_evidence'] = asof[EVID_COL] / (asof[EVID_COL] + EVID_K)
+asof['band_sd'] = asof['role'].map(band).fillna(float(te2['resid'].std()))
+asof['is_live'] = asof['_live']
+asof['as_of_date'] = np.where(asof['_live'], AS_OF.strftime('%Y-%m-%d') if AS_OF is not None else None, None)
+asof_out = asof[['playerId', 'seasonId', 'yr', 'name', 'role', 'league', 'age', 'mins_played',
+                 'acp_rating', 'career_asof', 'age_delta', 'w_evidence', 'projection_asof',
+                 'band_sd', 'is_live', 'as_of_date']].copy()
+asof_out['projection_version'] = 'v2.1-' + SHIP + '-asof'
+asof_out.to_parquet(_HERE / 'acp_projection_asof.parquet')
+print(f"\n  acp_projection_asof.parquet ({len(asof_out):,} player-seasons; "
+      f"{int(asof_out['is_live'].sum())} live as of {AS_OF.date() if AS_OF is not None else '—'})")

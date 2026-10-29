@@ -272,8 +272,12 @@ json.dump({'reference': 'L3',
 # the projection (L3 reference)
 # the projection is TODAY's forecast, so it takes today's recruit gap; the
 # rating takes its own Camp season's as-of gap
+# (the as-of projections, past seasons included, are read today: today's gap)
 for fname, col, dd in [('acp_rating_per_player_season.parquet', 'acp_rating', None),
-                          ('acp_projection.parquet', 'projection', delta_recruit)]:
+                          ('acp_projection.parquet', 'projection', delta_recruit),
+                          ('acp_projection_asof.parquet', 'projection_asof', delta_recruit)]:
+    if not (_HERE / fname).exists():
+        continue
     df = pd.read_parquet(_HERE / fname)
     gap = (df['seasonId'].map(camp_delta).fillna(delta) if dd is None
            else pd.Series(dd, index=df.index))
