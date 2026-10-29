@@ -87,6 +87,16 @@ jobs:
           WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
         run: python fetch_team_stats.py
 
+      - name: Refresh transfer records (engine value join/leave windows)
+        # /teams/{id}/transfers per team of the active league's last two
+        # seasons (/seasons/{id}/transfers is 403 on our subscription), per
+        # player where a team call fails. Non-fatal: a failed refresh keeps
+        # the committed records (models/value/transfers.parquet).
+        env:
+          WYSCOUT_USER_NEW: ${{ secrets.WYSCOUT_USER_NEW }}
+          WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
+        run: python models/value/fetch_transfers.py || echo "fetch_transfers nonzero (continuing — the committed records stay)"
+
       - name: Fetch Opta Power Rankings (Portugal)
         # Scrapes dataviz.theanalyst.com/opta-power-rankings/index.js,
         # extracts the embedded Portuguese clubs, writes opta_ratings.parquet.
@@ -120,6 +130,7 @@ jobs:
           # Add all data files EXCEPT raw_events.parquet (too large for GitHub, lives on HF only)
           git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet opta_ratings.parquet match_player_minutes.parquet
           git add -f models/scoreline/dc_params.json
+          git add -f models/value/transfers.parquet
           git add -f *.pkl
 
           if [ -n "$(git status --porcelain)" ]; then

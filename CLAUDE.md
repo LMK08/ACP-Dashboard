@@ -176,6 +176,46 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   JSON that lands mid-rebuild can conflict its rebase — rerun the rebuild).
   Tests: `tests/test_eur_intervals.py` (incl. bit-for-bit parity with the
   old closure and the stale-artifact check against a fresh build).
+- `models/value/availability.py` — the engine value's PLAYING-TIME FACTOR
+  (`regular_factor`, 2026-10). The projection can't tell a cameo from a
+  regular: a 95' player inherited a starter's value (Rafinha Monteiro, €218k).
+  - **Share:** engine `mins_lineup` ÷ the minutes available to him (his
+    club's league matches while he was there).
+  - **Bench term:** `sub_frac` = sub appearances ÷ appearances.
+  - **Factor:** a logistic chance of 900'+ the next season, ÷ the same at
+    36% share; 1.0 from ~1,000'.
+  - **Exempt:** reserve sides (`league_config.is_reserve_team`, '<club> II'),
+    since few Liga 3 minutes there often mean first-team football we can't see.
+  - **Windows:** from `models/value/transfers.parquet` (Wyscout transfer
+    records), widened to every squad appearance, ≥ 6 matches, and NEVER more
+    than one season (two clubs, or both leagues in one year).
+  - **Club identity:** events `team.id`. NEVER the lineup file's team names,
+    which are wrong in some matches.
+  - **Never inferred:** a departure, from lineups ("left" vs "dropped").
+  - **Not excused:** red-card suspensions and injury-like gaps were tested
+    and didn't help.
+  - **Pipeline:** runs in the engine rebuild right after
+    build_player_engine.py and before eur_intervals.py. It writes
+    `availability.parquet`; `availability.attach()` joins the factor on the
+    RAW ids (before any alias remap) in `load_player_engine` and in the
+    calibration's `load_inputs`, so the app and the calibration value
+    identically.
+  - **Rollover:** `COEF` is pinned; refit with `--fit` and regenerate the
+    calibration JSON (its `point_model.availability` records the constants).
+  - Plan + evidence: `ACP_Official/value_minutes_plan_2026-10-28.md`.
+  - Tests: `tests/test_availability.py`.
+- `models/value/fetch_transfers.py` — refreshes `transfers.parquet` in
+  scheduled_update.yml (non-fatal).
+  - Per TEAM via `/teams/{id}/transfers`. `/seasons/{id}/transfers` is 403
+    on our subscription; date ranges are at most one year.
+  - Per PLAYER for a team whose call fails.
+  - Only active competitions; the Campeonato keeps the seeded records.
+  - Wyscout returns a refusal as HTTP 400 with `{"error": {"code": 403}}`
+    in the body; read the body.
+  - Upserts on (playerId, startDate, fromTeamId, toTeamId, type) and never
+    deletes.
+  - `transfers.parquet` is in `engine_inputs_fp.py`, so a new move triggers
+    the rebuild. Seeded 2026-10-28 from the loader cache (`--seed`).
 - `models/similarity/similar_players.py` — the like-for-like search behind
   the profile's 'Similar Players' section (`similar_players_ui.py`) and
   the Shadow Team 'Find players like…' buttons. One vector per

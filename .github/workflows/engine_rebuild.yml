@@ -184,6 +184,11 @@ jobs:
           python models/ratings/build_projection.py
           python models/ratings/league_conversion.py
           python models/ratings/build_player_engine.py
+          # Engine value's playing-time factor (seconds): share of the minutes
+          # available to each player (club windows from transfers.parquet) and
+          # bench share -> regular_factor. Reads the fresh engine rows' minutes,
+          # so AFTER build_player_engine.py and BEFORE the calibration below.
+          python models/value/availability.py || echo "availability nonzero (continuing — the committed factors stay)"
           # Projected-value interval: fee-calibrated conformal band around the
           # engine value (seconds). Must run AFTER build_player_engine.py — it
           # pairs the real sales with the freshly rebuilt engine rows.
@@ -258,7 +263,8 @@ jobs:
                      obv_match_player.parquet obv_team_season.parquet \
                      possession_phases.parquet team_phase_profile.parquet \
                      models/ratings/*.parquet models/ratings/*.json \
-                     models/value/*.json models/scoreline/*.json \
+                     models/value/*.json models/value/availability.parquet \
+                     models/scoreline/*.json \
                      models/duels/*.parquet models/defr/*.parquet \
                      models/roles/role_features_season.parquet \
                      models/roles/role_assignments_season.parquet \

@@ -1,6 +1,7 @@
 """Fingerprint of everything the engine rebuild reads that the daily data
 refresh can change: the HF Space's raw_events.parquet (LFS sha256 — no
-download) plus the committed per-match minutes, lineups and schedule.
+download) plus the committed per-match minutes, lineups, schedule and
+transfer records (the engine value's join/leave windows).
 
     python scripts/engine_inputs_fp.py            # print the fingerprint
     python scripts/engine_inputs_fp.py --changed  # 'true'/'false' vs the
@@ -15,7 +16,8 @@ import os
 import sys
 
 STORED = os.path.join('models', 'ratings', 'engine_inputs.sha')
-FILES = ['match_player_minutes.parquet', 'match_lineups.pkl', 'matches_summary.parquet']
+FILES = ['match_player_minutes.parquet', 'match_lineups.pkl', 'matches_summary.parquet',
+         'models/value/transfers.parquet']
 
 
 def _content_hash(f):
@@ -36,6 +38,11 @@ def _content_hash(f):
         with open(f, 'rb') as fh:
             lu = pickle.load(fh)
         d = repr(sorted((int(k), bool(v)) for k, v in lu.items()))
+    elif f == 'models/value/transfers.parquet':
+        # the moves, not when or how they were fetched (fetched_at / source
+        # change on every refresh)
+        cols = ['playerId', 'startDate', 'fromTeamId', 'toTeamId', 'type']
+        d = pd.read_parquet(f, columns=cols).astype(str).sort_values(cols).to_csv(index=False)
     else:
         return hashlib.sha256(open(f, 'rb').read()).hexdigest()
     return hashlib.sha256(d.encode()).hexdigest()

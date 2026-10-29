@@ -7,7 +7,11 @@ Two things live here, both pure pandas/numpy (no streamlit):
    here so the calibration script and the app run the SAME code.
      perf  = percentile of projection_abs within the projection pool
      value = cvi_to_projected_eur(perf x age multiplier, role group, comp)
-             x ENGINE_VALUE_TEMPER
+             x ENGINE_VALUE_TEMPER x regular_factor
+   regular_factor (models/value/availability.py, 2026-10) scales the value by
+   how likely a player with his playing time is to become a regular — a 95'
+   cameo is no longer valued like a starter; 1.0 at/above ~1,000', for
+   reserve sides, and wherever the engine row has no factor.
    (see engine_value_eur / engine_value_eur_frame).
 
 2. The INTERVAL — a split-conformal prediction interval for the realised
@@ -48,6 +52,7 @@ if __name__ == '__main__':  # `python models/value/eur_intervals.py` from the Da
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from models.value import availability as _availability
 from models.value.cvi import (
     CAMP_PROJECTED_EUR_PENALTY,
     POSITION_EUR_MULTIPLIER,
@@ -121,8 +126,10 @@ def engine_perf_percentile(projection_abs, pool_sorted):
     return float(lo / n + 0.5 * ((hi - lo) / n)) * 100.0
 
 
-def engine_value_eur(projection_abs, pool_sorted, role, age, season_id):
-    """The dashboard's projected value (EUR) for one engine row, or None."""
+def engine_value_eur(projection_abs, pool_sorted, role, age, season_id, regular_factor=1.0):
+    """The dashboard's projected value (EUR) for one engine row, or None.
+    regular_factor: the row's playing-time factor (availability.py); None /
+    NaN count as 1.0."""
     perf = engine_perf_percentile(projection_abs, pool_sorted)
     if perf is None:
         return None
@@ -130,7 +137,10 @@ def engine_value_eur(projection_abs, pool_sorted, role, age, season_id):
     am = _cvi_age_value_multiplier(age, grp)
     v = cvi_to_projected_eur(perf * am, position_group=grp,
                              competition_id=competition_for_engine_season(season_id))
-    return None if v is None else v * ENGINE_VALUE_TEMPER
+    if v is None:
+        return None
+    f = 1.0 if regular_factor is None or pd.isna(regular_factor) else float(regular_factor)
+    return v * ENGINE_VALUE_TEMPER * f
 
 
 def sorted_pool(engine_df):
@@ -144,7 +154,8 @@ def engine_value_eur_frame(engine_df):
     pool = sorted_pool(engine_df)
     return engine_df.apply(
         lambda r: engine_value_eur(r.get('projection_abs'), pool, r.get('role'),
-                                   r.get('age'), r.get('seasonId')), axis=1)
+                                   r.get('age'), r.get('seasonId'),
+                                   r.get('regular_factor', 1.0)), axis=1)
 
 
 def conformal_k(n, level):
@@ -344,7 +355,8 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             age_at_sale = (float(age_row) - seasons_ago
                            if age_row is not None and not pd.isna(age_row) else age_row)
             value = engine_value_eur(r.get('projection_abs'), pool, role,
-                                     age_at_sale, r.get('seasonId'))
+                                     age_at_sale, r.get('seasonId'),
+                                     r.get('regular_factor', 1.0))
             mp, we = r.get('mins_played'), r.get('w_evidence')
             mins = float(mp) if mp is not None and not pd.isna(mp) else None
             w_ev = float(we) if we is not None and not pd.isna(we) else None
@@ -524,6 +536,9 @@ def build_calibration(pairs, engine_meta=None, previous=None, today=None):
             'coef': PROJECTED_EUR_COEF, 'exp': PROJECTED_EUR_EXP,
             'temper': ENGINE_VALUE_TEMPER, 'camp_penalty': CAMP_PROJECTED_EUR_PENALTY,
             'position_multipliers': dict(POSITION_EUR_MULTIPLIER),
+            'availability': {'coef': list(_availability.COEF), 'anchor_share': _availability.ANCHOR_SHARE,
+                             'share_eps': _availability.SHARE_EPS, 'min_window': _availability.MIN_WINDOW,
+                             'edge_days': _availability.EDGE_DAYS},
         },
         'n_fee_rows': int(len(pairs)), 'n_calibration': n,
         'n_mid_season': (int(cal['mid_season'].sum()) if n and 'mid_season' in cal.columns else 0),
@@ -587,7 +602,8 @@ def load_inputs():
     """(fees, engine, engine_meta, aliases) exactly as the build uses them —
     shared with the test that rebuilds the calibration in-process."""
     fees = pd.read_csv(FEES_PATH, comment='#')
-    eng = pd.read_parquet(ENGINE_PATH)
+    # the playing-time factor, joined on the raw ids (pairing applies the aliases)
+    eng = _availability.attach(pd.read_parquet(ENGINE_PATH))
     meta = {}
     if ENGINE_META_PATH.exists():
         with open(ENGINE_META_PATH) as f:

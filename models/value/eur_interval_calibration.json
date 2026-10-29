@@ -20,6 +20,17 @@
    "CB": 0.9,
    "FB": 0.85,
    "GK": 0.7
+  },
+  "availability": {
+   "coef": [
+    0.2759,
+    0.6181,
+    -0.2755
+   ],
+   "anchor_share": 0.36,
+   "share_eps": 0.002,
+   "min_window": 6,
+   "edge_days": 14
   }
  },
  "n_fee_rows": 33,
@@ -63,7 +74,7 @@
   ]
  },
  "centre_drift": {
-  "L3_median_ratio": 1.1395345555838396,
+  "L3_median_ratio": 1.1433263065228398,
   "flag": false,
   "note": "centred"
  },
@@ -107,11 +118,11 @@
  "bias": {
   "pooled": {
    "n": 12,
-   "median_ratio": 1.0000603922362234
+   "median_ratio": 1.0456521505477603
   },
   "L3": {
    "n": 9,
-   "median_ratio": 1.1395345555838396
+   "median_ratio": 1.1433263065228398
   },
   "Camp": {
    "n": 3,
@@ -137,7 +148,7 @@
    "kind": "league",
    "name": "L3",
    "n": 9,
-   "median_ratio": 1.1395345555838396,
+   "median_ratio": 1.1433263065228398,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 4,
@@ -165,7 +176,7 @@
    "kind": "role_group",
    "name": "FB",
    "n": 1,
-   "median_ratio": 2.914454928487003,
+   "median_ratio": 3.054518279403727,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 0,
@@ -179,7 +190,7 @@
    "kind": "role_group",
    "name": "ST",
    "n": 4,
-   "median_ratio": 0.7249501774936035,
+   "median_ratio": 0.7705419358051404,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -207,7 +218,7 @@
    "kind": "value_band",
    "name": "> EUR 300k",
    "n": 3,
-   "median_ratio": 1.1395345555838396,
+   "median_ratio": 1.1433263065228398,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 2,
@@ -221,7 +232,7 @@
    "kind": "value_band",
    "name": "EUR 100k-300k",
    "n": 6,
-   "median_ratio": 0.8826307482606455,
+   "median_ratio": 0.8862028753966562,
    "conditioned": false,
    "eligible_at_n": 15,
    "loo_hits_0.50": 4,
@@ -312,8 +323,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2024-01-15",
    "fee_eur": 250000.0,
-   "value_eur": 250881.02766053003,
-   "ratio": 0.9964882651002125,
+   "value_eur": 229848.75051544022,
+   "ratio": 1.0876717817232864,
    "seasons_ago": 2,
    "age_at_sale": 23.1232876712329,
    "mins_played": 1002.0,
@@ -322,8 +333,8 @@
    "to_team": "Portimonense",
    "engine_team": "Felgueiras 1932",
    "mid_season": true,
-   "log_error": -0.003517915514820834,
-   "score": 0.003517915514820834
+   "log_error": 0.0840394317116233,
+   "score": 0.0840394317116233
   },
   {
    "playerId": 650811,
@@ -336,8 +347,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2025-01-15",
    "fee_eur": 450000.0,
-   "value_eur": 181509.54251253724,
-   "ratio": 2.4792084965390595,
+   "value_eur": 180396.85967115004,
+   "ratio": 2.4945001859806,
    "seasons_ago": 1,
    "age_at_sale": 22.298630136986276,
    "mins_played": 1046.0,
@@ -346,8 +357,8 @@
    "to_team": "Moreirense",
    "engine_team": "Anadia",
    "mid_season": true,
-   "log_error": 0.9079393546148687,
-   "score": 0.9079393546148687
+   "log_error": 0.9140883828752161,
+   "score": 0.9140883828752161
   },
   {
    "playerId": 846557,
@@ -432,8 +443,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 500000.0,
-   "value_eur": 438775.63655261457,
-   "ratio": 1.1395345555838396,
+   "value_eur": 437320.4719837448,
+   "ratio": 1.1433263065228398,
    "seasons_ago": 0,
    "age_at_sale": 18.032876712328743,
    "mins_played": 1190.0,
@@ -442,8 +453,8 @@
    "to_team": "Sporting Lisbon",
    "engine_team": "Atl\u00e9tico CP",
    "mid_season": false,
-   "log_error": 0.13061989445998404,
-   "score": 0.13061989445998404
+   "log_error": 0.13394182659246193,
+   "score": 0.13394182659246193
   },
   {
    "playerId": 873635,
@@ -456,8 +467,8 @@
    "synthetic_flag": 0,
    "as_of_date": "2026-07-15",
    "fee_eur": 200000.0,
-   "value_eur": 68623.46644826212,
-   "ratio": 2.914454928487003,
+   "value_eur": 65476.77299840616,
+   "ratio": 3.054518279403727,
    "seasons_ago": 0,
    "age_at_sale": 20.884931506849398,
    "mins_played": 1281.0,
@@ -466,8 +477,8 @@
    "to_team": "Ukraine Premier League (TBD)",
    "engine_team": "CF Os Belenenses",
    "mid_season": false,
-   "log_error": 1.0696828138057468,
-   "score": 1.0696828138057468
+   "log_error": 1.116621897507433,
+   "score": 1.116621897507433
   },
   {
    "playerId": 693095,

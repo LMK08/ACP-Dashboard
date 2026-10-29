@@ -111,6 +111,15 @@ def all_season_id_map():
     return result
 
 
+def is_reserve_team(team_name):
+    """A club's B side ('<club> II': Sporting CP II, Sporting Braga II,
+    Vitória Guimarães II, FC Alverca II, Chaves II, Portimonense II,
+    Marítimo II — Wyscout names every one this way). Few Liga 3 minutes
+    there often mean first-team football this data can't see, so the
+    engine value's playing-time factor exempts them (models/value/availability.py)."""
+    return isinstance(team_name, str) and team_name.endswith(' II')
+
+
 # ============================================================================
 # PLAYER_ID_ALIASES — Wyscout sometimes splits one real-world player across
 # two playerIds (different scrapes, different sources, mistyped name, etc.).

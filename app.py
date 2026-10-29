@@ -1426,7 +1426,9 @@ def load_player_engine():
         logger.info("player_engine.parquet not found — engine card disabled")
         return pd.DataFrame(), {}
     try:
-        df = pd.read_parquet(path)
+        # the playing-time factor (models/value/availability.py) is keyed on
+        # the RAW ids: attach it before the alias remap below
+        df = value_availability.attach(pd.read_parquet(path))
         df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
         df['seasonId'] = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
         if PLAYER_ID_ALIASES:
@@ -1442,7 +1444,10 @@ def load_player_engine():
         # models/value/eur_intervals.engine_value_eur so the fee-calibration
         # build runs the SAME code (it used to be a closure here that the
         # calibration script re-typed by hand). No reliability ramp: the
-        # projection is already evidence-weighted. The interval around it
+        # projection is already evidence-weighted — but the projection does
+        # not know a cameo from a regular, so the value carries the row's
+        # regular_factor (availability.py: playing time vs the minutes
+        # available, 1.0 from ~1,000' and for reserve sides). The interval around it
         # (projected_eur_interval) is derived at display time from the
         # point and the shipped calibration, so no cached column changes.
         df['engine_value_eur'] = engine_value_eur_frame(df)
@@ -3420,6 +3425,7 @@ from models.similarity import similar_players  # like-for-like search (pure)
 from models.strength import sos as sos_model  # strength-of-schedule adjustment (pure)
 from models.ratings.card_scope import card_row as engine_card_row  # ACP Index card row-pick (pure)
 from models.templates import percentiles as template_pct  # minutes floor + sub-floor radar scoring (pure)
+from models.value import availability as value_availability  # engine value's playing-time factor (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
     engine_value_eur_frame, projected_eur_interval,
