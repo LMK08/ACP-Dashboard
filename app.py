@@ -1946,9 +1946,10 @@ Separate from the quality question, we describe *how* a player plays:
   as-is. Styles describe; they **never enter the rating or projection**.
   Goalkeepers are outside this system for now.
 
-**Minutes when in squad** — next to the projected value in the profile
-header, for the season the value is for (his whole career when All Seasons is
-selected). Descriptive: the minutes he played as a share of the minutes of
+**Available minutes played** (when in the squad) — next to the projected
+value in the profile header, for the season the value is for (his whole career
+when All Seasons is selected). Descriptive: the minutes he played as a share
+of the minutes of
 the matches he was in the matchday squad for (started, on the bench, or came
 on); the help shows how many squads he made ("in squad 24 of 28 league
 matches at Paredes"). Liga 3 and Campeonato together, exact Wyscout minutes,

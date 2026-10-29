@@ -623,18 +623,17 @@ def render():
             else:
                 _squad_line = "In squad " + "; ".join(
                     f"{n} of {N} league matches at {club}" for club, n, N in _hs['clubs']) + "."
-            # next to the value (GKs included)
+            # next to the value (GKs included); "available" = in the matchday squad
+            _season_txt = ("his career (All Seasons)" if _share_label == "career"
+                           else f"{_share_label}, the season the projected value is for")
             bio_row3[1].metric(
-                f"Minutes when in squad {_share_label}", _share_txt,
-                # "played / available when in the squad" — short enough for a career total
-                delta=(f"{_hs['squad_played']:,.0f} / "
-                       f"{'' if _hs['exact'] else '~'}{_hs['squad_avail']:,.0f}'"),
-                delta_color="off",
-                help=f"{_squad_line} Minutes played as a share of the minutes "
-                     "of the matches he was in the matchday squad for "
-                     "(started, on the bench, or came on) — the season the "
-                     "projected value is for (his career on All Seasons); "
-                     "below: minutes played / minutes of those matches. "
+                "Available minutes played", _share_txt,
+                delta=_share_label, delta_color="off",
+                help=f"{_hs['squad_played']:,.0f} of "
+                     f"{'' if _hs['exact'] else '~'}{_hs['squad_avail']:,.0f} "
+                     f"available minutes played in {_season_txt}. Available = "
+                     "the matches he was in the matchday squad for (started, "
+                     f"on the bench, or came on). {_squad_line} "
                      f"Of all his clubs' league matches while he was there he "
                      f"played {_hs['share']:.0%}"
                      + (" (information only — the goalkeeper value doesn't "

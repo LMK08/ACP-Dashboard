@@ -222,7 +222,7 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     `in_engine` False and no factor. These are every other player-season with
     exact API minutes (GKs, sub-floor players). `attach()` joins engine rows
     only, so they never touch a value.
-  - **Profile card:** the Player Profile header's "Minutes when in squad"
+  - **Profile card:** the Player Profile header's "Available minutes played"
     card sits next to the value, GKs included. It reads the table via
     `app.load_minutes_share_table` / `get_minutes_share` →
     `availability.scoped_share`.
