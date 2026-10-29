@@ -40,7 +40,7 @@ _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
 SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
-TEST_START_YR = 2024
+TEST_START_YR = None   # set from the panel below (the last completed pair year)
 ALPHAS = (10.0, 30.0, 100.0)    # chosen by 5-fold CV on TRAIN only
 
 print("[1/5] features…", flush=True)
@@ -235,6 +235,9 @@ for pid, gg in o.sort_values('yr', kind='stable').groupby('playerId'):
                            'cur_rating': a['acp_rating'], 'role': a['role'],
                            'start_yr': a['yr'], 'next_rating': b['acp_rating']})
 P = pd.DataFrame(rows).dropna()
+# the G1 test pairs start in the last completed pair year (2024 today: 24/25 ->
+# 25/26) — derived so a replay or rollover never ends up with an empty test set
+TEST_START_YR = int(P['start_yr'].max())
 tr = P[P['start_yr'] < TEST_START_YR]
 te = P[P['start_yr'] == TEST_START_YR]
 print(f"  panel {len(P)} pairs (age available) -> train {len(tr)}, test {len(te)}")
