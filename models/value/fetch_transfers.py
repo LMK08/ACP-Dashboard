@@ -54,6 +54,7 @@ def _normalise(rows, source):
         if c not in df:
             df[c] = None
     df['type'] = df['type'].fillna('').astype(str)
+    df['active'] = pd.to_numeric(df['active'], errors='coerce').astype(float)   # 0/1/True -> one dtype
     # an undated move can't cut a window ('0000-00-00', None): dropped
     sd = pd.to_datetime(df['startDate'], errors='coerce')
     df = df[sd.notna()].copy()
@@ -64,14 +65,28 @@ def _normalise(rows, source):
     return df[COLS]
 
 
+VALUE_COLS = [c for c in COLS if c not in KEY + ['source', 'fetched_at']]
+
+
 def upsert(old, new):
-    """New rows replace old ones with the same key; nothing is deleted."""
+    """New rows replace old ones with the same key; nothing is deleted. A
+    re-fetched row whose content is unchanged keeps its old source and
+    fetched_at, so a refresh with no new moves rewrites nothing (the file is
+    committed by every scheduled update)."""
     if old is None or old.empty:
         out = new
+    elif new is None or new.empty:
+        out = old
     else:
+        o = old.set_index(KEY)
+        same = new.set_index(KEY).index.isin(o.index)
+        if same.any():
+            n_same = new[same].set_index(KEY)
+            unchanged = (n_same[VALUE_COLS].astype(str) == o.loc[n_same.index, VALUE_COLS].astype(str)).all(axis=1)
+            new = pd.concat([new[~same], n_same[~unchanged.to_numpy()].reset_index()], ignore_index=True)
         out = pd.concat([old, new], ignore_index=True)
     out = out.drop_duplicates(KEY, keep='last')
-    return out.sort_values(['playerId', 'startDate']).reset_index(drop=True)
+    return out.sort_values(KEY).reset_index(drop=True)
 
 
 def load():
@@ -89,8 +104,14 @@ def seed(cache_dir):
 
 
 def _get(session, auth, path, params=None):
-    """(payload, None) or (None, reason). A 403 can arrive inside an HTTP 400."""
-    r = session.get(BASE_URL + path, params=params or {}, auth=auth, timeout=30)
+    """(payload, None) or (None, reason). A 403 can arrive inside an HTTP 400.
+    Network errors (timeouts, retries exhausted) are failures too, so one bad
+    team falls back per player and the run still writes what it fetched."""
+    import requests
+    try:
+        r = session.get(BASE_URL + path, params=params or {}, auth=auth, timeout=30)
+    except requests.RequestException as e:
+        return None, f'network: {type(e).__name__}'
     try:
         body = r.json()
     except ValueError:

@@ -13,7 +13,9 @@ become a regular, measured as 900'+ the next season:
               he was there x the season's median match length
   sub_frac  = the share of his appearances that came off the bench
   p         = 1 / (1 + exp(-(a + b log(share + EPS) + c sub_frac)))
-  factor    = min(p / p(ANCHOR_SHARE, 0), 1)    (no change at/above ~1,000')
+  factor    = min(p / p(ANCHOR_SHARE, 0), 1)    (1.0 for a starter from ~1,000';
+              a bench-heavy rotation player keeps a small discount above
+              that, e.g. 40% share with 80% of appearances off the bench ~0.91)
 
 Reserve sides ('<club> II', league_config.is_reserve_team) are exempt:
 few Liga 3 minutes there often mean first-team football we can't see.
@@ -229,6 +231,27 @@ def build(inp=None):
     out['regular_factor'] = [1.0 if rt else (regular_factor(s, f) if pd.notna(s) else 1.0)
                              for rt, s, f in zip(out['reserve_team'], out['avail_share'], out['sub_frac'])]
     return out.drop(columns=['team'])
+
+
+_STAMP = {}
+
+
+def stamp(path=OUT):
+    """Short content hash of the committed factors ('' without the file).
+    Part of app.py's percentiles-cache fingerprint: the cached frame carries
+    'Engine Value EUR', so a factor change must invalidate it like an engine
+    rebuild does. Cached per file mtime."""
+    import hashlib
+    p = Path(path)
+    if not p.exists():
+        return ''
+    key = (str(p), p.stat().st_mtime_ns)
+    if key not in _STAMP:
+        a = pd.read_parquet(p, columns=['playerId', 'seasonId', 'regular_factor'])
+        a = a.astype(str).sort_values(['playerId', 'seasonId'])
+        _STAMP.clear()
+        _STAMP[key] = hashlib.sha256(a.to_csv(index=False).encode()).hexdigest()[:12]
+    return _STAMP[key]
 
 
 def attach(engine_df, path=OUT):

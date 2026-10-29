@@ -199,3 +199,60 @@ def test_transfer_rows_and_upsert():
                           'toTeamName': 'new'}], 'api')
     out = ft.upsert(old, new)
     assert len(out) == 1 and out.iloc[0]['toTeamName'] == 'new' and out.iloc[0]['source'] == 'api'
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return self._body
+
+
+class _Session:
+    def __init__(self, resp=None, exc=None):
+        self.resp, self.exc = resp, exc
+
+    def get(self, *a, **k):
+        if self.exc:
+            raise self.exc
+        return self.resp
+
+
+def test_get_reads_the_refusal_from_the_body_and_survives_network_errors():
+    import requests
+    body, err = ft._get(_Session(_Resp(400, {'error': {'code': 403, 'message': 'Forbidden'}})), None, '/x')
+    assert body is None and err.startswith('403')
+    body, err = ft._get(_Session(exc=requests.ConnectionError('down')), None, '/x')
+    assert body is None and err.startswith('network')
+    body, err = ft._get(_Session(_Resp(200, {'transfer': []})), None, '/x')
+    assert err is None and ft._rows(body) == []
+
+
+def test_ranges_never_exceed_one_year_and_cover_the_span():
+    from datetime import date
+    r = list(ft._ranges(date(2025, 6, 1), date(2026, 10, 28)))
+    assert all((b - a).days <= 364 for a, b in r) and len(r) == 2
+    assert r[0][0] == date(2025, 6, 1) and r[-1][1] == date(2026, 10, 28)
+    assert all((r[i + 1][0] - r[i][1]).days == 1 for i in range(len(r) - 1))
+
+
+def test_unchanged_rows_keep_their_stamp():
+    row = {'playerId': 1, 'startDate': '2026-01-20', 'fromTeamId': 5, 'toTeamId': 6, 'type': 'Loan',
+           'toTeamName': 'X', 'active': 1}
+    old = ft._normalise([row], 'seed').assign(fetched_at='2026-05-21T00:00:00Z')
+    again = ft.upsert(old, ft._normalise([dict(row, active=True)], 'api'))
+    assert again.iloc[0]['source'] == 'seed' and again.iloc[0]['fetched_at'] == '2026-05-21T00:00:00Z'
+    changed = ft.upsert(old, ft._normalise([dict(row, toTeamName='Y')], 'api'))
+    assert changed.iloc[0]['source'] == 'api' and len(changed) == 1
+
+
+def test_stamp_follows_the_factors(tmp_path):
+    p = tmp_path / 'a.parquet'
+    assert av.stamp(p) == ''
+    pd.DataFrame({'playerId': [1], 'seasonId': [SID], 'regular_factor': [0.5]}).to_parquet(p)
+    s1 = av.stamp(p)
+    import time
+    time.sleep(0.01)
+    pd.DataFrame({'playerId': [1], 'seasonId': [SID], 'regular_factor': [0.6]}).to_parquet(p)
+    assert s1 and av.stamp(p) != s1

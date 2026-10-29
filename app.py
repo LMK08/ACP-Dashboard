@@ -1447,7 +1447,8 @@ def load_player_engine():
         # projection is already evidence-weighted — but the projection does
         # not know a cameo from a regular, so the value carries the row's
         # regular_factor (availability.py: playing time vs the minutes
-        # available, 1.0 from ~1,000' and for reserve sides). The interval around it
+        # available; 1.0 for a starter from ~1,000' and for reserve sides).
+        # The interval around it
         # (projected_eur_interval) is derived at display time from the
         # point and the shipped calibration, so no cached column changes.
         df['engine_value_eur'] = engine_value_eur_frame(df)
@@ -5102,15 +5103,19 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
 
 @st.cache_data
 def _engine_build_stamp():
-    """'<built_at> <rating_version>' of the deployed engine (or '' when
-    there is none) — part of the percentiles-cache fingerprint."""
+    """'<built_at> <rating_version> avail:<hash>' of the deployed engine (or
+    '' when there is none) — part of the percentiles-cache fingerprint. The
+    availability hash: the cached frame carries 'Engine Value EUR', which the
+    playing-time factor scales, so a factor change must invalidate it too."""
     try:
         with open(os.path.join(os.path.dirname(__file__), 'models', 'ratings',
                                'player_engine_meta.json')) as f:
             meta = json.load(f)
-        return f"{meta.get('built_at', '')} {meta.get('rating_version', '')}".strip()
+        base = f"{meta.get('built_at', '')} {meta.get('rating_version', '')}".strip()
     except Exception:
         return ''
+    av_stamp = value_availability.stamp()
+    return f"{base} avail:{av_stamp}" if av_stamp else base
 
 
 def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _weights, _invert_metrics, min_minutes=500, season_id=None, cache_version=STATS_CACHE_VERSION, cache_scope=None, disk_cache=False):

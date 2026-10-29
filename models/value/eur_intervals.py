@@ -10,8 +10,8 @@ Two things live here, both pure pandas/numpy (no streamlit):
              x ENGINE_VALUE_TEMPER x regular_factor
    regular_factor (models/value/availability.py, 2026-10) scales the value by
    how likely a player with his playing time is to become a regular — a 95'
-   cameo is no longer valued like a starter; 1.0 at/above ~1,000', for
-   reserve sides, and wherever the engine row has no factor.
+   cameo is no longer valued like a starter; 1.0 for a starter from
+   ~1,000', for reserve sides, and wherever the engine row has no factor.
    (see engine_value_eur / engine_value_eur_frame).
 
 2. The INTERVAL — a split-conformal prediction interval for the realised
