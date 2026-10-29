@@ -222,10 +222,16 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     `in_engine` False and no factor. These are every other player-season with
     exact API minutes (GKs, sub-floor players). `attach()` joins engine rows
     only, so they never touch a value.
-  - **Profile card:** the Player Profile header's "Minutes share" card sits
-    next to the value, GKs included. It reads the table via
+  - **Profile card:** the Player Profile header's "Minutes when in squad"
+    card sits next to the value, GKs included. It reads the table via
     `app.load_minutes_share_table` / `get_minutes_share` →
     `availability.scoped_share`.
+    - **Headline (descriptive):** minutes ÷ the minutes of the matches he was
+      in the matchday squad for (`squad_mins`).
+    - **Help:** "in squad N of M league matches at <club>" (`squad_clubs`),
+      plus the all-club share the value uses.
+    - **Not the value's measure:** squad-only as the value's denominator
+      predicted worse (2026-10-29).
     - **Season:** the one the value is for (the engine row; the GK legacy
       value's anchor), or the career on All Seasons. NOT the Role/Style
       scope.

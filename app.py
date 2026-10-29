@@ -1946,16 +1946,18 @@ Separate from the quality question, we describe *how* a player plays:
   as-is. Styles describe; they **never enter the rating or projection**.
   Goalkeepers are outside this system for now.
 
-**Minutes share** — next to the projected value in the profile header: the
-share of the league minutes available to him in the season the value is for
-(his whole career when All Seasons is selected). Liga 3 and Campeonato count
-together, at every club he was at that season; a dated mid-season move counts
-only his time at each club. Both sides are counted match by match: his exact
-Wyscout minutes ÷ the lengths of his clubs' matches while he was there (exact
-from Wyscout's per-match minutes in Liga 3; read off the event clock in the
-Campeonato, marked "~"). For outfielders it is the playing-time measure the
-projected value uses — a cameo or bench-heavy season lowers the value, B-team
-("II") sides excepted; for goalkeepers it is shown as information only.
+**Minutes when in squad** — next to the projected value in the profile
+header, for the season the value is for (his whole career when All Seasons is
+selected). Descriptive: the minutes he played as a share of the minutes of
+the matches he was in the matchday squad for (started, on the bench, or came
+on); the help shows how many squads he made ("in squad 24 of 28 league
+matches at Paredes"). Liga 3 and Campeonato together, exact Wyscout minutes,
+match lengths exact in Liga 3 and read off the event clock in the Campeonato
+(marked "~"). The projected value uses a different measure — his share of
+ALL his clubs' league matches while he was there, since not being picked is
+itself a signal (a squad-only measure predicted worse); the help shows that
+number too. B-team ("II") sides are exempt from the value discount;
+goalkeepers' values don't use it.
 """
 
 

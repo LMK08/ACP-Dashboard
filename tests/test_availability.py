@@ -39,7 +39,7 @@ def _season(n=30):
             ev.append({'matchId': mid, 'seasonId': SID, 'team.id': t, 'team.name': f'Clube {t}',
                        'player.id': 9000 + t})   # a fixture player
             mins.append({'matchId': mid, 'playerId': 9000 + t, 'minutes': L})
-            lineups[mid] = {f'team{t}': {'lineup': [{'playerId': 9000 + t}], 'bench': [], 'substitutions': []}}
+            lineups[mid] = {f'Clube {t}': {'lineup': [{'playerId': 9000 + t}], 'bench': [], 'substitutions': []}}
     return days, ms, ev, mins, lineups
 
 
@@ -49,7 +49,7 @@ def _inputs(players, transfers=(), n=30):
     for pid, apps in players.items():
         for t, i, flag in apps:
             mid = 1000 + 2 * i + (0 if t == T1 else 1)
-            side = lineups[mid][f'team{t}']
+            side = lineups[mid][f'Clube {t}']
             if flag == 'S':
                 side['lineup'].append({'playerId': pid})
             else:
@@ -195,6 +195,38 @@ def test_unplayed_fixtures_and_stat_less_matches_are_not_available():
     assert _avail(inp, 17)['avail_mins'] == pytest.approx(30 * L)        # the fixture adds nothing
     inp['excluded'] = {1000 + 2 * i for i in range(25, 30)}               # no per-match minutes for 5 of T1's
     assert _avail(inp, 17)['avail_mins'] == pytest.approx(25 * L)
+
+
+def test_squad_view_counts_only_matchday_squads():
+    # 10 starts, 5 unused on the bench, 15 club matches without him in the squad
+    apps = [(T1, i, 'S') for i in range(10)] + [(T1, i, 'U') for i in range(10, 15)]
+    inp, _ = _inputs({18: apps})
+    r = _avail(inp, 18)
+    assert (r['n_squad'], r['n_club'], r['squad_clubs']) == (15, 30, f'Clube {T1}:15:30')
+    assert r['squad_mins'] == pytest.approx(15 * L) and r['avail_mins'] == pytest.approx(30 * L)
+    s = av.scoped_share(pd.DataFrame({'yr': [2025], 'mins_year': [10 * L], **{k: [r[k]] for k in
+                        ('avail_mins', 'len_api', 'squad_mins', 'n_squad', 'n_club', 'squad_clubs')}}))
+    assert s['squad_share'] == pytest.approx(10 / 15) and s['share'] == pytest.approx(10 / 30)
+    assert s['clubs'] == [(f'Clube {T1}', 15, 30)] and s['squad_played'] == pytest.approx(10 * L)
+
+
+def test_squad_match_between_his_two_clubs_counts_once():
+    # T1 -> T2 at match 12 (dated); T1's match 20 is against T2, where he sat on T2's bench
+    apps = [(T1, i, 'S') for i in range(10)] + [(T2, i, 'S') for i in range(12, 20)]
+    inp, _ = _inputs({19: apps}, transfers=[(19, DAYS[12].strftime('%Y-%m-%d'), T1, T2)])
+    ab = 1000 + 2 * 20
+    inp['ms'].loc[inp['ms']['matchId'] == ab, 'awayTeamName'] = f'Clube {T2}'
+    inp['lineups'][ab][f'Clube {T2}'] = {'lineup': [{'playerId': 9000 + T2}], 'bench': [{'playerId': 19}],
+                                         'substitutions': []}
+    r = _avail(inp, 19)
+    clubs = dict((c.rsplit(':', 2)[0], int(c.rsplit(':', 2)[1])) for c in r['squad_clubs'].split('|'))
+    assert r['n_squad'] == 19 and clubs == {f'Clube {T1}': 10, f'Clube {T2}': 9}
+
+
+def test_an_empty_lineup_entry_is_not_known():
+    inp, _ = _inputs({20: [(T1, i, 'S') for i in range(10)]})
+    inp['lineups'][1000 + 2 * 25] = {}                    # scanned before kick-off
+    assert _avail(inp, 20)['n_club'] == 29
 
 
 def test_match_length_api_then_clock_then_median():

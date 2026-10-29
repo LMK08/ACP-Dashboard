@@ -568,8 +568,10 @@ def render():
                     _share_label = f"{_vyr % 100:02d}/{(_vyr + 1) % 100:02d}"
         except Exception:
             logger.exception("minutes share failed")
-        _share_txt = (None if _hdr_share is None else
-                      f"{_hdr_share['share']:.0%}" if _hdr_share['share'] >= 0.005 else "<1%")
+        # headline = minutes when in the matchday squad (descriptive, Lucas
+        # 2026-10-29); the all-club-matches share the value uses goes in the help
+        _sq = _hdr_share.get('squad_share') if _hdr_share else None
+        _share_txt = (None if _sq is None else f"{_sq:.0%}" if _sq >= 0.005 else "<1%")
         _value_eur = _tv_projected_eur if _is_gk else _eng_proj_eur
         _value_txt = "—" if _value_eur is None else f"€{_value_eur:,.0f}"
         with st.container(key=theme.metric_fit_key(
@@ -614,29 +616,36 @@ def render():
                          "(percentile vs the role cohort).",
                 )
         if _share_txt:
-            # next to the value it explains (GKs included)
+            _hs = _hdr_share
+            if _share_label == "career":
+                _squad_line = (f"In squad {_hs['n_squad']} of {_hs['n_club']} league "
+                               f"matches across {len(_hs['years'])} season(s).")
+            else:
+                _squad_line = "In squad " + "; ".join(
+                    f"{n} of {N} league matches at {club}" for club, n, N in _hs['clubs']) + "."
+            # next to the value (GKs included)
             bio_row3[1].metric(
-                f"Minutes share {_share_label}", _share_txt,
-                # "played / available" — short enough for a career total
-                delta=(f"{_hdr_share['mins']:,.0f} / "
-                       f"{'' if _hdr_share['exact'] else '~'}{_hdr_share['avail']:,.0f}'"),
+                f"Minutes when in squad {_share_label}", _share_txt,
+                # "played / available when in the squad" — short enough for a career total
+                delta=(f"{_hs['squad_played']:,.0f} / "
+                       f"{'' if _hs['exact'] else '~'}{_hs['squad_avail']:,.0f}'"),
                 delta_color="off",
-                help="Share of the league minutes available to him in the "
-                     "season the projected value is for (his career on All "
-                     "Seasons) — Liga 3 and Campeonato together, at every "
-                     "club he played for. Below: minutes played / minutes "
-                     "available. His exact Wyscout minutes ÷ the "
-                     "lengths of his clubs' league matches while he was "
-                     "there, match by match: exact from Wyscout's per-match "
-                     "minutes in Liga 3; read off the event clock in the "
-                     "Campeonato (within about a minute a match), marked "
-                     "\"~\". A mid-season move (dated transfer) counts only "
-                     "his time at each club. "
-                     + ("Information only — the goalkeeper value doesn't "
-                        "use it." if _is_gk else
-                        "The projected value uses it: a low share, "
-                        "especially off the bench, lowers it; B-team "
-                        "(\"II\") sides are exempt."),
+                help=f"{_squad_line} Minutes played as a share of the minutes "
+                     "of the matches he was in the matchday squad for "
+                     "(started, on the bench, or came on) — the season the "
+                     "projected value is for (his career on All Seasons); "
+                     "below: minutes played / minutes of those matches. "
+                     f"Of all his clubs' league matches while he was there he "
+                     f"played {_hs['share']:.0%}"
+                     + (" (information only — the goalkeeper value doesn't "
+                        "use it). " if _is_gk else
+                        " — the measure the projected value uses, since not "
+                        "being picked is itself a signal (B-team \"II\" sides "
+                        "exempt). ")
+                     + "Liga 3 and Campeonato together. Exact Wyscout minutes; "
+                       "match lengths from Wyscout's per-match minutes in "
+                       "Liga 3 and from the event clock in the Campeonato "
+                       "(marked \"~\").",
             )
 
     st.divider()

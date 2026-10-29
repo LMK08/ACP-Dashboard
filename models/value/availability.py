@@ -56,6 +56,16 @@ is not done. Audit 2026-10-29 on years never used to choose the model (L3
 -0.0084 to -0.0010); AUC +0.008 (CI includes 0) — a real but small gain.
 Plan + evidence: ACP_Official/value_minutes_plan_2026-10-28.md.
 
+Each player-year also carries the matchday-squad view, which is display-only
+(the profile card's headline, descriptive; never in the factor):
+  - squad_mins: the lengths of the matches he was in the squad for (XI,
+    bench, or API minutes);
+  - n_squad of n_club: the club matches while he was there;
+  - squad_clubs: 'name:n_squad:n_club' per club, '|'-joined.
+Squad-only as the value's denominator was tested on 2026-10-29 and predicts
+worse (hold-out log-loss +0.017). Excusing long absences didn't hold up on
+the hold-out years.
+
 COEF is pinned; refit at the yearly rollover with `--fit` (prints the
 coefficients and the cross-season check) and regenerate the fee calibration
 (eur_intervals.py) in the same commit.
@@ -253,6 +263,25 @@ def availability_table(inp):
     clubs = (ev.dropna(subset=['player.id']).astype({'player.id': int})
              .groupby(['player.id', 'seasonId'])['team.id'].unique())
     pres = _squad(lineups)
+    # The squad view (display only).
+    # - In the matchday squad = named in the XI or on the bench, credited API
+    #   minutes, or in the events (covers a match with no or empty lineup data).
+    # - A match counts toward "of N" when its lineups are known or he was in it.
+    # - Each squad match belongs to ONE club, the side he was on (events, else
+    #   the lineup side), so a match between his two clubs isn't counted twice.
+    mm = inp.get('mins', pd.DataFrame(columns=['matchId', 'playerId', 'minutes']))
+    on = mm[pd.to_numeric(mm['minutes'], errors='coerce') > 0]
+    evp = ev.dropna(subset=['player.id']).astype({'player.id': int})
+    side = dict(zip(zip(evp['player.id'], evp['matchId']), evp['team.id']))
+    for m, teams in lineups.items():
+        for name, t in teams.items():
+            tid = name_id.get((season_of.get(int(m)), _norm_name(name)))
+            for p in ((t or {}).get('lineup') or []) + ((t or {}).get('bench') or []):
+                side.setdefault((p['playerId'], int(m)), tid)
+    in_squad = set(pres) | set(side) | set(zip(on['playerId'].astype(int), on['matchId'].astype(int)))
+    known = {int(m) for m, teams in lineups.items()
+             if any((t or {}).get('lineup') for t in (teams or {}).values())}
+    team_name = dict(zip(zip(named['seasonId'], named['team.id']), named['team.name'].str.strip()))
 
     tr = inp['tr'].copy()
     tr['sd'] = pd.to_datetime(tr['startDate'], errors='coerce')
@@ -283,7 +312,7 @@ def availability_table(inp):
     for (pid, sid), tids in clubs.items():
         if sid not in bounds or sid not in SEASON_YEAR:
             continue
-        per = []
+        per, claimed = [], set()
         for tid in tids:
             seq = sched.get((sid, tid), [])
             if not seq:
@@ -302,10 +331,24 @@ def availability_table(inp):
             mins = lambda xs: (sum(length[m][0] for _, m in xs),
                                sum(length[m][0] for _, m in xs if length[m][1] == 'api'))
             (season_L, season_api), (win_L, win_api) = mins(seq), mins(win)
+            squad = [m for _, m in seq if (pid, m) in in_squad and m not in claimed
+                     and side.get((pid, m)) in (None, tid)]
+            claimed.update(squad)
+            sq = set(squad)
+            sq_d = [d for d, m in seq if m in sq]
             per.append({'season_L': season_L, 'season_api': season_api,
-                        'win_L': win_L, 'win_api': win_api, 'cut': cut})
+                        'win_L': win_L, 'win_api': win_api, 'cut': cut,
+                        'squad_L': sum(length[m][0] for m in squad), 'n_squad': len(squad),
+                        # "of N": his window; for two undated clubs, first to last squad there
+                        'n_win': len({m for _, m in win if m in known} | sq),
+                        'n_span': len({m for d, m in seq if sq_d and sq_d[0] <= d <= sq_d[-1] and m in known} | sq),
+                        'name': team_name.get((sid, tid), tid)})
         if not per:
             continue
+        undated = len(per) > 1 and not any(c['cut'] for c in per)
+        for c in per:
+            c['n_club'] = c['n_span'] if undated else c['n_win']
+            c['club'] = f"{c['name']}:{c['n_squad']}:{c['n_club']}"
         v0 = np.mean([c['season_L'] for c in per])
         api0 = np.mean([c['season_api'] for c in per])
         cap = max(c['season_L'] for c in per)
@@ -317,11 +360,16 @@ def availability_table(inp):
             api1 = sum(c['win_api'] for c in per) * (v1 / w if w > 0 else 0.0)
         rows.append({'playerId': int(pid), 'yr': SEASON_YEAR[sid], 'v0': v0, 'api0': api0,
                      'v1': v1, 'api1': api1, 'cap': cap,
-                     'cut': any(c['cut'] for c in per), 'n_clubs': len(per)})
+                     'cut': any(c['cut'] for c in per), 'n_clubs': len(per),
+                     'squad_mins': sum(c['squad_L'] for c in per), 'n_squad': sum(c['n_squad'] for c in per),
+                     'n_club': sum(c['n_club'] for c in per), 'squad_clubs': '|'.join(c['club'] for c in per)})
     a = pd.DataFrame(rows)
     py = a.groupby(['playerId', 'yr']).agg(v0=('v0', 'mean'), api0=('api0', 'mean'), v1=('v1', 'sum'),
                                            api1=('api1', 'sum'), cap=('cap', 'max'),
-                                           window_cut=('cut', 'any'), n_clubs=('n_clubs', 'sum')).reset_index()
+                                           window_cut=('cut', 'any'), n_clubs=('n_clubs', 'sum'),
+                                           squad_mins=('squad_mins', 'sum'), n_squad=('n_squad', 'sum'),
+                                           n_club=('n_club', 'sum'),
+                                           squad_clubs=('squad_clubs', '|'.join)).reset_index()
     # both leagues in one year: still one season at most; no dated window: the mean
     py['avail_mins'] = np.where(py['window_cut'], np.minimum(py['v1'], py['cap']), py['v0'])
     py['len_api'] = np.clip(np.where(py['window_cut'], py['api1'] / py['v1'].where(py['v1'] > 0),
@@ -337,7 +385,8 @@ def availability_table(inp):
     py['sub_apps'] = [sy[(p, y)][1] for p, y in zip(py['playerId'], py['yr'])]
     apps = py['starts'] + py['sub_apps']
     py['sub_frac'] = np.where(apps > 0, py['sub_apps'] / apps.where(apps > 0, 1), 0.0)
-    return py[['playerId', 'yr', 'avail_mins', 'len_api', 'window_cut', 'n_clubs', 'starts', 'sub_apps', 'sub_frac']]
+    return py[['playerId', 'yr', 'avail_mins', 'len_api', 'window_cut', 'n_clubs', 'starts', 'sub_apps', 'sub_frac',
+               'squad_mins', 'n_squad', 'n_club', 'squad_clubs']]
 
 
 def build(inp=None):
@@ -433,7 +482,11 @@ def scoped_share(rows):
     mover's club rows all carry the same player-year availability). A year's
     available minutes are never below its minutes (a clock-derived length can
     run a few seconds short; the 100% cap of avail_share). `exact` = every
-    match length from the API. None without data."""
+    match length from the API. The squad view (the profile card's headline,
+    descriptive): `squad_share` = minutes ÷ the minutes of the matches he was
+    in the matchday squad for, `n_squad` of `n_club` club matches, and per
+    club [(name, n_squad, n_club)]; None where there is no squad data. None
+    without data."""
     if rows is None or rows.empty or 'avail_mins' not in rows.columns:
         return None
     # most minutes first: an alias-merged player could carry two raw ids' rows in one year
@@ -444,8 +497,20 @@ def scoped_share(rows):
     if r.empty or avail <= 0:
         return None
     exact = bool('len_api' in r.columns and (r['len_api'] >= 0.999).all())
-    return {'share': min(mins / avail, 1.0), 'mins': mins, 'avail': avail,
-            'years': sorted(int(y) for y in r['yr']), 'exact': exact}
+    out = {'share': min(mins / avail, 1.0), 'mins': mins, 'avail': avail,
+           'years': sorted(int(y) for y in r['yr']), 'exact': exact,
+           'squad_share': None, 'squad_avail': None, 'n_squad': 0, 'n_club': 0, 'clubs': []}
+    if 'squad_mins' in r.columns:
+        q = r[r['n_squad'].fillna(0) > 0]
+        if len(q):
+            squad_avail = float(np.maximum(q['squad_mins'], q['mins_year']).sum())
+            out.update({'squad_share': min(float(q['mins_year'].sum()) / squad_avail, 1.0),
+                        'squad_avail': squad_avail, 'squad_played': float(q['mins_year'].sum()),
+                        'n_squad': int(r['n_squad'].fillna(0).sum()),
+                        'n_club': int(r['n_club'].fillna(0).sum()),
+                        'clubs': [(c.rsplit(':', 2)[0], int(c.rsplit(':', 2)[1]), int(c.rsplit(':', 2)[2]))
+                                  for s in r['squad_clubs'].dropna() for c in str(s).split('|') if c]})
+    return out
 
 
 # --- refit (yearly rollover) -------------------------------------------------------
