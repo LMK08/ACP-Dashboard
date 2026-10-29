@@ -1961,7 +1961,9 @@ The euro value comes from the same projection, made from everything known *at
 the end of the selected season* — so a past season shows what he was worth
 then. During the season in progress it is **live**: rebuilt from the matches
 played so far, once his club has played 6 league matches (before that, the
-summer value stands). **All Seasons** shows his value today. Replaying 2024/25
+summer value stands). **All Seasons** shows his value today. Today's value uses
+his age today, updated week by week, so it eases down as he ages instead of
+stepping when the live value starts. Replaying 2024/25
 match by match, the live value predicted the next season better than the
 summer value at every checkpoint, and the gain grew as the season went on.
 
@@ -3577,7 +3579,7 @@ from models.templates import percentiles as template_pct  # minutes floor + sub-
 from models.value import availability as value_availability  # engine value's playing-time factor (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
     ENGINE_ROLE2CVI, ENGINE_CAMP_SEASON_IDS, ENGINE_VALUE_TEMPER,
-    engine_value_eur_frame, engine_values, projected_eur_interval,
+    engine_value_eur_frame, engine_values, value_date, projected_eur_interval,
     load_calibration as load_eur_calibration, format_eur_short, format_eur_range)  # noqa: F401,F403
 
 
@@ -5264,8 +5266,10 @@ def _engine_build_stamp():
         return ''
     av_stamp = value_availability.stamp()
     # value:asof — season-scoped 'Engine Value EUR' is the as-of / live value
-    # (2026-10-29); a change to that rule must invalidate the cached frames
-    base = f"{base} value:asof1"
+    # (2026-10-29); a change to that rule must invalidate the cached frames.
+    # @date — today's value is aged to the week's Monday (eur_intervals.
+    # value_date), so the cached frames refresh week by week with it
+    base = f"{base} value:asof2@{value_date().date()}"
     return f"{base} avail:{av_stamp}" if av_stamp else base
 
 

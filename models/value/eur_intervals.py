@@ -158,21 +158,44 @@ def engine_value_eur_frame(engine_df):
                                    r.get('regular_factor', 1.0)), axis=1)
 
 
-def engine_values(engine_df):
+def value_date(today=None):
+    """The date TODAY's values are aged to: the Monday of the current ISO week
+    (UTC). Values move week by week (~0.3%), and the stats caches — stamped
+    with this date (app._engine_build_stamp) — refresh at the same rhythm."""
+    t = pd.Timestamp.now(tz='UTC').tz_localize(None) if today is None else pd.Timestamp(today)
+    t = t.normalize()
+    return t - pd.Timedelta(days=t.weekday())
+
+
+def engine_values(engine_df, as_of=None):
     """(now, season): two EUR Series aligned to engine_df.index (2026-10-29).
 
     season — each row's value as of its own season: the as-of projection
       (asof_abs, build_player_engine) at the as-of age and the row's own
       playing-time factor. A live row only once live_ok (its club has played
       enough league matches); NaN before.
-    now — the player's value today, on the row engine_value_eur_frame values
-      (the one carrying `projection`): his live value when one of his live rows
-      is live_ok, else today's projection. A player with no projection row
-      carries it on that live row.
+    now — the player's value TODAY (as_of, default value_date()), on the row
+      engine_value_eur_frame values (the one carrying `projection`): his live
+      value when one of his live rows is live_ok, else today's projection. A
+      player with no projection row carries it on that live row.
+    Today's value takes his age ON as_of (Lucas 2026-10-29: "age the summer
+    value day by day"): the summer projection's age (at its base season's
+    midpoint, 1 Jan) and a live row's (at its data date) both move to as_of,
+    so a value never steps down when the live value starts. Past-season
+    values keep their as-of ages.
     Both rank in today's projection pool (sorted_pool), so the fee-calibrated
     curve is unchanged. Without as-of columns (an older engine file): season
-    is NaN and now == engine_value_eur_frame."""
-    now = pd.to_numeric(engine_value_eur_frame(engine_df), errors='coerce')
+    is NaN and now is the summer projection's value (aged to as_of)."""
+    from league_config import SEASON_YEAR
+    as_of = value_date() if as_of is None else pd.Timestamp(as_of).normalize()
+    cur = engine_df['projection_abs'].notna()
+    if 'seasons_ago' in engine_df.columns:
+        cur &= pd.to_numeric(engine_df['seasons_ago'], errors='coerce').eq(0)
+    yrs = engine_df.loc[cur, 'seasonId'].map(lambda s: SEASON_YEAR.get(int(s)) if pd.notna(s) else None).dropna()
+    base_mid = pd.Timestamp(int(yrs.max()) + 1, 1, 1) if len(yrs) else as_of
+    shift = (as_of - base_mid).days / 365.25        # every projection row's age sits at base_mid
+    now = pd.to_numeric(engine_value_eur_frame(
+        engine_df.assign(age=pd.to_numeric(engine_df['age'], errors='coerce') + shift)), errors='coerce')
     season = pd.Series(np.nan, index=engine_df.index)
     if 'asof_abs' not in engine_df.columns:
         return now, season
@@ -184,11 +207,15 @@ def engine_values(engine_df):
     # pool entry and the two values differ by a pool step
     proj = pd.to_numeric(engine_df['projection_abs'], errors='coerce')
     x = engine_df['asof_abs'].where(~((engine_df['asof_abs'] - proj).abs() < 1e-9), proj)
+    # the live season is today's: its rows age from their data date to as_of
+    age = pd.to_numeric(engine_df['asof_age'], errors='coerce')
+    if live.any() and 'asof_date' in engine_df.columns:
+        d = pd.to_datetime(engine_df['asof_date'], errors='coerce')
+        age = age.where(~live, age + (as_of - d).dt.days / 365.25)
     # NaN, not None, where a row can't be valued (below the pool's floor):
     # pandas 3 refuses an object into a float Series
-    vals = [engine_value_eur(xi, pool, r.get('role'), r.get('asof_age'),
-                             r.get('seasonId'), r.get('regular_factor', 1.0))
-            for xi, (_, r) in zip(x[ok], engine_df[ok].iterrows())]
+    vals = [engine_value_eur(xi, pool, r.get('role'), ai, r.get('seasonId'), r.get('regular_factor', 1.0))
+            for xi, ai, (_, r) in zip(x[ok], age[ok], engine_df[ok].iterrows())]
     season[ok] = np.array([np.nan if v is None else float(v) for v in vals], dtype=float)
     season = pd.to_numeric(season, errors='coerce')
     lv = engine_df[ok & live].assign(_v=season[ok & live])

@@ -192,6 +192,10 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     today's projection pool, so the curve is unchanged.
     - `engine_value_eur` is TODAY's value: live once valued, else the
       summer projection.
+    - Today's value is at his age ON `value_date()`, the Monday of the
+      current week. Both the summer and the live age move to that date
+      (Lucas: "age the summer value day by day"), so nothing steps down when
+      live starts. Past-season values keep their as-of ages.
     - `engine_value_eur_season` is each row's value as of its season.
   - **The app follows the selected season:**
     - `engine_value_for_scope` (Analysis tables) and
@@ -199,8 +203,8 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     - The live season falls back to today's value until it is valued.
     - All Seasons shows today's value.
   - **Fees** pair with the value as of the sale's season (no look-ahead).
-  - The stats-cache stamp carries `value:asof1`; bump it when that rule
-    changes.
+  - The stats-cache stamp carries `value:asof2@<value_date>`, so cached
+    frames refresh weekly. Bump the token when the rule changes.
   - Tests: `tests/test_live_value.py`.
 - `models/value/availability.py` — the engine value's PLAYING-TIME FACTOR
   (`regular_factor`, 2026-10). The projection can't tell a cameo from a

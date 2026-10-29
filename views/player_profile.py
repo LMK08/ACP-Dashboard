@@ -571,7 +571,7 @@ def render():
                      + " It follows the selected season: the value as of the end "
                        "of that season, live during the current one once his "
                        "club has played 6 league matches; All Seasons shows "
-                       "today's value.",
+                       "today's value, at his age today (updated weekly).",
             )
             # The likely-fee range and the value's basis go in a caption, NOT
             # the metric delta: Streamlit draws an up-arrow for any
