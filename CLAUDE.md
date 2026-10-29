@@ -232,9 +232,10 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
       plus the all-club share the value uses.
     - **Not the value's measure:** squad-only as the value's denominator
       predicted worse (2026-10-29).
-    - **Season:** the one the value is for (the engine row; the GK legacy
-      value's anchor), or the career on All Seasons. NOT the Role/Style
-      scope.
+    - **Season:** the selected season (its year across both leagues), like
+      everything else in the header; the career on All Seasons. The grey line
+      shows the season and club (for a mid-season mover, the main club +N).
+      Hidden when he has no minutes in the selected season.
     - **Counting:** each season year is counted once, across both leagues
       and all clubs. Available minutes are never below the minutes played.
     - **Marking:** "~" unless every match length came from the API.

@@ -510,7 +510,7 @@ pre code { background: transparent !important; padding: 0 !important; }
 """, unsafe_allow_html=True)
 # metric rows keyed theme.metric_fit_key: value font capped so the row's
 # longest word fits its card whole
-st.markdown(f"<style>{theme.metric_fit_css()}</style>", unsafe_allow_html=True)
+st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}</style>", unsafe_allow_html=True)
 
 # ==============================================================================
 # 1B. SEASON CONSTANTS
@@ -1646,18 +1646,22 @@ def load_minutes_share_table():
         return pd.DataFrame()
 
 
-def get_minutes_share(player_id, year=None):
-    """Share of the league minutes available to a player
-    (models/value/availability.py: his clubs' matches while he was there,
-    match by match) in season-year `year` (2025 = 2025/26), or over every year
-    when None (career). Player-year totals: both leagues and every club.
-    Returns dict (share, mins, avail, years, exact) or None."""
+def get_minutes_share(player_id, season_ids=None):
+    """Playing time for the profile card (models/value/availability.py
+    scoped_share) over the season years of `season_ids` (the profile's
+    selection; both leagues' ids of one season are one year), or every year
+    when None (All Seasons -> career). Player-year totals: both leagues and
+    every club, so the league filter doesn't narrow them. Returns the
+    scoped_share dict or None."""
+    from league_config import SEASON_YEAR
     t = load_minutes_share_table()
     if t is None or t.empty:
         return None
     rows = t[t['playerId'] == int(player_id)]
-    if year is not None:
-        rows = rows[rows['yr'] == int(year)]
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                 else [season_ids])]
+        rows = rows[rows['yr'].isin({SEASON_YEAR[s] for s in sids if s in SEASON_YEAR})]
     return value_availability.scoped_share(rows)
 
 
@@ -1947,8 +1951,8 @@ Separate from the quality question, we describe *how* a player plays:
   Goalkeepers are outside this system for now.
 
 **Available minutes played** (when in the squad) — next to the projected
-value in the profile header, for the season the value is for (his whole career
-when All Seasons is selected). Descriptive: the minutes he played as a share
+value in the profile header, for the selected season (his whole career when
+All Seasons is selected). Descriptive: the minutes he played as a share
 of the minutes of
 the matches he was in the matchday squad for (started, on the bench, or came
 on); the help shows how many squads he made ("in squad 24 of 28 league

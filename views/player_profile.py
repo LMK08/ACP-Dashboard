@@ -390,7 +390,6 @@ def render():
     # after the anchor.
     _tv_career_current = None
     _tv_career_season = None
-    _tv_recent_sid = None
     try:
         _gpa_for_career = load_gpa_values()
         _perf_table = _build_player_season_perf_table(
@@ -409,7 +408,6 @@ def render():
         # Current CVI: anchor at player's most recent season w/ GPA data
         _most_recent_sid = most_recent_season_for_player(_perf_table,
                                                             player_id)
-        _tv_recent_sid = _most_recent_sid
         if _most_recent_sid is not None:
             _tv_career_current = compute_career_cvi(
                 player_id, _most_recent_sid,
@@ -444,17 +442,14 @@ def render():
     # models/value/cvi.cvi_to_projected_eur; never restate its constants here.
     _tv_projected_eur = None
     _current_cvi_for_eur = None
-    _tv_value_sid = None   # the season that value is anchored at (minutes-share card)
     if _tv_career_current is not None:
         _v = _tv_career_current.get('career_cvi')
         if _v is not None and not pd.isna(_v):
             _current_cvi_for_eur = float(_v)
-            _tv_value_sid = _tv_recent_sid
     if _current_cvi_for_eur is None and not _tv_cvi_block.empty:
         _v = _tv_cvi_block.iloc[0].get('_CVI')
         if _v is not None and not pd.isna(_v):
             _current_cvi_for_eur = float(_v)
-            _tv_value_sid = selected_season_id
     if _current_cvi_for_eur is not None and _current_cvi_for_eur > 0:
         # v2.9 — single helper handles power curve + position
         # multiplier + Camp penalty + cap. See cvi_to_projected_eur.
@@ -478,7 +473,6 @@ def render():
     # load_player_engine() (engine_value_eur); just look it up.
     _eng_proj_eur = None
     _eng_w_ev = _eng_mins = None   # support inputs for the likely-fee range
-    _eng_value_sid = None          # the engine row's season (minutes-share card)
     try:
         _eng_tv_df, _ = load_player_engine()
         if not _eng_tv_df.empty:
@@ -493,7 +487,6 @@ def render():
                 _eng_proj_eur = float(_p_row['engine_value_eur'])
                 _eng_w_ev = _p_row.get('w_evidence')
                 _eng_mins = _p_row.get('mins_played')
-                _eng_value_sid = _p_row.get('seasonId')
     except Exception:
         logger.exception("engine projected value failed")
     _eurcal = load_eur_calibration()
@@ -546,26 +539,16 @@ def render():
                                               active_season_ids)
             except Exception:
                 _hdr_style = None
-        # Share of the minutes available to him (Lucas 2026-10-29): for the
-        # season the value is for (the engine row's / the GK value's anchor
-        # season), or his career on All Seasons — never the Role/Style scope.
-        # Outfielders: the playing-time measure behind the value's
-        # regular_factor; keepers: information only.
+        # Available minutes played (Lucas 2026-10-29): the selected season
+        # like everything else in the header (his career on All Seasons);
+        # hidden when he has no minutes in it (and for no squad data).
         _hdr_share, _share_label = None, None
         try:
-            from league_config import SEASON_YEAR
-            if active_season_ids is None:
-                _hdr_share, _share_label = get_minutes_share(int(selected_player_id)), "career"
-            else:
-                _vsid = _tv_value_sid if _is_gk else _eng_value_sid
-                _vyr = (SEASON_YEAR.get(int(_vsid))
-                        if _vsid is not None and pd.notna(_vsid) else None)
-                if _vyr is None:   # no value: his latest season with minutes
-                    _all = get_minutes_share(int(selected_player_id))
-                    _vyr = _all['years'][-1] if _all else None
-                if _vyr is not None:
-                    _hdr_share = get_minutes_share(int(selected_player_id), _vyr)
-                    _share_label = f"{_vyr % 100:02d}/{(_vyr + 1) % 100:02d}"
+            _hdr_share = get_minutes_share(int(selected_player_id), active_season_ids)
+            if _hdr_share:
+                _y = _hdr_share['years']
+                _share_label = ("career" if active_season_ids is None or len(_y) != 1
+                                else f"{_y[0] % 100:02d}/{(_y[0] + 1) % 100:02d}")
         except Exception:
             logger.exception("minutes share failed")
         # headline = minutes when in the matchday squad (descriptive, Lucas
@@ -625,10 +608,14 @@ def render():
                     f"{n} of {N} league matches at {club}" for club, n, N in _hs['clubs']) + "."
             # next to the value (GKs included); "available" = in the matchday squad
             _season_txt = ("his career (All Seasons)" if _share_label == "career"
-                           else f"{_share_label}, the season the projected value is for")
+                           else _share_label)
+            # grey line: season · club (a mid-season mover: his main club +N)
+            _cl = sorted(_hs['clubs'], key=lambda c: -c[1])
+            _club_txt = ("" if _share_label == "career" or not _cl else
+                         f" · {_cl[0][0]}" + (f" +{len(_cl) - 1}" if len(_cl) > 1 else ""))
             bio_row3[1].metric(
                 "Available minutes played", _share_txt,
-                delta=_share_label, delta_color="off",
+                delta=f"{_share_label}{_club_txt}", delta_color="off",
                 help=f"{_hs['squad_played']:,.0f} of "
                      f"{'' if _hs['exact'] else '~'}{_hs['squad_avail']:,.0f} "
                      f"available minutes played in {_season_txt}. Available = "

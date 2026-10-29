@@ -136,3 +136,9 @@ def metric_fit_css():
         f'[data-testid="stMetricValue"] > div '
         f'{{ font-size: clamp(1rem, {1000 / t:.2f}cqi, 1.7rem); }}'
         for t in METRIC_FIT_TENTHS)
+
+
+def profile_head_css():
+    """The profile header's grey delta lines wrap instead of cutting off
+    ('26/27 · Atlético CP'); the row's container key ends '_profile_head'."""
+    return '[class*="_profile_head"] [data-testid="stMetricDelta"] > div { white-space: normal; }'
