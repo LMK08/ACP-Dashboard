@@ -80,3 +80,11 @@ def test_pairing_uses_the_value_as_of_the_sale_season():
     assert bool(pairs.loc[3, 'included']) and pairs.loc[3, 'value_eur'] == pytest.approx(season[30])
     assert pairs.loc[3, 'age_at_sale'] == pytest.approx(21.0) and pairs.loc[3, 'w_evidence'] == pytest.approx(0.5)
     assert pairs.loc[1, 'value_eur'] == pytest.approx(season[10])
+
+
+def test_a_value_below_the_pool_floor_is_nan_not_none():
+    # pandas 3 refuses None into a float Series: an unvaluable row must be NaN
+    e = _engine()
+    e.loc[30, 'asof_abs'] = -100.0
+    now, season = ei.engine_values(e)
+    assert season.dtype == float and np.isnan(season[30])

@@ -184,9 +184,12 @@ def engine_values(engine_df):
     # pool entry and the two values differ by a pool step
     proj = pd.to_numeric(engine_df['projection_abs'], errors='coerce')
     x = engine_df['asof_abs'].where(~((engine_df['asof_abs'] - proj).abs() < 1e-9), proj)
-    season[ok] = [engine_value_eur(xi, pool, r.get('role'), r.get('asof_age'),
-                                   r.get('seasonId'), r.get('regular_factor', 1.0))
-                  for xi, (_, r) in zip(x[ok], engine_df[ok].iterrows())]
+    # NaN, not None, where a row can't be valued (below the pool's floor):
+    # pandas 3 refuses an object into a float Series
+    vals = [engine_value_eur(xi, pool, r.get('role'), r.get('asof_age'),
+                             r.get('seasonId'), r.get('regular_factor', 1.0))
+            for xi, (_, r) in zip(x[ok], engine_df[ok].iterrows())]
+    season[ok] = np.array([np.nan if v is None else float(v) for v in vals], dtype=float)
     season = pd.to_numeric(season, errors='coerce')
     lv = engine_df[ok & live].assign(_v=season[ok & live])
     lv = lv.dropna(subset=['_v']).sort_values('mins_played').drop_duplicates('playerId', keep='last')

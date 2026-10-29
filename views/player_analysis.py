@@ -28,6 +28,7 @@ def render():
     ENGINE_VALUE_TEMPER = app.ENGINE_VALUE_TEMPER
     FIGURE_CACHE_VERSION = app.FIGURE_CACHE_VERSION
     engine_rows_for_scope = app.engine_rows_for_scope
+    engine_value_for_scope = app.engine_value_for_scope
     PROJECTED_EUR_COEF = app.PROJECTED_EUR_COEF
     PROJECTED_EUR_EXP = app.PROJECTED_EUR_EXP
     format_eur_range = app.format_eur_range
@@ -418,7 +419,10 @@ def render():
     # gates on the row's minutes too, and the two pages must agree.
     try:
         _eng_scope = engine_rows_for_scope(active_season_ids)
-        _eng_mins_by_pid = ({int(p): float(m) for p, m in zip(_eng_scope['playerId'], _eng_scope['mins_played'])
+        # the minutes behind the value SHOWN (as of the season / live / today)
+        _eng_vmins = (engine_value_for_scope(_eng_scope, active_season_ids)['mins']
+                      if not _eng_scope.empty else pd.Series(dtype=float))
+        _eng_mins_by_pid = ({int(p): float(m) for p, m in zip(_eng_scope['playerId'], _eng_vmins)
                              if pd.notna(p) and pd.notna(m)} if not _eng_scope.empty else {})
     except Exception:
         logger.exception("engine minutes lookup failed — likely-fee ranges withheld")
@@ -644,8 +648,11 @@ def render():
         if show_cvi and 'Engine Value EUR' in sorted_tdf.columns:
             pv_vals = pd.Series(sorted_tdf['Engine Value EUR'].values,
                                  index=display.index)
-            _ev_w = (pd.Series(sorted_tdf['Evidence Weight'].values, index=display.index)
-                     if 'Evidence Weight' in sorted_tdf.columns
+            # the evidence behind the value shown (Value Evidence Weight; the
+            # projection's on an older merge)
+            _wcol = next((c for c in ('Value Evidence Weight', 'Evidence Weight')
+                          if c in sorted_tdf.columns), None)
+            _ev_w = (pd.Series(sorted_tdf[_wcol].values, index=display.index) if _wcol
                      else pd.Series([None] * len(display), index=display.index))
             _pids = pd.Series(sorted_tdf['playerId'].values, index=display.index)
             _poss = (pd.Series(sorted_tdf['primaryPosition'].values, index=display.index)
@@ -1020,8 +1027,9 @@ def render():
         if ('Engine Value EUR' in (_sc_x, _sc_y) and 'Engine Value EUR' in _sc_df.columns
                 and _eng_mins_by_pid is not None):
             _ev_vals = pd.to_numeric(_sc_df['Engine Value EUR'], errors='coerce')
-            _ev_w = (pd.to_numeric(_sc_df['Evidence Weight'], errors='coerce')
-                     if 'Evidence Weight' in _sc_df.columns
+            _wcol = next((c for c in ('Value Evidence Weight', 'Evidence Weight')
+                          if c in _sc_df.columns), None)
+            _ev_w = (pd.to_numeric(_sc_df[_wcol], errors='coerce') if _wcol
                      else pd.Series([None] * len(_sc_df), index=_sc_df.index))
             _sc_pids = (_sc_df['playerId'] if 'playerId' in _sc_df.columns
                         else pd.Series([None] * len(_sc_df), index=_sc_df.index))

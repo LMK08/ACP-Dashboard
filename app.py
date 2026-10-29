@@ -1456,11 +1456,30 @@ def load_player_engine():
         #                           played enough matches; else today's
         #                           projection) — on the projection row
         #   engine_value_eur_season every row's value as of its own season
-        #   engine_value_eur_now    today's value on all his rows (the
-        #                           live season's fallback before it is valued)
-        df['engine_value_eur'], df['engine_value_eur_season'] = engine_values(df)
-        df['engine_value_eur_now'] = df['playerId'].map(
-            df.groupby('playerId')['engine_value_eur'].max())
+        #                           (only with an as-of engine file)
+        #   engine_value_eur_now /  today's value on all his rows + the
+        #   value_w_now / _mins_now support (evidence, minutes) and label
+        #   / value_label_now       behind it: from the row
+        #                           engine_rows_for_scope(None) picks, or his
+        #                           live row once valued
+        df['engine_value_eur'], _season_v = engine_values(df)
+        if 'asof_abs' in df.columns:
+            df['engine_value_eur_season'] = _season_v
+        _pick = (df.assign(_hp=df['projection'].notna())
+                   .sort_values(['playerId', '_hp', 'seasonId', 'mins_played'])
+                   .drop_duplicates('playerId', keep='last').set_index('playerId'))
+        _w, _m = _pick['w_evidence'].copy(), _pick['mins_played'].copy()
+        _lab = 'today · from ' + _pick['seasonId'].map(season_short_label)
+        if 'live_ok' in df.columns:
+            _lv = (df[df['live_ok'].fillna(False).astype(bool)].sort_values('mins_played')
+                     .drop_duplicates('playerId', keep='last').set_index('playerId'))
+            _w.update(_lv['asof_w_evidence'])
+            _m.update(_lv['mins_played'])
+            _lab.update('today · ' + _lv['seasonId'].map(season_short_label) + ' live')
+        df['engine_value_eur_now'] = df['playerId'].map(_pick['engine_value_eur'])
+        df['value_w_now'] = df['playerId'].map(_w)
+        df['value_mins_now'] = df['playerId'].map(_m)
+        df['value_label_now'] = df['playerId'].map(_lab)
         meta = {}
         if os.path.exists(meta_path):
             with open(meta_path) as f:
@@ -2127,66 +2146,57 @@ def engine_rows_for_scope(season_ids=None):
              .drop(columns='_has_proj'))
 
 
+def season_short_label(season_id):
+    """'25/26' for a seasonId ('' when unknown)."""
+    from league_config import SEASON_YEAR
+    y = SEASON_YEAR.get(int(season_id)) if season_id is not None and pd.notna(season_id) else None
+    return f"{y % 100:02d}/{(y + 1) % 100:02d}" if y else ''
+
+
 def engine_value_for_scope(rows, season_ids):
-    """The value to show for engine rows picked by engine_rows_for_scope:
-    All Seasons (None) -> today's value; a season -> the row's value as of
-    that season, the live season falling back to today's value until it is
-    valued. (Older engine files without season values: today's value.)"""
+    """The value to show for engine rows picked by engine_rows_for_scope, with
+    its support and label: DataFrame(value, w_evidence, mins, label) on
+    rows.index. All Seasons (None) -> today's value ('today · 26/27 live' /
+    'today · from 25/26'); a season -> the row's value as of that season
+    ('25/26', '26/27 live'), the live season falling back to today's until
+    it is valued. An engine file without as-of values: today's value."""
+    now = pd.DataFrame({'value': rows['engine_value_eur_now'], 'w_evidence': rows['value_w_now'],
+                        'mins': rows['value_mins_now'], 'label': rows['value_label_now']}, index=rows.index)
     if season_ids is None or 'engine_value_eur_season' not in rows.columns:
-        return rows['engine_value_eur']
-    live = rows.get('asof_live', pd.Series(False, index=rows.index)).fillna(False).astype(bool)
-    return rows['engine_value_eur_season'].where(
-        rows['engine_value_eur_season'].notna() | ~live, rows['engine_value_eur_now'])
+        return now
+    live = rows['asof_live'].fillna(False).astype(bool)
+    out = pd.DataFrame({'value': rows['engine_value_eur_season'], 'w_evidence': rows['asof_w_evidence'],
+                        'mins': rows['mins_played'],
+                        'label': rows['seasonId'].map(season_short_label) + np.where(live, ' live', '')},
+                       index=rows.index)
+    use_now = out['value'].isna() & live
+    out.loc[use_now] = now.loc[use_now]
+    return out
 
 
 def engine_value_for_player(player_id, season_ids):
-    """The profile header's projected value for the selected scope — the same
-    row pick and value as the analysis tables (engine_rows_for_scope +
-    engine_value_for_scope). Returns dict(value, w_evidence, mins, label) or
-    None. label says what the value is: '25/26' (as of that season),
-    '26/27 live', or for today's value 'today · 26/27 live' / 'today · from
-    25/26'. The live season with no row of his: today's value."""
-    from league_config import SEASON_YEAR, IN_PROGRESS_SEASON_IDS
-    eng, _meta = load_player_engine()
-    if eng is None or eng.empty:
-        return None
+    """The profile / comparison projected value for the selected scope — the
+    analysis tables' row pick and value (engine_rows_for_scope +
+    engine_value_for_scope), so the pages can't disagree. Returns
+    dict(value, w_evidence, mins, label) or None. The live season with no
+    row of his: today's value; a past season with no row: None."""
+    from league_config import IN_PROGRESS_SEASON_IDS
     pid = int(player_id)
-
-    def lab(sid):
-        y = SEASON_YEAR.get(int(sid)) if sid is not None and pd.notna(sid) else None
-        return f"{y % 100:02d}/{(y + 1) % 100:02d}" if y else ''
-
-    def today():
-        mine = eng[eng['playerId'] == pid]
-        live = (mine[mine['live_ok'].fillna(False).astype(bool)] if 'live_ok' in mine.columns
-                else mine.iloc[0:0])
-        if len(live):
-            r = live.sort_values('mins_played').iloc[-1]
-            return {'value': r['engine_value_eur_season'], 'w_evidence': r.get('asof_w_evidence'),
-                    'mins': r.get('mins_played'), 'label': f"today · {lab(r['seasonId'])} live"}
-        p = mine.dropna(subset=['engine_value_eur'])
-        if p.empty:
-            return None
-        r = p.sort_values('mins_played').iloc[-1]
-        return {'value': r['engine_value_eur'], 'w_evidence': r.get('w_evidence'),
-                'mins': r.get('mins_played'), 'label': f"today · from {lab(r['seasonId'])}"}
-
-    if season_ids is None:
-        return today()
-    sids = {int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set)) else [season_ids])}
     rows = engine_rows_for_scope(season_ids)
     rows = rows[rows['playerId'] == pid] if not rows.empty else rows
+    scope = season_ids
+    if rows.empty and season_ids is not None:
+        sids = {int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set)) else [season_ids])}
+        if not sids <= set(IN_PROGRESS_SEASON_IDS):
+            return None
+        rows, scope = engine_rows_for_scope(None), None
+        rows = rows[rows['playerId'] == pid] if not rows.empty else rows
     if rows.empty:
-        return today() if sids <= set(IN_PROGRESS_SEASON_IDS) else None
-    r = rows.iloc[0]
-    if 'engine_value_eur_season' in rows.columns and pd.isna(r.get('engine_value_eur_season')):
-        # the live season before it is valued -> today's; a past season -> none
-        return today() if bool(r.get('asof_live', False)) else None
-    if 'engine_value_eur_season' not in rows.columns:
-        return today()
-    live = bool(r.get('asof_live', False))
-    return {'value': float(r['engine_value_eur_season']), 'w_evidence': r.get('asof_w_evidence'),
-            'mins': r.get('mins_played'), 'label': f"{lab(r['seasonId'])}{' live' if live else ''}"}
+        return None
+    v = engine_value_for_scope(rows, scope).iloc[0]
+    if v['value'] is None or pd.isna(v['value']):
+        return None
+    return {'value': float(v['value']), 'w_evidence': v['w_evidence'], 'mins': v['mins'], 'label': v['label']}
 
 
 def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=None):
@@ -2199,9 +2209,10 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     e = engine_rows_for_scope(season_ids)
     if e is None or e.empty:
         return player_stats_df
+    # value: All Seasons -> today's; a season -> as of that season (the
+    # live season before it is valued -> today's), with the evidence behind it
+    _val = engine_value_for_scope(e, season_ids)
     out = pd.DataFrame({
-        # value: All Seasons -> today's; a season -> as of that season (the
-        # live season before it is valued -> today's)
         'playerId': e['playerId'],
         'ACP Rating': e['acp_rating'],
         'ACP Rating (abs)': e['acp_rating_abs'],
@@ -2215,7 +2226,8 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
         'Def Volume Grade %': e['defr_pct'] * 100.0,
         'Off Duel Grade %': e['datt_pct'] * 100.0,
         'Engine Set Piece %': e['setpiece_pct'] * 100.0,
-        'Engine Value EUR': engine_value_for_scope(e, season_ids),
+        'Engine Value EUR': _val['value'],
+        'Value Evidence Weight': _val['w_evidence'],
         'Aerial Grade %': e['aerial_grade_pct'] * 100.0,
         'Ground Def Grade %': e['ground_grade_pct'] * 100.0,
         'Shooting Grade %': e['Shooting_pct'] * 100.0,
