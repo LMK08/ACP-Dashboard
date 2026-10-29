@@ -240,6 +240,9 @@ P = pd.DataFrame(rows).dropna()
 TEST_START_YR = int(P['start_yr'].max())
 tr = P[P['start_yr'] < TEST_START_YR]
 te = P[P['start_yr'] == TEST_START_YR]
+if tr.empty:   # one pair-year only (a replay as of 2023/24): nothing is held out
+    print("  !! one pair-year: G1 runs in-sample (train = test = every pair)")
+    tr = te = P
 print(f"  panel {len(P)} pairs (age available) -> train {len(tr)}, test {len(te)}")
 
 print("[3/5] fit + G1 out-of-time gate…", flush=True)
