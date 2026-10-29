@@ -179,8 +179,22 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
 - `models/value/availability.py` — the engine value's PLAYING-TIME FACTOR
   (`regular_factor`, 2026-10). The projection can't tell a cameo from a
   regular: a 95' player inherited a starter's value (Rafinha Monteiro, €218k).
-  - **Share:** engine `mins_lineup` ÷ the minutes available to him (his
-    club's league matches while he was there).
+  - **Share:** engine `mins_lineup` (exact API minutes) ÷ the minutes
+    available to him, i.e. his club's league matches while he was there.
+    These are counted MATCH BY MATCH (2026-10-29; it was event-match count
+    × coverage ratio × median length):
+    - **Schedule:** every match with status 'Played' in `matches_summary`
+      (never a fixture). Its team names map to events `team.id`, ignoring
+      accents and spacing ('Pevidém', 'Mortágua ').
+    - **Excluded:** a per-match season's matches with no per-match API
+      minutes (`match_minutes.excluded_match_ids`), because the numerator
+      can't count them.
+    - **Length, in order of preference:**
+      - the API per-match minutes, i.e. the most anyone got (all of Liga 3);
+      - the event clock, within 0.6' of the API (the Campeonato, whose
+        per-match API minutes are gone);
+      - the season median.
+    - `len_api` records the API-exact fraction.
   - **Bench term:** `sub_frac` = sub appearances ÷ appearances.
   - **Factor:** a logistic chance of 900'+ the next season, ÷ the same at
     36% share; 1.0 from ~1,000'.
@@ -204,15 +218,20 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     RAW ids (before any alias remap) in `load_player_engine` and in the
     calibration's `load_inputs`, so the app and the calibration value
     identically.
-  - **Profile card:** `attach()` also carries `SHARE_COLS` (yr, mins_year,
-    avail_mins), which are display-only and outside the stats-cache stamp.
-    The Player Profile header's "Minutes share" card reads them via
-    `app.get_scoped_minutes_share` → `availability.scoped_share`.
-    - Scoped like Role/Style; each season year is counted once.
-    - Year totals cover both leagues and all clubs, so the league filter
-      doesn't narrow them.
-    - Available minutes are never below the minutes played.
-    - Hidden for GKs and for rows with no availability.
+  - **Display-only rows:** `availability.parquet` also holds rows with
+    `in_engine` False and no factor. These are every other player-season with
+    exact API minutes (GKs, sub-floor players). `attach()` joins engine rows
+    only, so they never touch a value.
+  - **Profile card:** the Player Profile header's "Minutes share" card sits
+    next to the value, GKs included. It reads the table via
+    `app.load_minutes_share_table` / `get_minutes_share` →
+    `availability.scoped_share`.
+    - **Season:** the one the value is for (the engine row; the GK legacy
+      value's anchor), or the career on All Seasons. NOT the Role/Style
+      scope.
+    - **Counting:** each season year is counted once, across both leagues
+      and all clubs. Available minutes are never below the minutes played.
+    - **Marking:** "~" unless every match length came from the API.
   - **Rollover:** `COEF` is pinned; refit with `--fit` and regenerate the
     calibration JSON (its `point_model.availability` records the constants).
   - Plan + evidence: `ACP_Official/value_minutes_plan_2026-10-28.md`.

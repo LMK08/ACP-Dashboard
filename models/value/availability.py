@@ -9,8 +9,23 @@ module scales the value by how likely a player with his playing time is to
 become a regular, measured as 900'+ the next season:
 
   share     = his season minutes (engine mins_lineup, exact API minutes)
-              / the minutes available to him: his club's league matches while
-              he was there x the season's median match length
+              / the minutes available to him: the summed lengths of his
+              club's league matches while he was there
+
+Available minutes are counted match by match (2026-10-29; they were the
+event-data match count x a coverage ratio x the season's median length):
+  - the club's schedule = every played match in matches_summary (status
+    'Played', never a fixture; team names mapped to the events' team.id per
+    season; the names agreed with the events in all 5,873 matches checked),
+    less a per-match season's matches with no per-match API minutes — the
+    numerator can't count those (match_minutes.excluded_match_ids, the
+    app's per-90 rule);
+  - a match's length = Wyscout's per-match API minutes (the most any player
+    got: what a full-match player is credited) — every Liga 3 season;
+    else the events' clock (1H end + 2H end - 45, + any extra time; within
+    0.6' of the API on 1,595 Liga 3 matches) — the Campeonato, whose
+    per-match API minutes are gone; else the season's median (`len_api`
+    records the API-exact fraction).
   sub_frac  = the share of his appearances that came off the bench
   p         = 1 / (1 + exp(-(a + b log(share + EPS) + c sub_frac)))
   factor    = min(p / p(ANCHOR_SHARE, 0), 1)    (1.0 for a starter from ~1,000';
@@ -68,7 +83,7 @@ OUT = HERE / 'availability.parquet'
 ENGINE_PATH = DASH / 'models' / 'ratings' / 'player_engine.parquet'
 
 # logit p(regular next season) = a + b log(share + EPS) + c sub_frac
-COEF = (0.2873, 0.6358, -0.2221)  # --fit 2026-10-29 (no lineup rule): 927 rows, cross-season log-loss 0.6392, AUC 0.6409
+COEF = (0.2735, 0.6274, -0.2392)  # --fit 2026-10-29 (exact available minutes): 927 rows, cross-season log-loss 0.6398, AUC 0.6404
 SHARE_EPS = 0.002       # ~5'; immaterial above the engine's 90' floor (3.3% share)
 ANCHOR_SHARE = 0.36     # ~1,000' of a typical 2,744' season: factor 1 at/above
 REGULAR_NEXT = 900.0    # the outcome the curve is fitted to
@@ -87,20 +102,112 @@ def regular_factor(share, sub_frac, coef=COEF):
 
 
 # --- inputs ----------------------------------------------------------------------
+EVENT_FILES = ('liga3_portugal_events', 'campeonato_portugal_events')
+
+
 def load_inputs(dash=DASH, gpa=GPA_DATA, engine_path=ENGINE_PATH):
-    ms = pd.read_parquet(dash / 'matches_summary.parquet', columns=['matchId', 'seasonId', 'dateutc'])
+    from match_minutes import excluded_match_ids
+    ms = _played(pd.read_parquet(dash / 'matches_summary.parquet',
+                                 columns=['matchId', 'seasonId', 'status', 'dateutc', 'homeTeamName', 'awayTeamName']))
     ms['d'] = pd.to_datetime(ms['dateutc'], errors='coerce')
     if getattr(ms['d'].dt, 'tz', None) is not None:
         ms['d'] = ms['d'].dt.tz_localize(None)
-    ev = pd.concat([pd.read_parquet(gpa / f'{f}.parquet', columns=['matchId', 'seasonId', 'team.id', 'player.id'])
-                    .drop_duplicates() for f in ('liga3_portugal_events', 'campeonato_portugal_events')])
+    ev = pd.concat([pd.read_parquet(gpa / f'{f}.parquet', columns=['matchId', 'seasonId', 'team.id', 'team.name', 'player.id'])
+                    .drop_duplicates() for f in EVENT_FILES])
     with open(dash / 'match_lineups.pkl', 'rb') as f:
         lineups = pickle.load(f)
-    iv = pd.read_parquet(dash / 'models' / 'ratings' / 'player_match_intervals.parquet', columns=['matchId', 'u_out'])
     tr = pd.read_parquet(HERE / 'transfers.parquet') if (HERE / 'transfers.parquet').exists() else pd.DataFrame(
         columns=['playerId', 'startDate', 'fromTeamId', 'toTeamId'])
     eng = pd.read_parquet(engine_path, columns=['playerId', 'seasonId', 'team', 'mins_lineup'])
-    return {'ms': ms, 'ev': ev, 'lineups': lineups, 'iv': iv, 'tr': tr, 'eng': eng}
+    mpm = dash / 'match_player_minutes.parquet'
+    mins = (pd.read_parquet(mpm, columns=['matchId', 'playerId', 'minutes']) if mpm.exists()
+            else pd.DataFrame(columns=['matchId', 'playerId', 'minutes']))
+    # per-match seasons' matches with no per-match minutes (Wyscout has no
+    # stats, or not fetched yet): the numerator can't count them, so the
+    # schedule doesn't either — the app's per-90 rule (match_minutes.py)
+    excluded = excluded_match_ids(ms[['matchId', 'seasonId']], str(mpm))
+    return {'ms': ms, 'ev': ev, 'lineups': lineups, 'tr': tr, 'eng': eng,
+            'mins': mins[mins['playerId'] != 0], 'clock': _clock(gpa), 'exact': _exact_minutes(dash),
+            'excluded': excluded}
+
+
+def _played(ms):
+    """matches_summary rows that were played — never a scheduled fixture."""
+    return ms[ms['status'].eq('Played')].copy() if 'status' in ms.columns else ms
+
+
+def _clock(gpa=GPA_DATA):
+    """Per (matchId, period) the last event's clock in minutes (columns 1H, 2H
+    and, for extra time, 1E / 2E)."""
+    parts = []
+    for f in EVENT_FILES:
+        e = pd.read_parquet(gpa / f'{f}.parquet', columns=['matchId', 'matchPeriod', 'minute', 'second'])
+        e = e[e['matchPeriod'].isin(['1H', '2H', '1E', '2E'])]
+        parts.append((e['minute'] + e['second'] / 60.0).groupby([e['matchId'], e['matchPeriod']]).max())
+    return pd.concat(parts).unstack()
+
+
+def _exact_minutes(dash=DASH):
+    """(playerId, seasonId, minutes) for EVERY player — the exact API minutes
+    the engine's mins_lineup uses (build_player_engine.py): per-match sums
+    where a season has per-match data, else the stored season totals. The
+    rows the engine doesn't cover (goalkeepers, sub-floor players) take their
+    numerator from here."""
+    from match_minutes import load_cache, per_match_seasons
+    from precompute_minutes import _season_total_rows, resolve_aliases
+    ms = pd.read_parquet(dash / 'matches_summary.parquet', columns=['matchId', 'seasonId'])
+    pms = per_match_seasons(dash / 'match_player_minutes.parquet', ms)
+    mm = load_cache(dash / 'match_player_minutes.parquet')
+    parts = []
+    if len(mm):
+        lm = resolve_aliases(mm).groupby(['seasonId', 'playerId'], as_index=False)['minutes'].sum()
+        parts.append(lm[lm['seasonId'].isin(pms)])
+    pkl = dash / 'player_minutes_and_positions.pkl'
+    if pkl.exists():
+        with open(pkl, 'rb') as f:
+            api = pickle.load(f)
+        parts += [_season_total_rows(int(s), df)[['playerId', 'totalMinutes']]
+                  .rename(columns={'totalMinutes': 'minutes'}).assign(seasonId=int(s))
+                  for s, df in api.items() if int(s) not in pms]
+    if not parts:
+        return pd.DataFrame(columns=['playerId', 'seasonId', 'minutes'])
+    return pd.concat(parts, ignore_index=True)[['playerId', 'seasonId', 'minutes']].astype(int)
+
+
+def _norm_name(name):
+    """Team name for matching across sources: no accents, case or extra spaces."""
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(name))
+    return ' '.join(''.join(c for c in s if not unicodedata.combining(c)).casefold().split())
+
+
+def match_lengths(inp):
+    """{matchId: (minutes, 'api' | 'clock' | 'median')} for every played match
+    in matches_summary — see the module docstring for the order."""
+    api = inp['mins'].groupby('matchId')['minutes'].max()
+    api = api[api > 0]
+    c = inp['clock']
+    clock = pd.Series(dtype=float)
+    if len(c) and {'1H', '2H'} <= set(c.columns):
+        clock = c['1H'].clip(lower=45) + c['2H'].clip(lower=90) - 45
+        for p, start in (('1E', 90), ('2E', 105)):
+            if p in c.columns:
+                clock = clock + (c[p].clip(lower=start + 15) - start).fillna(0.0)
+        clock = clock.dropna()
+    ms = _played(inp['ms'])
+    out, by_season = {}, defaultdict(list)
+    for m, s in zip(ms['matchId'].astype(int), ms['seasonId'].astype(int)):
+        if m in api.index:
+            out[m] = (float(api[m]), 'api')
+        elif m in clock.index:
+            out[m] = (float(clock[m]), 'clock')
+        else:
+            continue
+        by_season[s].append(out[m][0])
+    for m, s in zip(ms['matchId'].astype(int), ms['seasonId'].astype(int)):
+        if m not in out:
+            out[m] = (float(np.median(by_season[s])) if by_season[s] else 97.0, 'median')
+    return out
 
 
 def _squad(lineups):
@@ -119,24 +226,28 @@ def _squad(lineups):
 
 # --- availability ----------------------------------------------------------------
 def availability_table(inp):
-    """One row per (playerId, yr): avail_mins, window_cut, n_clubs, starts,
-    sub_apps, sub_frac. Club identity = events team.id (the lineup file's team
-    NAMES are wrong in some matches)."""
-    ms, lineups = inp['ms'], inp['lineups']
+    """One row per (playerId, yr): avail_mins, len_api (its API-exact
+    fraction), window_cut, n_clubs, starts, sub_apps, sub_frac. Club identity
+    = events team.id (the lineup file's team NAMES are wrong in some matches);
+    a club's schedule = its played matches in matches_summary, less the
+    per-match seasons' matches with no per-match minutes (inp['excluded'])."""
+    ms, lineups = _played(inp['ms']), inp['lineups']
+    ms = ms[~ms['matchId'].astype(int).isin(inp.get('excluded') or set())]
     ev = inp['ev'].dropna(subset=['team.id']).astype({'matchId': int, 'seasonId': int, 'team.id': int})
-    date = dict(zip(ms['matchId'].astype(int), ms['d']))
     season_of = {**dict(zip(ms['matchId'].astype(int), ms['seasonId'].astype(int))),
                  **dict(zip(ev['matchId'], ev['seasonId']))}
-    # eventless matches have lineups but no team identity: each season's
-    # schedule is scaled by its played / with-events match ratio
-    played = pd.Series([season_of.get(int(m)) for m in lineups]).dropna().astype(int).value_counts()
-    coverage = (played / ev.groupby('seasonId')['matchId'].nunique()).dropna().to_dict()
-    iv = inp['iv'].assign(seasonId=inp['iv']['matchId'].astype(int).map(season_of))
-    mlen = iv.groupby('matchId').agg(L=('u_out', 'max'), s=('seasonId', 'first')).groupby('s')['L'].median().to_dict()
+    length = match_lengths(inp)
 
-    tm = ev[['seasonId', 'team.id', 'matchId']].drop_duplicates()
-    tm['d'] = tm['matchId'].map(date)
-    tm = tm.dropna(subset=['d']).sort_values('d')
+    # matches_summary has team names, not ids: map them through the events
+    # (one id per name per season), accents / case / spacing ignored
+    # ('Pevidem' vs 'Pevidém', 'Mortágua' vs 'Mortágua '); a club with no
+    # events at all stays unmapped
+    named = ev.dropna(subset=['team.name'])
+    name_id = dict(zip(zip(named['seasonId'], named['team.name'].map(_norm_name)), named['team.id']))
+    tm = pd.concat([ms[['matchId', 'seasonId', 'd', side]].rename(columns={side: 'name'})
+                    for side in ('homeTeamName', 'awayTeamName')])
+    tm['team.id'] = [name_id.get((int(s), _norm_name(n))) for s, n in zip(tm['seasonId'], tm['name'])]
+    tm = tm.dropna(subset=['d', 'team.id']).astype({'matchId': int, 'seasonId': int, 'team.id': int}).sort_values('d')
     sched = {k: list(zip(g['d'], g['matchId'])) for k, g in tm.groupby(['seasonId', 'team.id'])}
     bounds = tm.groupby('seasonId')['d'].agg(['min', 'max']).to_dict('index')
     clubs = (ev.dropna(subset=['player.id']).astype({'player.id': int})
@@ -172,7 +283,6 @@ def availability_table(inp):
     for (pid, sid), tids in clubs.items():
         if sid not in bounds or sid not in SEASON_YEAR:
             continue
-        cov, L = coverage.get(sid, 1.0), mlen.get(sid, 97.0)
         per = []
         for tid in tids:
             seq = sched.get((sid, tid), [])
@@ -189,22 +299,33 @@ def availability_table(inp):
             cut = start is not None or end is not None
             if cut and len(win) < MIN_WINDOW:
                 win, cut = seq, False
-            per.append({'season_n': len(seq), 'n': len(win), 'cut': cut})
+            mins = lambda xs: (sum(length[m][0] for _, m in xs),
+                               sum(length[m][0] for _, m in xs if length[m][1] == 'api'))
+            (season_L, season_api), (win_L, win_api) = mins(seq), mins(win)
+            per.append({'season_L': season_L, 'season_api': season_api,
+                        'win_L': win_L, 'win_api': win_api, 'cut': cut})
         if not per:
             continue
-        v0 = np.mean([c['season_n'] for c in per]) * cov * L
-        cap = max(c['season_n'] for c in per) * cov * L
+        v0 = np.mean([c['season_L'] for c in per])
+        api0 = np.mean([c['season_api'] for c in per])
+        cap = max(c['season_L'] for c in per)
         if len(per) > 1 and not any(c['cut'] for c in per):
-            v1 = v0          # two clubs, no dated move at either: one season, the mean schedule
+            v1, api1 = v0, api0      # two clubs, no dated move at either: one season, the mean schedule
         else:
-            v1 = min(sum(c['n'] for c in per) * cov * L, cap)
-        rows.append({'playerId': int(pid), 'yr': SEASON_YEAR[sid], 'v0': v0, 'v1': v1, 'cap': cap,
+            w = sum(c['win_L'] for c in per)
+            v1 = min(w, cap)
+            api1 = sum(c['win_api'] for c in per) * (v1 / w if w > 0 else 0.0)
+        rows.append({'playerId': int(pid), 'yr': SEASON_YEAR[sid], 'v0': v0, 'api0': api0,
+                     'v1': v1, 'api1': api1, 'cap': cap,
                      'cut': any(c['cut'] for c in per), 'n_clubs': len(per)})
     a = pd.DataFrame(rows)
-    py = a.groupby(['playerId', 'yr']).agg(v0=('v0', 'mean'), v1=('v1', 'sum'), cap=('cap', 'max'),
+    py = a.groupby(['playerId', 'yr']).agg(v0=('v0', 'mean'), api0=('api0', 'mean'), v1=('v1', 'sum'),
+                                           api1=('api1', 'sum'), cap=('cap', 'max'),
                                            window_cut=('cut', 'any'), n_clubs=('n_clubs', 'sum')).reset_index()
     # both leagues in one year: still one season at most; no dated window: the mean
     py['avail_mins'] = np.where(py['window_cut'], np.minimum(py['v1'], py['cap']), py['v0'])
+    py['len_api'] = np.clip(np.where(py['window_cut'], py['api1'] / py['v1'].where(py['v1'] > 0),
+                                     py['api0'] / py['v0'].where(py['v0'] > 0)), 0.0, 1.0)
 
     # starts / sub appearances per player-year, over every match he was listed in
     sy = defaultdict(lambda: [0, 0])
@@ -216,11 +337,15 @@ def availability_table(inp):
     py['sub_apps'] = [sy[(p, y)][1] for p, y in zip(py['playerId'], py['yr'])]
     apps = py['starts'] + py['sub_apps']
     py['sub_frac'] = np.where(apps > 0, py['sub_apps'] / apps.where(apps > 0, 1), 0.0)
-    return py[['playerId', 'yr', 'avail_mins', 'window_cut', 'n_clubs', 'starts', 'sub_apps', 'sub_frac']]
+    return py[['playerId', 'yr', 'avail_mins', 'len_api', 'window_cut', 'n_clubs', 'starts', 'sub_apps', 'sub_frac']]
 
 
 def build(inp=None):
-    """One row per engine (playerId, seasonId): the factor and its inputs."""
+    """One row per engine (playerId, seasonId) — the factor and its inputs —
+    plus, with in_engine False and no factor, every other (playerId,
+    seasonId) with exact API minutes (goalkeepers, sub-floor players): the
+    profile's minutes-share card reads those; attach() joins engine rows only,
+    so they never touch a value."""
     inp = inp or load_inputs()
     eng = inp['eng'].copy()
     eng['playerId'] = pd.to_numeric(eng['playerId'], errors='coerce').astype('Int64')
@@ -238,7 +363,28 @@ def build(inp=None):
     out['reserve_team'] = out['team'].map(is_reserve_team)
     out['regular_factor'] = [1.0 if rt else (regular_factor(s, f) if pd.notna(s) else 1.0)
                              for rt, s, f in zip(out['reserve_team'], out['avail_share'], out['sub_frac'])]
-    return out.drop(columns=['team'])
+    out['in_engine'] = True
+
+    ex = inp['exact'].copy()
+    ex['yr'] = ex['seasonId'].map(SEASON_YEAR)
+    ex = ex.dropna(subset=['yr']).astype({'playerId': 'Int64', 'seasonId': 'Int64', 'yr': int})
+    ex = ex[ex['minutes'] > 0]
+    ex_year = ex.groupby(['playerId', 'yr'])['minutes'].sum().rename('mins_year')
+    seen = pd.MultiIndex.from_frame(out[['playerId', 'seasonId']])
+    rest = ex[~pd.MultiIndex.from_frame(ex[['playerId', 'seasonId']]).isin(seen)]
+    rest = (rest[['playerId', 'seasonId', 'yr']].join(ex_year, on=['playerId', 'yr'])
+            .merge(av, on=['playerId', 'yr'], how='inner'))
+    ev = inp['ev'].dropna(subset=['player.id', 'team.name'])
+    reserve = (ev.assign(r=ev['team.name'].map(is_reserve_team))
+                 .groupby(['player.id', 'seasonId'])['r'].any())
+    rest['window_cut'] = rest['window_cut'].astype(bool)
+    rest['avail_share'] = (rest['mins_year'] / rest['avail_mins']).clip(upper=1.0)
+    rest['reserve_team'] = [bool(reserve.get((int(p), int(s)), False))
+                            for p, s in zip(rest['playerId'], rest['seasonId'])]
+    rest['regular_factor'] = np.nan
+    rest['in_engine'] = False
+    out = pd.concat([out.drop(columns=['team']), rest[out.columns.drop('team')]], ignore_index=True)
+    return out
 
 
 _STAMP = {}
@@ -262,22 +408,14 @@ def stamp(path=OUT):
     return _STAMP[key]
 
 
-# display-only columns attach() also carries, for the player profile's
-# minutes-share card (scoped_share); NaN where a row has no availability
-SHARE_COLS = ['yr', 'mins_year', 'avail_mins']
-
-
 def attach(engine_df, path=OUT):
-    """engine_df + `regular_factor` (1.0 where there is none) + SHARE_COLS
-    (NaN where there are none), joined on the RAW playerId and seasonId —
-    call before any alias remap."""
-    df = engine_df.drop(columns=['regular_factor', *SHARE_COLS], errors='ignore')
+    """engine_df + `regular_factor` (1.0 where there is none), joined on the
+    RAW playerId and seasonId — call before any alias remap."""
+    df = engine_df.drop(columns=['regular_factor'], errors='ignore')
     if not Path(path).exists():
         df['regular_factor'] = 1.0
         return df
-    av = pd.read_parquet(path)
-    av = av[['playerId', 'seasonId', 'regular_factor']
-            + [c for c in SHARE_COLS if c in av.columns]].copy()
+    av = pd.read_parquet(path, columns=['playerId', 'seasonId', 'regular_factor'])
     av['playerId'] = av['playerId'].astype('Int64')
     av['seasonId'] = av['seasonId'].astype('Int64')
     av = av.drop_duplicates(['playerId', 'seasonId'])
@@ -285,20 +423,17 @@ def attach(engine_df, path=OUT):
     key_s = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
     f = pd.DataFrame({'playerId': key_p, 'seasonId': key_s}).merge(av, on=['playerId', 'seasonId'], how='left')
     df['regular_factor'] = f['regular_factor'].fillna(1.0).to_numpy()
-    for c in SHARE_COLS:
-        if c in f.columns:
-            df[c] = f[c].to_numpy()
     return df
 
 
 def scoped_share(rows):
-    """Share of the available minutes over one player's engine rows (already
-    cut to the scope): minutes ÷ available minutes, each summed once per
-    season year (a year's L3 + Camp rows and a mid-season mover's club rows
-    all carry the same player-year availability). A year's available minutes
-    are never below its minutes — the schedule uses a typical match length,
-    so an ever-present starter can play a few more (the 100% cap of
-    avail_share). None without data."""
+    """Share of the available minutes over one player's availability rows
+    (already cut to the years wanted): minutes ÷ available minutes, each
+    summed once per season year (a year's L3 + Camp rows and a mid-season
+    mover's club rows all carry the same player-year availability). A year's
+    available minutes are never below its minutes (a clock-derived length can
+    run a few seconds short; the 100% cap of avail_share). `exact` = every
+    match length from the API. None without data."""
     if rows is None or rows.empty or 'avail_mins' not in rows.columns:
         return None
     # most minutes first: an alias-merged player could carry two raw ids' rows in one year
@@ -308,8 +443,9 @@ def scoped_share(rows):
     avail = float(np.maximum(r['avail_mins'], r['mins_year']).sum())
     if r.empty or avail <= 0:
         return None
+    exact = bool('len_api' in r.columns and (r['len_api'] >= 0.999).all())
     return {'share': min(mins / avail, 1.0), 'mins': mins, 'avail': avail,
-            'years': sorted(int(y) for y in r['yr'])}
+            'years': sorted(int(y) for y in r['yr']), 'exact': exact}
 
 
 # --- refit (yearly rollover) -------------------------------------------------------
@@ -346,5 +482,8 @@ if __name__ == '__main__':
     else:
         out = build()
         out.to_parquet(OUT, index=False)
-        print(f"availability: {len(out)} engine rows; window cut {int(out['window_cut'].sum())}; reserve {int(out['reserve_team'].sum())}; "
-              f"factor < 1: {int((out['regular_factor'] < 1).sum())} (median {out.loc[out['regular_factor'] < 1, 'regular_factor'].median():.2f})")
+        e = out[out['in_engine']]
+        print(f"availability: {len(e)} engine rows (+{len(out) - len(e)} display-only); window cut {int(e['window_cut'].sum())}; "
+              f"reserve {int(e['reserve_team'].sum())}; factor < 1: {int((e['regular_factor'] < 1).sum())} "
+              f"(median {e.loc[e['regular_factor'] < 1, 'regular_factor'].median():.2f}); "
+              f"API-exact lengths {e['len_api'].mean():.0%}")

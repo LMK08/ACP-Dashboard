@@ -27,22 +27,25 @@ DAYS = pd.date_range('2025-08-10', periods=30, freq='7D')   # the synthetic seas
 
 
 def _season(n=30):
-    """n weekly matches per club, Aug -> Apr; both clubs play every week."""
+    """n weekly matches per club, Aug -> Apr; both clubs play every week (each
+    against an opponent outside the data); every match has API minutes of L."""
     days = pd.date_range('2025-08-10', periods=n, freq='7D')
-    ms, ev, iv, lineups = [], [], [], {}
+    ms, ev, mins, lineups = [], [], [], {}
     for i, d in enumerate(days):
         for k, t in enumerate((T1, T2)):
             mid = 1000 + 2 * i + k
-            ms.append({'matchId': mid, 'seasonId': SID, 'dateutc': d.strftime('%Y-%m-%d 15:00:00')})
-            ev.append({'matchId': mid, 'seasonId': SID, 'team.id': t, 'player.id': 9000 + t})   # a fixture player
-            iv.append({'matchId': mid, 'u_out': L})
+            ms.append({'matchId': mid, 'seasonId': SID, 'dateutc': d.strftime('%Y-%m-%d 15:00:00'),
+                       'homeTeamName': f'Clube {t}', 'awayTeamName': f'Visitante {mid}'})
+            ev.append({'matchId': mid, 'seasonId': SID, 'team.id': t, 'team.name': f'Clube {t}',
+                       'player.id': 9000 + t})   # a fixture player
+            mins.append({'matchId': mid, 'playerId': 9000 + t, 'minutes': L})
             lineups[mid] = {f'team{t}': {'lineup': [{'playerId': 9000 + t}], 'bench': [], 'substitutions': []}}
-    return days, ms, ev, iv, lineups
+    return days, ms, ev, mins, lineups
 
 
 def _inputs(players, transfers=(), n=30):
     """players: {pid: [(team, match_index, flag)]}, flag 'S' start / 'B' came on / 'U' unused."""
-    days, ms, ev, iv, lineups = _season(n)
+    days, ms, ev, mins, lineups = _season(n)
     for pid, apps in players.items():
         for t, i, flag in apps:
             mid = 1000 + 2 * i + (0 if t == T1 else 1)
@@ -54,11 +57,12 @@ def _inputs(players, transfers=(), n=30):
                 if flag == 'B':
                     side['substitutions'].append({'playerIn': pid, 'playerOut': 9000 + t})
             if flag in ('S', 'B'):
-                ev.append({'matchId': mid, 'seasonId': SID, 'team.id': t, 'player.id': pid})
+                ev.append({'matchId': mid, 'seasonId': SID, 'team.id': t, 'team.name': f'Clube {t}', 'player.id': pid})
     ms = pd.DataFrame(ms)
     ms['d'] = pd.to_datetime(ms['dateutc'])
     tr = pd.DataFrame(list(transfers), columns=['playerId', 'startDate', 'fromTeamId', 'toTeamId'])
-    return {'ms': ms, 'ev': pd.DataFrame(ev), 'lineups': lineups, 'iv': pd.DataFrame(iv), 'tr': tr,
+    return {'ms': ms, 'ev': pd.DataFrame(ev), 'lineups': lineups, 'mins': pd.DataFrame(mins), 'tr': tr,
+            'clock': pd.DataFrame(), 'exact': pd.DataFrame(columns=['playerId', 'seasonId', 'minutes']),
             'eng': pd.DataFrame(columns=['playerId', 'seasonId', 'team', 'mins_lineup'])}, days
 
 
@@ -174,27 +178,69 @@ def test_attach_defaults_to_one(tmp_path):
     assert av.attach(eng, p)['regular_factor'].tolist() == [0.4, 1.0, 1.0]
 
 
-def test_attach_carries_the_share_columns(tmp_path):
-    eng = pd.DataFrame({'playerId': [1, 2], 'seasonId': [SID, SID], 'avail_mins': [9.0, 9.0]})
+# --- exact available minutes -------------------------------------------------------------
+def test_schedule_counts_matches_without_event_data():
+    # the club's matches 10-19 have no events (only the fixture list knows them)
+    inp, _ = _inputs({13: [(T1, i, 'S') for i in range(10)]})
+    gone = {1000 + 2 * i for i in range(10, 20)}
+    inp['ev'] = inp['ev'][~inp['ev']['matchId'].isin(gone)]
+    assert _avail(inp, 13)['avail_mins'] == pytest.approx(30 * L)
+
+
+def test_unplayed_fixtures_and_stat_less_matches_are_not_available():
+    inp, _ = _inputs({17: [(T1, i, 'S') for i in range(10)]})
+    ms = inp['ms'].assign(status='Played')
+    future = ms[ms['matchId'] == 1000].assign(matchId=99999, status='Fixture', d=pd.Timestamp('2026-05-30'))
+    inp['ms'] = pd.concat([ms, future], ignore_index=True)
+    assert _avail(inp, 17)['avail_mins'] == pytest.approx(30 * L)        # the fixture adds nothing
+    inp['excluded'] = {1000 + 2 * i for i in range(25, 30)}               # no per-match minutes for 5 of T1's
+    assert _avail(inp, 17)['avail_mins'] == pytest.approx(25 * L)
+
+
+def test_match_length_api_then_clock_then_median():
+    inp, _ = _inputs({14: [(T1, i, 'S') for i in range(3)]}, n=4)
+    m_api, m_clock, m_none = 1000, 1002, 1004           # club T1's matches 0, 1, 2
+    inp['mins'] = pd.DataFrame({'matchId': [m_api, m_api], 'playerId': [1, 2], 'minutes': [96, 71]})
+    inp['clock'] = pd.DataFrame({'1H': [47.5], '2H': [93.0]}, index=pd.Index([m_clock], name='matchId'))
+    ln = av.match_lengths(inp)
+    assert ln[m_api] == (96.0, 'api')                    # the most any player got
+    assert ln[m_clock] == (pytest.approx(95.5), 'clock')  # 47.5 + 93 - 45
+    assert ln[m_none][1] == 'median'
+    r = _avail(inp, 14)
+    assert r['len_api'] == pytest.approx(96.0 / r['avail_mins'])
+
+
+def test_team_names_match_across_accents_and_spacing():
+    inp, _ = _inputs({15: [(T1, i, 'S') for i in range(3)]})
+    inp['ev'] = inp['ev'].assign(**{'team.name': inp['ev']['team.name'].str.replace('Clube', 'Clubé ') + ' '})
+    assert _avail(inp, 15)['avail_mins'] == pytest.approx(30 * L)
+
+
+def test_build_adds_display_rows_for_players_the_engine_does_not_rate(tmp_path):
+    # 16 is a keeper (no engine row): a display-only row with his exact minutes
+    inp, _ = _inputs({12: [(T1, i, 'S') for i in range(20)], 16: [(T2, i, 'S') for i in range(30)]})
+    inp['eng'] = pd.DataFrame({'playerId': [12], 'seasonId': [SID], 'team': ['Leça'], 'mins_lineup': [1900]})
+    inp['exact'] = pd.DataFrame({'playerId': [12, 16], 'seasonId': [SID, SID], 'minutes': [1900, 2850]})
+    out = av.build(inp).set_index('playerId')
+    assert bool(out.loc[12, 'in_engine']) and not bool(out.loc[16, 'in_engine'])
+    assert np.isnan(out.loc[16, 'regular_factor']) and out.loc[16, 'avail_share'] == pytest.approx(1.0)
+    eng = pd.DataFrame({'playerId': [12], 'seasonId': [SID]})
     p = tmp_path / 'a.parquet'
-    pd.DataFrame({'playerId': pd.array([1], dtype='Int64'), 'seasonId': pd.array([SID], dtype='Int64'),
-                  'regular_factor': [0.4], 'yr': [2025], 'mins_year': [300], 'avail_mins': [3000.0]}).to_parquet(p)
-    out = av.attach(eng, p)
-    assert out.loc[0, ['yr', 'mins_year', 'avail_mins']].tolist() == [2025, 300, 3000.0]
-    assert out.loc[1, ['yr', 'mins_year', 'avail_mins']].isna().all()   # stale input column replaced
+    out.reset_index().to_parquet(p)
+    assert av.attach(eng, p)['regular_factor'].tolist() == [1.0]   # the keeper row never joins
 
 
 def test_scoped_share_counts_each_year_once():
     # one year as L3 + Camp rows (same player-year availability), plus a second year
     rows = pd.DataFrame({'yr': [2024, 2024, 2025], 'mins_year': [300, 300, 1500],
-                         'avail_mins': [3000.0, 3000.0, 2000.0]})
+                         'avail_mins': [3000.0, 3000.0, 2000.0], 'len_api': [1.0, 1.0, 1.0]})
     s = av.scoped_share(rows)
     assert s['share'] == pytest.approx(1800 / 5000)
-    assert (s['mins'], s['avail'], s['years']) == (1800.0, 5000.0, [2024, 2025])
+    assert (s['mins'], s['avail'], s['years'], s['exact']) == (1800.0, 5000.0, [2024, 2025], True)
     assert av.scoped_share(rows.iloc[[2]])['share'] == pytest.approx(0.75)
-    # an ever-present starter a few minutes past the typical-length schedule
-    over = av.scoped_share(pd.DataFrame({'yr': [2026], 'mins_year': [685], 'avail_mins': [679.0]}))
-    assert (over['share'], over['avail']) == (1.0, 685.0)
+    # a clock-derived schedule a few seconds short of an ever-present player's minutes
+    over = av.scoped_share(pd.DataFrame({'yr': [2026], 'mins_year': [2524], 'avail_mins': [2518.0], 'len_api': [0.0]}))
+    assert (over['share'], over['avail'], over['exact']) == (1.0, 2524.0, False)
 
 
 def test_scoped_share_none_without_data():
@@ -218,9 +264,12 @@ def test_engine_value_scales_by_the_factor():
 @pytest.mark.skipif(not av.OUT.exists(), reason='no committed availability.parquet')
 def test_committed_availability_is_sane():
     a = pd.read_parquet(av.OUT)
-    assert a['regular_factor'].between(0, 1).all()
-    assert (a.loc[a['reserve_team'], 'regular_factor'] == 1.0).all()
+    e = a[a['in_engine']]
+    assert e['regular_factor'].between(0, 1).all()
+    assert (e.loc[e['reserve_team'], 'regular_factor'] == 1.0).all()
+    assert a.loc[~a['in_engine'], 'regular_factor'].isna().all(), 'display-only rows carry no factor'
     assert a['avail_mins'].dropna().max() < 3600, 'a season never offers more than one season of minutes'
+    assert a['len_api'].dropna().between(0, 1).all()
 
 
 # --- transfer records ----------------------------------------------------------------

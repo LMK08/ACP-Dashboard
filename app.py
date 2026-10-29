@@ -1625,21 +1625,39 @@ def get_scoped_style(player_id, season_ids):
             'role': r.get('role'), 'thin_sample': bool(r.get('thin_sample', False))}
 
 
-def get_scoped_minutes_share(player_id, season_ids):
-    """Season-scope-aware share of the league minutes available to a player
-    (models/value/availability.py: his club windows' schedule), summed over
-    the scoped season years (All Seasons -> career). Player-year totals: both
-    leagues and every club of a year, so the league filter does not narrow
-    them (only the seasonIds pick the years). Returns dict (share,
-    mins, avail, years) or None (GK / no engine row / no availability)."""
-    eng, _meta = load_player_engine()
-    if eng is None or eng.empty:
+@st.cache_data(ttl=86400)
+def load_minutes_share_table():
+    """models/value/availability.parquet — every player-season with exact
+    API minutes (engine rows and display-only ones: GKs, sub-floor players),
+    ids remapped to canonical. Empty DF if missing."""
+    path = os.path.join(os.path.dirname(__file__), 'models', 'value', 'availability.parquet')
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+        df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce').astype('Int64')
+        if PLAYER_ID_ALIASES:
+            df['playerId'] = df['playerId'].map(
+                lambda p: PLAYER_ID_ALIASES.get(int(p), int(p))
+                if p is not None and not pd.isna(p) else p).astype('Int64')
+        return df
+    except Exception:
+        logger.exception("Failed to load availability.parquet")
+        return pd.DataFrame()
+
+
+def get_minutes_share(player_id, year=None):
+    """Share of the league minutes available to a player
+    (models/value/availability.py: his clubs' matches while he was there,
+    match by match) in season-year `year` (2025 = 2025/26), or over every year
+    when None (career). Player-year totals: both leagues and every club.
+    Returns dict (share, mins, avail, years, exact) or None."""
+    t = load_minutes_share_table()
+    if t is None or t.empty:
         return None
-    rows = eng[eng['playerId'] == int(player_id)]
-    if season_ids is not None:
-        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
-                                 else [season_ids])]
-        rows = rows[rows['seasonId'].isin(sids)]
+    rows = t[t['playerId'] == int(player_id)]
+    if year is not None:
+        rows = rows[rows['yr'] == int(year)]
     return value_availability.scoped_share(rows)
 
 
@@ -1928,12 +1946,16 @@ Separate from the quality question, we describe *how* a player plays:
   as-is. Styles describe; they **never enter the rating or projection**.
   Goalkeepers are outside this system for now.
 
-**Minutes share** — next to Role and Style in the profile header: the share of
-the league minutes available to him in the selected seasons, Liga 3 and
-Campeonato together whatever the league filter (his clubs' matches while he
-was there; a dated mid-season move counts only his time at each club). It is
-the playing-time measure the projected value uses — a
-cameo or bench-heavy season lowers the value, B-team ("II") sides excepted.
+**Minutes share** — next to the projected value in the profile header: the
+share of the league minutes available to him in the season the value is for
+(his whole career when All Seasons is selected). Liga 3 and Campeonato count
+together, at every club he was at that season; a dated mid-season move counts
+only his time at each club. Both sides are counted match by match: his exact
+Wyscout minutes ÷ the lengths of his clubs' matches while he was there (exact
+from Wyscout's per-match minutes in Liga 3; read off the event clock in the
+Campeonato, marked "~"). For outfielders it is the playing-time measure the
+projected value uses — a cameo or bench-heavy season lowers the value, B-team
+("II") sides excepted; for goalkeepers it is shown as information only.
 """
 
 
