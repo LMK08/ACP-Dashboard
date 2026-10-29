@@ -1625,6 +1625,24 @@ def get_scoped_style(player_id, season_ids):
             'role': r.get('role'), 'thin_sample': bool(r.get('thin_sample', False))}
 
 
+def get_scoped_minutes_share(player_id, season_ids):
+    """Season-scope-aware share of the league minutes available to a player
+    (models/value/availability.py: his club windows' schedule), summed over
+    the scoped season years (All Seasons -> career). Player-year totals: both
+    leagues and every club of a year, so the league filter does not narrow
+    them (only the seasonIds pick the years). Returns dict (share,
+    mins, avail, years) or None (GK / no engine row / no availability)."""
+    eng, _meta = load_player_engine()
+    if eng is None or eng.empty:
+        return None
+    rows = eng[eng['playerId'] == int(player_id)]
+    if season_ids is not None:
+        sids = [int(s) for s in (season_ids if isinstance(season_ids, (list, tuple, set))
+                                 else [season_ids])]
+        rows = rows[rows['seasonId'].isin(sids)]
+    return value_availability.scoped_share(rows)
+
+
 def render_tendencies_panel(player_id, season_ids, st_container=None):
     """futi-style bipolar tendency sliders for the player's role menu.
 
@@ -1909,6 +1927,13 @@ Separate from the quality question, we describe *how* a player plays:
   same role); the tendency bars themselves always show the selected season
   as-is. Styles describe; they **never enter the rating or projection**.
   Goalkeepers are outside this system for now.
+
+**Minutes share** — next to Role and Style in the profile header: the share of
+the league minutes available to him in the selected seasons, Liga 3 and
+Campeonato together whatever the league filter (his clubs' matches while he
+was there; a dated mid-season move counts only his time at each club). It is
+the playing-time measure the projected value uses — a
+cameo or bench-heavy season lowers the value, B-team ("II") sides excepted.
 """
 
 

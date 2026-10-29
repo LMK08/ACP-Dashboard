@@ -262,16 +262,22 @@ def stamp(path=OUT):
     return _STAMP[key]
 
 
+# display-only columns attach() also carries, for the player profile's
+# minutes-share card (scoped_share); NaN where a row has no availability
+SHARE_COLS = ['yr', 'mins_year', 'avail_mins']
+
+
 def attach(engine_df, path=OUT):
-    """engine_df + `regular_factor` (1.0 where there is none), joined on the
-    RAW playerId and seasonId — call before any alias remap."""
-    df = engine_df.copy()
-    if 'regular_factor' in df.columns:
-        df = df.drop(columns=['regular_factor'])
+    """engine_df + `regular_factor` (1.0 where there is none) + SHARE_COLS
+    (NaN where there are none), joined on the RAW playerId and seasonId —
+    call before any alias remap."""
+    df = engine_df.drop(columns=['regular_factor', *SHARE_COLS], errors='ignore')
     if not Path(path).exists():
         df['regular_factor'] = 1.0
         return df
-    av = pd.read_parquet(path, columns=['playerId', 'seasonId', 'regular_factor'])
+    av = pd.read_parquet(path)
+    av = av[['playerId', 'seasonId', 'regular_factor']
+            + [c for c in SHARE_COLS if c in av.columns]].copy()
     av['playerId'] = av['playerId'].astype('Int64')
     av['seasonId'] = av['seasonId'].astype('Int64')
     av = av.drop_duplicates(['playerId', 'seasonId'])
@@ -279,7 +285,31 @@ def attach(engine_df, path=OUT):
     key_s = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
     f = pd.DataFrame({'playerId': key_p, 'seasonId': key_s}).merge(av, on=['playerId', 'seasonId'], how='left')
     df['regular_factor'] = f['regular_factor'].fillna(1.0).to_numpy()
+    for c in SHARE_COLS:
+        if c in f.columns:
+            df[c] = f[c].to_numpy()
     return df
+
+
+def scoped_share(rows):
+    """Share of the available minutes over one player's engine rows (already
+    cut to the scope): minutes ÷ available minutes, each summed once per
+    season year (a year's L3 + Camp rows and a mid-season mover's club rows
+    all carry the same player-year availability). A year's available minutes
+    are never below its minutes — the schedule uses a typical match length,
+    so an ever-present starter can play a few more (the 100% cap of
+    avail_share). None without data."""
+    if rows is None or rows.empty or 'avail_mins' not in rows.columns:
+        return None
+    # most minutes first: an alias-merged player could carry two raw ids' rows in one year
+    r = (rows.dropna(subset=['yr', 'mins_year', 'avail_mins'])
+             .sort_values('mins_year', ascending=False, kind='stable').drop_duplicates('yr'))
+    mins = float(r['mins_year'].sum())
+    avail = float(np.maximum(r['avail_mins'], r['mins_year']).sum())
+    if r.empty or avail <= 0:
+        return None
+    return {'share': min(mins / avail, 1.0), 'mins': mins, 'avail': avail,
+            'years': sorted(int(y) for y in r['yr'])}
 
 
 # --- refit (yearly rollover) -------------------------------------------------------

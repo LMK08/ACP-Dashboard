@@ -174,6 +174,35 @@ def test_attach_defaults_to_one(tmp_path):
     assert av.attach(eng, p)['regular_factor'].tolist() == [0.4, 1.0, 1.0]
 
 
+def test_attach_carries_the_share_columns(tmp_path):
+    eng = pd.DataFrame({'playerId': [1, 2], 'seasonId': [SID, SID], 'avail_mins': [9.0, 9.0]})
+    p = tmp_path / 'a.parquet'
+    pd.DataFrame({'playerId': pd.array([1], dtype='Int64'), 'seasonId': pd.array([SID], dtype='Int64'),
+                  'regular_factor': [0.4], 'yr': [2025], 'mins_year': [300], 'avail_mins': [3000.0]}).to_parquet(p)
+    out = av.attach(eng, p)
+    assert out.loc[0, ['yr', 'mins_year', 'avail_mins']].tolist() == [2025, 300, 3000.0]
+    assert out.loc[1, ['yr', 'mins_year', 'avail_mins']].isna().all()   # stale input column replaced
+
+
+def test_scoped_share_counts_each_year_once():
+    # one year as L3 + Camp rows (same player-year availability), plus a second year
+    rows = pd.DataFrame({'yr': [2024, 2024, 2025], 'mins_year': [300, 300, 1500],
+                         'avail_mins': [3000.0, 3000.0, 2000.0]})
+    s = av.scoped_share(rows)
+    assert s['share'] == pytest.approx(1800 / 5000)
+    assert (s['mins'], s['avail'], s['years']) == (1800.0, 5000.0, [2024, 2025])
+    assert av.scoped_share(rows.iloc[[2]])['share'] == pytest.approx(0.75)
+    # an ever-present starter a few minutes past the typical-length schedule
+    over = av.scoped_share(pd.DataFrame({'yr': [2026], 'mins_year': [685], 'avail_mins': [679.0]}))
+    assert (over['share'], over['avail']) == (1.0, 685.0)
+
+
+def test_scoped_share_none_without_data():
+    assert av.scoped_share(pd.DataFrame()) is None
+    assert av.scoped_share(pd.DataFrame({'playerId': [1]})) is None      # no availability attached
+    assert av.scoped_share(pd.DataFrame({'yr': [2025], 'mins_year': [94], 'avail_mins': [np.nan]})) is None
+
+
 def test_engine_value_scales_by_the_factor():
     pool = np.sort(np.array([30.0, 40.0, 50.0, 60.0]))
     base = ei.engine_value_eur(50.0, pool, 'Striker', 22.0, SID)

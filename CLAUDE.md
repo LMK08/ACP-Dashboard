@@ -204,6 +204,15 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     RAW ids (before any alias remap) in `load_player_engine` and in the
     calibration's `load_inputs`, so the app and the calibration value
     identically.
+  - **Profile card:** `attach()` also carries `SHARE_COLS` (yr, mins_year,
+    avail_mins), which are display-only and outside the stats-cache stamp.
+    The Player Profile header's "Minutes share" card reads them via
+    `app.get_scoped_minutes_share` → `availability.scoped_share`.
+    - Scoped like Role/Style; each season year is counted once.
+    - Year totals cover both leagues and all clubs, so the league filter
+      doesn't narrow them.
+    - Available minutes are never below the minutes played.
+    - Hidden for GKs and for rows with no availability.
   - **Rollover:** `COEF` is pinned; refit with `--fit` and regenerate the
     calibration JSON (its `point_model.availability` records the constants).
   - Plan + evidence: `ACP_Official/value_minutes_plan_2026-10-28.md`.

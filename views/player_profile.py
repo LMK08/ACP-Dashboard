@@ -78,6 +78,7 @@ def render():
     get_filtered_events = app.get_filtered_events
     get_player_match_stats = app.get_player_match_stats
     get_player_minutes_by_position = app.get_player_minutes_by_position
+    get_scoped_minutes_share = app.get_scoped_minutes_share
     get_scoped_style = app.get_scoped_style
     get_scoped_tendencies = app.get_scoped_tendencies
     get_season_events = app.get_season_events
@@ -538,12 +539,25 @@ def render():
                                               active_season_ids)
             except Exception:
                 _hdr_style = None
+        # Share of the minutes available to him (Lucas 2026-10-29): the
+        # playing-time measure behind the value's regular_factor, scoped
+        # like Role/Style; hidden when there is no availability row (GKs).
+        _hdr_share = None
+        if not _is_gk:
+            try:
+                _hdr_share = get_scoped_minutes_share(int(selected_player_id),
+                                                      active_season_ids)
+            except Exception:
+                logger.exception("minutes share failed")
+        _share_txt = (None if _hdr_share is None else
+                      f"{_hdr_share['share']:.0%}" if _hdr_share['share'] >= 0.005 else "<1%")
         _value_eur = _tv_projected_eur if _is_gk else _eng_proj_eur
         _value_txt = "—" if _value_eur is None else f"€{_value_eur:,.0f}"
         with st.container(key=theme.metric_fit_key(
                 "profile_head", _value_txt,
-                *((_hdr_style.get('role'), _hdr_style.get('style')) if _hdr_style else ()))):
-            bio_row3 = st.columns(3)
+                *((_hdr_style.get('role'), _hdr_style.get('style')) if _hdr_style else ()),
+                *((_share_txt,) if _share_txt else ()))):
+            bio_row3 = st.columns(4)
         if _is_gk:
             bio_row3[0].metric(
                 "Projected value", _value_txt,
@@ -556,7 +570,7 @@ def render():
             )
             # The likely-fee range goes in a caption, NOT the metric delta:
             # Streamlit draws an up-arrow for any non-negative delta text.
-            # Under the whole row (the three cards keep one height).
+            # Under the whole row (the cards keep one height).
             _rng_line = eur_interval_ui.range_sentence(
                 _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
             if _rng_line:
@@ -579,6 +593,25 @@ def render():
                          "role, not how well. Never part of the rating. "
                          "Fit = how strongly he expresses the style "
                          "(percentile vs the role cohort).",
+                )
+            if _share_txt:
+                # next to the value when there is no Role/Style pair
+                bio_row3[3 if _hdr_style else 1].metric(
+                    "Minutes share", _share_txt,
+                    delta=(f"{_hdr_share['mins']:,.0f}' of "
+                           f"~{_hdr_share['avail']:,.0f}'"),
+                    delta_color="off",
+                    help="Share of the league minutes available to him in "
+                         "the selected season(s) — Liga 3 and Campeonato "
+                         "together, at every club he played for, whatever "
+                         "the league filter: his minutes ÷ his clubs' "
+                         "league matches while he was there × a typical "
+                         "match length. A mid-season move (dated transfer) "
+                         "counts only his time at each club. The projected "
+                         "value uses the same measure for the season it "
+                         "projects from — a low share, especially off the "
+                         "bench, lowers it; B-team (\"II\") sides are "
+                         "exempt.",
                 )
 
     st.divider()
