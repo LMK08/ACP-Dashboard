@@ -150,7 +150,7 @@ def _fee_scatter(calib):
         height=480, margin=dict(l=60, r=20, t=50, b=50),
         title=dict(text='Real permanent sales vs the model value (log scales)',
                    font=dict(color=_INK, size=15), x=0.02),
-        xaxis=dict(type='log', title='Model value at the pre-transfer season (EUR)',
+        xaxis=dict(type='log', title='Model value at the sale date (EUR)',
                    gridcolor='rgba(0,0,0,0.08)'),
         yaxis=dict(type='log', title='Realised fee (EUR)', gridcolor='rgba(0,0,0,0.08)'),
         legend=dict(orientation='h', y=-0.18), font=dict(color=_INK))
@@ -173,18 +173,21 @@ def render_eur_calibration_section(calib=None, key='eurcal'):
     f50, f80 = _factor(calib, '0.50'), _factor(calib, '0.80')
     st.markdown(
         f"**How the range is built.** Each real permanent sale in the club's fee "
-        f"records is paired with the player's engine value for the season before the "
-        f"sale; the range is a split-conformal prediction interval on "
+        f"records is paired with the player's engine value AS OF THE SALE DATE — built "
+        f"only from what had been played before it; the range is a split-conformal prediction interval on "
         f"log(fee ÷ value): the k-th smallest |log error| brackets the value. "
         f"Calibration set: **{n} sales** "
         f"({bias.get('L3', {}).get('n', 0)} Liga 3, {bias.get('Camp', {}).get('n', 0)} Campeonato); "
         f"excluded {ex.get('synthetic', 0)} hand-estimated anchors, {ex.get('offer', 0)} unaccepted offer(s), "
-        f"{ex.get('no_engine_row', 0)} sale(s) without an engine projection. "
+        f"{ex.get('no_engine_row', 0) + ex.get('no_data_before_sale', 0)} sale(s) without an engine "
+        f"value before the sale. "
         f"Built {calib.get('built', '?')} against engine {em.get('rating_version', '?')} "
-        f"(data through {em.get('data_through', '?')}). Older sales are valued with today's "
-        f"engine and pool, with the value curve's age effect back-dated to the sale"
-        + (f"; {calib.get('n_mid_season')} of the sales happened in January, so their season "
-           f"row also contains matches played after the sale." if calib.get('n_mid_season') else "."))
+        f"(data through {em.get('data_through', '?')}). Each sale is valued from what had been "
+        f"played before it — the fits known then, ranked among the players known then, at "
+        f"his age on the sale date"
+        + (f"; {calib.get('n_mid_season')} of the sales happened mid-season, so they use the "
+           f"part of that season played before the sale where it can be told apart (a move "
+           f"within our leagues can't: his earlier seasons only)." if calib.get('n_mid_season') else "."))
     sup = calib.get('support') or {}
     vr = sup.get('value_range_eur') or [None, None]
     st.caption(f"Ranges are shown only above the calibration's floors — value ≥ "

@@ -16,8 +16,9 @@ Two things live here, both pure pandas/numpy (no streamlit):
 
 2. The INTERVAL — a split-conformal prediction interval for the realised
    permanent-transfer fee around that point, calibrated on the real sales
-   in valuations/reported_fees.csv paired with the player's engine row for
-   the pre-transfer season:
+   in valuations/reported_fees.csv paired with the player's engine value AS
+   OF THE SALE DATE (pair_fees_to_engine — only what had been played before
+   it):
      s_i = |ln(fee_i / value_i)|                      (nonconformity score)
      q   = the k-th smallest s_i, k = ceil((n + 1) x level)
      interval = [value x exp(-q), value x exp(+q)]
@@ -466,9 +467,6 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None, ends=None, sales=None,
         eng['playerId'] = eng['playerId'].map(
             lambda p: aliases.get(int(p), int(p)) if pd.notna(p) else p).astype('Int64')
     pool = sorted_pool(eng)
-    # as-of values (2026-10-29): each sale meets the value as of its own
-    # pre-transfer season — no look-ahead, and a player who kept playing in our
-    # leagues after the sale still has a value for that season
     built = load_pools() if isinstance(pools, str) and pools == 'file' else pools
     season = engine_values(eng, pools=built)[1] if 'asof_abs' in eng.columns else None
     # AS OF THE SALE DATE (2026-10-29, no look-ahead): a sale meets the value
