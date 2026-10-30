@@ -521,7 +521,8 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 192831  # Liga 3 default (2026/27)
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v16'  # Bump when stat COLUMNS or cached VALUES change (e.g. the
+STATS_CACHE_VERSION = 'v17'  # Bump when stat COLUMNS or cached VALUES change (v17 = a season
+                             # with no DefR keeps empty DefR columns, 2026-10-30; e.g. the
                              # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
                              # override; v15 = the 2026-09 Calegari alias, which merges
                              # two 2026/27 rows into one; v16 = multi-season scopes take
@@ -1303,7 +1304,11 @@ def merge_defr_values_into_stats(player_stats_df, season_ids=None, comp_ids=None
                                    else [season_ids])]
         defr = defr[defr['seasonId'].isin(sids)]
     if defr.empty:
-        return player_stats_df
+        # a season with NO DefR at all (2021/22 since v7.1: no earlier season
+        # to learn the response tables from) keeps the columns, empty: the
+        # schema every consumer reads stays the same (the similarity pool
+        # scores a missing value as bucket-typical), and no player shows a 0
+        return _add_defr_percentiles(_with_empty_defr_columns(player_stats_df))
 
     count_cols = (list(DEFR_TYPE_TO_DISPLAY.keys()) + ['defr']
                     + list(DWAE_TO_DISPLAY.keys())
@@ -1366,6 +1371,15 @@ def _defr_pos_bucket(pos):
     if 'M' in p:   # DMF/CMF/etc
         return 'CM'
     return 'OTHER'
+
+
+def _with_empty_defr_columns(df):
+    """df with every DefR display metric present (NaN where absent)."""
+    df = df.copy()
+    for m in DEFR_DISPLAY_METRICS:
+        if m not in df.columns:
+            df[m] = np.nan
+    return df
 
 
 def _add_defr_percentiles(df):

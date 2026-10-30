@@ -254,3 +254,17 @@ def test_queue_shadow_add_dedupes_per_slot():
     ui.queue_shadow_add('RCB', rec)
     q = st.session_state['shadow_pending_adds']
     assert [(i['slot'], i['playerId']) for i in q] == [('LCB', 5), ('RCB', 5)]
+
+
+def test_a_season_without_defr_keeps_its_columns_empty_and_builds():
+    """2021/22 has no DefR since v7.1 (no earlier season to learn from): its
+    frame carries the DefR columns EMPTY (app.merge_defr_values_into_stats),
+    the pool builds, and those features score bucket-typical (0.5)."""
+    early = _frame([{'pid': 1}, {'pid': 2}, {'pid': 3}], 188221)
+    early[['DefR Total', 'Def Wins Above Exp']] = np.nan
+    pool = sp.build_pool({188221: early, 190090: _frame([{'pid': 4}, {'pid': 5}], 190090)})
+    j = [pool.features.index(c) for c in ('DefR Total', 'Def Wins Above Exp')]
+    b = next(iter(pool.X))
+    rows = pool.meta.loc[pool.rows[b], 'seasonId'].to_numpy() == 188221
+    w = np.sqrt(pool.weights[j])
+    assert np.allclose(pool.X[b][rows][:, j] / w, 0.5)
