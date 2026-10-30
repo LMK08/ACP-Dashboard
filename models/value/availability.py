@@ -96,7 +96,7 @@ OUT = HERE / 'availability.parquet'
 ENGINE_PATH = DASH / 'models' / 'ratings' / 'player_engine.parquet'
 
 # logit p(regular next season) = a + b log(share + EPS) + c sub_frac
-COEF = (0.3435, 0.7574, -0.1913)  # --fit 2026-10-29 (career share, H_PLAYING 1y): 927 rows, cross-season log-loss 0.6359, AUC 0.6523
+COEF = (0.3365, 0.7516, -0.1886)  # --fit 2026-10-29 (career share, H_PLAYING 1y, no reserve-only years): 927 rows, cross-season log-loss 0.6360, AUC 0.6516
 SHARE_EPS = 0.002       # ~5'; immaterial above the engine's 90' floor (3.3% share)
 ANCHOR_SHARE = 0.36     # ~1,000' of a typical 2,744' season: factor 1 at/above
 REGULAR_NEXT = 900.0    # the outcome the curve is fitted to
@@ -417,7 +417,13 @@ def career_playing_time(rows, inp):
     for sid, c in smid.items():
         if sid in SEASON_YEAR:
             ymid[SEASON_YEAR[sid]].append(c)
-    blk = (rows.dropna(subset=['avail_mins']).drop_duplicates(['playerId', 'yr'])
+    # a year spent only at reserve sides says nothing about his chance of
+    # playing (why the factor exempts them), so it isn't a block of a later
+    # row's career share either
+    rt = (rows['reserve_team'].fillna(False).astype(bool) if 'reserve_team' in rows.columns
+          else pd.Series(False, index=rows.index))
+    res = rt.groupby([rows['playerId'], rows['yr']]).transform('all')
+    blk = (rows[~res].dropna(subset=['avail_mins']).drop_duplicates(['playerId', 'yr'])
                [['playerId', 'yr', 'mins_year', 'avail_mins', 'starts', 'sub_apps']].copy())
     blk['c'] = [np.mean(yc[(int(p), int(y))]) if yc.get((int(p), int(y))) else
                 (np.mean(ymid[int(y)]) if ymid.get(int(y)) else np.nan)

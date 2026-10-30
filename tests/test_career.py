@@ -78,3 +78,14 @@ def test_career_share_carries_a_regular_through_a_slow_start():
     assert sub[1] == pytest.approx((w * 2 + 3) / (w * 24 + 4))
     assert share[0] == pytest.approx(2000 / 2850)      # no look-ahead into 25/26
     assert np.isfinite(sub[0])
+
+
+def test_a_reserve_side_year_is_not_part_of_the_career_share():
+    ms = _ms([(1, S24, '2025-03-01'), (2, S25, '2026-03-01')])
+    mm = pd.DataFrame({'matchId': [1, 2], 'playerId': [7, 7], 'minutes': [90, 90]})
+    rows = pd.DataFrame({'playerId': [7, 7], 'yr': [2024, 2025], 'mins_year': [400.0, 1200.0],
+                         'avail_mins': [2800.0, 2800.0], 'starts': [4, 13], 'sub_apps': [3, 2],
+                         'reserve_team': [True, False]})
+    share, _ = av.career_playing_time(rows, {'mins': mm, 'ms': ms})
+    assert share[1] == pytest.approx(1200 / 2800)      # the 'II' year doesn't drag it down
+    assert np.isnan(share[0])                          # the reserve row's own factor is 1.0 anyway
