@@ -103,6 +103,19 @@ REGULAR_NEXT = 900.0    # the outcome the curve is fitted to
 EDGE_DAYS = 14          # a move this close to the season's ends is a summer move
 MIN_WINDOW = 6          # fewer matches than this in a window: full season instead
 FIT_YEARS = (2022, 2024)  # Liga 3 seasons whose next season has both leagues in the data
+# AS-OF coefficients (2026-10-29, no look-ahead): a row of season-year y uses
+# the fit on the FIT_YEARS whose outcome (the next season) had been played by
+# the end of y — {first year it applies: coef}. Before any (y <= 2022) there
+# is no fitted evidence, so the factor is 1.0 (no playing-time adjustment).
+# Pinned like COEF: `--fit` prints both at the rollover.
+COEF_ASOF = {2023: (0.3016, 0.6196, -0.5704),   # --fit years (2022,): 497 rows
+             2025: COEF}                         # FIT_YEARS (2022, 2024)
+
+
+def coef_for(yr):
+    """The coefficients a row of season-year yr may use (None: no fit yet)."""
+    keys = [k for k in COEF_ASOF if k <= int(yr)]
+    return COEF_ASOF[max(keys)] if keys else None
 
 
 def regular_factor(share, sub_frac, coef=COEF):
@@ -493,9 +506,19 @@ def build(inp=None):
     # and sub_frac stay as the season's description
     out['career_share'], out['career_sub_frac'] = career_playing_time(
         out.sort_values('in_engine', ascending=False, kind='stable'), inp)
-    out['regular_factor'] = [
-        np.nan if not ie else 1.0 if rt else (regular_factor(s, f) if pd.notna(s) else 1.0)
-        for ie, rt, s, f in zip(out['in_engine'], out['reserve_team'], out['career_share'], out['career_sub_frac'])]
+    def _factor(ie, rt, s, f, c):
+        if not ie:
+            return np.nan
+        if rt or c is None or pd.isna(s):
+            return 1.0
+        return regular_factor(s, f, c)
+    _args = list(zip(out['in_engine'], out['reserve_team'], out['career_share'], out['career_sub_frac'], out['yr']))
+    # regular_factor: the row's AS-OF factor (its season value, the fee
+    # pairing) — the coefficients known by the end of its year. regular_factor_now:
+    # TODAY's value of a projection row (a lapsed player's last row too) — today's
+    # coefficients on his playing time up to that row.
+    out['regular_factor'] = [_factor(ie, rt, s_, f_, coef_for(y)) for ie, rt, s_, f_, y in _args]
+    out['regular_factor_now'] = [_factor(ie, rt, s_, f_, COEF) for ie, rt, s_, f_, y in _args]
     return out
 
 
@@ -523,11 +546,17 @@ def stamp(path=OUT):
 def attach(engine_df, path=OUT):
     """engine_df + `regular_factor` (1.0 where there is none), joined on the
     RAW playerId and seasonId — call before any alias remap."""
-    df = engine_df.drop(columns=['regular_factor'], errors='ignore')
+    df = engine_df.drop(columns=['regular_factor', 'regular_factor_now'], errors='ignore')
     if not Path(path).exists():
-        df['regular_factor'] = 1.0
+        df['regular_factor'] = df['regular_factor_now'] = 1.0
         return df
-    av = pd.read_parquet(path, columns=['playerId', 'seasonId', 'regular_factor'])
+    _cols = ['playerId', 'seasonId', 'regular_factor']
+    import pyarrow.parquet as _pq
+    if 'regular_factor_now' in _pq.read_schema(path).names:
+        _cols.append('regular_factor_now')
+    av = pd.read_parquet(path, columns=_cols)
+    if 'regular_factor_now' not in av.columns:          # a file from before 2026-10-29
+        av['regular_factor_now'] = av['regular_factor']
     av['playerId'] = av['playerId'].astype('Int64')
     av['seasonId'] = av['seasonId'].astype('Int64')
     av = av.drop_duplicates(['playerId', 'seasonId'])
@@ -535,6 +564,7 @@ def attach(engine_df, path=OUT):
     key_s = pd.to_numeric(df['seasonId'], errors='coerce').astype('Int64')
     f = pd.DataFrame({'playerId': key_p, 'seasonId': key_s}).merge(av, on=['playerId', 'seasonId'], how='left')
     df['regular_factor'] = f['regular_factor'].fillna(1.0).to_numpy()
+    df['regular_factor_now'] = f['regular_factor_now'].fillna(1.0).to_numpy()
     return df
 
 
@@ -577,28 +607,29 @@ def scoped_share(rows):
 
 
 # --- refit (yearly rollover) -------------------------------------------------------
-def fit(inp=None):
+def fit(inp=None, years=FIT_YEARS):
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import log_loss, roc_auc_score
     inp = inp or load_inputs()
+    FIT = tuple(years)
     eng = inp['eng'].assign(yr=inp['eng']['seasonId'].map(lambda s: SEASON_YEAR.get(int(s))))
     league = inp['eng']['seasonId'].map(lambda s: 'CAMP' if int(s) in CAMP_SEASON_IDS else 'L3')
     per = eng.groupby(['playerId', 'yr'])['mins_lineup'].sum()
-    w = eng[(league == 'L3') & eng['yr'].isin(FIT_YEARS) & ~eng['team'].map(is_reserve_team)].drop_duplicates(['playerId', 'yr'])
+    w = eng[(league == 'L3') & eng['yr'].isin(FIT) & ~eng['team'].map(is_reserve_team)].drop_duplicates(['playerId', 'yr'])
     b = build(inp)
     b = b[b['in_engine']].drop_duplicates(['playerId', 'yr'])[['playerId', 'yr', 'career_share', 'career_sub_frac']]
     w = w[['playerId', 'yr']].merge(b.astype({'playerId': 'int64'}), on=['playerId', 'yr']).dropna(subset=['career_share'])
     X = np.c_[np.log(w['career_share'] + SHARE_EPS), w['career_sub_frac']]
     y = np.array([int(per.get((p, yy + 1), 0.0) >= REGULAR_NEXT) for p, yy in zip(w['playerId'], w['yr'])])
     ll, auc = [], []
-    for tr_y, te_y in (FIT_YEARS, FIT_YEARS[::-1]):
+    for tr_y, te_y in ((FIT, FIT[::-1]) if len(FIT) == 2 else ()):
         a, b = (w['yr'] == tr_y).to_numpy(), (w['yr'] == te_y).to_numpy()
         m = LogisticRegression(C=1e6, max_iter=5000).fit(X[a], y[a])
         p = m.predict_proba(X[b])[:, 1]
         ll.append(log_loss(y[b], p)); auc.append(roc_auc_score(y[b], p))
     m = LogisticRegression(C=1e6, max_iter=5000).fit(X, y)
     coef = (round(float(m.intercept_[0]), 4), round(float(m.coef_[0][0]), 4), round(float(m.coef_[0][1]), 4))
-    print(f'rows {len(w)}; cross-season log-loss {np.mean(ll):.4f}, AUC {np.mean(auc):.4f}')
+    print(f'years {FIT}: rows {len(w)}' + (f'; cross-season log-loss {np.mean(ll):.4f}, AUC {np.mean(auc):.4f}' if ll else ''))
     print(f'COEF = {coef}   (pinned: {COEF})')
     return coef
 
@@ -607,7 +638,9 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--fit', action='store_true', help='refit COEF and print it (yearly rollover)')
     if ap.parse_args().fit:
-        fit()
+        _inp = load_inputs()
+        fit(_inp)
+        fit(_inp, FIT_YEARS[:1])      # COEF_ASOF's earlier entry
     else:
         out = build()
         out.to_parquet(OUT, index=False)

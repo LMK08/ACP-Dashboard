@@ -30,6 +30,7 @@ from pathlib import Path
 import sys as _sys_lc
 _sys_lc.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from league_config import SEASON_YEAR, CAMP_SEASON_IDS, IN_PROGRESS_SEASON_IDS  # noqa: E402
+import json
 import pickle
 import numpy as np
 import pandas as pd
@@ -41,10 +42,25 @@ _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
 SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
 TEST_START_YR = None   # set from the panel below (the last completed pair year)
+# v2.2 lookahead test hook (tests/test_projection_no_lookahead.py), as in
+# build_rating: ACP_MAX_YEAR drops every season after that year from every
+# input; ACP_ENGINE_OUT reads the rating from and writes the projections to
+# that directory.
+import os as _os
+_MAX_YR = int(_os.environ['ACP_MAX_YEAR']) if _os.environ.get('ACP_MAX_YEAR') else None
+_OUT = Path(_os.environ.get('ACP_ENGINE_OUT', str(_HERE)))
+
+
+def _cut(frame, col='seasonId'):
+    """frame truncated to seasons <= ACP_MAX_YEAR when it is set."""
+    if _MAX_YR is None:
+        return frame
+    yr = pd.to_numeric(frame[col], errors='coerce').map(SEASON_YEAR)
+    return frame[yr <= _MAX_YR].copy()
 ALPHAS = (10.0, 30.0, 100.0)    # chosen by 5-fold CV on TRAIN only
 
 print("[1/5] features…", flush=True)
-o = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet')
+o = _cut(pd.read_parquet(_OUT / 'acp_rating_per_player_season.parquet'))
 # The projection is an off-season model: "current" = the last COMPLETED
 # season, projected one season ahead. A season still in progress is rated
 # for the dashboard but is neither a training pair nor a projection base
@@ -57,10 +73,10 @@ o['_live'] = o['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
 o['yr'] = o['seasonId'].map(SEASON_YR)
 
 # NPxG + receiving value percentile
-ev = pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet',
-    columns=['seasonId', 'player.id', 'type.primary', 'shot.xg'])
+ev = _cut(pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet',
+    columns=['seasonId', 'player.id', 'type.primary', 'shot.xg', 'team.name'])
     for f in ['liga3_portugal_events', 'campeonato_portugal_events']],
-    ignore_index=True)
+    ignore_index=True))
 sh = ev[(ev['shot.xg'].notna()) & (ev['type.primary'] != 'penalty')].dropna(
     subset=['player.id'])
 sh['player.id'] = sh['player.id'].astype(int)
@@ -77,6 +93,7 @@ g = pd.read_parquet(_DASH / 'gpa_player_season_values.parquet',
                                 'Dribbling'])
 g['playerId'] = pd.to_numeric(g['playerId'], errors='coerce').astype('Int64')
 g['seasonId'] = pd.to_numeric(g['seasonId'], errors='coerce').astype('Int64')
+g = _cut(g)
 o = o.merge(g, on=['playerId', 'seasonId'], how='left')
 for c, nm in [('Receiving', 'p_recv'), ('Dribbling', 'p_drib')]:
     o[c + '90'] = o[c] / o['mins_played'] * 90
@@ -138,17 +155,35 @@ o['eff10'] = _e10
 # 2026-10-29: as accurate as the season steps, ~20% smaller jump when a live
 # value starts. eff_mins / eff8 / eff10 (the unshipped ridge's) stay stepped.
 from models.ratings import career as _career  # noqa: E402
-_ms_c = pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['matchId', 'seasonId', 'dateutc', 'status'])
+from models.ratings import asof as _asof  # noqa: E402
+_ms_c = _cut(pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['matchId', 'seasonId', 'dateutc', 'status']))
 _mm_c = pd.read_parquet(_DASH / 'match_player_minutes.parquet', columns=['matchId', 'playerId', 'minutes'])
+_mm_c = _mm_c[_mm_c['matchId'].isin(_ms_c['matchId'])]
 _cen, _smid = _career.block_centroids(_mm_c, _ms_c)
 _ends = _career.season_end_times(_ms_c, SEASON_YR)
 _live_t = _ends.get(max(SEASON_YR[s] for s in IN_PROGRESS_SEASON_IDS)) if IN_PROGRESS_SEASON_IDS else None
 _tref = o['yr'].map(_ends)
 if _live_t is not None:
     _tref = _tref.where(~o['_live'], _live_t)
-_cf = _career.career_features(o[['playerId', 'seasonId', 'yr', 'mins_played', 'acp_rating']],
-                              _cen, _smid, _tref)
-o['career_asof'] = _cf['career_asof']
+# ONE SCALE (v2.2, 2026-10-29): every block goes onto the Liga 3 scale
+# (acp_rating_abs: its own season's descriptive Campeonato gap — so
+# league_conversion runs BEFORE this script), is averaged, and the career is
+# put back on the row's own league scale (+ the row's own gap). v2.1 averaged
+# raw ratings across leagues: a Campeonato 50 counted as a Liga 3 50.
+if 'acp_rating_abs' in o.columns:
+    _blk = o[['playerId', 'seasonId', 'yr', 'mins_played']].assign(acp_rating=o['acp_rating_abs'])
+    _own_gap = (o['acp_rating'] - o['acp_rating_abs']).fillna(0.0)
+else:
+    print("  !! acp_rating_abs missing (league_conversion not run first): career blocks on raw ratings")
+    _blk, _own_gap = o[['playerId', 'seasonId', 'yr', 'mins_played', 'acp_rating']], 0.0
+_cf = _career.career_features(_blk, _cen, _smid, _tref)
+o['career_asof'] = _cf['career_asof'] + _own_gap
+# the CAREER role (2026-10-29): the role a player is valued at is the one he
+# has played most up to the row's as-of time, by time-weighted minutes
+# (career.career_role) — not one season's (a 196' spell at full-back no longer
+# makes a winger a full-back). value_role is what the engine value reads.
+o['value_role'] = _career.career_role(o[['playerId', 'seasonId', 'yr', 'mins_played', 'role']],
+                                      _cen, _smid, _tref)
 o['eff9'] = _cf['evidence']
 o['evidence'] = _cf['evidence']
 # pooled within-season minutes (winter movers carry two rows/season) —
@@ -223,15 +258,20 @@ for b in range(len(AGE_BINS)):
     mid = (AGE_BINS[b][0] + min(AGE_BINS[b][1], 36)) / 2
     print(f"    {AGE_BINS[b][0]:>4.0f}-{AGE_BINS[b][1]:<4.0f} std(mid-role) {std_age_delta(mid):+.2f}/yr"
            f"   (our panel observed {obs.mean() if len(obs) else float('nan'):+.2f}, n={len(obs)} — survivor-biased)")
-# v6.3: age curve blended by role shares (exported by the rating)
+# v6.3: age curve blended by role shares (exported by the rating). v2.2
+# (2026-10-29): the CAREER shares — time-weighted over the blocks up to each
+# row's as-of time, like career_asof — not one season's.
 _shcols = [c for c in o.columns if c.startswith('sh_')]
+_cshcols = ['c' + c for c in _shcols]
+o[_cshcols] = _career.time_weighted(o[['playerId', 'seasonId', 'yr', 'mins_played']], o[_shcols],
+                                    _cen, _smid, _tref).to_numpy()
 def _blended_age_delta(r):
     if r['age'] != r['age']:
         return np.nan
-    tot = sum(r[c] for c in _shcols)
+    tot = sum(r[c] for c in _cshcols if r[c] == r[c])
     if tot < 0.5:
-        return std_age_delta(r['age'], r['role'])
-    return sum(r[c] * std_age_delta(r['age'], c[3:]) for c in _shcols) / tot
+        return std_age_delta(r['age'], r['value_role'])
+    return sum(r[c] * std_age_delta(r['age'], c[4:]) for c in _cshcols if r[c] == r[c]) / tot
 o['age_delta'] = o.apply(_blended_age_delta, axis=1)
 
 WIDE = {'Wide Attacker', 'Wide Defender'}
@@ -458,9 +498,10 @@ cur = pd.concat([cur, _stale], ignore_index=True)
 print(f"  +{len(_stale)} non-current players projected off their latest season "
        f"(seasons_ago {int(_stale['seasons_ago'].min()) if len(_stale) else 0}"
        f"-{int(_stale['seasons_ago'].max()) if len(_stale) else 0})")
-def _ship_predict(d):
+def _ship_predict(d, cf=None):
     """The SHIPPED predictor on any feature frame (today's projections and
-    the as-of ones below share it)."""
+    the as-of ones below share it). cf: the 'full' coefficients to use (the
+    as-of fits below); default the train fit."""
     if SHIP == 'ridge':
         return final.predict((d[FEATS] - mu) / sd)
     if SHIP == 'marcel':
@@ -471,8 +512,8 @@ def _ship_predict(d):
             d['career_asof'].values, d['career_asof'].values * _wc]) @ _cr)
     if SHIP == 'full':
         return (np.column_stack([np.ones(len(d)), _wc,
-            d['career_asof'].values, d['career_asof'].values * _wc]) @ _cf
-            + d['age_delta'].values)
+            d['career_asof'].values, d['career_asof'].values * _wc])
+            @ (_cf if cf is None else cf) + d['age_delta'].values)
     if SHIP == 'full2':
         _wsc = (d['season_mins'] / (d['season_mins'] + 900.0)).values
         return (np.column_stack([np.ones(len(d)), _wc, _wsc,
@@ -481,7 +522,36 @@ def _ship_predict(d):
     return d['career_asof'].values
 
 
-cur['projection'] = _ship_predict(cur)
+# ---- AS-OF FITS (v2.2, 2026-10-29: no look-ahead) --------------------------
+# A projection made at the end of season-year y may only use the pairs that
+# had ENDED by then (start_yr < y; asof.fit_by_year). v2.1 applied the train
+# fit (pairs starting 2021-23) to every as-of row, so a 2021/22 row was
+# projected with coefficients fitted on later seasons, its own pair included.
+# Today's projection (end of CUR_YR) now uses EVERY completed pair — the
+# whole sample at our disposal; the G1 gate above stays the train/test check.
+# Fewer than FIT_MIN_PAIRS -> FULL_PRIOR, a hand-set design constant:
+# projection = 50·(1 - w) + w·career + age_delta (evidence-weighted pull to
+# the scale's centre, 50).
+FIT_MIN_PAIRS = 100
+FULL_PRIOR = np.array([50.0, -50.0, 0.0, 1.0])
+
+
+def _fit_full(p):
+    _w = (p[EVID_COL] / (p[EVID_COL] + EVID_K)).values
+    _X = np.column_stack([np.ones(len(p)), _w, p['career_asof'].values,
+                          p['career_asof'].values * _w])
+    return np.linalg.lstsq(_X, p['next_rating'].values - p['age_delta'].values, rcond=None)[0]
+
+
+if SHIP != 'full':
+    raise SystemExit(f"as-of fits are implemented for SHIP='full' only (got {SHIP!r})")
+CF_BY_YR = _asof.fit_by_year(P, sorted(set(o_all['yr']) | {CUR_YR + 1}), _fit_full,
+                             FULL_PRIOR, FIT_MIN_PAIRS)
+for _y, _c in CF_BY_YR.items():
+    _n = int((P['start_yr'] < _y).sum())
+    print(f"  as-of fit {_y}: {_n} pairs" + (" -> PRIOR" if _n < FIT_MIN_PAIRS else
+          f" c0 {_c[0]:+.1f} w {_c[1]:+.1f} career {_c[2]:+.3f} career*w {_c[3]:+.3f}"))
+cur['projection'] = _ship_predict(cur, CF_BY_YR[CUR_YR + 1])
 te = te.copy()   # slice of P — write on a copy (silences SettingWithCopyWarning)
 te['__ship_pred'] = (pred_te if SHIP == 'ridge'
                        else marcel_te if SHIP == 'marcel'
@@ -493,16 +563,26 @@ te2 = te.copy()
 te2['resid'] = te2['next_rating'] - te2['__ship_pred']
 band = te2.groupby('role')['resid'].std().rename('band_sd')
 print(band.round(1).to_string())
-cur['band_sd'] = cur['role'].map(band).fillna(float(te2['resid'].std()))
+cur['band_sd'] = cur['value_role'].map(band).fillna(float(te2['resid'].std()))
 cur['band_sd'] = cur['band_sd'] * np.sqrt(1.0 + cur['seasons_ago'])
 cur['proj_delta'] = cur['projection'] - cur['acp_rating']
 cur['w_evidence'] = cur[EVID_COL] / (cur[EVID_COL] + EVID_K)
-out = cur[['playerId', 'seasonId', 'name', 'role', 'side', 'league', 'age',
+out = cur[['playerId', 'seasonId', 'name', 'role', 'value_role', 'side', 'league', 'age',
              'mins_played', 'acp_rating', 'career_asof', 'age_delta',
              'w_evidence', 'projection', 'band_sd', 'proj_delta',
              'seasons_ago']].copy()
-out['projection_version'] = 'v2.1-' + SHIP
-out.to_parquet(_HERE / 'acp_projection.parquet')
+out['projection_version'] = 'v2.2-' + SHIP
+# _abs (Liga 3 scale; was written by league_conversion, which now runs first):
+# a Campeonato row takes today's recruit gap, an as-of row (below) the gap
+# measurable by the end of ITS year
+_lc_path = _OUT / 'league_conversion.json'
+_lc = json.load(open(_lc_path)) if _lc_path.exists() else None
+if _lc is None:
+    print("  !! league_conversion.json missing: projection_abs = projection")
+REC_TODAY = float(_lc['delta_pts_recruit']) if _lc else 0.0
+REC_BY_YR = {int(k): float(v) for k, v in (_lc or {}).get('delta_pts_recruit_by_year', {}).items()}
+out['projection_abs'] = out['projection'] - np.where(out['league'] == 'CAMP', REC_TODAY, 0.0)
+out.to_parquet(_OUT / 'acp_projection.parquet')
 print(f"  acp_projection.parquet ({len(out):,} current players)")
 print("\n  top 8 projections (25/26 -> 26/27):")
 for _, x in out.nlargest(8, 'projection').iterrows():
@@ -527,7 +607,7 @@ for _, x in out[out['mins_played'] >= 1200].nsmallest(5, 'proj_delta').iterrows(
 # step, so nobody is aged twice. For the per-season / live engine value;
 # `projection` above (today's forecast, boards and cards) is unchanged.
 # Replay-tested on 2024/25: ACP_Official/live_value_plan_2026-10-29.md.
-_ms = pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['seasonId', 'dateutc', 'status'])
+_ms = _cut(pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['seasonId', 'dateutc', 'status']))
 _live_d = pd.to_datetime(_ms.loc[_ms['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
                                   & _ms['status'].eq('Played'), 'dateutc'], errors='coerce', utc=True)
 AS_OF = _live_d.max().tz_convert(None).normalize() if _live_d.notna().any() else None
@@ -537,15 +617,160 @@ if AS_OF is not None and _lv.any():
     asof.loc[_lv, 'age'] = (AS_OF - asof.loc[_lv, 'birth']).dt.days / 365.25
     asof.loc[_lv, 'age_delta'] = asof.loc[_lv].apply(_blended_age_delta, axis=1)
 asof = asof[asof[FEATS].notna().all(axis=1)].copy()
-asof['projection_asof'] = _ship_predict(asof)
+asof['projection_asof'] = np.nan
+for _y, _idx in asof.groupby('yr').groups.items():
+    asof.loc[_idx, 'projection_asof'] = _ship_predict(asof.loc[_idx], CF_BY_YR[_y])
 asof['w_evidence'] = asof[EVID_COL] / (asof[EVID_COL] + EVID_K)
-asof['band_sd'] = asof['role'].map(band).fillna(float(te2['resid'].std()))
+# band: in-sample residual sd of the pairs behind each year's fit (by role,
+# >= 20 pairs, else all); none before any pair. v2.1 used the 24/25 test
+# residuals for every year.
+asof['band_sd'] = np.nan
+for _y, _idx in asof.groupby('yr').groups.items():
+    _p = P[P['start_yr'] < _y]
+    if len(_p) < FIT_MIN_PAIRS:
+        continue
+    _r = _p['next_rating'] - _ship_predict(_p, CF_BY_YR[_y])
+    _rb = _r.groupby(_p['role']).agg(['std', 'size'])
+    _rb = _rb.loc[_rb['size'] >= 20, 'std']
+    asof.loc[_idx, 'band_sd'] = asof.loc[_idx, 'value_role'].map(_rb).fillna(float(_r.std())).values
 asof['is_live'] = asof['_live']
 asof['as_of_date'] = np.where(asof['_live'], AS_OF.strftime('%Y-%m-%d') if AS_OF is not None else None, None)
-asof_out = asof[['playerId', 'seasonId', 'yr', 'name', 'role', 'league', 'age', 'mins_played',
+asof_out = asof[['playerId', 'seasonId', 'yr', 'name', 'role', 'value_role', 'league', 'age', 'mins_played',
                  'acp_rating', 'career_asof', 'evidence', 'age_delta', 'w_evidence', 'projection_asof',
                  'band_sd', 'is_live', 'as_of_date']].copy()
-asof_out['projection_version'] = 'v2.1-' + SHIP + '-asof'
-asof_out.to_parquet(_HERE / 'acp_projection_asof.parquet')
+asof_out['projection_version'] = 'v2.2-' + SHIP + '-asof'
+
+
+def _rec_asof(y):
+    """The recruit gap measurable by the end of season-year y: the latest
+    year's gap up to y; none -> NaN (never a later year's gap)."""
+    _ks = [k for k in REC_BY_YR if k <= y]
+    return REC_BY_YR[max(_ks)] if _ks else np.nan
+
+
+asof_out['projection_asof_abs'] = asof_out['projection_asof'] - np.where(
+    asof_out['league'] == 'CAMP', asof_out['yr'].map(_rec_asof), 0.0)
+asof_out.to_parquet(_OUT / 'acp_projection_asof.parquet')
 print(f"\n  acp_projection_asof.parquet ({len(asof_out):,} player-seasons; "
       f"{int(asof_out['is_live'].sum())} live as of {AS_OF.date() if AS_OF is not None else '—'})")
+
+# ---- AS-OF POOLS (2026-10-29: no look-ahead) --------------------------------
+# A past season's value ranks in the projection pool AS IT STOOD at the end of
+# that season-year, built the way today's is (acp_projection above): every
+# player of that year projected off it, plus every player seen before,
+# projected off his latest season with his age carried forward (the stale
+# rule) — all on the fit known then (CF_BY_YR[y]). Read by eur_intervals
+# (asof_pool) for season values and the fee pairing; today's values keep
+# today's pool.
+_pool_rows = []
+_full = o[FEATS].notna().all(axis=1)
+for _y in sorted(set(o.loc[_full, 'yr'])):
+    _base = o[(o['yr'] == _y) & _full].copy()
+    # today's stale rule: each other player's LATEST season up to y, dropped
+    # when that season can't be projected (not his latest complete one)
+    _st = o[(o['yr'] <= _y) & ~o['playerId'].isin(set(_base['playerId']))]
+    _st = _st.sort_values(['yr', 'mins_played'], kind='stable').drop_duplicates('playerId', keep='last')
+    _st = _st[_st[FEATS].notna().all(axis=1)].copy()
+    if len(_st):
+        _st['age'] = _st['age'] + (_y - _st['yr']).clip(lower=1)
+        _st['age_delta'] = _st.apply(_blended_age_delta, axis=1)
+    _py = pd.concat([_base, _st], ignore_index=True).dropna(subset=['age_delta'])
+    _pr = _ship_predict(_py, CF_BY_YR.get(_y, FULL_PRIOR))
+    _ks = [k for k in REC_BY_YR if k <= _y]
+    _gy = REC_BY_YR[max(_ks)] if _ks else np.nan
+    _pool_rows.append(pd.DataFrame({'yr': _y, 'playerId': _py['playerId'].to_numpy(),
+                                    'seasonId': _py['seasonId'].to_numpy(),
+                                    'projection_abs': _pr - np.where(_py['league'] == 'CAMP', _gy, 0.0)}))
+_pools = pd.concat(_pool_rows, ignore_index=True).dropna(subset=['projection_abs'])
+_pools.to_parquet(_OUT / 'acp_projection_pools.parquet')
+print(f"  acp_projection_pools.parquet: " + ", ".join(
+    f"{int(k)} n={int(v['n'])} median {v['m']:.1f}" for k, v in
+    _pools.groupby('yr')['projection_abs'].agg(n='size', m='median').iterrows()))
+
+# ---- SALE-DATE projections (fee pairing, 2026-10-29: no look-ahead) ---------
+# A sale DURING a season (before its last match) meets the value from what
+# had been played before it, like a live value on that date: his earlier
+# seasons, plus the sale season's row when every match of it came before the
+# sale (he left our leagues), decayed and aged to the sale date, on the fit
+# of the pairs that had ended by then (CF_BY_YR[y - 1]) and the Campeonato
+# gap measurable then. A sale-season row with matches after the sale (a move
+# within our leagues) can't be split: his earlier seasons only. A summer
+# sale needs none of this: its season's as-of row already ends before it.
+_fees_path = _DASH / 'valuations' / 'reported_fees.csv'
+_sale_rows = []
+if _fees_path.exists():
+    from league_config import PLAYER_ID_ALIASES as _ALIAS
+    _fees = pd.read_csv(_fees_path, comment='#')
+    _md = _career.match_dates(_ms_c)
+    _pm = _mm_c[_mm_c['minutes'] > 0].merge(_ms_c[['matchId', 'seasonId']], on='matchId')
+    _last = _pm.assign(t=_pm['matchId'].astype(int).map(_md)).groupby(['playerId', 'seasonId'])['t'].max()
+    _evt = ev.dropna(subset=['player.id', 'team.name'])
+    _PTEAMS = _evt.groupby([_evt['player.id'].astype(int), _evt['seasonId'].astype(int)])['team.name'].unique().to_dict()
+
+    def _club_key(name):
+        return ' '.join(str(name or '').casefold().split())
+    for _f in _fees.itertuples(index=False):
+        try:
+            _pid, _sid = int(_f.playerId), int(_f.season_id)
+        except (TypeError, ValueError):
+            continue
+        _sale = pd.to_datetime(_f.as_of_date, errors='coerce')
+        _y = SEASON_YR.get(_sid)
+        if pd.isna(_sale) or _y is None or _ends.get(_y) is None:
+            continue
+        _st = _career.to_years(_sale)
+        if not _st < _ends[_y]:
+            continue                                   # a summer sale
+        # a player with two Wyscout ids (league_config.PLAYER_ID_ALIASES): every id's rows
+        _ids = {_pid} | {a for a, b in _ALIAS.items() if b == _ALIAS.get(_pid, _pid)} | {_ALIAS.get(_pid, _pid)}
+        _p0 = o_all[o_all['playerId'].isin(_ids)]
+        _cen_p = {(_pid, int(s_)): _cen.get((int(i_), int(s_)), np.nan) for i_, s_ in zip(_p0['playerId'], _p0['seasonId'])}
+        _p = _p0.assign(playerId=_pid)
+        # the sale season's row counts when he played that season for the
+        # SELLING club only (he left our leagues: every match came before the
+        # move — the fee file's dates are conventions, e.g. 15 Jan), or when
+        # its last match came before the sale date
+        _lastp = {s: max((_last.get((i, s), -np.inf) for i in _ids), default=-np.inf) for s in _p['seasonId']}
+        _clubs = {s: set().union(*[set(_PTEAMS.get((i, s), ())) for i in _ids]) for s in _p['seasonId']}
+        _seller = _club_key(_f.from_team)
+        _only_seller = {s: bool(_clubs[s]) and all(_club_key(c) == _seller for c in _clubs[s]) for s in _clubs}
+        _before = [(yy < _y) or (yy == _y and (_only_seller[s] or -np.inf < _lastp[s] < _st))
+                   for yy, s in zip(_p['yr'], _p['seasonId'])]
+        _p = _p[_before]
+        if _p.empty:
+            continue
+        _tr = pd.Series(_st, index=_p.index)
+        if 'acp_rating_abs' in _p.columns:
+            _b = _p[['playerId', 'seasonId', 'yr', 'mins_played']].assign(acp_rating=_p['acp_rating_abs'])
+            _g = (_p['acp_rating'] - _p['acp_rating_abs']).fillna(0.0)
+        else:
+            _b, _g = _p[['playerId', 'seasonId', 'yr', 'mins_played', 'acp_rating']], 0.0
+        _c = _career.career_features(_b, _cen_p, _smid, _tr)
+        _r = _p.assign(career_asof=_c['career_asof'] + _g, eff9=_c['evidence'], evidence=_c['evidence'])
+        _r['value_role'] = _career.career_role(_r[['playerId', 'seasonId', 'yr', 'mins_played', 'role']],
+                                               _cen_p, _smid, _tr)
+        _r[_cshcols] = _career.time_weighted(_r[['playerId', 'seasonId', 'yr', 'mins_played']], _r[_shcols],
+                                             _cen_p, _smid, _tr).to_numpy()
+        _r = _r.sort_values(['yr', 'mins_played'], kind='stable').iloc[[-1]].copy()
+        _r['age'] = (_sale - _r['birth']).dt.days / 365.25
+        _r['age_delta'] = _r.apply(_blended_age_delta, axis=1)
+        if _r[['career_asof', 'eff9', 'age_delta']].isna().any(axis=None):
+            continue
+        _proj = float(_ship_predict(_r, CF_BY_YR.get(_y - 1, FULL_PRIOR))[0])
+        _gap = 0.0
+        if _r['league'].iloc[0] == 'CAMP':
+            _ks = [k for k in REC_BY_YR if k <= _y - 1]
+            _gap = REC_BY_YR[max(_ks)] if _ks else np.nan
+        _sale_rows.append({'playerId': _pid, 'season_id': _sid, 'as_of_date': str(_f.as_of_date),
+                           'base_seasonId': int(_r['seasonId'].iloc[0]),
+                           'used_sale_season': bool(_r['yr'].iloc[0] == _y),
+                           'projection_sale': _proj, 'projection_sale_abs': _proj - _gap,
+                           'age': float(_r['age'].iloc[0]), 'value_role': _r['value_role'].iloc[0],
+                           'w_evidence': float(_r['eff9'].iloc[0] / (_r['eff9'].iloc[0] + EVID_K)),
+                           'evidence': float(_r['evidence'].iloc[0])})
+_sales = pd.DataFrame(_sale_rows, columns=['playerId', 'season_id', 'as_of_date', 'base_seasonId',
+                                           'used_sale_season', 'projection_sale', 'projection_sale_abs',
+                                           'age', 'value_role', 'w_evidence', 'evidence'])
+_sales.to_parquet(_OUT / 'acp_projection_sales.parquet')
+print(f"  acp_projection_sales.parquet ({len(_sales)} mid-season sales; "
+      f"{int(_sales['used_sale_season'].sum()) if len(_sales) else 0} with the sale season's pre-sale row)")

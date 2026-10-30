@@ -29,7 +29,7 @@ r = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet')
 p = pd.read_parquet(_HERE / 'acp_projection.parquet')
 proj_cols = ['playerId', 'seasonId', 'age', 'career_asof', 'age_delta',
               'w_evidence', 'projection', 'projection_abs', 'band_sd',
-              'proj_delta', 'seasons_ago']
+              'proj_delta', 'seasons_ago', 'value_role']
 # projection covers current-season rows + lapsed (24/25, no current row);
 # lapsed rows join onto their LAST rated season's rating row.
 eng = r.merge(p[proj_cols], on=['playerId', 'seasonId'], how='left')
@@ -129,12 +129,16 @@ if _asof_path.exists():
         a['projection_asof_abs'] = a['projection_asof']
     if 'evidence' not in a.columns:               # an as-of file from before career.py
         a['evidence'] = np.nan
+    if 'value_role' not in a.columns:             # before the career role (2026-10-29)
+        a['value_role'] = a['role']
     # asof_evidence: the career evidence (time-decayed minutes, career.py) —
     # what the likely-fee range's support check reads (2026-10-29)
+    # asof_role: the career role as of the row (the role its value reads)
     a = a[['playerId', 'seasonId', 'projection_asof', 'projection_asof_abs', 'age', 'w_evidence',
-           'evidence', 'is_live', 'as_of_date']].rename(columns={
+           'evidence', 'is_live', 'as_of_date', 'value_role']].rename(columns={
         'projection_asof_abs': 'asof_abs', 'age': 'asof_age', 'w_evidence': 'asof_w_evidence',
-        'evidence': 'asof_evidence', 'is_live': 'asof_live', 'as_of_date': 'asof_date'})
+        'evidence': 'asof_evidence', 'is_live': 'asof_live', 'as_of_date': 'asof_date',
+        'value_role': 'asof_role'})
     eng = eng.merge(a, on=['playerId', 'seasonId'], how='left')
     eng['asof_live'] = eng['asof_live'].fillna(False).astype(bool)
     _ms = pd.read_parquet(_DASH / 'matches_summary.parquet',

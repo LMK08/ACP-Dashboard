@@ -36,8 +36,23 @@ _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
 _GPA_DATA = _DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data'
 SEASON_YR = SEASON_YEAR   # from league_config (every season, incl. the current one)
+# lookahead test hook (tests/test_projection_no_lookahead.py), as in
+# build_rating: ACP_MAX_YEAR drops every season after that year from every
+# input; ACP_ENGINE_OUT is the directory read from and written to.
+import os as _os
+_MAX_YR = int(_os.environ['ACP_MAX_YEAR']) if _os.environ.get('ACP_MAX_YEAR') else None
+_OUT = Path(_os.environ.get('ACP_ENGINE_OUT', str(_HERE)))
 
-o_all = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet')
+
+def _cut(frame, col='seasonId'):
+    """frame truncated to seasons <= ACP_MAX_YEAR when it is set."""
+    if _MAX_YR is None:
+        return frame
+    yr = pd.to_numeric(frame[col], errors='coerce').map(SEASON_YEAR)
+    return frame[yr <= _MAX_YR].copy()
+
+
+o_all = _cut(pd.read_parquet(_OUT / 'acp_rating_per_player_season.parquet'))
 # Estimate from COMPLETED seasons only (a season in progress would move the
 # deltas every matchday); the _abs columns below are still written for every
 # row, the live season included.
@@ -65,10 +80,10 @@ def bin_of(a):
 
 # A2 inputs (team xGD per club-season, player -> club), built once and
 # truncated per fit below
-ev = pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet',
+ev = _cut(pd.concat([pd.read_parquet(_GPA_DATA / f'{f}.parquet',
     columns=['matchId', 'seasonId', 'team.name', 'shot.xg', 'player.id'])
     for f in ['liga3_portugal_events', 'campeonato_portugal_events']],
-    ignore_index=True)
+    ignore_index=True))
 sh = ev.dropna(subset=['shot.xg'])
 xg = sh.groupby(['matchId', 'team.name'])['shot.xg'].sum().reset_index()
 sn = ev.dropna(subset=['team.name']).groupby('matchId')['seasonId'].first()
@@ -248,39 +263,39 @@ fit = fit_delta(LATEST_YR, verbose=True)
 delta, delta_se, delta_recruit = fit['delta'], fit['delta_se'], fit['delta_recruit']
 # per Camp season: the gap measurable by the end of THAT season (a season at
 # or after the latest completed one simply gets today's fit)
-r_seasons = pd.read_parquet(_HERE / 'acp_rating_per_player_season.parquet',
+r_seasons = pd.read_parquet(_OUT / 'acp_rating_per_player_season.parquet',
                             columns=['seasonId', 'league'])
 camp_sids = sorted(set(r_seasons.loc[r_seasons['league'] == 'CAMP', 'seasonId']))
 camp_delta = {}
+recruit_by_yr = {}     # the recruit gap measurable by the end of each year (as-of projections)
 for sid in camp_sids:
     y = SEASON_YR[int(sid)]
-    camp_delta[int(sid)] = delta if y >= LATEST_YR else fit_delta(y)['delta']
+    _fy = fit if y >= LATEST_YR else fit_delta(y)
+    camp_delta[int(sid)] = _fy['delta']
+    recruit_by_yr[y] = _fy['delta_recruit']
     print(f"  Camp {sid} ({y}/{(y + 1) % 100:02d}) _abs gap: {camp_delta[int(sid)]:+.2f}"
           + ("" if y >= LATEST_YR else f"  (seasons <= {y} only)"))
 json.dump({'reference': 'L3',
              'delta_pts_L3_minus_CAMP_descriptive': delta,
              'delta_se': delta_se,
              'delta_pts_recruit': delta_recruit,
+             'delta_pts_recruit_by_year': {str(k): round(v, 3) for k, v in sorted(recruit_by_yr.items())},
              'delta_pts_descriptive_by_camp_season': {str(k): round(v, 3)
                                                       for k, v in camp_delta.items()},
              'anchors': {k: {'delta': (None if v != v else round(v, 3)),
                               'se': (None if se != se else round(se, 3))}
                           for k, (v, se) in fit['anchors'].items()}},
-            open(_HERE / 'league_conversion.json', 'w'), indent=2)
+            open(_OUT / 'league_conversion.json', 'w'), indent=2)
 
-# absolute columns: descriptive delta for the rating, recruit delta for
-# the projection (L3 reference)
-# the projection is TODAY's forecast, so it takes today's recruit gap; the
-# rating takes its own Camp season's as-of gap
-# (the as-of projections, past seasons included, are read today: today's gap)
-for fname, col, dd in [('acp_rating_per_player_season.parquet', 'acp_rating', None),
-                          ('acp_projection.parquet', 'projection', delta_recruit),
-                          ('acp_projection_asof.parquet', 'projection_asof', delta_recruit)]:
-    if not (_HERE / fname).exists():
-        continue
-    df = pd.read_parquet(_HERE / fname)
-    gap = (df['seasonId'].map(camp_delta).fillna(delta) if dd is None
-           else pd.Series(dd, index=df.index))
-    df[col + '_abs'] = df[col] - np.where(df['league'] == 'CAMP', gap, 0.0)
-    df.to_parquet(_HERE / fname)
-    print(f"  {fname}: wrote {col}_abs")
+# absolute column for the rating (L3 reference): each Camp season's own
+# as-of descriptive gap. v2.2 (2026-10-29): this script runs BEFORE
+# build_projection (the career blocks need acp_rating_abs); the projections'
+# _abs is written there from league_conversion.json — today's recruit gap,
+# and for an as-of row the recruit gap measurable by the end of ITS year
+# (delta_pts_recruit_by_year; v2.1 gave every past year today's gap).
+_rf = _OUT / 'acp_rating_per_player_season.parquet'
+df = pd.read_parquet(_rf)
+gap = df['seasonId'].map(camp_delta).fillna(delta)
+df['acp_rating_abs'] = df['acp_rating'] - np.where(df['league'] == 'CAMP', gap, 0.0)
+df.to_parquet(_rf)
+print(f"  {_rf.name}: wrote acp_rating_abs")

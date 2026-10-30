@@ -77,6 +77,8 @@ CALIBRATION_PATH = HERE / 'eur_interval_calibration.json'
 ENGINE_PATH = DASH / 'models' / 'ratings' / 'player_engine.parquet'
 ENGINE_META_PATH = DASH / 'models' / 'ratings' / 'player_engine_meta.json'
 FEES_PATH = DASH / 'valuations' / 'reported_fees.csv'
+SALES_PATH = DASH / 'models' / 'ratings' / 'acp_projection_sales.parquet'   # build_projection
+POOLS_PATH = DASH / 'models' / 'ratings' / 'acp_projection_pools.parquet'   # build_projection
 
 # --- engine value -----------------------------------------------------------
 ENGINE_ROLE2CVI = {'Striker': 'ST', 'Wide Attacker': 'AM_WG',
@@ -152,14 +154,51 @@ def sorted_pool(engine_df):
                    .dropna().to_numpy(dtype=float))
 
 
+def _role(r, col):
+    """The role a value reads: the career role in `col` (value_role on a
+    projection row, asof_role on an as-of value — 2026-10-29), else the
+    season's own role (an engine file from before the career role)."""
+    v = r.get(col)
+    return v if isinstance(v, str) and v else r.get('role')
+
+
 def engine_value_eur_frame(engine_df):
     """engine_value_eur for every row of the engine frame (Series aligned
-    to engine_df.index; None where there is no projection)."""
+    to engine_df.index; None where there is no projection), at the player's
+    career role and TODAY's playing-time factor (regular_factor_now)."""
     pool = sorted_pool(engine_df)
     return engine_df.apply(
-        lambda r: engine_value_eur(r.get('projection_abs'), pool, r.get('role'),
+        lambda r: engine_value_eur(r.get('projection_abs'), pool, _role(r, 'value_role'),
                                    r.get('age'), r.get('seasonId'),
-                                   r.get('regular_factor', 1.0)), axis=1)
+                                   r.get('regular_factor_now', r.get('regular_factor', 1.0))), axis=1)
+
+
+def load_pools(path=None):
+    """{season-year: sorted projection_abs} from build_projection's as-of
+    pools (acp_projection_pools.parquet), or None when the file is absent."""
+    path = Path(path or POOLS_PATH)
+    if not path.exists():
+        return None
+    p = pd.read_parquet(path, columns=['yr', 'projection_abs'])
+    return {int(y): np.sort(g['projection_abs'].to_numpy(dtype=float)) for y, g in p.groupby('yr')}
+
+
+def asof_pool(engine_df, y, yr=None, pools=None):
+    """The projection pool as it stood at the end of season-year y. From
+    `pools` (load_pools: built like today's pool, as of y) when it has y;
+    else every player's latest as-of projection (asof_abs) from a completed
+    season up to y, from the engine frame. Nothing later than y either way."""
+    if pools is not None and int(y) in pools:
+        return pools[int(y)]
+    from league_config import SEASON_YEAR
+    if yr is None:
+        yr = engine_df['seasonId'].map(lambda s: SEASON_YEAR.get(int(s)) if pd.notna(s) else None)
+    live = (engine_df['asof_live'].fillna(False).astype(bool) if 'asof_live' in engine_df.columns
+            else pd.Series(False, index=engine_df.index))
+    m = engine_df['asof_abs'].notna() & ~live & (pd.to_numeric(yr, errors='coerce') <= y)
+    last = (engine_df[m].assign(_y=yr[m]).sort_values(['_y', 'mins_played'], kind='stable')
+            .drop_duplicates('playerId', keep='last'))
+    return np.sort(pd.to_numeric(last['asof_abs'], errors='coerce').dropna().to_numpy(dtype=float))
 
 
 def value_date(today=None):
@@ -171,7 +210,7 @@ def value_date(today=None):
     return t - pd.Timedelta(days=t.weekday())
 
 
-def engine_values(engine_df, as_of=None):
+def engine_values(engine_df, as_of=None, pools='file'):
     """(now, season): two EUR Series aligned to engine_df.index (2026-10-29).
 
     season — each row's value as of its own season: the as-of projection
@@ -187,9 +226,12 @@ def engine_values(engine_df, as_of=None):
     midpoint, 1 Jan) and a live row's (at its data date) both move to as_of,
     so a value never steps down when the live value starts. Past-season
     values keep their as-of ages.
-    Both rank in today's projection pool (sorted_pool), so the fee-calibrated
-    curve is unchanged. Without as-of columns (an older engine file): season
-    is NaN and now is the summer projection's value (aged to as_of)."""
+    `now` and a live row rank in today's projection pool (sorted_pool). A past
+    season's value ranks in THAT year's pool (2026-10-29, no look-ahead):
+    every player's latest as-of projection up to that season-year — the pool
+    as it stood then, not today's (asof_pool). Without as-of columns (an
+    older engine file): season is NaN and now is the summer projection's
+    value (aged to as_of)."""
     from league_config import SEASON_YEAR
     as_of = value_date() if as_of is None else pd.Timestamp(as_of).normalize()
     cur = engine_df['projection_abs'].notna()
@@ -206,11 +248,10 @@ def engine_values(engine_df, as_of=None):
     pool = sorted_pool(engine_df)
     live = engine_df['asof_live'].fillna(False).astype(bool)
     ok = engine_df['asof_abs'].notna() & (~live | engine_df['live_ok'].fillna(False).astype(bool))
-    # a projection row's as-of projection IS its projection, computed on another
-    # frame (differs by ~1e-13): snap it, or it ranks one place below its own
-    # pool entry and the two values differ by a pool step
-    proj = pd.to_numeric(engine_df['projection_abs'], errors='coerce')
-    x = engine_df['asof_abs'].where(~((engine_df['asof_abs'] - proj).abs() < 1e-9), proj)
+    x = pd.to_numeric(engine_df['asof_abs'], errors='coerce')
+    yr = engine_df['seasonId'].map(lambda s: SEASON_YEAR.get(int(s)) if pd.notna(s) else None)
+    built = load_pools() if isinstance(pools, str) and pools == 'file' else pools
+    pools = {}
     # the live season is today's: its rows age from their data date to as_of
     age = pd.to_numeric(engine_df['asof_age'], errors='coerce')
     if live.any() and 'asof_date' in engine_df.columns:
@@ -218,8 +259,15 @@ def engine_values(engine_df, as_of=None):
         age = age.where(~live, age + (as_of - d).dt.days / 365.25)
     # NaN, not None, where a row can't be valued (below the pool's floor):
     # pandas 3 refuses an object into a float Series
-    vals = [engine_value_eur(xi, pool, r.get('role'), ai, r.get('seasonId'), r.get('regular_factor', 1.0))
-            for xi, ai, (_, r) in zip(x[ok], age[ok], engine_df[ok].iterrows())]
+    def _pool(i):
+        if live.loc[i] or pd.isna(yr.loc[i]):
+            return pool
+        y = int(yr.loc[i])
+        if y not in pools:
+            pools[y] = asof_pool(engine_df, y, yr, built)
+        return pools[y]
+    vals = [engine_value_eur(xi, _pool(i), _role(r, 'asof_role'), ai, r.get('seasonId'), r.get('regular_factor', 1.0))
+            for xi, ai, (i, r) in zip(x[ok], age[ok], engine_df[ok].iterrows())]
     season[ok] = np.array([np.nan if v is None else float(v) for v in vals], dtype=float)
     season = pd.to_numeric(season, errors='coerce')
     lv = engine_df[ok & live].assign(_v=season[ok & live])
@@ -376,7 +424,19 @@ def _same_club(a, b):
     return bool(a and b and (a == b or a in b or b in a))
 
 
-def pair_fees_to_engine(fees_df, engine_df, aliases=None):
+def season_ends(path=None):
+    """season-year -> date of its last played match (both leagues)."""
+    from league_config import SEASON_YEAR
+    path = path or (DASH / 'matches_summary.parquet')
+    if not Path(path).exists():
+        return {}
+    ms = pd.read_parquet(path, columns=['seasonId', 'dateutc', 'status'])
+    ms = ms[ms['status'].eq('Played')]
+    d = pd.to_datetime(ms['dateutc'], errors='coerce', utc=True).dt.tz_convert(None).dt.normalize()
+    return d.groupby(ms['seasonId'].map(SEASON_YEAR)).max().to_dict()
+
+
+def pair_fees_to_engine(fees_df, engine_df, aliases=None, ends=None, sales=None, avail=None, pools='file'):
     """One row per fee with the engine value at the fee's pre-transfer
     season. `included` marks the calibration set (real permanent sales
     with an engine value); `exclusion` says why the others are out."""
@@ -390,9 +450,35 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
     # as-of values (2026-10-29): each sale meets the value as of its own
     # pre-transfer season — no look-ahead, and a player who kept playing in our
     # leagues after the sale still has a value for that season
-    season = engine_values(eng)[1] if 'asof_abs' in eng.columns else None
+    built = load_pools() if isinstance(pools, str) and pools == 'file' else pools
+    season = engine_values(eng, pools=built)[1] if 'asof_abs' in eng.columns else None
+    # AS OF THE SALE DATE (2026-10-29, no look-ahead): a sale meets the value
+    # from everything played BEFORE it, at his age ON the sale date, ranked in
+    # the pool as it stood then (asof_pool):
+    #  - a summer sale (after its season's last match): that season's as-of
+    #    value;
+    #  - a mid-season sale: build_projection's sale-date projection
+    #    (acp_projection_sales: his earlier seasons + the pre-sale part of the
+    #    sale season when it can be told apart, the fits known then), with the
+    #    playing-time coefficients and the pool of the previous season-year.
+    from league_config import SEASON_YEAR
+    ends = season_ends() if ends is None else ends
+    eyr = eng['seasonId'].map(lambda v: SEASON_YEAR.get(int(v)) if pd.notna(v) else None)
+    pools = {}
+    if sales is None and SALES_PATH.exists():
+        sales = pd.read_parquet(SALES_PATH)
+    sale_idx = ({(int(p), str(d)): r for p, d, r in zip(sales['playerId'], sales['as_of_date'],
+                                                       sales.to_dict('records'))}
+                if sales is not None else None)
+    if avail is None and _availability.OUT.exists():
+        avail = pd.read_parquet(_availability.OUT, columns=['playerId', 'seasonId', 'career_share',
+                                                           'career_sub_frac', 'reserve_team'])
+    av_idx = ({(int(p), int(s)): (sh, sf, rt) for p, s, sh, sf, rt in zip(
+        avail['playerId'], avail['seasonId'], avail['career_share'], avail['career_sub_frac'],
+        avail['reserve_team'])} if avail is not None else {})
     fees = fees_df.copy()
     fees['playerId'] = pd.to_numeric(fees['playerId'], errors='coerce')
+    fees['_raw_pid'] = fees['playerId']
     if aliases:
         fees['playerId'] = fees['playerId'].map(
             lambda p: aliases.get(int(p), int(p)) if pd.notna(p) else p)
@@ -405,21 +491,37 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             pid, sid = int(f['playerId']), int(f['season_id'])
         except (TypeError, ValueError):
             pid, sid = None, None
-        er = (eng[(eng['playerId'] == pid) & (eng['seasonId'] == sid)]
-              if pid is not None else eng.iloc[0:0])
-        if len(er):
-            er = er[season.loc[er.index].notna()] if season is not None else er.dropna(subset=['projection_abs'])
-        value = role = mins = w_ev = ev = age_at_sale = eng_team = None
-        seasons_ago = 0
         from_team = str(f.get('from_team') or '').strip()
         to_team = str(f.get('to_team') or '').strip()
         as_of = str(f.get('as_of_date') or '')
-        # A January sale's season row also contains matches AFTER the sale
-        # (one engine row per player-season); flagged, not excluded.
-        mid_season = len(as_of) >= 7 and as_of[5:7] in ('01', '02', '03')
+        sale = pd.to_datetime(as_of, errors='coerce')
+        y_sale = SEASON_YEAR.get(sid) if sid is not None else None
+        if pd.notna(sale) and y_sale is not None and ends.get(y_sale) is not None:
+            mid_season = bool(sale < ends[y_sale])
+        else:   # no match dates: a January-March sale is mid-season
+            mid_season = len(as_of) >= 7 and as_of[5:7] in ('01', '02', '03')
+        sr = None
+        if season is not None and mid_season and sale_idx is not None and pd.notna(f['_raw_pid']):
+            sr = sale_idx.get((int(f['_raw_pid']), as_of))
+        if pid is None or (season is not None and mid_season and sale_idx is not None):
+            er = eng.iloc[0:0]          # mid-season: the sale-date projection below
+        elif season is not None and mid_season and y_sale is not None:
+            er = eng[(eng['playerId'] == pid) & (eyr == y_sale - 1)]
+        else:
+            er = eng[(eng['playerId'] == pid) & (eng['seasonId'] == sid)]
+        if len(er):
+            if season is not None:
+                live = (er['asof_live'].fillna(False).astype(bool) if 'asof_live' in er.columns
+                        else pd.Series(False, index=er.index))
+                er = er[er['asof_abs'].notna() & ~live]
+            else:
+                er = er.dropna(subset=['projection_abs'])
+        value = role = mins = w_ev = ev = age_at_sale = eng_team = paired_sid = None
+        seasons_ago = 0
         if len(er):
             r = er.sort_values('mins_played').iloc[-1]
-            role = r.get('role')
+            paired_sid = int(r['seasonId'])
+            role = _role(r, 'asof_role' if season is not None else 'value_role')
             eng_team = str(r.get('team') or '').strip() or None
             # As-of engine (2026-10-29): the row's own as-of value — the
             # projection made from everything known at the end of the sale's
@@ -429,8 +531,16 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             # is back-dated to the sale's season; the projection itself stays
             # today's (later-horizon) one — a residual look-ahead.
             if season is not None:
-                # the row's own as-of value: its season's projection at its age
-                age_at_sale, value = r.get('asof_age'), float(season.loc[r.name])
+                # the row's as-of projection, at his age on the sale date (a
+                # completed row's as-of age sits at 1 Jan of its winter)
+                ry = int(eyr.loc[r.name])
+                age_at_sale = r.get('asof_age')
+                if pd.notna(sale) and age_at_sale is not None and pd.notna(age_at_sale):
+                    age_at_sale = float(age_at_sale) + (sale - pd.Timestamp(ry + 1, 1, 1)).days / 365.25
+                if ry not in pools:
+                    pools[ry] = asof_pool(eng, ry, eyr, built)
+                value = engine_value_eur(r.get('asof_abs'), pools[ry], role, age_at_sale,
+                                         r.get('seasonId'), r.get('regular_factor', 1.0))
                 we = r.get('asof_w_evidence')
             else:
                 sa = r.get('seasons_ago')
@@ -447,6 +557,24 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             w_ev = float(we) if we is not None and not pd.isna(we) else None
             e = r.get('asof_evidence') if season is not None else None
             ev = float(e) if e is not None and not pd.isna(e) else None
+        elif sr is not None:
+            paired_sid = int(sr['base_seasonId'])
+            role, age_at_sale = sr['value_role'], float(sr['age'])
+            py = y_sale - 1
+            if py not in pools:
+                pools[py] = asof_pool(eng, py, eyr, built)
+            sh, sf, rt = av_idx.get((int(f['_raw_pid']), paired_sid), (np.nan, np.nan, False))
+            c = _availability.coef_for(py)
+            factor = (1.0 if bool(rt) or c is None or pd.isna(sh) or pd.isna(sf)
+                      else _availability.regular_factor(sh, sf, c))
+            value = engine_value_eur(sr['projection_sale_abs'], pools[py], role, age_at_sale,
+                                     paired_sid, factor)
+            b = eng[(eng['playerId'] == pid) & (eng['seasonId'] == paired_sid)]
+            if len(b):
+                bb = b.sort_values('mins_played').iloc[-1]
+                mins = float(bb['mins_played']) if pd.notna(bb.get('mins_played')) else None
+                eng_team = str(bb.get('team') or '').strip() or None
+            w_ev, ev = float(sr['w_evidence']), float(sr['evidence'])
         if flag is None or pd.isna(flag):
             excl = 'null_synthetic_flag'
         elif int(flag) != 0:
@@ -456,7 +584,7 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
         elif fee is None or pd.isna(fee) or fee <= 0:
             excl = 'no_fee'
         elif value is None:
-            excl = 'no_engine_row'
+            excl = 'no_data_before_sale' if mid_season and season is not None else 'no_engine_row'
         elif _same_club(eng_team, to_team):
             # The row is at the DESTINATION club: the player arrived from
             # outside the dataset, so this is post-transfer performance, not
@@ -467,6 +595,7 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
         ratio = (float(fee) / value) if (excl is None) else None
         rows.append({
             'playerId': pid, 'player_name': f.get('player_name'), 'season_id': sid,
+            'paired_season_id': paired_sid,
             'league': _league_label(sid), 'role': role,
             'role_group': ENGINE_ROLE2CVI.get(role),
             'transfer_type': ttype, 'synthetic_flag': None if pd.isna(flag) else int(flag),

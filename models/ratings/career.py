@@ -91,6 +91,47 @@ def career_features(rows, centroid, season_mid, t_ref, h_form=H_FORM, h_evid=H_E
     return pd.DataFrame({'career_asof': out_car, 'evidence': out_ev})
 
 
+
+def time_weighted(rows, values, centroid, season_mid, t_ref, h=H_FORM):
+    """Minute- and time-weighted mean of every column of `values` (aligned to
+    rows) over each row's career blocks up to its own t_ref: career_asof's
+    blocks and weights, for any per-block quantity (role shares, the role
+    played). A row with no usable block gets NaN."""
+    c = [centroid.get((int(p), int(s)), np.nan) for p, s in zip(rows['playerId'], rows['seasonId'])]
+    b = rows.assign(_c=pd.Series(c, index=rows.index).fillna(rows['seasonId'].map(season_mid)),
+                    _t=t_ref)
+    V = values.to_numpy(dtype=float)
+    out = np.full(V.shape, np.nan)
+    pos = pd.Series(np.arange(len(rows)), index=rows.index)
+    for _, g in b.groupby('playerId', sort=False):
+        k = pos[g.index].to_numpy()
+        yr, cen = g['yr'].to_numpy(), g['_c'].to_numpy()
+        mins, v = g['mins_played'].to_numpy(float), V[k]
+        ok = np.isfinite(cen) & np.isfinite(v).all(axis=1)
+        for j, (y_i, t_i) in enumerate(zip(yr, g['_t'].to_numpy())):
+            use = (yr <= y_i) & ok
+            if not use.any():
+                continue
+            w = mins[use] * 0.5 ** (np.clip(t_i - cen[use], 0.0, None) / h)
+            if w.sum() > 0:
+                out[k[j]] = (w[:, None] * v[use]).sum(axis=0) / w.sum()
+    return pd.DataFrame(out, index=rows.index, columns=values.columns)
+
+
+def career_role(rows, centroid, season_mid, t_ref, h=H_FORM):
+    """The role a player has played most up to each row's t_ref: the largest
+    time-weighted minutes over his career blocks, each block counting for its
+    own season's role (a one-season career: that season's role; ties go to
+    the alphabetically first role)."""
+    roles = sorted(rows['role'].dropna().unique())
+    ind = pd.DataFrame({r: (rows['role'] == r).astype(float) for r in roles}, index=rows.index)
+    tw = time_weighted(rows, ind, centroid, season_mid, t_ref, h)
+    has = tw.notna().any(axis=1)
+    best = pd.Series(rows['role'], index=rows.index, dtype=object)
+    best[has] = tw[has].idxmax(axis=1)
+    return best
+
+
 def season_end_times(matches_summary, season_year):
     """season-year -> float years of the last played match in it (both
     leagues): the as-of time of a completed season's rows."""

@@ -48,6 +48,7 @@ from league_config import SEASON_YEAR, CAMP_SEASON_IDS, IN_PROGRESS_SEASON_IDS  
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
+from models.ratings.asof import lam_by_year as _lam_by_year  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
 _DASH = _HERE.parent.parent
@@ -309,36 +310,42 @@ for c in GPA_CATS:
 # influence shares, gated on external validity, not YoY.
 _off_adj = pd.Series(0.0, index=df.index)
 _lam_log = []
+
+
+def _season_pairs(sub, c):
+    """(a, b, yr) lag-1 pairs of category c's percentile within one role."""
+    P = []
+    # reliability from COMPLETED seasons only: half-season pairs into a
+    # season still in progress would move every season's weights each
+    # matchday (found when 2026/27 was first rated, 2026-10-21)
+    _done = sub['_cohort'] & ~sub['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
+    # a winter mover has two rows in one year (one per league); pairs use
+    # his MAIN row (most minutes). v6.9 paired whichever an unstable sort
+    # put first, so LATER seasons' rows could decide it (caught by the
+    # lookahead test)
+    _main = (sub[_done].sort_values(['yr', 'mins_played', 'seasonId'], kind='stable')
+             .groupby(['playerId', 'yr']).tail(1))
+    for pid, gg in _main.sort_values('yr', kind='stable').groupby('playerId'):
+        rr = gg[[c + '_pct', 'yr']].to_dict('records')
+        for a, b in zip(rr, rr[1:]):
+            if b['yr'] - a['yr'] == 1:
+                P.append((a[c + '_pct'], b[c + '_pct'], b['yr']))
+    return pd.DataFrame(P, columns=['a', 'b', 'yr'])
+
+
+_PAIRS = {(role, c): _season_pairs(sub, c) for role, sub in df.groupby('role') for c in GPA_CATS}
+_PAIRS_ALL = {c: pd.concat([_PAIRS[(r, c)] for r in df['role'].dropna().unique()], ignore_index=True)
+              for c in GPA_CATS}
 for role, sub in df.groupby('role'):
     for c in GPA_CATS:
-        P = []
-        # reliability from COMPLETED seasons only: half-season pairs into a
-        # season still in progress would move every season's weights each
-        # matchday (found when 2026/27 was first rated, 2026-10-21)
-        _done = sub['_cohort'] & ~sub['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
-        # a winter mover has two rows in one year (one per league); pairs use
-        # his MAIN row (most minutes). v6.9 paired whichever an unstable sort
-        # put first, so LATER seasons' rows could decide it (caught by the
-        # lookahead test)
-        _main = (sub[_done].sort_values(['yr', 'mins_played', 'seasonId'], kind='stable')
-                 .groupby(['playerId', 'yr']).tail(1))
-        for pid, gg in _main.sort_values('yr', kind='stable').groupby('playerId'):
-            rr = gg[[c + '_pct', 'yr']].to_dict('records')
-            for a, b in zip(rr, rr[1:]):
-                if b['yr'] - a['yr'] == 1:
-                    P.append((a[c + '_pct'], b[c + '_pct'], b['yr']))
-        P = pd.DataFrame(P, columns=['a', 'b', 'yr'])
-        # v7.0 NO LOOKAHEAD: reliability AS-OF each season-year — a row is
-        # weighted with pairs ending in its own season or earlier only (v6.9
-        # pooled every completed season, so 2021/22 offence was weighted
-        # with reliabilities measured on 2022-26). < 30 pairs -> the 0.15
-        # prior, as before. The current season is unchanged (all its prior
-        # pairs are complete seasons either way).
-        lam_y = {}
-        for y in sorted(sub['yr'].unique()):
-            Py = P[P['yr'] <= y]
-            lam = _pr(Py['a'], Py['b'])[0] if len(Py) >= 30 else 0.15
-            lam_y[y] = float(np.clip(lam, 0.05, 1.0)) if np.isfinite(lam) else 0.15
+        P = _PAIRS[(role, c)]
+        # v7.1 NO LOOKAHEAD: reliability AS-OF each season-year — a row is
+        # weighted with pairs that ENDED BEFORE its own season (asof.py);
+        # v7.0 counted pairs ending in its own season, so the row's own
+        # season fed its own weight. With fewer earlier seasons the role's
+        # own r is shrunk toward the category's r over every role (n/(n+30));
+        # no earlier pair at all -> the 0.15 prior.
+        lam_y = _lam_by_year(P, sub['yr'].unique(), pooled=_PAIRS_ALL[c])
         lam_row = sub['yr'].map(lam_y)
         _cm = (sub[c + '90'].where(sub['_cohort'])
                  .groupby([sub['league'], sub['seasonId']]).transform('mean'))

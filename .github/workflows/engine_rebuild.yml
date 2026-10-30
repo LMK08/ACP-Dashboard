@@ -181,8 +181,10 @@ jobs:
           python models/ratings/rapm_v4.py
           python models/ratings/build_pass_split.py
           python models/ratings/build_rating.py
-          python models/ratings/build_projection.py
+          # league_conversion BEFORE the projection (2026-10-29): the career
+          # blocks go onto one scale through acp_rating_abs
           python models/ratings/league_conversion.py
+          python models/ratings/build_projection.py
           python models/ratings/build_player_engine.py
           # Engine value's playing-time factor (seconds): share of the minutes
           # available to each player (club windows from transfers.parquet) and
@@ -208,6 +210,8 @@ jobs:
           ACP_SLOW_TESTS: ${{ inputs.slow_checks == 'true' && '1' || '0' }}
         run: |
           python -m pytest tests/test_rating_no_lookahead.py tests/test_engine_no_lookahead_upstream.py \
+            tests/test_projection_no_lookahead.py tests/test_duel_no_lookahead.py \
+            tests/test_asof_no_lookahead.py tests/test_defr_no_lookahead.py \
             -v -p no:cacheprovider -rs
 
       - name: Keep the engine outputs (validate-only runs)

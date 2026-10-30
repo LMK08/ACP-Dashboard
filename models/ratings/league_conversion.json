@@ -1,20 +1,24 @@
 {
   "reference": "L3",
-  "delta_pts_L3_minus_CAMP_descriptive": 7.548708201785678,
-  "delta_se": 1.5952363853064908,
-  "delta_pts_recruit": 7.322849943802316,
+  "delta_pts_L3_minus_CAMP_descriptive": 7.585002947944862,
+  "delta_se": 1.6132867724658877,
+  "delta_pts_recruit": 7.4423535005175525,
+  "delta_pts_recruit_by_year": {
+    "2023": 6.483,
+    "2025": 7.442
+  },
   "delta_pts_descriptive_by_camp_season": {
-    "190230": 5.926,
-    "191779": 7.549
+    "190230": 6.592,
+    "191779": 7.585
   },
   "anchors": {
     "A1 movers": {
-      "delta": 6.383,
-      "se": 1.745
+      "delta": 6.394,
+      "se": 1.77
     },
     "A2 teams": {
-      "delta": 13.467,
-      "se": 3.932
+      "delta": 13.425,
+      "se": 3.92
     }
   }
 }
