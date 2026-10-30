@@ -411,48 +411,15 @@ df['rapm_pct'] = role_pct('rapm_v4')
 # dashboard's Defensive metrics. IF REVISITED: try danger-weighting only
 # own-third take-ons (where the swing concentrates), gate on the xGA
 # outcome link, not YoY.
+# v7.1 NO LOOKAHEAD WITHIN THE SEASON (2026-10-29): every contest is judged
+# only against contests from matches that kicked off BEFORE it — strengths,
+# bucket rates and the strength centring (duel_expectations.py). v7.0's were
+# cumulative through the contest's season-year, its own result included.
+from models.ratings.duel_expectations import expectations as _duel_expectations  # noqa: E402
 _ct = _read(_DASH / 'models/duels/contests.parquet',
-                        columns=['ladder', 'seasonId', 'playerA', 'playerB',
+                        columns=['ladder', 'seasonId', 'date', 'playerA', 'playerB',
                                   'scoreA', 'att_kind', 'zx', 'phase'])
-_ct['league'] = np.where(_ct['seasonId'].isin(CAMP), 'CAMP', 'L3')
-_ct['cyr'] = _ct['seasonId'].map(SEASON_YR)
-
-
-def _asof_strength(df_pw, K0=40.0):
-    """df_pw: columns p, cyr, w (one row per contest-side). Returns a
-    Series indexed by (p, cyr): shrunk win share through that year."""
-    s = (df_pw.groupby(['p', 'cyr'])['w'].agg(['sum', 'size'])
-            .reset_index().sort_values('cyr'))
-    s[['W', 'N']] = s.groupby('p')[['sum', 'size']].cumsum()
-    s['s_asof'] = (s['W'] + K0 / 2) / (s['N'] + K0)
-    return s.set_index(['p', 'cyr'])['s_asof']
-
-
-_a = _ct[_ct['ladder'] == 'aerial']
-_aw = pd.concat([
-    _a[['playerA', 'cyr']].assign(w=_a['scoreA']).rename(columns={'playerA': 'p'}),
-    _a[['playerB', 'cyr']].assign(w=1 - _a['scoreA']).rename(columns={'playerB': 'p'})])
-_s_aer = _asof_strength(_aw)
-_g = _ct[_ct['ladder'] == 'ground'].copy()
-_s_att = _asof_strength(
-    _g[['playerB', 'cyr']].assign(w=1 - _g['scoreA']).rename(columns={'playerB': 'p'}))
-_g['bucket'] = (_g['att_kind'].astype(str) + '|' + _g['zx'].astype(str)
-                 + '|' + _g['phase'].astype(str) + '|' + _g['league'])
-# v7.0 NO LOOKAHEAD: the bucket's expected defender win rate is AS-OF the
-# contest's season-year (cumulative through it), like the opponent
-# strengths, and strengths are centred on their own year's mean — v6.9
-# pooled both over every season, so a 2021/22 duel was judged against
-# averages that included 2025/26.
-_mb = (_g.groupby(['bucket', 'cyr'])['scoreA'].agg(['sum', 'size'])
-         .reset_index().sort_values('cyr'))
-_mb[['S', 'N']] = _mb.groupby('bucket')[['sum', 'size']].cumsum()
-_mb['mu_b'] = _mb['S'] / _mb['N']
-_g = _g.merge(_mb[['bucket', 'cyr', 'mu_b']], on=['bucket', 'cyr'], how='left')
-_g['s_opp'] = pd.Series(
-    _g.set_index(['playerB', 'cyr']).index.map(_s_att), index=_g.index)
-_yr_mean = _g.groupby('cyr')['s_opp'].transform('mean')
-_g['s_opp'] = _g['s_opp'].fillna(_yr_mean)
-_g['phat'] = (_g['mu_b'] - (_g['s_opp'] - _yr_mean)).clip(0.05, 0.95)
+_a2, _g = _duel_expectations(_ct, CAMP, SEASON_YR)
 _g['woe'] = _g['scoreA'] - _g['phat']
 _grd = (_g.groupby(['playerA', 'seasonId'])['woe']
           .agg(woe_ground='sum', n_ground='size').reset_index()
@@ -460,26 +427,12 @@ _grd = (_g.groupby(['playerA', 'seasonId'])['woe']
 # v7.0 Off Duel Grade, season-only: the ATTACKER side of the same ground
 # contests ('dribble' = take-on, 'offensive_duel' = shield / press
 # resistance). Expected attacker win = 1 - what an average attacker gets vs
-# THIS defender (bucket rate + the defender's as-of strength), so beating a
-# strong defender earns more — the mirror of the defensive WOE above.
-_s_def = _asof_strength(
-    _g[['playerA', 'cyr']].assign(w=_g['scoreA']).rename(columns={'playerA': 'p'}))
-_g['s_def'] = pd.Series(
-    _g.set_index(['playerA', 'cyr']).index.map(_s_def), index=_g.index)
-_yr_mean_d = _g.groupby('cyr')['s_def'].transform('mean')
-_g['s_def'] = _g['s_def'].fillna(_yr_mean_d)
-_g['pdef'] = (_g['mu_b'] + (_g['s_def'] - _yr_mean_d)).clip(0.05, 0.95)
+# THIS defender (bucket rate + the defender's strength before the match), so
+# beating a strong defender earns more — the mirror of the defensive WOE above.
 _g['woe_att'] = _g['pdef'] - _g['scoreA']    # (1 - scoreA) - (1 - pdef)
 _att = (_g.groupby(['playerB', 'seasonId'])['woe_att']
           .agg(woe_att='sum', n_att='size').reset_index()
           .rename(columns={'playerB': 'playerId'}))
-_a2 = _a.copy()
-_a2['_sB'] = pd.Series(
-    _a2.set_index(['playerB', 'cyr']).index.map(_s_aer), index=_a2.index)
-_a2['_sA'] = pd.Series(
-    _a2.set_index(['playerA', 'cyr']).index.map(_s_aer), index=_a2.index)
-_a2['pA'] = (1 - _a2['_sB'].fillna(0.5)).clip(0.08, 0.92)
-_a2['pB'] = (1 - _a2['_sA'].fillna(0.5)).clip(0.08, 0.92)
 _sA = (_a2[['playerA', 'seasonId']]
          .assign(woe=_a2['scoreA'] - _a2['pA']))
 _sB = (_a2[['playerB', 'seasonId']].rename(columns={'playerB': 'playerA'})
@@ -617,7 +570,7 @@ out_cols = out_cols + ['aerial_grade_pct', 'ground_grade_pct',
                          'woe_aerial_p90', 'woe_ground_p90', 'woe_att_p90']
 out_cols = out_cols + ['sh_' + nm for nm in ROLE_NAMES]
 out = df[out_cols].copy()
-out['rating_version'] = 'v7.0'
+out['rating_version'] = 'v7.1'   # v7.1: duel expectations as of kick-off (duel_expectations.py)
 out.to_parquet(_OUT / 'acp_rating_per_player_season.parquet')
 print(f"  saved acp_rating_per_player_season.parquet ({len(out):,} rows)")
 
