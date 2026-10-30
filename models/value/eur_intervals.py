@@ -99,8 +99,12 @@ VALUE_BANDS = ((0, 100_000, '< EUR 100k'), (100_000, 300_000, 'EUR 100k-300k'),
 VERSION = 'eur_interval_v1'
 # Ranges are only evidenced INSIDE the calibration set's own support: fees
 # under EUR 25k are noise at this tier (the EUR trainer's floor), and the
-# sold players all had real minutes / evidence behind their projection. A
-# row outside that support gets no range (range_support_reason).
+# sold players all had real career evidence behind their projection. A row
+# outside that support gets no range (range_support_reason).
+# Career, not season (2026-10-29): the evidence is the time-weighted career
+# minutes behind the projection (models/ratings/career.py; evidence weight =
+# evidence / (evidence + 1500)). The season's own minutes are no longer a
+# bound, so a regular with a long career keeps his range early in a season.
 SUPPORT_VALUE_FLOOR = 25_000
 
 
@@ -261,8 +265,10 @@ def loo_coverage(scores, level):
 def range_support_reason(point, calib=None, w_evidence=None, mins=None):
     """None when the calibration supports a range for this row, else a
     short reason. The band is evidenced only inside the calibration set's
-    own value / minutes / evidence-weight range (stored under 'support');
-    pass w_evidence and mins when the row has them (engine columns)."""
+    own value / evidence-weight range (stored under 'support'); pass
+    w_evidence when the row has it (engine columns). mins is checked only
+    against a calibration that bounds season minutes (built before
+    2026-10-29)."""
     calib = load_calibration() if calib is None else calib
     sup = (calib or {}).get('support') or {}
     if point is None or pd.isna(point) or float(point) <= 0:
@@ -403,7 +409,7 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
               if pid is not None else eng.iloc[0:0])
         if len(er):
             er = er[season.loc[er.index].notna()] if season is not None else er.dropna(subset=['projection_abs'])
-        value = role = mins = w_ev = age_at_sale = eng_team = None
+        value = role = mins = w_ev = ev = age_at_sale = eng_team = None
         seasons_ago = 0
         from_team = str(f.get('from_team') or '').strip()
         to_team = str(f.get('to_team') or '').strip()
@@ -439,6 +445,8 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             mp = r.get('mins_played')
             mins = float(mp) if mp is not None and not pd.isna(mp) else None
             w_ev = float(we) if we is not None and not pd.isna(we) else None
+            e = r.get('asof_evidence') if season is not None else None
+            ev = float(e) if e is not None and not pd.isna(e) else None
         if flag is None or pd.isna(flag):
             excl = 'null_synthetic_flag'
         elif int(flag) != 0:
@@ -466,7 +474,7 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None):
             'fee_eur': None if pd.isna(fee) else float(fee),
             'value_eur': value, 'ratio': ratio,
             'seasons_ago': seasons_ago, 'age_at_sale': age_at_sale,
-            'mins_played': mins, 'w_evidence': w_ev,
+            'mins_played': mins, 'w_evidence': w_ev, 'evidence': ev,
             'from_team': from_team or None, 'to_team': to_team or None,
             'engine_team': eng_team, 'mid_season': bool(mid_season),
             'log_error': (math.log(ratio) if ratio else None),
@@ -595,8 +603,11 @@ def build_calibration(pairs, engine_meta=None, previous=None, today=None):
         for r in pairs[pairs['exclusion'].isin(['no_engine_row', 'post_transfer_row'])].to_dict('records')]
     support = {
         'min_value_eur': SUPPORT_VALUE_FLOOR,
-        'min_mins_played': (float(cal['mins_played'].min()) if n and cal['mins_played'].notna().any() else None),
+        # the bound is the evidence weight; min_evidence is the same floor in
+        # career minutes, for the caption
         'min_w_evidence': (float(cal['w_evidence'].min()) if n and cal['w_evidence'].notna().any() else None),
+        'min_evidence': (float(cal['evidence'].min()) if n and 'evidence' in cal.columns
+                         and cal['evidence'].notna().any() else None),
         'value_range_eur': ([float(cal['value_eur'].min()), float(cal['value_eur'].max())] if n else None),
     }
     l3_med = bias['L3']['median_ratio']
@@ -665,8 +676,8 @@ def _print_report(pairs, calib):
     p = calib['prospective']
     print(f"prospective ledger: {p['n']} fee(s) scored against earlier quantiles")
     sup = calib['support']
-    print(f"support: value >= {sup['min_value_eur']:,}, minutes >= {sup['min_mins_played']}, "
-          f"evidence weight >= {sup['min_w_evidence']}")
+    print(f"support: value >= {sup['min_value_eur']:,}, evidence weight >= {sup['min_w_evidence']} "
+          f"(career evidence >= {sup.get('min_evidence')}')")
     if calib['centre_drift']['flag']:
         print("WARNING:", calib['centre_drift']['note'])
     if calib['excluded_rows']:

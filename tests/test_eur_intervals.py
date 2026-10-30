@@ -138,20 +138,21 @@ def _pairs(scores, league='L3'):
                      'fee_eur': value * math.exp(s if i % 2 else -s), 'value_eur': value,
                      'ratio': math.exp(s if i % 2 else -s), 'log_error': (s if i % 2 else -s),
                      'score': s, 'seasons_ago': 0, 'age_at_sale': 24.0,
-                     'mins_played': 900.0 + i, 'w_evidence': 0.5, 'mid_season': (i == 0),
+                     'mins_played': 900.0 + i, 'w_evidence': 0.5, 'evidence': 1500.0 + i,
+                     'mid_season': (i == 0),
                      'included': True, 'exclusion': None})
     rows.append({'playerId': 5, 'player_name': 'Syn', 'season_id': 191782, 'league': 'L3',
                  'role': 'Striker', 'role_group': 'ST', 'transfer_type': 'permanent',
                  'synthetic_flag': 1, 'as_of_date': None, 'fee_eur': 50_000.0,
                  'value_eur': 100_000.0, 'ratio': None, 'log_error': None, 'score': None,
                  'seasons_ago': 0, 'age_at_sale': 24.0, 'mins_played': 900.0, 'w_evidence': 0.5,
-                 'mid_season': False, 'included': False, 'exclusion': 'synthetic'})
+                 'evidence': 1500.0, 'mid_season': False, 'included': False, 'exclusion': 'synthetic'})
     rows.append({'playerId': 6, 'player_name': 'Stayed', 'season_id': 189147, 'league': 'L3',
                  'role': None, 'role_group': None, 'transfer_type': 'permanent',
                  'synthetic_flag': 0, 'as_of_date': None, 'fee_eur': 90_000.0,
                  'value_eur': None, 'ratio': None, 'log_error': None, 'score': None,
                  'seasons_ago': 0, 'age_at_sale': None, 'mins_played': None, 'w_evidence': None,
-                 'mid_season': False, 'included': False, 'exclusion': 'no_engine_row'})
+                 'evidence': None, 'mid_season': False, 'included': False, 'exclusion': 'no_engine_row'})
     return pd.DataFrame(rows)
 
 
@@ -159,8 +160,9 @@ def test_build_calibration_reproduces_hand_computed_quantiles_and_ledger():
     calib = ei.build_calibration(_pairs(SCORES_14), engine_meta={'rating_version': 'x'}, today='2026-09-06')
     assert calib['n_calibration'] == 14 and calib['excluded'] == {'synthetic': 1, 'no_engine_row': 1}
     assert calib['excluded_rows'] == [{'player_name': 'Stayed', 'season_id': 189147, 'exclusion': 'no_engine_row'}]
-    assert calib['support'] == {'min_value_eur': 25_000, 'min_mins_played': 900.0,
-                                'min_w_evidence': 0.5, 'value_range_eur': [100_000.0, 100_000.0]}
+    # career, not season: no season-minutes floor; the evidence floor in both units
+    assert calib['support'] == {'min_value_eur': 25_000, 'min_w_evidence': 0.5, 'min_evidence': 1500.0,
+                                'value_range_eur': [100_000.0, 100_000.0]}
     assert calib['centre_drift']['flag'] is False
     assert calib['n_mid_season'] == 1
     lv = calib['levels']
@@ -210,6 +212,7 @@ def test_pair_fees_to_engine_filters_and_values():
         ei.engine_value_eur(40.0, np.array([20.0, 40.0]), 'Striker', 24.0, 191782))
     assert pairs.loc[0, 'value_eur'] > ei.engine_value_eur(40.0, np.array([20.0, 40.0]), 'Striker', 26.0, 191782)
     assert (pairs.loc[0, 'mins_played'], pairs.loc[0, 'w_evidence']) == (900.0, 0.6)
+    assert pairs.loc[0, 'evidence'] is None or pd.isna(pairs.loc[0, 'evidence'])   # no as-of columns
     assert pairs.loc[0, 'score'] == pytest.approx(abs(math.log(100_000 / pairs.loc[0, 'value_eur'])))
     # aliases apply on both sides of the join
     pairs2 = ei.pair_fees_to_engine(fees.assign(playerId=[11, 1, 2, 2, 3, 2]), eng, aliases={11: 1})
@@ -252,8 +255,11 @@ def test_shipped_calibration_matches_a_fresh_build():
 
 
 # --- support gate ----------------------------------------------------------------
+# a calibration built before 2026-10-29 (season-minutes floor) and today's
+# (career evidence only)
 SUPPORTED = dict(CALIB, support={'min_value_eur': 25_000, 'min_mins_played': 550.0,
                                  'min_w_evidence': 0.27})
+CAREER = dict(CALIB, support={'min_value_eur': 25_000, 'min_w_evidence': 0.27, 'min_evidence': 555.0})
 
 
 def test_range_only_inside_calibration_support():
@@ -271,6 +277,15 @@ def test_range_only_inside_calibration_support():
     assert ei.range_support_reason(150_000, SUPPORTED, w_evidence=None, mins=float('nan')) is None
     # a calibration without a support block gates on nothing but the value
     assert ei.range_support_reason(150_000, CALIB, w_evidence=0.01, mins=1) is None
+
+
+def test_career_support_ignores_the_seasons_own_minutes():
+    # early in a season: 200' this season, a long career behind the projection
+    assert ei.range_support_reason(150_000, CAREER, w_evidence=0.6, mins=200) is None
+    assert ei.projected_eur_interval(150_000, 0.5, CAREER, w_evidence=0.6, mins=200)[0] is not None
+    # a thin career still gets no range
+    assert ei.range_support_reason(150_000, CAREER, w_evidence=0.2, mins=2000) == \
+        'too little evidence behind the projection'
 
 
 # --- parity with the app.py closure this module replaced ---------------------------

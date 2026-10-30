@@ -188,10 +188,11 @@ def render_eur_calibration_section(calib=None, key='eurcal'):
     sup = calib.get('support') or {}
     vr = sup.get('value_range_eur') or [None, None]
     st.caption(f"Ranges are shown only above the calibration's floors — value ≥ "
-               f"{format_eur_short(sup.get('min_value_eur', 25000))}, minutes ≥ "
-               f"{sup.get('min_mins_played') or 0:.0f}, evidence weight ≥ "
-               f"{sup.get('min_w_evidence') or 0:.2f} (the sold players' minima); below them the "
-               f"value is shown alone."
+               f"{format_eur_short(sup.get('min_value_eur', 25000))} and career evidence ≥ "
+               f"{sup.get('min_evidence') or 0:,.0f}′ (time-weighted career minutes, evidence "
+               f"weight ≥ {sup.get('min_w_evidence') or 0:.2f}; the sold players' minima); below "
+               f"them the value is shown alone. A season's own minutes are not a floor, so a "
+               f"regular keeps his range early in a season."
                + (f" The sold players' model values ran {format_eur_short(vr[0])} – "
                   f"{format_eur_short(vr[1])}, so a range above that is the same width "
                   f"extrapolated." if vr[0] else ""))

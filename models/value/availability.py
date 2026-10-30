@@ -8,9 +8,12 @@ cameo was valued like a starter (Rafinha Monteiro, EUR 218k, 2026-10). This
 module scales the value by how likely a player with his playing time is to
 become a regular, measured as 900'+ the next season:
 
-  share     = his season minutes (engine mins_lineup, exact API minutes)
-              / the minutes available to him: the summed lengths of his
-              club's league matches while he was there
+  share     = his CAREER playing time (career_playing_time, 2026-10-29):
+              each season's minutes (engine mins_lineup, exact API minutes)
+              / the minutes available to him (the summed lengths of his
+              club's league matches while he was there), seasons weighted
+              by time before the as-of date (half-life H_PLAYING) — one
+              continuous sample, not one season (Lucas 2026-10-29)
 
 Available minutes are counted match by match (2026-10-29; they were the
 event-data match count x a coverage ratio x the season's median length):
@@ -93,7 +96,7 @@ OUT = HERE / 'availability.parquet'
 ENGINE_PATH = DASH / 'models' / 'ratings' / 'player_engine.parquet'
 
 # logit p(regular next season) = a + b log(share + EPS) + c sub_frac
-COEF = (0.2735, 0.6274, -0.2392)  # --fit 2026-10-29 (exact available minutes): 927 rows, cross-season log-loss 0.6398, AUC 0.6404
+COEF = (0.3435, 0.7574, -0.1913)  # --fit 2026-10-29 (career share, H_PLAYING 1y): 927 rows, cross-season log-loss 0.6359, AUC 0.6523
 SHARE_EPS = 0.002       # ~5'; immaterial above the engine's 90' floor (3.3% share)
 ANCHOR_SHARE = 0.36     # ~1,000' of a typical 2,744' season: factor 1 at/above
 REGULAR_NEXT = 900.0    # the outcome the curve is fitted to
@@ -389,6 +392,56 @@ def availability_table(inp):
                'squad_mins', 'n_squad', 'n_club', 'squad_clubs']]
 
 
+H_PLAYING = 1.0   # years: the career share's half-life (= the form decay, career.H_FORM)
+
+
+def career_playing_time(rows, inp):
+    """Career playing time as of each row's season (Lucas 2026-10-29: predict
+    from the whole career as one continuous sample). Each player-year is a
+    block — his minutes, available minutes, starts and sub appearances — at
+    its minute-weighted match date; blocks up to the row's year are weighted
+    0.5 ** (years before the as-of time / H_PLAYING), the as-of time being the
+    season's last played match (for the season in progress: the data date).
+      career_share    = sum(w x mins_year) / sum(w x avail_mins)   (<= 1)
+      career_sub_frac = sum(w x sub_apps) / sum(w x appearances)
+    Tested 2026-10-29 against the season share (900'+ next season): better
+    on both splits (log-loss -0.0036 cross-season, -0.0032 hold-out)."""
+    from models.ratings import career as _career
+    cen, smid = _career.block_centroids(inp['mins'], inp['ms'])
+    ends = _career.season_end_times(inp['ms'], SEASON_YEAR)
+    yc = defaultdict(list)
+    for (p, sid), c in cen.items():
+        if sid in SEASON_YEAR:
+            yc[(int(p), SEASON_YEAR[sid])].append(c)
+    ymid = defaultdict(list)
+    for sid, c in smid.items():
+        if sid in SEASON_YEAR:
+            ymid[SEASON_YEAR[sid]].append(c)
+    blk = (rows.dropna(subset=['avail_mins']).drop_duplicates(['playerId', 'yr'])
+               [['playerId', 'yr', 'mins_year', 'avail_mins', 'starts', 'sub_apps']].copy())
+    blk['c'] = [np.mean(yc[(int(p), int(y))]) if yc.get((int(p), int(y))) else
+                (np.mean(ymid[int(y)]) if ymid.get(int(y)) else np.nan)
+                for p, y in zip(blk['playerId'], blk['yr'])]
+    blk['t'] = blk['yr'].map(ends)
+    res = {}
+    for pid, g in blk.groupby('playerId'):
+        yr, c = g['yr'].to_numpy(), g['c'].to_numpy(float)
+        mins, avail = g['mins_year'].to_numpy(float), g['avail_mins'].to_numpy(float)
+        subs = g['sub_apps'].fillna(0).to_numpy(float)
+        apps = subs + g['starts'].fillna(0).to_numpy(float)
+        for y_i, t_i in zip(yr, g['t'].to_numpy(float)):
+            use = (yr <= y_i) & np.isfinite(c) & (avail > 0)
+            if not use.any() or not np.isfinite(t_i):
+                continue
+            w = 0.5 ** (np.clip(t_i - c[use], 0.0, None) / H_PLAYING)
+            share = min(float((w * mins[use]).sum() / (w * avail[use]).sum()), 1.0)
+            a_ = float((w * apps[use]).sum())
+            res[(int(pid), int(y_i))] = (share, float((w * subs[use]).sum()) / a_ if a_ > 0 else 0.0)
+    key = list(zip(rows['playerId'].astype(int), rows['yr'].astype(int)))
+    return (pd.Series([res.get(k, (np.nan, np.nan))[0] for k in key], index=rows.index),
+            pd.Series([res.get(k, (np.nan, np.nan))[1] for k in key], index=rows.index))
+
+
 def build(inp=None):
     """One row per engine (playerId, seasonId) — the factor and its inputs —
     plus, with in_engine False and no factor, every other (playerId,
@@ -410,8 +463,6 @@ def build(inp=None):
     out['window_cut'] = out['window_cut'].fillna(False).astype(bool)
     out['avail_share'] = (out['mins_year'] / out['avail_mins']).clip(upper=1.0)
     out['reserve_team'] = out['team'].map(is_reserve_team)
-    out['regular_factor'] = [1.0 if rt else (regular_factor(s, f) if pd.notna(s) else 1.0)
-                             for rt, s, f in zip(out['reserve_team'], out['avail_share'], out['sub_frac'])]
     out['in_engine'] = True
 
     ex = inp['exact'].copy()
@@ -430,9 +481,15 @@ def build(inp=None):
     rest['avail_share'] = (rest['mins_year'] / rest['avail_mins']).clip(upper=1.0)
     rest['reserve_team'] = [bool(reserve.get((int(p), int(s)), False))
                             for p, s in zip(rest['playerId'], rest['seasonId'])]
-    rest['regular_factor'] = np.nan
     rest['in_engine'] = False
     out = pd.concat([out.drop(columns=['team']), rest[out.columns.drop('team')]], ignore_index=True)
+    # the factor runs on the CAREER playing time (2026-10-29); the season share
+    # and sub_frac stay as the season's description
+    out['career_share'], out['career_sub_frac'] = career_playing_time(
+        out.sort_values('in_engine', ascending=False, kind='stable'), inp)
+    out['regular_factor'] = [
+        np.nan if not ie else 1.0 if rt else (regular_factor(s, f) if pd.notna(s) else 1.0)
+        for ie, rt, s, f in zip(out['in_engine'], out['reserve_team'], out['career_share'], out['career_sub_frac'])]
     return out
 
 
@@ -522,9 +579,10 @@ def fit(inp=None):
     league = inp['eng']['seasonId'].map(lambda s: 'CAMP' if int(s) in CAMP_SEASON_IDS else 'L3')
     per = eng.groupby(['playerId', 'yr'])['mins_lineup'].sum()
     w = eng[(league == 'L3') & eng['yr'].isin(FIT_YEARS) & ~eng['team'].map(is_reserve_team)].drop_duplicates(['playerId', 'yr'])
-    w = w[['playerId', 'yr']].merge(availability_table(inp), on=['playerId', 'yr']).dropna(subset=['avail_mins'])
-    sh = np.minimum([per[(p, y)] for p, y in zip(w['playerId'], w['yr'])] / w['avail_mins'], 1.0)
-    X = np.c_[np.log(sh + SHARE_EPS), w['sub_frac']]
+    b = build(inp)
+    b = b[b['in_engine']].drop_duplicates(['playerId', 'yr'])[['playerId', 'yr', 'career_share', 'career_sub_frac']]
+    w = w[['playerId', 'yr']].merge(b.astype({'playerId': 'int64'}), on=['playerId', 'yr']).dropna(subset=['career_share'])
+    X = np.c_[np.log(w['career_share'] + SHARE_EPS), w['career_sub_frac']]
     y = np.array([int(per.get((p, yy + 1), 0.0) >= REGULAR_NEXT) for p, yy in zip(w['playerId'], w['yr'])])
     ll, auc = [], []
     for tr_y, te_y in (FIT_YEARS, FIT_YEARS[::-1]):

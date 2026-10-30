@@ -127,6 +127,30 @@ o['eff_mins'] = _e5
 o['eff8'] = _e8
 o['eff9'] = _e9
 o['eff10'] = _e10
+
+# ---- the career as ONE continuous sample (models/ratings/career.py) ----------
+# Lucas 2026-10-29: predict from all of a player's data as a continuous
+# entity. The shipped form's two inputs — career_asof and the evidence (eff9)
+# — are rebuilt from season BLOCKS placed at their minute-weighted match date
+# and decayed by TIME before each row's as-of time (a completed season: its
+# last match; the season in progress: the data date), with the old per-season
+# rates made continuous (0.5/yr form, 0.9/yr evidence). Replay-tested
+# 2026-10-29: as accurate as the season steps, ~20% smaller jump when a live
+# value starts. eff_mins / eff8 / eff10 (the unshipped ridge's) stay stepped.
+from models.ratings import career as _career  # noqa: E402
+_ms_c = pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['matchId', 'seasonId', 'dateutc', 'status'])
+_mm_c = pd.read_parquet(_DASH / 'match_player_minutes.parquet', columns=['matchId', 'playerId', 'minutes'])
+_cen, _smid = _career.block_centroids(_mm_c, _ms_c)
+_ends = _career.season_end_times(_ms_c, SEASON_YR)
+_live_t = _ends.get(max(SEASON_YR[s] for s in IN_PROGRESS_SEASON_IDS)) if IN_PROGRESS_SEASON_IDS else None
+_tref = o['yr'].map(_ends)
+if _live_t is not None:
+    _tref = _tref.where(~o['_live'], _live_t)
+_cf = _career.career_features(o[['playerId', 'seasonId', 'yr', 'mins_played', 'acp_rating']],
+                              _cen, _smid, _tref)
+o['career_asof'] = _cf['career_asof']
+o['eff9'] = _cf['evidence']
+o['evidence'] = _cf['evidence']
 # pooled within-season minutes (winter movers carry two rows/season) —
 # the "playing time is information" signal for the full2 level pull
 o['season_mins'] = o.groupby(['playerId', 'yr'])['mins_played'].transform('sum')
@@ -519,7 +543,7 @@ asof['band_sd'] = asof['role'].map(band).fillna(float(te2['resid'].std()))
 asof['is_live'] = asof['_live']
 asof['as_of_date'] = np.where(asof['_live'], AS_OF.strftime('%Y-%m-%d') if AS_OF is not None else None, None)
 asof_out = asof[['playerId', 'seasonId', 'yr', 'name', 'role', 'league', 'age', 'mins_played',
-                 'acp_rating', 'career_asof', 'age_delta', 'w_evidence', 'projection_asof',
+                 'acp_rating', 'career_asof', 'evidence', 'age_delta', 'w_evidence', 'projection_asof',
                  'band_sd', 'is_live', 'as_of_date']].copy()
 asof_out['projection_version'] = 'v2.1-' + SHIP + '-asof'
 asof_out.to_parquet(_HERE / 'acp_projection_asof.parquet')

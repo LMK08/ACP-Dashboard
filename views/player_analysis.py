@@ -410,13 +410,13 @@ def render():
     _eur_range_txt = ((f" Range in brackets = likely fee if sold: {_k50} of the "
                        f"{_eurcal.get('n_calibration')} real sales fell within ×/÷{_f50:.1f} "
                        f"of the model value; blank when the player sits outside the "
-                       f"calibration's support (value under €25k, too few minutes or too "
-                       f"little evidence behind the projection) and for goalkeepers.")
+                       f"calibration's support (value under €25k or too little career "
+                       f"evidence behind the projection) and for goalkeepers.")
                       if _f50 else "")
-    # Engine minutes for that support gate: the stats frame carries the
-    # engine's Evidence Weight but not its minutes, so read them off the SAME
-    # engine row the merge used (app.engine_rows_for_scope) — the profile
-    # gates on the row's minutes too, and the two pages must agree.
+    # Engine minutes for a calibration that bounds season minutes (built
+    # before 2026-10-29; today's bounds career evidence = the Evidence Weight
+    # already on the stats frame): read off the SAME engine row the merge used
+    # (app.engine_rows_for_scope), so this page and the profile agree.
     try:
         _eng_scope = engine_rows_for_scope(active_season_ids)
         # the minutes behind the value SHOWN (as of the season / live / today)

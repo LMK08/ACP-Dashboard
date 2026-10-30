@@ -18,6 +18,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 _HERE = Path(__file__).resolve().parent
@@ -126,10 +127,14 @@ if _asof_path.exists():
     a = pd.read_parquet(_asof_path)
     if 'projection_asof_abs' not in a.columns:   # league_conversion not run: L3 scale
         a['projection_asof_abs'] = a['projection_asof']
+    if 'evidence' not in a.columns:               # an as-of file from before career.py
+        a['evidence'] = np.nan
+    # asof_evidence: the career evidence (time-decayed minutes, career.py) —
+    # what the likely-fee range's support check reads (2026-10-29)
     a = a[['playerId', 'seasonId', 'projection_asof', 'projection_asof_abs', 'age', 'w_evidence',
-           'is_live', 'as_of_date']].rename(columns={
+           'evidence', 'is_live', 'as_of_date']].rename(columns={
         'projection_asof_abs': 'asof_abs', 'age': 'asof_age', 'w_evidence': 'asof_w_evidence',
-        'is_live': 'asof_live', 'as_of_date': 'asof_date'})
+        'evidence': 'asof_evidence', 'is_live': 'asof_live', 'as_of_date': 'asof_date'})
     eng = eng.merge(a, on=['playerId', 'seasonId'], how='left')
     eng['asof_live'] = eng['asof_live'].fillna(False).astype(bool)
     _ms = pd.read_parquet(_DASH / 'matches_summary.parquet',

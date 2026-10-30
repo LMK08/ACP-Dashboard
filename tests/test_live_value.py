@@ -33,13 +33,14 @@ def _engine():
         'asof_abs':       [50.0, 55.0, 45.0, 47.0, 52.0, 48.0, 40.0],
         'asof_age':       [24.0, 24.8, 25.0, 25.8, 21.0, 22.0, 26.0],
         'asof_w_evidence': [0.6, 0.65, 0.6, 0.62, 0.5, 0.3, 0.6],
+        'asof_evidence':  [2250.0, 2786.0, 2250.0, 2447.0, 1500.0, 643.0, 2250.0],
         'asof_live':      [False, True, False, True, False, True, False],
         'live_ok':        [False, True, False, False, False, True, False],
     }, index=[10, 11, 20, 21, 30, 40, 90])
 
 
 def test_without_asof_columns_today_is_the_old_frame():
-    e = _engine().drop(columns=['asof_abs', 'asof_age', 'asof_w_evidence', 'asof_live', 'live_ok'])
+    e = _engine().drop(columns=['asof_abs', 'asof_age', 'asof_w_evidence', 'asof_evidence', 'asof_live', 'live_ok'])
     now, season = ei.engine_values(e, as_of=BASE_MID)
     old = pd.to_numeric(ei.engine_value_eur_frame(e), errors='coerce')
     assert np.allclose(now.fillna(-1), old.fillna(-1)) and season.isna().all()
@@ -80,6 +81,8 @@ def test_pairing_uses_the_value_as_of_the_sale_season():
     # player 3's 21/22 row has no projection (the old pairing excluded him)
     assert bool(pairs.loc[3, 'included']) and pairs.loc[3, 'value_eur'] == pytest.approx(season[30])
     assert pairs.loc[3, 'age_at_sale'] == pytest.approx(21.0) and pairs.loc[3, 'w_evidence'] == pytest.approx(0.5)
+    # the career evidence behind that as-of value (the range support's floor)
+    assert pairs.loc[3, 'evidence'] == pytest.approx(1500.0)
     assert pairs.loc[1, 'value_eur'] == pytest.approx(season[10])
 
 
