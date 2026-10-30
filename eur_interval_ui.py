@@ -216,7 +216,9 @@ def render_eur_calibration_section(calib=None, key='eurcal'):
                    f"{lv[k].get('k', 0)} of {n}" if shipped else "—",
                    help=_inside_help)
     cd = calib.get('centre_drift') or {}
-    if cd.get('flag'):
+    if cd.get('flag') and cd.get('acknowledged'):
+        st.info(cd.get('note'))
+    elif cd.get('flag'):
         st.warning(cd.get('note', 'The point value and the band no longer share a centre.'))
     pro = calib.get('prospective') or {}
     if pro.get('n'):

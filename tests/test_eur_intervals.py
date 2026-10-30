@@ -250,7 +250,7 @@ def test_shipped_calibration_matches_a_fresh_build():
         if abs(shipped['levels'][k]['q'] - calib['levels'][k]['q']) > 1e-6:
             warnings.warn(f"shipped calibration q{k} {shipped['levels'][k]['q']:.3f} != fresh "
                           f"{calib['levels'][k]['q']:.3f}: rerun models/value/eur_intervals.py")
-    if shipped.get('centre_drift', {}).get('flag'):
+    if shipped.get('centre_drift', {}).get('flag') and not shipped['centre_drift'].get('acknowledged'):
         warnings.warn(shipped['centre_drift']['note'])
 
 
@@ -348,3 +348,14 @@ def test_ui_helpers_respect_support_and_goalkeepers():
     assert ui.pdf_range_text(185_965, calib, mins=400) is None
     assert 'Campeonato' in ui.curve_text() and str(ei.ENGINE_VALUE_TEMPER) in ui.curve_text()
     assert 'No likely-fee range' in ui.help_text(calib, gk=True)
+
+
+def test_a_centre_drift_is_acknowledged_only_for_the_signed_off_sales():
+    """Lucas 2026-10-30 kept the curve for the 14 leak-free sales; any other
+    set of sales (a new fee) brings the retune warning back."""
+    p = _pairs(SCORES_14)
+    p['fee_eur'] = p['fee_eur'] * 3.0                       # an off-centre set
+    p['ratio'] = p['fee_eur'] / p['value_eur']
+    c = ei.build_calibration(p, engine_meta={'rating_version': 'x'}, today='2026-10-30')
+    assert c['centre_drift']['flag'] and not c['centre_drift']['acknowledged']
+    assert 'retune' in c['centre_drift']['note']

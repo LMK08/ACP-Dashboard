@@ -54,7 +54,8 @@
  "centre_drift": {
   "L3_median_ratio": 3.121171355389341,
   "flag": true,
-  "note": "L3 median fee/value has moved more than 0.15 from 1.0: the point-value constants and the band no longer share a centre \u2014 retune the curve (with sign-off) before trusting the range"
+  "acknowledged": true,
+  "note": "Liga 3 sales sit at a median 3.12x the model value: five sold near it, six well above (mostly cheap players who still fetched EUR 60-250k, plus two big-buyer premiums). Kept as is by decision (2026-10-30, keep the curve (option A)): the range is wider rather than the curve re-centred on two split groups."
  },
  "headline_level": "0.50",
  "levels": {
