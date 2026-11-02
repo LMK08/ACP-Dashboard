@@ -126,9 +126,10 @@ def test_liga3_run_matches_the_format():
             g = res[k]
             assert sum(g['playoff_pct'].values()) == pytest.approx(4.0, abs=1e-9)
             assert sum(g['releg_pct'].values()) == pytest.approx(2.0, abs=1e-9)
+            # Reserve / B teams are promotable to Liga 2 (only the Primeira
+            # Liga bars them), so no team is held at 0% by rule.
             for t in g['teams']:
-                if not ss.is_promotion_eligible(t):
-                    assert g['promotion_pct'][t] == 0.0
+                assert 0.0 <= g['promotion_pct'][t] <= 1.0
         assert sum(sum(res[k]['promotion_pct'].values()) for k in series) == pytest.approx(2.0, abs=1e-9)
     # Deterministic: seeded generators, no process-salted hashes
     again = ss.simulate_liga3(matches, ScorelineSampler(season_sim.load_params(PARAMS), 43324), n_sims=300)

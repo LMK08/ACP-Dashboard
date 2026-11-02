@@ -64,34 +64,12 @@ FIRST_STAGE_GROUPS = {
 # from GD order. SEASON-SPECIFIC: reset at turnover, add as ties emerge.
 FIRST_STAGE_POSITION_OVERRIDES = {}
 
-# Reserve / B teams ineligible for promotion. They keep their league standings
-# but the playoff qualification slot drops to the next eligible team.
-PROMOTION_INELIGIBLE_TEAMS = {
-    'FC Alverca II',
-    'Vitória Guimarães II',
-    'Sporting Braga II',
-}
-
-
-def is_promotion_eligible(team_name: str) -> bool:
-    """Whether this team can be promoted (excludes reserve / B teams)."""
-    if team_name in PROMOTION_INELIGIBLE_TEAMS:
-        return False
-    # Heuristic fallback for teams ending in " II" or " B" not on the list above.
-    s = team_name.strip()
-    return not (s.endswith(' II') or s.endswith(' B'))
-
-
-def top_n_eligible(standings_in_order, n=2):
-    """Pick the top n teams from an ordered standings list, skipping any
-    team that isn't promotion-eligible (reserve / B teams)."""
-    out = []
-    for t in standings_in_order:
-        if is_promotion_eligible(t):
-            out.append(t)
-            if len(out) >= n:
-                break
-    return out
+# Reserve / B teams ARE promotable here. The bar on reserve teams applies only
+# to the Primeira Liga, which neither simulation reaches: a B side can go up
+# from the Campeonato to Liga 3 and from Liga 3 to Liga 2 — Sporting CP II
+# finished 2nd in the 2024/25 Liga 3 promotion series and was promoted. Until
+# 2026-11 this file skipped them and passed the slot to the next club, so the
+# Home promotion tile and the Match Predictor's tables showed 0% for them.
 
 
 # ── Replicated helpers from app.py ────────────────────────────────────────────
@@ -676,9 +654,8 @@ def simulate_campeonato(matches_df, sampler, n_sims=None):
             for group_a_name, group_b_name in playoff_pairings:
                 standings_a = group_sim_data[group_a_name][sim]
                 standings_b = group_sim_data[group_b_name][sim]
-                # Skip ineligible (reserve) teams; the slot drops to the next.
-                top2_a = top_n_eligible(standings_a, 2)
-                top2_b = top_n_eligible(standings_b, 2)
+                top2_a = standings_a[:2]
+                top2_b = standings_b[:2]
 
                 # Track playoff qualification
                 for t in top2_a + top2_b:
@@ -724,7 +701,7 @@ def simulate_campeonato(matches_df, sampler, n_sims=None):
             # Final first-stage standings determine the qualifiers.
             final_a = list(results[ga]['current_standings']['Team'])
             final_b = list(results[gb]['current_standings']['Team'])
-            qualifiers = top_n_eligible(final_a, 2) + top_n_eligible(final_b, 2)
+            qualifiers = final_a[:2] + final_b[:2]
             if len(qualifiers) == 4:
                 canonical_playoff_groups.append(qualifiers)
 
@@ -777,7 +754,7 @@ def simulate_promotion_playoff(matches_df, sampler, first_stage_round=None,
     print(f"  Played playoff matches: {len(played)}  Total playoff fixtures: {len(playoff_all)}")
 
     # Prefer caller-supplied canonical groups (4 teams each, derived from
-    # final séries standings + reserve-team filter). Preserve the supplied
+    # final séries standings). Preserve the supplied
     # group order (A+C → Group 1, B+D → Group 2 for the Campeonato).
     components = None
     if canonical_groups:
@@ -1037,7 +1014,7 @@ def _simulate_liga3_first_phase(first_stage_matches, sampler, n_sims=None):
         gf = {t: 0 for t in promo_teams}
         _sim_fixtures(fixtures, cum, pts, gd, gf, rng)
         promo_order = sorted(promo_teams, key=lambda t: (pts[t], gd[t], gf[t]), reverse=True)
-        for t in top_n_eligible(promo_order, 2):
+        for t in promo_order[:2]:
             promo_slot[t] += 1
 
         # ---- Maintenance series: bottom 6 of each série, FPF bonuses ----

@@ -61,9 +61,13 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   never leaves the pickle and the forecast on different parameters); the
   pickle records the fit under 'model' and both pages cite it. The
   league-format logic (séries, chained promotion + maintenance phases, FPF
-  bonuses, reserve-team eligibility) stays in simulate_season.py; the format fixes the slot counts (8
+  bonuses) stays in simulate_season.py; the format fixes the slot counts (8
   promotion-series places, 2 promotion slots, 4 relegation places) — printed
-  as a check and asserted in `tests/test_season_sim.py`. Local runs:
+  as a check and asserted in `tests/test_season_sim.py`. Reserve / B teams
+  are promotable and take a slot like anyone else (only the Primeira Liga
+  bars them, and neither simulation reaches it): Sporting CP II went up from
+  Liga 3 in 2024/25. Until 2026-11 the file skipped them and passed the slot
+  down, so their promotion odds read 0%. Local runs:
   `--no-refit` draws from the committed dc_params.json (never commit a local
   refit), `--sims 500` for speed. Caveat: a side new to the data (relegated
   from Liga 2, say) starts AT the Liga 3 mean — the fit has no tier above
