@@ -66,8 +66,11 @@ def test_asof_projections_up_to_cutoff_ignore_later_seasons(builds, cutoff):
     assert (m['_merge'] == 'both').all(), 'later seasons changed which rows exist'
     leaks = {}
     for c in COLS:
-        if m[f'{c}_full'].dtype == object:
-            bad = (m[f'{c}_full'].fillna('') != m[f'{c}_cut'].fillna('')).to_numpy()
+        # text columns are `object` under pandas 2 and Arrow `str` under the
+        # engine rebuild's pandas 3 — test for 'not numeric', never for object
+        if not pd.api.types.is_numeric_dtype(m[f'{c}_full']):
+            bad = (m[f'{c}_full'].astype(object).fillna('')
+                   != m[f'{c}_cut'].astype(object).fillna('')).to_numpy()
         else:
             a, b = m[f'{c}_full'].astype(float).to_numpy(), m[f'{c}_cut'].astype(float).to_numpy()
             bad = ~(np.isclose(a, b, rtol=0, atol=1e-9) | (np.isnan(a) & np.isnan(b)))
