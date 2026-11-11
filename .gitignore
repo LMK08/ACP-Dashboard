@@ -49,6 +49,11 @@ __pycache__/
 !models/eur_v2/realization.py
 !models/creation/build_box_passes.py
 !models/creation/box_entry_passes.parquet
+!models/coaches/coach_match.parquet
+!models/coaches/coaches.parquet
+!models/coaches/coach_team_match.parquet
+!models/coaches/coach_player.parquet
+!models/coaches/coach_names.csv
 
 # System files
 .DS_Store

@@ -325,6 +325,29 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   and seeded before they draw), Shadow Team → profile with
   `profile_active_tab='Similar Players'` (settable from another page only).
   Tests: `tests/test_similar_players.py`.
+- `models/coaches/` — Coach Profile (`views/coach_profile.py`, Opposition
+  group) and the Player Profile's 'Coached by' section
+  (`coach_profile.render_coached_by`). `build_coaches.py` (scheduled
+  refresh, incremental, `continue-on-error`) writes four committed
+  parquets: who coached each team in each match (Wyscout match
+  `teamsData.<id>.coachId`; `/matches/{id}/coaches` is 403), coach names
+  (`/coaches/{id}` — refused with HTTP 400 for ~1 in 5, shown as
+  'Coach #id' unless `coach_names.csv` names them by hand), one row per
+  team per match (xPts from shot xG, style counts, game state, recorded
+  substitution minutes, line-up changes) and coach × player (exact
+  minutes, OBV). `coach_metrics.py` is every number on the page (pure
+  pandas). RULES: pre-match ratings are walk-forward BY CALENDAR DAY
+  (`add_ratings`: a 15:00 result never informs a 17:00 expectation) with a
+  fixed step `RATING_K` — never tune it on the matches it judges; 'Change
+  since arrival' needs ≥ 10 earlier rated matches of the team in the same
+  competition, else it is blank; a player's baseline is only his matches
+  BEFORE his first under that coach; style percentiles are within one
+  competition among coaches with ≥ 10 event matches, and the copy says
+  'how he plays, not how well'; 'Team level' is never called a coaching
+  effect (squad, turnover and regression to the mean are inside it).
+  Game-state rows use only matches whose event goals equal the final
+  score (own goals are not shot events). Tests: `tests/test_coaches.py`
+  (no-look-ahead on a prefix of the shipped table).
 - Scrollbars (RULE): the theme styles `::-webkit-scrollbar` (thin 6 px
   bars), which makes Chrome's scrollbars layout-taking; any scrollbar that
   toggles then shifts the whole column sideways ('charts and text shift

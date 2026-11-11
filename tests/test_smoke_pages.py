@@ -27,7 +27,7 @@ REQUIRED_DATA = ['raw_events.parquet', 'matches_summary.parquet',
 
 PAGES = ['Home', 'Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile',
          'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team',
-         'Opposition Report']
+         'Opposition Report', 'Coach Profile']
 # Pages that read the player-stats engine and used to raise KeyError
 # 'next_shot_id' on a season with fixtures but no events.
 EMPTY_SEASON_PAGES = ['Player Profile', 'Player Comparison', 'Player Analysis',
@@ -413,3 +413,45 @@ def test_promotion_odds_cite_the_scoreline_model(app):
     captions = ' '.join(str(c.value) for c in app.caption)
     assert f"Dixon-Coles fit through {model.get('asof')}" in captions
     assert not _problems(app), _problems(app)
+
+
+COACH_TABLES = os.path.join(DASHBOARD_DIR, 'models', 'coaches', 'coach_team_match.parquet')
+
+
+@pytest.mark.skipif(not os.path.exists(COACH_TABLES), reason='coach tables not built')
+def test_coach_profile_sections(app):
+    """Every Coach Profile section renders clean on the default coach, and
+    the page opens on the club's own coach."""
+    _open_page(app, 'Coach Profile')
+    assert not _problems(app), _problems(app)
+    coach = [s for s in app.selectbox if s.label == 'Coach'][0]
+    assert 'Atlético CP' in coach.format_func(coach.value)
+    section = [r for r in app.radio if r.label == 'Coach section'][0]
+    for name in section.options:
+        section.set_value(name)
+        app.run()
+        assert not _problems(app), (name, _problems(app))
+    labels = [m.label for m in app.metric]
+    assert 'Latest team' in labels
+    section.set_value('Overview')
+    app.run()
+    assert {'Team level', 'Change since arrival', 'Points − expected'} <= {m.label for m in app.metric}
+
+
+@pytest.mark.skipif(not os.path.exists(COACH_TABLES), reason='coach tables not built')
+def test_profile_coached_by_section(app):
+    """'Coached by' on the Player Profile: a table of coaches with exact
+    minutes, or an honest info box."""
+    _open_page(app, 'Player Profile')
+    section = [r for r in app.radio if r.label == 'Profile section'][0]
+    section.set_value('Coached by')
+    app.run()
+    assert not _problems(app), _problems(app)
+    tables = [d for d in app.dataframe if 'Coach' in list(d.value.columns)]
+    assert tables or any('known coach' in str(i.value) for i in app.info)
+    if tables:
+        t = tables[0].value
+        assert (t['Minutes'] > 0).all() and (t['Starts'] <= t['Matches']).all()
+        print(t.to_string())
+    section.set_value('Player Radar')
+    app.run()

@@ -47,7 +47,7 @@ SIZE_DEFAULT = 'Large'
 LEAGUE_OPTIONS = ('Liga 3', 'Campeonato')
 
 PAGES_WITHOUT_CONTEXT = {'Home'}
-PAGES_WITHOUT_SEASON = {'Match Predictor'}
+PAGES_WITHOUT_SEASON = {'Match Predictor', 'Coach Profile'}
 PAGES_WITH_ALL_SEASONS = {'Player Profile', 'Player Comparison', 'Player Analysis', 'Shadow Team'}
 
 _HEADER = (

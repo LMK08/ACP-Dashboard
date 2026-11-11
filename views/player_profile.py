@@ -1132,7 +1132,7 @@ def render():
         player_stats_with_scores_df, active_season_ids, selected_comp_ids)
 
     _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log",
-                         "Similar Players"]
+                         "Similar Players", "Coached by"]
     _active_tab = st.radio("Profile section", _profile_sections,
                             horizontal=True, label_visibility="collapsed",
                             key="profile_active_tab")
@@ -2659,3 +2659,9 @@ def render():
         st.subheader("Similar Players")
         similar_players_ui.render(app, int(selected_player_id), selected_season_id, key='sim',
                                   current_pos=current_pos, stats_row=player_per_90_stats)
+
+    elif _active_tab == "Coached by":
+        # Coaches the player has played under (models/coaches); lazy like
+        # the other sections. A row opens the coach's profile.
+        from views import coach_profile
+        coach_profile.render_coached_by(int(selected_player_id))

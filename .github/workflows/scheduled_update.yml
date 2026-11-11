@@ -97,6 +97,15 @@ jobs:
           WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
         run: python models/value/fetch_transfers.py || echo "fetch_transfers nonzero (continuing — the committed records stay)"
 
+      - name: Build coach tables
+        # Coach Profile + the profile's 'Coached by'. Incremental: only new
+        # matches hit the API. A failure keeps the committed tables.
+        continue-on-error: true
+        env:
+          WYSCOUT_USER_NEW: ${{ secrets.WYSCOUT_USER_NEW }}
+          WYSCOUT_PASS_NEW: ${{ secrets.WYSCOUT_PASS_NEW }}
+        run: python models/coaches/build_coaches.py
+
       - name: Fetch Opta Power Rankings (Portugal)
         # Scrapes dataviz.theanalyst.com/opta-power-rankings/index.js,
         # extracts the embedded Portuguese clubs, writes opta_ratings.parquet.
@@ -131,6 +140,7 @@ jobs:
           git add -f matches_summary.parquet team_advanced_stats.parquet historical_events.parquet historical_matches.parquet opta_ratings.parquet match_player_minutes.parquet
           git add -f models/scoreline/dc_params.json
           git add -f models/value/transfers.parquet
+          git add -f models/coaches/*.parquet
           git add -f *.pkl
 
           if [ -n "$(git status --porcelain)" ]; then

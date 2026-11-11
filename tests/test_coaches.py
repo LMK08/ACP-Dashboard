@@ -1,0 +1,128 @@
+"""Coach tables: no look-ahead in the ratings or the player baselines, and
+the arithmetic of expected points, spells and the 'Coached by' shares."""
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.coaches import build_coaches as bc  # noqa: E402
+from models.coaches import coach_metrics as cm  # noqa: E402
+
+
+def _league(n_rounds=12, seed=0):
+    """Six teams, a round a week; team 1 changes coach after round 6."""
+    rng = np.random.default_rng(seed)
+    rows, mid = [], 100
+    teams = [1, 2, 3, 4, 5, 6]
+    for rnd in range(n_rounds):
+        order = list(rng.permutation(teams))
+        for h, a in zip(order[:3], order[3:]):
+            mid += 1
+            xgd = float(rng.normal(0.2, 1.0))
+            for t, o, side, sign in ((h, a, 'home', 1), (a, h, 'away', -1)):
+                rows.append({'matchId': mid, 'teamId': int(t), 'oppId': int(o), 'side': side,
+                             'competitionId': 1, 'seasonId': 1,
+                             'date': pd.Timestamp('2025-01-01') + pd.Timedelta(days=7 * rnd),
+                             'xgd': sign * xgd,
+                             'coachId': 10 * int(t) + (1 if (t == 1 and rnd >= 6) else 0)})
+    return pd.DataFrame(rows)
+
+
+PRE = ['r_pre', 'r_opp_pre', 'hfa_pre', 'n_rated_pre']
+
+
+def test_ratings_have_no_look_ahead():
+    """A row's pre-match numbers must not move when later matches are removed
+    or changed."""
+    tm = _league()
+    full = bc.add_ratings(tm).set_index(['matchId', 'teamId'])[PRE]
+    cut = tm.date.sort_values().unique()[7]
+    early = bc.add_ratings(tm[tm.date <= cut]).set_index(['matchId', 'teamId'])[PRE]
+    pd.testing.assert_frame_equal(full.loc[early.index], early)
+    # and changing the result of a match leaves its own pre-match row alone
+    bumped = tm.copy()
+    last = bumped.date == bumped.date.max()
+    bumped.loc[last, 'xgd'] *= 5
+    again = bc.add_ratings(bumped).set_index(['matchId', 'teamId'])[PRE]
+    pd.testing.assert_frame_equal(full, again)
+
+
+def test_first_match_starts_level():
+    tm = bc.add_ratings(_league())
+    first = tm[tm.date == tm.date.min()]
+    assert (first.r_pre == 0).all() and (first.hfa_pre == 0).all() and (first.n_rated_pre == 0).all()
+
+
+def test_spells_and_inherited_level():
+    tm = bc.add_spells(bc.add_ratings(_league()))
+    t1 = tm[tm.teamId == 1].sort_values('date')
+    assert t1.spell.nunique() == 2
+    second = t1[t1.coachId == 11]
+    # 6 earlier matches < MIN_BASELINE_MATCHES → no baseline
+    assert second.r_inherited.isna().all()
+    tm = bc.add_spells(bc.add_ratings(_league(n_rounds=30)))
+    t1 = tm[tm.teamId == 1].sort_values('date')
+    late = t1.copy()
+    late.loc[late.index[:15], 'coachId'] = 10
+    late.loc[late.index[15:], 'coachId'] = 11
+    other = tm[tm.teamId != 1]
+    sp = bc.add_spells(pd.concat([other, late]).drop(columns=['spell', 'r_inherited']))
+    new = sp[(sp.teamId == 1) & (sp.coachId == 11)].sort_values('date')
+    assert new.r_inherited.notna().all()
+    assert new.r_inherited.nunique() == 1 and new.r_inherited.iloc[0] == new.r_pre.iloc[0]
+
+
+def test_expected_points():
+    assert bc.expected_points([], []) == pytest.approx(1.0)
+    assert bc.expected_points([0.99, 0.99], []) == pytest.approx(3.0, abs=1e-3)
+    a, b = [0.3, 0.1, 0.45], [0.2, 0.6]
+    pa, pb = bc.expected_points(a, b), bc.expected_points(b, a)
+    # the two sides share 3 points for a decisive match and 2 for a draw
+    assert 2.0 < pa + pb < 3.0
+    assert bc.expected_points(a, a) == pytest.approx(bc.expected_points(a, a))
+
+
+def test_coached_by_shares():
+    cp = pd.DataFrame([{'coachId': 7, 'teamId': 1, 'playerId': 5, 'team': 'A',
+                        'first_date': pd.Timestamp('2025-01-01'), 'last_date': pd.Timestamp('2025-03-01'),
+                        'matches': 8, 'starts': 6, 'minutes': 540.0, 'obv_minutes': 540.0, 'obv': 0.6, 'points': 12,
+                        'prior_minutes': 900.0, 'prior_obv': 0.5, 'team_matches_in_span': 10}])
+    r = cm.coached_by(cp, None, 5).iloc[0]
+    assert r.start_share == pytest.approx(0.6) and r.played_share == pytest.approx(0.8)
+    assert r.obv90 == pytest.approx(0.1) and r.team_ppg_with == pytest.approx(1.5)
+    dev, summ = cm.player_development(cp, 7)
+    assert summ['n'] == 1 and dev.change.iloc[0] == pytest.approx(0.1 - 0.05)
+
+
+BUILT = os.path.join(os.path.dirname(os.path.abspath(bc.__file__)), 'coach_team_match.parquet')
+
+
+@pytest.mark.skipif(not os.path.exists(BUILT), reason='coach tables not built')
+def test_built_table_is_consistent():
+    tm = pd.read_parquet(BUILT)
+    assert not tm.duplicated(['matchId', 'teamId']).any()
+    ev = tm[tm.has_events]
+    # the two sides of a match mirror each other
+    both = ev.groupby('matchId').filter(lambda g: len(g) == 2)
+    assert both.groupby('matchId').xgd.sum().abs().max() < 1e-9
+    assert (both.groupby('matchId').xpts.sum().between(2.0, 3.0)).all()
+    # the shipped pre-match columns are reproducible walk-forward from a prefix
+    cut = tm.date.quantile(0.5)
+    cols = ['matchId', 'teamId', 'competitionId', 'side', 'date', 'xgd']
+    early = bc.add_ratings(tm.loc[tm.date <= cut, cols]).set_index(['matchId', 'teamId'])[PRE]
+    shipped = tm.set_index(['matchId', 'teamId'])[PRE].loc[early.index]
+    pd.testing.assert_frame_equal(shipped, early, check_exact=False, atol=1e-12)
+
+
+def test_unknown_coach_does_not_split_a_spell():
+    tm = bc.add_ratings(_league())
+    t1 = tm[tm.teamId == 1].sort_values('date')
+    tm.loc[t1.index[2], 'coachId'] = 0          # A, A, ?, A …
+    sp = bc.add_spells(tm)
+    first = sp[(sp.teamId == 1) & (sp.coachId == 10)]
+    assert first.spell.nunique() == 1
+    assert (sp.loc[sp.coachId == 0, 'spell'] == -1).all()

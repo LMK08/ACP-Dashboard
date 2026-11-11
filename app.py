@@ -94,6 +94,7 @@ import views.player_profile
 import views.league_analysis
 import views.team_analysis
 import views.match_analysis
+import views.coach_profile
 
 
 # ------------------------------------------------------------------------------
@@ -9595,6 +9596,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     elif analysis_type == 'Opposition Report':
         views.opposition.render()
+
+    elif analysis_type == 'Coach Profile':
+        views.coach_profile.render()
 
 
 
