@@ -348,6 +348,30 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   Game-state rows use only matches whose event goals equal the final
   score (own goals are not shot events). Tests: `tests/test_coaches.py`
   (no-look-ahead on a prefix of the shipped table).
+  Flexibility + Young players sections (2026-11): `flexibility` =
+  formation variety / change rates / back-line switch / in-match shape
+  change (these four make the settled ↔ fluid score, `FLUIDITY_KEYS`),
+  plus `opp_adapt` (noise-corrected slope of the context-adjusted style
+  scores on opponent strength — shown, labelled noisy at 0.24, NOT in the
+  score; before the correction it read 0.44 only because short records
+  are noisier). Formation variety is inverse Simpson with the unbiased
+  estimator, so it does not grow with match count; `z_<metric>` is fitted walk-forward by calendar
+  month per competition (`add_context_adjusted`). `youth_trust` = share
+  of minutes ÷ share of matchday-squad places (line-up sheet: starters +
+  bench). RULES: every measure shown as a coach trait carries its
+  odd/even-match reliability (`cm.reliability`, shown as stable /
+  moderate / noisy) — match-to-match style distance (Hudl 2025) and the
+  spread of the style scores scored ≈ 0 on Liga 3 and are deliberately
+  NOT on the page; set-piece share of xG and xGD-when-trailing are also
+  ≈ 0 and are captioned as 'what happened'. Player development (vs own
+  earlier record, vs expected for age from spells that had already
+  ENDED, first vs second half of minutes) is a list of cases, never a
+  coach rating: random split-halves of a coach's players agree at only
+  0.13–0.22. Exact minutes exist for Liga 3 only, so the trust and
+  development views are blank for the Campeonato. 121 line-up sheets in
+  match_lineups.pkl are filed under the OPPONENT's name —
+  `verify_sheet_teams` re-labels a sheet to the team its starters acted
+  for in the events; never read a sheet's team from the pkl key alone.
 - Scrollbars (RULE): the theme styles `::-webkit-scrollbar` (thin 6 px
   bars), which makes Chrome's scrollbars layout-taking; any scrollbar that
   toggles then shifts the whole column sideways ('charts and text shift

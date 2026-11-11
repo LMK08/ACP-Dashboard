@@ -426,16 +426,27 @@ def test_coach_profile_sections(app):
     assert not _problems(app), _problems(app)
     coach = [s for s in app.selectbox if s.label == 'Coach'][0]
     assert 'Atlético CP' in coach.format_func(coach.value)
-    section = [r for r in app.radio if r.label == 'Coach section'][0]
-    for name in section.options:
-        section.set_value(name)
+
+    def show(name):
+        # re-find the radio every time: an element handle goes stale after a run
+        [r for r in app.radio if r.label == 'Coach section'][0].set_value(name)
         app.run()
         assert not _problems(app), (name, _problems(app))
-    labels = [m.label for m in app.metric]
-    assert 'Latest team' in labels
-    section.set_value('Overview')
+        return {m.label for m in app.metric}
+
+    names = list([r for r in app.radio if r.label == 'Coach section'][0].options)
+    seen = {name: show(name) for name in names}
+    assert {'Team level', 'Change since arrival', 'Points − expected'} <= seen['Overview']
+    assert 'Settled ↔ fluid' in seen['Flexibility']
+    assert 'Trust ratio' in seen['Young players']
+    show('Flexibility')
+    flex = [d for d in app.dataframe if 'How stable the measure is' in list(d.value.columns)][0].value
+    assert len(flex) == 5 and flex['Percentile'].dropna().between(0, 100).all()
+    show('Young players')
+    [r for r in app.radio if r.label == 'Young means'][0].set_value(23)
     app.run()
-    assert {'Team level', 'Change since arrival', 'Points − expected'} <= {m.label for m in app.metric}
+    assert not _problems(app), _problems(app)
+    show('Overview')
 
 
 @pytest.mark.skipif(not os.path.exists(COACH_TABLES), reason='coach tables not built')

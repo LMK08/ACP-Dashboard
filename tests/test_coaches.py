@@ -90,7 +90,8 @@ def test_coached_by_shares():
     cp = pd.DataFrame([{'coachId': 7, 'teamId': 1, 'playerId': 5, 'team': 'A',
                         'first_date': pd.Timestamp('2025-01-01'), 'last_date': pd.Timestamp('2025-03-01'),
                         'matches': 8, 'starts': 6, 'minutes': 540.0, 'obv_minutes': 540.0, 'obv': 0.6, 'points': 12,
-                        'prior_minutes': 900.0, 'prior_obv': 0.5, 'team_matches_in_span': 10}])
+                        'prior_minutes': 900.0, 'prior_obv': 0.5, 'team_matches_in_span': 10,
+                        'named': 9, 'named_played': 8}])
     r = cm.coached_by(cp, None, 5).iloc[0]
     assert r.start_share == pytest.approx(0.6) and r.played_share == pytest.approx(0.8)
     assert r.obv90 == pytest.approx(0.1) and r.team_ppg_with == pytest.approx(1.5)
@@ -126,3 +127,68 @@ def test_unknown_coach_does_not_split_a_spell():
     first = sp[(sp.teamId == 1) & (sp.coachId == 10)]
     assert first.spell.nunique() == 1
     assert (sp.loc[sp.coachId == 0, 'spell'] == -1).all()
+
+
+def _styled_league(n_rounds=140, seed=1):
+    tm = bc.add_ratings(_league(n_rounds=n_rounds, seed=seed))
+    rng = np.random.default_rng(seed)
+    n = len(tm)
+    tm['has_events'] = True
+    for c in ('passes', 'opp_passes', 'passes_f3', 'opp_passes_f3', 'possessions', 'long_passes',
+              'fwd_passes', 'def_actions', 'opp_press_passes', 'press_def'):
+        tm[c] = rng.integers(50, 400, n).astype(float)
+    tm['def_x_sum'] = tm.def_actions * rng.uniform(30, 40, n)
+    return tm
+
+
+def test_context_adjustment_has_no_look_ahead():
+    """A match's z-scores must not move when later months are removed."""
+    tm = _styled_league()
+    full = bc.add_context_adjusted(tm)
+    zc = ['z_' + m for m in bc.Z_METRICS]
+    assert full[zc].notna().any().all(), 'the synthetic league never reached MIN_CONTEXT_ROWS'
+    cut = tm.date.sort_values().iloc[int(len(tm) * 0.8)]
+    early = bc.add_context_adjusted(tm[tm.date <= cut])
+    a = full.set_index(['matchId', 'teamId']).loc[early.set_index(['matchId', 'teamId']).index, zc]
+    pd.testing.assert_frame_equal(a, early.set_index(['matchId', 'teamId'])[zc])
+    # the first month can never be adjusted
+    first_month = full.date.dt.to_period('M') == full.date.dt.to_period('M').min()
+    assert full.loc[first_month, zc].isna().all().all()
+
+
+def test_flexibility_and_trust_arithmetic():
+    rows = pd.DataFrame({
+        'spell': [1] * 4, 'date': pd.date_range('2025-01-01', periods=4, freq='7D'),
+        'formation': ['4-3-3', '4-3-3', '3-5-2', '4-3-3'],
+        'u21_minutes': [99.0, 0, 99, 0], 'squad_minutes': [990.0] * 4, 'u21_named': [4, 4, 4, 4],
+        'sheet_n': [20] * 4, 'u21_starts': [1, 0, 1, 0], 'xi_n': [11] * 4,
+        'age_minutes_sum': [990 * 26.0] * 4, 'sheet_age_sum': [20 * 25.0] * 4})
+    f = cm.flexibility(rows)
+    assert f['formation_change_rate'] == pytest.approx(2 / 3)
+    assert f['back_line_change_rate'] == pytest.approx(2 / 3)
+    # 3 × 4-3-3 and 1 × 3-5-2: two matches share a shape in 3 of 6 pairs
+    assert f['eff_formations'] == pytest.approx(2.0)
+    y = cm.youth_trust(rows, 21)
+    assert y['u21_minutes_share'] == pytest.approx(0.05) and y['u21_named_share'] == pytest.approx(0.2)
+    assert y['u21_trust'] == pytest.approx(0.25)
+    assert y['age_on_pitch'] == pytest.approx(26.0) and y['age_of_squad'] == pytest.approx(25.0)
+
+
+def test_expected_for_age_uses_only_finished_spells():
+    """Removing or changing spells that end later must not move an earlier
+    pair's expected-for-age change."""
+    rng = np.random.default_rng(3)
+    n = 120
+    start = pd.Timestamp('2022-01-01') + pd.to_timedelta(np.sort(rng.integers(0, 1200, n)), unit='D')
+    cp = pd.DataFrame({'coachId': np.arange(n) % 7 + 1, 'playerId': np.arange(n) + 1, 'team': 'T',
+                       'obv_minutes': 900.0, 'obv': rng.normal(0.5, 0.3, n), 'prior_minutes': 900.0,
+                       'prior_obv': rng.normal(0.5, 0.3, n), 'age_first': 24.0,
+                       'first_under_coach': start, 'last_date': start + pd.Timedelta(days=150)})
+    full = cm.development_pairs(cp).set_index('playerId')
+    assert full.expected.notna().sum() > 20
+    cut = start[80]
+    early = cm.development_pairs(cp[cp.last_date < cut]).set_index('playerId')
+    pd.testing.assert_series_equal(full.loc[early.index, 'expected'], early.expected)
+    assert full.sort_values('first_date').expected.iloc[:cm.MIN_PEERS].isna().all()
+    # a coach's own earlier players are never his players' peers
+    assert cm.development_pairs(cp.assign(coachId=1)).expected.isna().all()

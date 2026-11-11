@@ -335,8 +335,34 @@ def lineup_rows(lineups, name_to_id):
                          'first_sub_min': mins[0] if mins else np.nan,
                          'mean_sub_min': float(np.mean(mins)) if mins else np.nan,
                          'subs_before_60': sum(m < 60 for m in mins),
-                         'sub_in_ids': [int(s['playerIn']) for s in subs if s.get('playerIn')]})
+                         'sub_in_ids': [int(s['playerIn']) for s in subs if s.get('playerIn')],
+                         'bench': [int(p['playerId']) for p in d.get('bench', []) if p.get('playerId')]})
     return pd.DataFrame(rows)
+
+
+def verify_sheet_teams(lu):
+    """Some line-up sheets are filed under the OPPONENT's name. A sheet
+    belongs to the team its starters acted for in the events: re-label a
+    sheet whose starters played for the other side, and drop a match's
+    sheets when two of them claim the same team."""
+    obv = pd.read_parquet(ROOT / 'obv_match_player.parquet', columns=['matchId', 'teamId', 'playerId'])
+    obv = obv.drop_duplicates(['matchId', 'playerId']).rename(columns={'teamId': 'evTeam'})
+    x = lu[['matchId', 'teamId', 'xi']].explode('xi').dropna().rename(columns={'xi': 'playerId'})
+    x['playerId'] = x.playerId.astype('int64')
+    x = x.merge(obv, on=['matchId', 'playerId'])
+    votes = x.groupby(['matchId', 'teamId', 'evTeam']).size().rename('n').reset_index()
+    top = votes.sort_values('n', ascending=False).drop_duplicates(['matchId', 'teamId'])
+    top = top[top.n >= 6]
+    lu = lu.merge(top[['matchId', 'teamId', 'evTeam']], on=['matchId', 'teamId'], how='left')
+    moved = int((lu.evTeam.notna() & (lu.evTeam != lu.teamId)).sum())
+    lu['teamId'] = lu.evTeam.fillna(lu.teamId).astype('int64')
+    clash = lu.duplicated(['matchId', 'teamId'], keep=False)
+    print(f'  line-up sheets: {moved} re-labelled to the team their starters played for, '
+          f'{int(clash.sum())} dropped (two sheets for one team)')
+    # a sheet that cannot be checked (no event rows for its starters) is not used
+    unverified = lu.evTeam.isna()
+    print(f'  line-up sheets: {int((unverified & ~clash).sum())} unverifiable (no event rows) left out')
+    return lu[~clash & ~unverified].drop(columns=['evTeam'])
 
 
 def add_ratings(tm):
@@ -388,6 +414,62 @@ def add_ratings(tm):
     return tm
 
 
+Z_METRICS = ('possession', 'field_tilt', 'passes_per_poss', 'long_share', 'forward_share',
+             'def_height', 'log_ppda')
+MIN_CONTEXT_ROWS = 300
+
+
+def match_style(tm):
+    """Per-match values of the style metrics (NaN without events)."""
+    with np.errstate(divide='ignore', invalid='ignore'):
+        f = pd.DataFrame({
+            'possession': tm.passes / (tm.passes + tm.opp_passes),
+            'field_tilt': tm.passes_f3 / (tm.passes_f3 + tm.opp_passes_f3),
+            'passes_per_poss': tm.passes / tm.possessions,
+            'long_share': tm.long_passes / tm.passes,
+            'forward_share': tm.fwd_passes / tm.passes,
+            'def_height': tm.def_x_sum / tm.def_actions,
+            'log_ppda': np.log(tm.opp_press_passes / tm.press_def),
+        }, index=tm.index)
+    return f.replace([np.inf, -np.inf], np.nan).where(tm.has_events.astype(bool))
+
+
+def add_context_adjusted(tm):
+    """z_<metric>: the match's style value with the league-typical effect of
+    opponent strength and venue removed, in units of the league's match-to-
+    match spread (the idea of Hooker's 'Manager Bounce' study, Hudl 2025).
+    The adjustment for a match is fitted ONLY on that competition's matches
+    of earlier calendar months; until MIN_CONTEXT_ROWS exist it is blank.
+    Scoreline effects are not removed."""
+    tm = tm.copy()
+    vals = match_style(tm)
+    d = (tm.r_pre - tm.r_opp_pre).to_numpy()
+    home = np.where(tm.side == 'home', 1.0, 0.0)
+    month = tm.date.dt.to_period('M')
+    z = {m: np.full(len(tm), np.nan) for m in Z_METRICS}
+    pos = np.arange(len(tm))
+    for comp in tm.competitionId.unique():
+        in_comp = (tm.competitionId == comp).to_numpy()
+        for mth in sorted(month[in_comp].unique()):
+            cur = in_comp & (month == mth).to_numpy()
+            prior = in_comp & (month < mth).to_numpy() & ~np.isnan(d)
+            for m in Z_METRICS:
+                y = vals[m].to_numpy()
+                ok = prior & ~np.isnan(y)
+                if ok.sum() < MIN_CONTEXT_ROWS:
+                    continue
+                X = np.column_stack([np.ones(ok.sum()), d[ok], home[ok]])
+                beta, *_ = np.linalg.lstsq(X, y[ok], rcond=None)
+                sd = float(np.std(y[ok] - X @ beta, ddof=3))
+                if sd <= 0:
+                    continue
+                i = pos[cur & ~np.isnan(y) & ~np.isnan(d)]
+                z[m][i] = (y[i] - (beta[0] + beta[1] * d[i] + beta[2] * home[i])) / sd
+    for m in Z_METRICS:
+        tm['z_' + m] = z[m]
+    return tm
+
+
 def add_spells(tm):
     """Number each coach's spells at a team (a spell ends when another coach
     takes a match) and stamp the team's level on arrival."""
@@ -411,8 +493,8 @@ def add_spells(tm):
 def player_team_minutes(tm):
     """Exact minutes per player per match with the team he played for. The
     team comes from the line-up sheet (starters + players brought on), which
-    the scheduled refresh keeps current; the OBV export fills sheets that
-    are missing. One row per (matchId, playerId)."""
+    the scheduled refresh keeps current, or from the OBV export (the team he
+    acted for in the events). One row per (matchId, playerId)."""
     mins = pd.read_parquet(ROOT / 'match_player_minutes.parquet',
                            columns=['matchId', 'playerId', 'minutes', 'started'])
     mins = mins[mins.minutes > 0].drop_duplicates(['matchId', 'playerId'])
@@ -421,7 +503,8 @@ def player_team_minutes(tm):
     sheet['playerId'] = sheet.playerId.astype('int64')
     obv = pd.read_parquet(ROOT / 'obv_match_player.parquet',
                           columns=['matchId', 'teamId', 'playerId', 'obv'])
-    team = pd.concat([sheet, obv[['matchId', 'teamId', 'playerId']]]).drop_duplicates(['matchId', 'playerId'])
+    # the team a player acted for in the events wins; the sheet fills players without an event
+    team = pd.concat([obv[['matchId', 'teamId', 'playerId']], sheet]).drop_duplicates(['matchId', 'playerId'])
     pm = mins.merge(team, on=['matchId', 'playerId'], how='inner')
     pm = pm.merge(obv.drop_duplicates(['matchId', 'teamId', 'playerId']),
                   on=['matchId', 'teamId', 'playerId'], how='left')
@@ -430,19 +513,52 @@ def player_team_minutes(tm):
     return pm
 
 
-def add_youth_minutes(tm):
-    """Exact minutes given to players under 21 on the match date, and the
-    minutes of every player whose birth date is known (the denominator)."""
+AGE_CUTS = (21, 23)
+
+
+def _birth_dates():
     with open(ROOT / 'player_details.pkl', 'rb') as fh:
         det = pd.DataFrame(pickle.load(fh))[['playerId', 'birthDate']]
     det['birthDate'] = pd.to_datetime(det.birthDate, errors='coerce')
     det = det.dropna().drop_duplicates('playerId')
+    det['playerId'] = det.playerId.astype('int64')
+    return det
+
+
+def add_youth_minutes(tm):
+    """Age columns per team-match, players with a known birth date only.
+    Minutes are the exact ones; the MATCHDAY SQUAD is the line-up sheet
+    (starters + bench), so 'how many young players did he have to pick from'
+    sits next to 'how many minutes did he give them'."""
+    det = _birth_dates()
     pm = player_team_minutes(tm)[['matchId', 'teamId', 'playerId', 'minutes']].merge(det, on='playerId')
     pm = pm.merge(tm[['matchId', 'teamId', 'date']], on=['matchId', 'teamId'])
-    age = (pm.date - pm.birthDate).dt.days / 365.25
-    pm['u21'] = pm.minutes.where(age < 21, 0)
-    agg = pm.groupby(['matchId', 'teamId']).agg(u21_minutes=('u21', 'sum'), squad_minutes=('minutes', 'sum'))
-    return tm.merge(agg.reset_index(), on=['matchId', 'teamId'], how='left')
+    pm['age'] = (pm.date - pm.birthDate).dt.days / 365.25
+    pm['age_min'] = pm.age * pm.minutes
+    named = {'squad_minutes': ('minutes', 'sum'), 'age_minutes_sum': ('age_min', 'sum')}
+    for c in AGE_CUTS:
+        pm[f'u{c}'] = pm.minutes.where(pm.age < c, 0)
+        named[f'u{c}_minutes'] = (f'u{c}', 'sum')
+    out = tm.merge(pm.groupby(['matchId', 'teamId']).agg(**named).reset_index(),
+                   on=['matchId', 'teamId'], how='left')
+
+    sheet = pd.concat([
+        tm[['matchId', 'teamId', 'date']].assign(playerId=tm.xi, starter=True).explode('playerId'),
+        tm[['matchId', 'teamId', 'date']].assign(playerId=tm.bench, starter=False).explode('playerId'),
+    ]).dropna(subset=['playerId'])
+    sheet['playerId'] = sheet.playerId.astype('int64')
+    sheet = sheet.drop_duplicates(['matchId', 'teamId', 'playerId']).merge(det, on='playerId')
+    sheet['age'] = (sheet.date - sheet.birthDate).dt.days / 365.25
+    sheet['xi_age'] = sheet.age.where(sheet.starter)
+    named = {'sheet_n': ('age', 'size'), 'sheet_age_sum': ('age', 'sum'),
+             'xi_n': ('starter', 'sum'), 'xi_age_sum': ('xi_age', 'sum')}
+    for c in AGE_CUTS:
+        sheet[f'u{c}_named'] = sheet.age < c
+        sheet[f'u{c}_start'] = sheet.starter & (sheet.age < c)
+        named[f'u{c}_named'] = (f'u{c}_named', 'sum')
+        named[f'u{c}_starts'] = (f'u{c}_start', 'sum')
+    return out.merge(sheet.groupby(['matchId', 'teamId']).agg(**named).reset_index(),
+                     on=['matchId', 'teamId'], how='left')
 
 
 def build_team_match(coach_match):
@@ -509,11 +625,13 @@ def build_team_match(coach_match):
     print('  line-ups …')
     with open(ROOT / 'match_lineups.pkl', 'rb') as fh:
         lu = lineup_rows(pickle.load(fh), name_to_id)
+    lu = verify_sheet_teams(lu)
     tm = tm.merge(lu, on=['matchId', 'teamId'], how='left')
 
     tm = tm.merge(coach_match, on=['matchId', 'teamId'], how='left')
     tm['coachId'] = tm.coachId.fillna(0).astype('int64')
     tm = add_ratings(tm)
+    tm = add_context_adjusted(tm)
     tm = add_spells(tm)
 
     # line-up changes vs the team's previous match (any coach — the first
@@ -531,6 +649,7 @@ def build_team_match(coach_match):
     tm['team'] = tm.teamId.map(id_to_name).fillna(tm.team)
     tm['xi'] = tm.xi.apply(lambda v: list(v) if isinstance(v, (list, np.ndarray)) else [])
     tm['sub_in_ids'] = tm.sub_in_ids.apply(lambda v: list(v) if isinstance(v, (list, np.ndarray)) else [])
+    tm['bench'] = tm.bench.apply(lambda v: list(v) if isinstance(v, (list, np.ndarray)) else [])
     tm = add_youth_minutes(tm)
     tm.to_parquet(TEAM_MATCH, index=False)
     return tm
@@ -548,17 +667,45 @@ def build_coach_player(tm):
     pm['obv_minutes'] = pm.minutes.where(pm.has_obv, 0)
     pm['cum_min_before'] = pm.groupby('playerId')['obv_minutes'].cumsum() - pm.obv_minutes
     pm['cum_obv_before'] = pm.groupby('playerId')['obv'].cumsum() - pm.obv
-    known = pm[pm.coachId > 0]
+    pm['cum_all_min_before'] = pm.groupby('playerId')['minutes'].cumsum() - pm.minutes
+    known = pm[pm.coachId > 0].copy()
+    # first and second half of his minutes under the coach (by date): does he
+    # get better WHILE playing for him? Needs no earlier record.
+    grp = known.groupby(['coachId', 'playerId'])['obv_minutes']
+    early = (grp.cumsum() - known.obv_minutes) < grp.transform('sum') / 2
+    known['early_minutes'] = known.obv_minutes.where(early, 0)
+    known['early_obv'] = known.obv.where(early, 0)
     g = known.groupby(['coachId', 'teamId', 'playerId'])
     out = g.agg(team=('team', 'first'), first_date=('date', 'min'), last_date=('date', 'max'),
                 matches=('matchId', 'nunique'), starts=('started', 'sum'),
                 minutes=('minutes', 'sum'), obv=('obv', 'sum'),
                 obv_minutes=('obv_minutes', 'sum'),
+                early_minutes=('early_minutes', 'sum'), early_obv=('early_obv', 'sum'),
                 points=('points', 'sum')).reset_index()
     # the player's record before his FIRST match under this coach at any club
     first = known.groupby(['coachId', 'playerId']).agg(
-        prior_minutes=('cum_min_before', 'first'), prior_obv=('cum_obv_before', 'first')).reset_index()
+        prior_minutes=('cum_min_before', 'first'), prior_obv=('cum_obv_before', 'first'),
+        prior_all_minutes=('cum_all_min_before', 'first'),
+        first_under_coach=('date', 'min')).reset_index()
     out = out.merge(first, on=['coachId', 'playerId'], how='left')
+    # age on the day of his first match under this coach (any club)
+    out = out.merge(_birth_dates(), on='playerId', how='left')
+    out['age_first'] = (out.first_under_coach - out.birthDate).dt.days / 365.25
+    out = out.drop(columns=['birthDate'])
+    # times named in the coach's matchday squad (started or on the bench)
+    named = pd.concat([tm[['coachId', 'teamId']].assign(playerId=tm.xi).explode('playerId'),
+                       tm[['coachId', 'teamId']].assign(playerId=tm.bench).explode('playerId')]).dropna()
+    named['playerId'] = named.playerId.astype('int64')
+    out = out.merge(named.groupby(['coachId', 'teamId', 'playerId']).size().rename('named').reset_index(),
+                    on=['coachId', 'teamId', 'playerId'], how='left')
+    # of those sheets, the ones he actually played in (same matches top and bottom)
+    sheet_keys = pd.concat([tm[['matchId', 'teamId']].assign(playerId=tm.xi).explode('playerId'),
+                            tm[['matchId', 'teamId']].assign(playerId=tm.bench).explode('playerId')]).dropna()
+    sheet_keys['playerId'] = sheet_keys.playerId.astype('int64')
+    played = known.merge(sheet_keys.drop_duplicates(), on=['matchId', 'teamId', 'playerId'])
+    out = out.merge(played.groupby(['coachId', 'teamId', 'playerId']).size().rename('named_played').reset_index(),
+                    on=['coachId', 'teamId', 'playerId'], how='left')
+    out['named_played'] = out.named_played.fillna(0)
     # team matches the coach took between the player's first and last match
     # under him — the denominator for 'share of matches played'
     span = tm[tm.coachId > 0][['coachId', 'teamId', 'date']]

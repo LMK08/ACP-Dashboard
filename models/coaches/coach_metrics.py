@@ -147,7 +147,242 @@ def summarise(rows):
     out['players_used'] = len(players)
     if 'u21_minutes' in r.columns:
         out['u21_share'] = _div(r.u21_minutes.sum(), r.squad_minutes.sum())
+    flex = flexibility(r)
+    flex.pop('in_match_switch_share', None)      # computed above from the same rows
+    out.update(flex)
+    for cut in AGE_CUTS:
+        out.update(youth_trust(r, cut))
+    out['age_gap'] = out.get('age_on_pitch', np.nan) - out.get('age_of_squad', np.nan)
     return out
+
+
+Z_COLS = ['z_possession', 'z_field_tilt', 'z_passes_per_poss', 'z_long_share',
+          'z_forward_share', 'z_def_height', 'z_log_ppda']
+AGE_CUTS = (21, 23)
+MIN_ADAPT_MATCHES = 12    # context-adjusted matches needed for the opponent-adaptation slope
+FLEX_KEYS = ('eff_formations', 'formation_change_rate', 'back_line_change_rate',
+             'in_match_switch_share', 'opp_adapt')
+# the settled ↔ fluid score: only the measures that are stable coach traits
+# (opp_adapt scored 0.24 odd/even once its sample-size bias was removed)
+FLUIDITY_KEYS = FLEX_KEYS[:4]
+FLEX_LABELS = {
+    'eff_formations': ('Formation variety', 'effective number of starting shapes'),
+    'formation_change_rate': ('Changes shape between matches', 'share of matches starting in a new shape'),
+    'back_line_change_rate': ('Switches back three ↔ four', 'share of matches changing the back line'),
+    'in_match_switch_share': ('Changes shape during matches', 'share of matches with more than one shape'),
+    'opp_adapt': ('Adapts style to the opponent', 'style shift per unit of opponent strength, beyond the league norm'),
+}
+
+
+def _back_line(formation):
+    try:
+        return int(str(formation).split('-')[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def flexibility(rows):
+    """How much a coach varies what he does.
+
+    eff_formations         effective number of starting shapes (inverse Simpson,
+                           unbiased in the number of matches): 1 = always the
+                           same shape, 3 = three shapes used equally.
+    formation_change_rate  share of matches starting in a different shape from
+                           the previous match of the same spell.
+    back_line_change_rate  the same for a back three ↔ back four / five.
+    in_match_switch_share  share of matches with more than one shape.
+    opp_adapt              how strongly his context-adjusted style still moves
+                           with opponent strength (RMS slope over the style
+                           scores): the league-typical shift is already
+                           removed, so 0 = adapts like everyone else.
+
+    Tested and left out (2026-11, odd/even-match reliability ≈ 0 on Liga 3):
+    match-to-match style distance (Hooker / Hudl 2025) and the spread of the
+    style scores — on this data they are match noise, not a coach trait.
+    """
+    out = {k: np.nan for k in FLEX_KEYS if k != 'in_match_switch_share'}
+    out.update({'style_matches': 0, 'opp_slopes': {}})
+    r = rows.sort_values(['spell', 'date'])
+    f = r.formation.dropna()
+    if len(f):
+        # inverse Simpson with the unbiased estimator: the chance two of his
+        # matches share a shape, so the number does not grow with match count
+        n_i = f.value_counts().to_numpy(dtype=float)
+        n = n_i.sum()
+        if n >= 2:
+            same = (n_i * (n_i - 1)).sum() / (n * (n - 1))
+            out['eff_formations'] = float(1 / same) if same > 0 else float(n)
+    ff = r.dropna(subset=['formation'])
+    same_spell = ff.spell == ff.spell.shift()
+    if same_spell.sum():
+        out['formation_change_rate'] = float((ff.formation != ff.formation.shift())[same_spell].mean())
+        back = ff.formation.map(_back_line)
+        out['back_line_change_rate'] = float((back != back.shift())[same_spell].mean())
+    if not set(Z_COLS) <= set(r.columns):
+        return out
+    z = r.dropna(subset=Z_COLS)
+    out['style_matches'] = len(z)
+    gap = (z.r_pre - z.r_opp_pre).to_numpy(dtype=float)
+    if len(z) >= MIN_ADAPT_MATCHES and np.nanstd(gap) > 0:
+        # RMS slope with each slope's own sampling variance taken off, so a
+        # short record is not 'more adaptive' just for being noisier
+        slopes, excess = {}, []
+        sxx = float(((gap - gap.mean()) ** 2).sum())
+        for c in Z_COLS:
+            y = z[c].to_numpy(dtype=float)
+            b, a = np.polyfit(gap, y, 1)
+            resid = y - (a + b * gap)
+            se2 = float((resid ** 2).sum() / (len(y) - 2) / sxx)
+            slopes[c] = float(b)
+            excess.append(b * b - se2)
+        out['opp_adapt'] = float(np.sqrt(max(float(np.mean(excess)), 0.0)))
+        out['opp_slopes'] = slopes
+    return out
+
+
+def youth_trust(rows, cut=21):
+    """Does he play the young players he has? Minutes are exact (Liga 3 only);
+    the matchday squad is the line-up sheet. trust = share of minutes given to
+    under-`cut` players ÷ their share of matchday-squad places (1.0 = used in
+    proportion to their places)."""
+    k = f'u{cut}'
+    need = [f'{k}_minutes', 'squad_minutes', f'{k}_named', 'sheet_n']
+    if not set(need) <= set(rows.columns):
+        return {}
+    r = rows.dropna(subset=need)
+    min_share = _div(r[f'{k}_minutes'].sum(), r.squad_minutes.sum())
+    named_share = _div(r[f'{k}_named'].sum(), r.sheet_n.sum())
+    return {
+        f'{k}_matches': len(r),
+        f'{k}_minutes_share': min_share,
+        f'{k}_named_share': named_share,
+        f'{k}_trust': _div(min_share, named_share) if named_share and named_share >= 0.03 else np.nan,
+        f'{k}_start_share': _div(r[f'{k}_starts'].sum(), r.xi_n.sum()),
+        f'{k}_named_per_match': _div(r[f'{k}_named'].sum(), len(r)),
+        'age_on_pitch': _div(r.age_minutes_sum.sum(), r.squad_minutes.sum()),
+        'age_of_squad': _div(r.sheet_age_sum.sum(), r.sheet_n.sum()),
+    }
+
+
+def club_style_vectors(tm, min_matches=MIN_MATCHES):
+    """Mean context-adjusted style per coach × club (≥ min_matches)."""
+    r = tm[(tm.coachId > 0)].dropna(subset=Z_COLS)
+    g = r.groupby(['competitionId', 'coachId', 'teamId'])
+    v = g[Z_COLS].mean()
+    v['n'] = g.size()
+    v['team'] = g.team.first()
+    return v[v.n >= min_matches].reset_index()
+
+
+def _pair_distances(v):
+    a = v[Z_COLS].to_numpy()
+    d = np.sqrt(((a[:, None, :] - a[None, :, :]) ** 2).mean(axis=2))
+    i, j = np.triu_indices(len(v), 1)
+    same_coach = v.coachId.to_numpy()[i] == v.coachId.to_numpy()[j]
+    same_club = v.teamId.to_numpy()[i] == v.teamId.to_numpy()[j]
+    return d[i, j], same_coach, same_club
+
+
+def style_persistence(vectors):
+    """Is style the coach's or the club's? Median style distance between
+    (same coach, different clubs), (same club, different coaches) and
+    (different coach and club), within one competition's vectors."""
+    if len(vectors) < 3:
+        return {}
+    d, same_coach, same_club = _pair_distances(vectors)
+    def med(mask):
+        return (float(np.median(d[mask])) if mask.sum() else np.nan, int(mask.sum()))
+    return {'same_coach_other_club': med(same_coach & ~same_club),
+            'same_club_other_coach': med(~same_coach & same_club),
+            'unrelated': med(~same_coach & ~same_club)}
+
+
+def coach_club_distances(vectors, coach_id):
+    """Pairwise style distance between one coach's clubs."""
+    v = vectors[vectors.coachId == coach_id].reset_index(drop=True)
+    rows = []
+    for i in range(len(v)):
+        for j in range(i + 1, len(v)):
+            dist = float(np.sqrt(((v.loc[i, Z_COLS] - v.loc[j, Z_COLS]).astype(float) ** 2).mean()))
+            rows.append({'Club A': v.team[i], 'Club B': v.team[j], 'Matches A': int(v.n[i]),
+                         'Matches B': int(v.n[j]), 'Style distance': dist})
+    return pd.DataFrame(rows)
+
+
+AGE_BANDS = (0, 21, 23, 26, 30, 99)
+MIN_PEERS = 15
+
+
+def development_pairs(cp, min_minutes=MIN_PLAYER_MINUTES):
+    """One row per coach × player with enough minutes before and under him:
+    the change in on-ball value per 90, and the change EXPECTED FOR HIS AGE —
+    the average change of OTHER same-age-band players whose spells under another
+    coach had already ENDED when this one began (walk-forward; blank until
+    MIN_PEERS such cases exist)."""
+    g = cp.groupby(['coachId', 'playerId'])
+    r = g.agg(team=('team', 'first'), minutes=('obv_minutes', 'sum'), obv=('obv', 'sum'),
+              prior_minutes=('prior_minutes', 'first'), prior_obv=('prior_obv', 'first'),
+              age_first=('age_first', 'first'), first_date=('first_under_coach', 'first'),
+              last_date=('last_date', 'max')).reset_index()
+    r = r[(r.minutes >= min_minutes) & (r.prior_minutes >= min_minutes) & r.age_first.notna()].copy()
+    r['obv90'] = r.obv / r.minutes * 90
+    r['prior_obv90'] = r.prior_obv / r.prior_minutes * 90
+    r['change'] = r.obv90 - r.prior_obv90
+    r['band'] = pd.cut(r.age_first, AGE_BANDS, right=False, labels=False)
+    # peers: same age band, a DIFFERENT coach and a different player, spell
+    # already over when this one began
+    band = r.band.to_numpy()
+    coach = r.coachId.to_numpy()
+    player = r.playerId.to_numpy()
+    start = r.first_date.to_numpy()
+    end = r.last_date.to_numpy()
+    change = r.change.to_numpy()
+    exp, peers = np.full(len(r), np.nan), np.zeros(len(r), dtype=int)
+    for i in range(len(r)):
+        m = (band == band[i]) & (end < start[i]) & (coach != coach[i]) & (player != player[i])
+        peers[i] = int(m.sum())
+        if peers[i] >= MIN_PEERS:
+            exp[i] = change[m].mean()
+    r['expected'] = exp
+    r['peers'] = peers
+    r['vs_expected'] = r.change - r.expected
+    return r
+
+
+def youth_development(pairs, coach_id, cut=23):
+    """Young players (under `cut` when they first played for him) against
+    their own earlier record and against what their age predicted."""
+    r = pairs[(pairs.coachId == coach_id) & (pairs.age_first < cut)].sort_values('change', ascending=False)
+    if r.empty:
+        return r, {'n': 0}
+    e = r.dropna(subset=['vs_expected'])
+    return r, {'n': len(r), 'improved': int((r.change > 0).sum()),
+               'mean_change': float(np.average(r.change, weights=r.minutes)),
+               'n_expected': len(e), 'beat_expected': int((e.vs_expected > 0).sum()),
+               'mean_vs_expected': float(np.average(e.vs_expected, weights=e.minutes)) if len(e) else np.nan}
+
+
+MIN_PROGRESS_MINUTES = 900   # under the coach; each half then holds 300+
+
+
+def youth_progress(cp, coach_id, cut=23):
+    """Young players' on-ball value per 90 in the second half of their minutes
+    under the coach against the first half (by date). Needs no earlier
+    record, so it covers players who arrived with no history."""
+    r = cp[(cp.coachId == coach_id) & (cp.age_first < cut)]
+    if r.empty or 'early_minutes' not in r.columns:
+        return pd.DataFrame()
+    g = r.sort_values('minutes', ascending=False).groupby('playerId').agg(
+        team=('team', 'first'), age_first=('age_first', 'first'), minutes=('obv_minutes', 'sum'),
+        obv=('obv', 'sum'), early_minutes=('early_minutes', 'sum'), early_obv=('early_obv', 'sum')).reset_index()
+    late = g.minutes - g.early_minutes
+    g = g[(g.minutes >= MIN_PROGRESS_MINUTES) & (g.early_minutes >= 300) & (late >= 300)].copy()
+    if g.empty:
+        return g
+    g['first_half'] = g.early_obv / g.early_minutes * 90
+    g['second_half'] = (g.obv - g.early_obv) / (g.minutes - g.early_minutes) * 90
+    g['progress'] = g.second_half - g.first_half
+    return g.sort_values('progress', ascending=False)
 
 
 def spells(tm, coach_id):
@@ -179,10 +414,17 @@ def coach_table(tm, competition_id=None, min_matches=MIN_MATCHES):
         return t
     q = t.event_matches >= min_matches
     t['qualifies'] = q
-    for k in list(STYLE_METRICS) + ['adj_xgd', 'ppg', 'xgd', 'xpts_pg']:
+    extra = list(FLEX_KEYS) + ['age_on_pitch', 'age_gap'] + \
+        [f'u{c}_{m}' for c in AGE_CUTS for m in ('trust', 'minutes_share', 'start_share')]
+    extra = [k for k in extra if k in t.columns]
+    for k in list(STYLE_METRICS) + ['adj_xgd', 'ppg', 'xgd', 'xpts_pg'] + extra:
         pool = t.loc[q, k].dropna().to_numpy()
         t[k + '_pct'] = [float((pool < v).mean() + 0.5 * (pool == v).mean()) * 100
                          if len(pool) and not pd.isna(v) else np.nan for v in t[k]]
+    # fluid ↔ settled: the mean of the four formation percentiles
+    cols = [k + '_pct' for k in FLUIDITY_KEYS if k + '_pct' in t.columns]
+    if cols:
+        t['fluidity'] = t[cols].mean(axis=1).where(t[cols].notna().all(axis=1))
     return t
 
 
@@ -229,6 +471,33 @@ def coached_by(cp, tm, player_id):
     r['obv90'] = np.where(r.obv_minutes > 0, r.obv / r.obv_minutes.replace(0, np.nan) * 90, np.nan)
     r['start_share'] = r.starts / r.team_matches_in_span
     r['played_share'] = r.matches / r.team_matches_in_span
+    r['played_when_named'] = r.named_played / r.named
     r['minutes_share'] = r.minutes / (r.team_matches_in_span * 90.0)
     r['team_ppg_with'] = r.points / r.matches
     return r.sort_values('last_date', ascending=False).reset_index(drop=True)
+
+
+def reliability(tm, competition_id, keys, min_matches=30):
+    """Odd/even-match agreement of each metric among coaches with at least
+    min_matches event matches in the competition: the correlation between a
+    coach's number on his odd matches and on his even matches. Near 1 = a
+    stable trait of the coach; near 0 = match noise."""
+    r = tm[(tm.competitionId == competition_id) & (tm.coachId > 0)].sort_values(['date', 'matchId'])
+    r = r.assign(_half=r.groupby('coachId').cumcount() % 2)
+    a, b = [], []
+    for _, g in r.groupby('coachId'):
+        if g.has_events.sum() < min_matches:
+            continue
+        a.append(summarise(g[g._half == 0]))
+        b.append(summarise(g[g._half == 1]))
+    out = {}
+    for k in keys:
+        x = pd.DataFrame({'a': [d.get(k, np.nan) for d in a], 'b': [d.get(k, np.nan) for d in b]}).dropna()
+        out[k] = (float(x.a.corr(x.b)), len(x)) if len(x) >= 10 else (np.nan, len(x))
+    return out
+
+
+def reliability_word(r):
+    if r is None or pd.isna(r):
+        return 'not measured'
+    return 'stable' if r >= 0.7 else 'moderate' if r >= 0.4 else 'noisy'
