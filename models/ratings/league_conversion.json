@@ -1,8 +1,8 @@
 {
   "reference": "L3",
-  "delta_pts_L3_minus_CAMP_descriptive": 7.585002947944862,
-  "delta_se": 1.6132867724658877,
-  "delta_pts_recruit": 7.4423535005175525,
+  "delta_pts_L3_minus_CAMP_descriptive": 7.5850029479448615,
+  "delta_se": 1.6132867724658875,
+  "delta_pts_recruit": 7.442353500517551,
   "delta_pts_recruit_by_year": {
     "2023": 6.483,
     "2025": 7.442
