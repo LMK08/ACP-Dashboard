@@ -12,7 +12,8 @@ LAM_PRIOR, LAM_MIN_PAIRS = 0.15, 30
 
 
 def _r(p):
-    r = pearsonr(p['a'], p['b'])[0] if len(p) >= 3 else np.nan
+    # float arrays whatever dtype the frame arrived with (see build_rating._season_pairs)
+    r = pearsonr(p['a'].to_numpy(dtype=float), p['b'].to_numpy(dtype=float))[0] if len(p) >= 3 else np.nan
     return r if np.isfinite(r) else np.nan
 
 

@@ -330,7 +330,10 @@ def _season_pairs(sub, c):
         for a, b in zip(rr, rr[1:]):
             if b['yr'] - a['yr'] == 1:
                 P.append((a[c + '_pct'], b[c + '_pct'], b['yr']))
-    return pd.DataFrame(P, columns=['a', 'b', 'yr'])
+    # typed even when empty: pandas 3 (the engine rebuild's version) no longer
+    # ignores an empty object-dtype frame in the concat below, which turned
+    # every pooled column into object and crashed pearsonr (2026-11-01..11)
+    return pd.DataFrame(P, columns=['a', 'b', 'yr']).astype({'a': 'float64', 'b': 'float64', 'yr': 'int64'})
 
 
 _PAIRS = {(role, c): _season_pairs(sub, c) for role, sub in df.groupby('role') for c in GPA_CATS}

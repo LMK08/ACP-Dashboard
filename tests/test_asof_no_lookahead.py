@@ -115,3 +115,20 @@ def test_a_mid_season_sale_never_sees_its_season_after_the_sale():
     # no sale-date projection: no value, not the sale season's row
     q = ei.pair_fees_to_engine(fees, e, ends=ends, sales=sales.iloc[0:0], pools=None).iloc[0]
     assert q['exclusion'] == 'no_data_before_sale'
+
+
+def test_pooled_reliability_survives_object_dtype_columns():
+    """The engine rebuild runs pandas 3, where stacking an empty role's pair
+    table turned the pooled table's columns into object dtype and crashed
+    pearsonr (every nightly rebuild failed 2026-11-01..11). The reliability
+    must not depend on the dtype the pairs arrive with."""
+    rng = np.random.default_rng(0)
+    a = rng.normal(size=120)
+    pairs = pd.DataFrame({'a': a, 'b': a + rng.normal(scale=0.5, size=120),
+                          'yr': np.repeat([2022, 2023, 2024], 40)})
+    want = A.lam_by_year(pairs, [2025], pooled=pairs)
+    as_object = pairs.astype(object)
+    assert A.lam_by_year(as_object, [2025], pooled=as_object) == pytest.approx(want)
+    empty = pd.DataFrame([], columns=['a', 'b', 'yr'])
+    stacked = pd.concat([empty, pairs], ignore_index=True)     # object under pandas 3
+    assert A.lam_by_year(pairs, [2025], pooled=stacked) == pytest.approx(want)
