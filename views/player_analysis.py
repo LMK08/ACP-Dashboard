@@ -29,6 +29,8 @@ def render():
     FIGURE_CACHE_VERSION = app.FIGURE_CACHE_VERSION
     engine_rows_for_scope = app.engine_rows_for_scope
     engine_value_for_scope = app.engine_value_for_scope
+    scope_shows_todays_projection = app.scope_shows_todays_projection
+    scope_projection_is_headline = app.scope_projection_is_headline
     PROJECTED_EUR_COEF = app.PROJECTED_EUR_COEF
     PROJECTED_EUR_EXP = app.PROJECTED_EUR_EXP
     format_eur_range = app.format_eur_range
@@ -78,6 +80,9 @@ def render():
     selected_comp_ids = league_selector("player_analysis")
     selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
     active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
+    # boards / Overview tables rank by projection only where it covers the
+    # scope (today's, or a latest completed season's summer one); else rating
+    _projection_headline = scope_projection_is_headline(active_season_ids)
     analysis_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
     analysis_player_minutes_df = get_season_player_minutes(player_minutes_data, active_season_ids, comp_ids=selected_comp_ids)
 
@@ -576,9 +581,14 @@ def render():
         # bespoke template score still drives the per-template views
         # and remains sortable via Individual Metric mode. GK
         # templates (no engine coverage) keep the score sort.
-        if (compact and 'ACP Projection (abs)' in tdf.columns
+        # A scope whose projection is not the headline (an older season:
+        # only players last seen then carry one) ranks by the ACP Rating.
+        if (compact and _projection_headline and 'ACP Projection (abs)' in tdf.columns
                 and tdf['ACP Projection (abs)'].notna().any()):
             _sort_col = 'ACP Projection (abs)'
+        elif (compact and 'ACP Rating' in tdf.columns
+                and tdf['ACP Rating'].notna().any()):
+            _sort_col = 'ACP Rating'
 
         # Projected-value sort override.
         if show_cvi and sort_by_cvi and 'Engine Value EUR' in tdf.columns:
@@ -592,7 +602,8 @@ def render():
             # templates fall back to the bespoke score.
             _eng_over = [c for c in ('ACP Projection (abs)', 'ACP Rating')
                          if c in sorted_tdf.columns
-                         and sorted_tdf[c].notna().any()]
+                         and sorted_tdf[c].notna().any()
+                         and (c != 'ACP Projection (abs)' or _projection_headline)]
             if _eng_over:
                 cols = ['playerName', 'teamName', 'primaryPosition',
                         'totalMinutes'] + _eng_over
@@ -762,7 +773,9 @@ def render():
                 if 'ACP Projection (abs)' in _rb.columns \
                 else pd.Series(np.nan, index=_rb.index)
             _proj_num = pd.to_numeric(_proj_series, errors='coerce')
-            if _proj_num.notna().any():
+            # an older season's rows carry a projection only for players
+            # last seen then: not the headline (_projection_headline)
+            if _projection_headline and _proj_num.notna().any():
                 _rb = _rb[_proj_num.notna()].copy()
                 _metric_label, _metric_col = 'Proj', 'ACP Projection (abs)'
             else:
@@ -851,20 +864,31 @@ def render():
                 with st.expander("ℹ️ How these ratings work"):
                     st.markdown(RATINGS_EXPLAINER_MD)
                 if _metric_label == 'Proj':
+                    # 'live' only when the merge actually showed TODAY's
+                    # projection (season in progress / All Seasons on an
+                    # engine with the forward projection)
+                    _proj_txt = (
+                        "expected level over the next 12 months, the rest of this season "
+                        "included (absolute / cross-league scale) — live from his whole "
+                        "career up to the latest match once his club has played 6 league "
+                        "matches, before that the summer projection; a player not "
+                        "playing this season keeps the projection off his last season"
+                        if scope_shows_todays_projection(active_season_ids) else
+                        "projected level next season, made at the end of his latest "
+                        "completed season (absolute / cross-league scale)")
                     st.caption(
                         "Observed ACP engine roles (data-derived from playing patterns), "
-                        "ranked by ACP Projection. **Proj** = projected level next season "
-                        "(absolute / cross-league scale). **Age** (current) and **Min** "
-                        "(total minutes in scope) match the table below. **Style** = the "
-                        "player's tendency-derived archetype (descriptive, never in the "
-                        "rating). Only players with a live projection appear."
+                        f"ranked by ACP Projection. **Proj** = {_proj_txt}. **Age** "
+                        "(current) and **Min** (total minutes in scope) match the table "
+                        "below. **Style** = the player's tendency-derived archetype "
+                        "(descriptive, never in the rating). Only players with a "
+                        "projection appear."
                     )
                 else:
-                    from league_config import IN_PROGRESS_SEASON_IDS as _live_sids
-                    _why = ("the season is still being played, so it is rated live but "
-                            "projections come from the last completed season"
-                            if selected_season_id in _live_sids else
-                            "the selected season is historical, so no forward projection exists")
+                    _why = ("no player in this scope has a projection yet"
+                            if _projection_headline else
+                            "only players last seen in this season carry a projection "
+                            "from it, so the board ranks by rating")
                     st.caption(
                         "Observed ACP engine roles (data-derived from playing patterns), "
                         f"ranked by ACP **Rating** (absolute scale) — {_why}. **Age** is current; "
@@ -1403,12 +1427,14 @@ def render():
         # --- View-dependent rendering ---
         if _selected_view == "Overview":
             st.subheader("Distribution by Position Group")
-            # A season in progress has no projections (they come from the last
-            # completed season): default its distribution to the live rating.
+            # Default to the projection when the scope has any (the season in
+            # progress has the live forward one, 2026-11-12), else the rating.
             if "player_analysis_viz_metric_overview" not in st.session_state:
-                from league_config import IN_PROGRESS_SEASON_IDS as _live_sids
-                st.session_state["player_analysis_viz_metric_overview"] = ('ACP Rating' if selected_season_id in _live_sids
-                                              else 'ACP Projection')
+                _has_proj = (_projection_headline and 'ACP Projection (abs)' in filtered_df.columns
+                             and pd.to_numeric(filtered_df['ACP Projection (abs)'],
+                                               errors='coerce').notna().any())
+                st.session_state["player_analysis_viz_metric_overview"] = ('ACP Projection' if _has_proj
+                                                                         else 'ACP Rating')
             _viz_metric = st.radio(
                 "Distribution metric:",
                 ["ACP Projection", "ACP Rating", "Action V/90", "Best-fit Rating"],

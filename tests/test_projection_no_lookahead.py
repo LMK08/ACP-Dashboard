@@ -26,7 +26,12 @@ CHAIN = ['models/ratings/build_rating.py', 'models/ratings/league_conversion.py'
          'models/ratings/build_projection.py']
 CUTOFFS = (2023, 2024)
 COLS = ['projection_asof', 'projection_asof_abs', 'career_asof', 'evidence', 'w_evidence',
-        'age', 'age_delta', 'band_sd', 'value_role']
+        'age', 'age_delta', 'band_sd', 'value_role',
+        # the boards' forward projection (2026-11-12): NaN on every row up to
+        # the cutoffs today (live rows only), so this is a GUARD for a later
+        # change that fills completed rows; fwd is the same row's
+        # projection_asof and age_delta, both gated above
+        'projection_fwd', 'projection_fwd_abs', 'band_fwd']
 GPA_EVENTS = DASH.parent.parent / 'GPA Model Project v2' / 'parquet_data' / 'liga3_portugal_events.parquet'
 
 pytestmark = [

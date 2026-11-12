@@ -327,11 +327,33 @@ def projection_series(erows: pd.DataFrame, season_labels: dict, use_abs=None):
                 else float(pr['projection']))
     last = df.iloc[-1]
     x_last, y_last = float(last['yr']), float(last['_val'])
+    age_now = pd.to_numeric(src.get('age'), errors='coerce')
+    w_ev = pd.to_numeric(src.get('w_evidence'), errors='coerce')
+    x_proj, live = x_last + 1, False
+    # LIVE (2026-11-12, Lucas: "switch the fan chart to the live
+    # projection"): once his club has played enough league matches
+    # (projection_now_live, models/ratings/projection_now.attach) the outlook
+    # is his 12-month forward projection — plotted half a season past the
+    # season in progress (the window's middle) with its band, his age at the
+    # data date and the evidence behind it (the live row's as-of values).
+    if 'projection_now_live' in erows.columns and bool(erows['projection_now_live'].fillna(False).any()):
+        now = erows.iloc[0]
+        lv = erows[erows['live_ok'].fillna(False).astype(bool) & erows['fwd_abs'].notna()] \
+            if {'live_ok', 'fwd_abs'} <= set(erows.columns) else erows.iloc[0:0]
+        if not lv.empty:
+            lr = lv.sort_values('mins_played', kind='stable').iloc[-1]
+            proj = (float(now['projection_now_abs'])
+                    if use_abs and pd.notna(now.get('projection_now_abs'))
+                    else float(now['projection_now']))
+            band = (float(now['band_now']) if pd.notna(now.get('band_now'))
+                    else (band if band is not None else 5.0))
+            src, live = lr, True
+            age_now = pd.to_numeric(lr.get('asof_age', lr.get('age')), errors='coerce')
+            w_ev = pd.to_numeric(lr.get('asof_w_evidence', lr.get('w_evidence')), errors='coerce')
+            x_proj = x_last + 0.5
     return dict(df=df, use_abs=use_abs, proj=proj, band=band,
-                role=str(src.get('role', '')),
-                age_now=pd.to_numeric(src.get('age'), errors='coerce'),
-                w_ev=pd.to_numeric(src.get('w_evidence'), errors='coerce'),
-                x_last=x_last, y_last=y_last, x_proj=x_last + 1)
+                role=str(src.get('role', '')), age_now=age_now, w_ev=w_ev,
+                x_last=x_last, y_last=y_last, x_proj=x_proj, live=live)
 
 
 def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
@@ -424,7 +446,8 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
         textposition=('bottom center' if y_last > proj else 'top center'),
         textfont=dict(size=12, color='#2aa876'),
         hovertemplate=(f'projection {proj:.1f} ± {band:.1f}'
-                       '<extra></extra>'),
+                       + (' · live, next 12 months' if ser.get('live') else '')
+                       + '<extra></extra>'),
         name='projection'))
     # evidence % — the data weight behind the projection's starting point
     _w_ev = ser['w_ev']
@@ -464,7 +487,9 @@ def plotly_projection_fan(erows: pd.DataFrame, season_labels: dict,
             base = _season_lbl(y)
         return _with_age(base, y)
 
-    _proj_lbl = _season_lbl(x_proj) + ' (proj)'
+    # live: the 12-month window's middle, half a season past the last one
+    _proj_lbl = ('next 12 mo (proj)' if ser.get('live')
+                 else _season_lbl(x_proj) + ' (proj)')
     tickvals = _years + [x_proj]
     ticktext = [_tick_lbl(y) for y in _years] + [_with_age(_proj_lbl, x_proj)]
     ys = list(df['_val']) + [proj + band, proj - band, 50]
@@ -601,7 +626,8 @@ def plotly_projection_overlay(players, season_labels: dict, x_axis: str = 'seaso
             textposition=('top center' if projs and proj >= projs[0] else 'bottom center'),
             textfont=dict(size=12, color=colour),
             hovertemplate=(f'<b>{name}</b><br>projection {proj:.1f} ± {band:.1f}{ev}'
-                           '<extra></extra>'),
+                           + (' · live, next 12 months' if ser.get('live') else '')
+                           + '<extra></extra>'),
             showlegend=False))
 
     if x_axis == 'age':
@@ -616,12 +642,15 @@ def plotly_projection_overlay(players, season_labels: dict, x_axis: str = 'seaso
             return (f'{y}/{(y + 1) % 100:02d}' if _slash
                     else f'{y % 100:02d}-{(y + 1) % 100:02d}')
         _last_played = max(s['x_last'] for _n, s, _c in drawn)
-        _proj_years = {int(s['x_proj']) for _n, s, _c in drawn if s['proj'] is not None}
+        _proj_years = {int(s['x_proj']) for _n, s, _c in drawn if s['proj'] is not None and not s.get('live')}
         years = list(range(int(min(xs)), int(round(max(xs))) + 1))
-        xaxis = dict(tickvals=years,
+        # a live projection sits half a season past its last season
+        _live_x = sorted({s['x_proj'] for _n, s, _c in drawn
+                          if s['proj'] is not None and s.get('live')})
+        xaxis = dict(tickvals=years + _live_x,
                      ticktext=[_season_lbl(y) + (' (proj)' if y in _proj_years
                                                  and y > _last_played else '')
-                               for y in years],
+                               for y in years] + ['next 12 mo (proj)'] * len(_live_x),
                      showgrid=False, zeroline=False, fixedrange=True,
                      range=[min(xs) - 0.4, max(xs) + 0.6])
     fig.update_layout(

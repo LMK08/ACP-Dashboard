@@ -520,7 +520,7 @@ def render():
         if e is None:
             _gk = _gk_legacy(row_df) if ctx['is_gk'] else None
             _head_rows[col] = {
-                'ACP Rating': '—', 'Projection (next season)': '—',
+                'ACP Rating': '—', 'Projection': '—',
                 'Career (as-of)': '—', 'Evidence': '—',
                 **({'GK Rating (legacy)': f"{_gk[1]:.0f} ({_gk[0]})"
                     + (f" · provisional, < {_floor}′" if _gk[2] else "")} if _gk else {})}
@@ -533,13 +533,19 @@ def render():
             continue
         _abs = (f" (abs {e['acp_rating_abs']:.0f})" if pd.notna(e.get('acp_rating_abs'))
                 and e.get('league') == 'CAMP' else "")
-        _proj = (f"{e['projection']:.0f} ± {e['band_sd']:.0f}" if pd.notna(e.get('projection'))
+        # the card's projection (card_scope.card_row): live 12-month forward
+        # once his club has played 6 league matches (no band yet), else the
+        # summer forecast of next season
+        _band = f" ± {e['band_sd']:.0f}" if pd.notna(e.get('band_sd')) else ""
+        _proj = (f"{e['projection']:.0f}{_band}" if pd.notna(e.get('projection'))
                  else "—")
         if _proj != "—" and pd.notna(e.get('projection_abs')) and e.get('league') == 'CAMP':
             _proj += f" (abs {e['projection_abs']:.0f})"
+        if _proj != "—":
+            _proj += " · live, next 12 mo" if bool(e.get('projection_live', False)) else " · next season"
         _head_rows[col] = {
             'ACP Rating': f"{e['acp_rating']:.0f}{_abs}",
-            'Projection (next season)': _proj,
+            'Projection': _proj,
             'Career (as-of)': f"{e['career_asof']:.0f}" if pd.notna(e.get('career_asof')) else "—",
             'Evidence': f"{e['w_evidence']:.0%}" if pd.notna(e.get('w_evidence')) else "—",
         }
@@ -606,8 +612,9 @@ def render():
     if _fan is not None:
         st.plotly_chart(_fan, use_container_width=True, config={'displayModeBar': False})
         st.caption(
-            "Career ratings by season flowing into next season's projection (diamond; shaded "
-            "fan = ±1 SD). Both players share one scale — L3-equivalent when the careers span "
+            "Career ratings by season flowing into the projection (diamond; shaded fan = ±1 "
+            "SD) — live, the next 12 months, once a player's club has played 6 league matches "
+            "(plotted half a season past the current one), else next season's. Both players share one scale — L3-equivalent when the careers span "
             "more than one league (CAMP seasons discounted by the league conversion; hover a "
             "dot for the native rating). A faded segment bridges seasons missing from our "
             "data; shaded band = typical peak ages for the role. On the Age axis, age at each "

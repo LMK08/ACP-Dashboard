@@ -97,5 +97,27 @@ def card_row(eng_df, player_id, active_season_ids):
         for c in PROJECTION_COLS:
             if c in pr.index:
                 e[c] = pr[c]
+    # Today's LIVE projection (2026-11-12, Lucas: "make the profile card use
+    # the live projection"): once his club has played enough league matches
+    # (projection_now_live, models/ratings/projection_now.attach — every row
+    # of the player carries it), the card shows his 12-month forward
+    # projection instead of the summer one, with its band (band_now: the
+    # role's SD of past next-season forecast error) and the evidence behind
+    # it (the live row's asof_w_evidence).
+    e['projection_live'] = False
+    if 'projection_now_live' in erows.columns and bool(erows['projection_now_live'].fillna(False).any()):
+        now = erows.iloc[0]
+        e['projection'] = float(now['projection_now'])
+        e['projection_abs'] = float(now['projection_now_abs'])
+        e['band_sd'] = float(now['band_now']) if pd.notna(now.get('band_now')) else np.nan
+        e['seasons_ago'] = 0
+        e['projection_live'] = True
+        live = erows[erows['live_ok'].fillna(False).astype(bool) & erows['fwd_abs'].notna()] \
+            if {'live_ok', 'fwd_abs'} <= set(erows.columns) else erows.iloc[0:0]
+        if not live.empty:
+            lr = live.sort_values('mins_played', kind='stable').iloc[-1]
+            e['proj_delta'] = e['projection'] - float(lr['acp_rating'])
+            if 'asof_w_evidence' in lr.index and pd.notna(lr['asof_w_evidence']):
+                e['w_evidence'] = float(lr['asof_w_evidence'])
     out['e'] = e
     return out

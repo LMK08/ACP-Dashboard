@@ -112,7 +112,8 @@ else:
 # known at the end of each row's season — for the season in progress, at the
 # data date. A live row's value starts once his club has played
 # MIN_LIVE_MATCHES league matches (before that the summer value stands):
-# live_ok. `projection` (today's forecast for boards and cards) is unchanged.
+# live_ok. `projection` (today's summer forecast, cards) is unchanged; the
+# boards show fwd (below) for the season in progress once live_ok.
 # Replay-tested on 2024/25 and 2023/24: ACP_Official/live_value_plan_2026-10-29.md.
 MIN_LIVE_MATCHES = 6
 _asof_path = _HERE / 'acp_projection_asof.parquet'
@@ -131,14 +132,25 @@ if _asof_path.exists():
         a['evidence'] = np.nan
     if 'value_role' not in a.columns:             # before the career role (2026-10-29)
         a['value_role'] = a['role']
+    # fwd / fwd_abs: the live row's 12-month FORWARD projection (build_projection,
+    # 2026-11-12) — what the analysis boards show for the season in progress
+    # once live_ok (app.load_player_engine: projection_now). NaN off live rows.
+    if 'projection_fwd' not in a.columns:         # an as-of file from before it
+        a['projection_fwd'] = np.nan
+        a['projection_fwd_abs'] = np.nan
     # asof_evidence: the career evidence (time-decayed minutes, career.py) —
     # what the likely-fee range's support check reads (2026-10-29)
     # asof_role: the career role as of the row (the role its value reads)
+    # fwd_band: the forward projection's ± on the card and the fan chart —
+    # today's role band (build_projection band_fwd: the summer projection's
+    # role SD of next-season forecast error, conservative for 12 months)
+    a['fwd_band'] = a['band_fwd'] if 'band_fwd' in a.columns else np.nan
     a = a[['playerId', 'seasonId', 'projection_asof', 'projection_asof_abs', 'age', 'w_evidence',
-           'evidence', 'is_live', 'as_of_date', 'value_role']].rename(columns={
+           'evidence', 'is_live', 'as_of_date', 'value_role',
+           'projection_fwd', 'projection_fwd_abs', 'fwd_band']].rename(columns={
         'projection_asof_abs': 'asof_abs', 'age': 'asof_age', 'w_evidence': 'asof_w_evidence',
         'evidence': 'asof_evidence', 'is_live': 'asof_live', 'as_of_date': 'asof_date',
-        'value_role': 'asof_role'})
+        'value_role': 'asof_role', 'projection_fwd': 'fwd', 'projection_fwd_abs': 'fwd_abs'})
     eng = eng.merge(a, on=['playerId', 'seasonId'], how='left')
     eng['asof_live'] = eng['asof_live'].fillna(False).astype(bool)
     _ms = pd.read_parquet(_DASH / 'matches_summary.parquet',

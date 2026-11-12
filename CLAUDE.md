@@ -210,6 +210,64 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   - The stats-cache stamp carries `value:asof2@<value_date>`, so cached
     frames refresh weekly. Bump the token when the rule changes.
   - Tests: `tests/test_live_value.py`.
+- **Live forward projection on the boards (2026-11-12).** Lucas: the live
+  projection means "how good a player will be moving forward (including for
+  the rest of the current season)", not next season.
+  - **build_projection** writes `projection_fwd(_abs)` on LIVE as-of rows:
+    `projection_asof − (1 − FWD_YEARS) × age_delta`, FWD_YEARS = 0.5, i.e.
+    the level over the 12 months after the data date (half a year of the
+    age step instead of a full one; the level part's fit already looks ~7
+    months ahead). A definition, not a fit — no rest-of-season ratings
+    exist to fit or test it on. build_player_engine merges it as
+    `fwd` / `fwd_abs`.
+  - **`models/ratings/projection_now.attach`** (called in load_player_engine
+    with the app's row pick): `projection_now(_abs)` on every row of a
+    player = his live `fwd` once `live_ok` (the value's 6-match switch),
+    else the summer projection; `band_now` NaN when live. An engine without
+    `fwd` gets no such columns, so a code deploy ahead of the engine
+    rebuild never labels a summer projection live.
+  - **merge_engine_values_into_stats**: a scope holding the season in
+    progress, or All Seasons, shows `projection_now` when the engine has it
+    (`app.scope_shows_todays_projection` — the board's 'live / next 12
+    months' caption reads the same helper); a past season keeps the
+    projection made at its end. The € value is unchanged (next-season
+    projection, fee-calibrated).
+  - **The card** (`card_scope.card_row`, profile + comparison, and the
+    profile's one-pager tile; Lucas: "make the profile card use the live
+    projection"): once `projection_now_live`, the card shows the live
+    forward projection in every scope — label 'Projection (next 12
+    months)', ± `band_now`, Evidence = the live row's `asof_w_evidence`.
+    Otherwise the summer 'Projection (next season)' as before.
+  - **Band:** build_projection writes `band_fwd` on live rows = TODAY's
+    role band (G2: the summer projection's role SD of next-season forecast
+    error, on pairs that ended before the live season), so the ± doesn't
+    jump when live starts (conservative for 12 months). build_player_engine
+    carries it as `fwd_band`; attach puts it in `band_now`. (The as-of
+    `band_sd` — all earlier pairs, in-sample — runs wider, median ~15.)
+  - **Fan chart + comparison overlay** (`pitch_interactive.projection_series`,
+    "switch the fan chart to the live projection"): live mode plots the
+    forward projection at `x_last + 0.5` (the window's middle, tick 'next
+    12 mo (proj)') with its band, age at the data date (`asof_age`) and the
+    live evidence; before the switch, the summer projection at the next
+    season as before.
+  - **Headline rule** (`projection_now.projection_is_headline`): the role
+    board and the Overview tables rank by projection only for All Seasons,
+    the season in progress or a latest COMPLETED season (its summer
+    projection covers every player). An older season's rows carry a
+    projection only for players last seen then (35–45%), so those scopes
+    rank by ACP Rating and the Overview drops the Proj column.
+  - **Blank ≠ 0 (RULE):** `calculate_player_percentiles_and_scores` fills
+    the scored frame with 0 EXCEPT `ENGINE_NAN_COLUMNS` (ACP rating /
+    projection / band / evidence). The boards test `.notna()` to decide
+    whether a scope has projections; the old fillna(0) made the 2026/27 role
+    board rank every player on a tie of zero projections. The cache stamp
+    carries `proj:fwd1` (bump it when this rule changes).
+  - Readers that hide 0 must hide NaN too (the profile's stat expanders:
+    `.notna() & (!= 0)`), or a blank prints as 'nan'.
+  - Tests: `tests/test_projection_now.py` (pick, scopes, headline, merge,
+    old engine, NaN kept). `projection_fwd(_abs)` sits in the no-look-ahead
+    gate only as a guard: it is NaN up to the cutoffs (live rows only).
+  - Plan: ACP_Official/live_projection_board_plan_2026-11-12.md.
 - `models/value/availability.py` — the engine value's PLAYING-TIME FACTOR
   (`regular_factor`, 2026-10). The projection can't tell a cameo from a
   regular: a 95' player inherited a starter's value (Rafinha Monteiro, €218k).

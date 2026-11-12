@@ -732,13 +732,30 @@ def render():
                 _proj_note = (f"abs {_e['projection_abs']:.0f}"
                               if pd.notna(_e.get('projection_abs'))
                               and _e.get('league') == 'CAMP' else None)
-                _ec2.metric("Projection (next season)",
-                            f"{_e['projection']:.0f} ± {_e['band_sd']:.0f}",
-                            _proj_note, delta_color="off",
-                            help="Career + evidence pull + role age curve. "
-                                 "Band = role-specific 1 SD of realized "
-                                 "error. 'abs' applies the stricter "
-                                 "recruit league delta.")
+                _band_txt = (f" ± {_e['band_sd']:.0f}"
+                             if pd.notna(_e.get('band_sd')) else "")
+                if bool(_e.get('projection_live', False)):
+                    # live 12-month forward projection (card_scope.card_row)
+                    _ec2.metric("Projection (next 12 months)",
+                                f"{_e['projection']:.0f}{_band_txt}",
+                                _proj_note, delta_color="off",
+                                help="Live: his expected level over the next 12 "
+                                     "months, the rest of this season included — "
+                                     "career form up to the latest match + "
+                                     "evidence pull + half a year of the role age "
+                                     "curve. Live once his club has played 6 "
+                                     "league matches. Band = the role's 1 SD of "
+                                     "past next-season forecast error "
+                                     "(conservative for 12 months). 'abs' applies "
+                                     "the stricter recruit league delta.")
+                else:
+                    _ec2.metric("Projection (next season)",
+                                f"{_e['projection']:.0f}{_band_txt}",
+                                _proj_note, delta_color="off",
+                                help="Career + evidence pull + role age curve. "
+                                     "Band = role-specific 1 SD of realized "
+                                     "error. 'abs' applies the stricter "
+                                     "recruit league delta.")
             else:
                 _ec2.metric("Projection", "—",
                             help="No projection (age unknown or below floor).")
@@ -857,8 +874,10 @@ def render():
                                     config={'displayModeBar': False})
                     st.caption(
                         "Career ratings by season (league and age on "
-                        "each tick) flowing into next season's "
-                        "projection. Shaded fan = ±1 SD of the "
+                        "each tick) flowing into the projection — "
+                        "live (next 12 months, half a season past the "
+                        "current one) once his club has played 6 league "
+                        "matches, else next season's. Shaded fan = ±1 SD of the "
                         "projection; a faded segment bridges seasons "
                         "missing from our data; green band = typical "
                         "peak ages for the role (literature-based "
@@ -1087,7 +1106,14 @@ def render():
                     if _op_e is not None:
                         _op_tiles.append(
                             ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
-                        if pd.notna(_op_e.get('projection')):
+                        if bool(_op_e.get('projection_now_live', False)):
+                            # the card's live 12-month projection
+                            _op_bn = _op_e.get('band_now')
+                            _op_tiles.append(
+                                ("Projection (12 mo)",
+                                 f"{float(_op_e['projection_now']):.0f}"
+                                 + (f" +/- {float(_op_bn):.0f}" if pd.notna(_op_bn) else "")))
+                        elif pd.notna(_op_e.get('projection')):
                             _op_tiles.append(
                                 ("Projection",
                                  f"{float(_op_e['projection']):.0f} "
@@ -2065,7 +2091,9 @@ def render():
                 with st.expander(f"**{group_name} Stats**", expanded=default_expanded):
 
                     stats_subset_series = stats_to_display[metrics_to_show]
-                    stats_subset_series = stats_subset_series[stats_subset_series != 0]
+                    # blank (NaN: e.g. no projection yet) hides like 0
+                    stats_subset_series = stats_subset_series[stats_subset_series.notna()
+                                                              & (stats_subset_series != 0)]
 
                     if stats_subset_series.empty:
                         st.text("No data for this category.")

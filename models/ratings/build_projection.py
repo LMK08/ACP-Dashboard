@@ -605,7 +605,8 @@ for _, x in out[out['mins_played'] >= 1200].nsmallest(5, 'proj_delta').iterrows(
 # rating and evidence weigh them by their minutes). A completed season keeps
 # its midpoint age + one step; a live row takes his age at the data date + one
 # step, so nobody is aged twice. For the per-season / live engine value;
-# `projection` above (today's forecast, boards and cards) is unchanged.
+# `projection` above (today's summer forecast, cards) is unchanged. The live
+# rows' FORWARD projection (projection_fwd, below) is what the boards show.
 # Replay-tested on 2024/25: ACP_Official/live_value_plan_2026-10-29.md.
 _ms = _cut(pd.read_parquet(_DASH / 'matches_summary.parquet', columns=['seasonId', 'dateutc', 'status']))
 _live_d = pd.to_datetime(_ms.loc[_ms['seasonId'].isin(IN_PROGRESS_SEASON_IDS)
@@ -650,6 +651,28 @@ def _rec_asof(y):
 
 asof_out['projection_asof_abs'] = asof_out['projection_asof'] - np.where(
     asof_out['league'] == 'CAMP', asof_out['yr'].map(_rec_asof), 0.0)
+
+# ---- FORWARD projection (the boards' live projection, 2026-11-12) -----------
+# Lucas: the live projection should mean "how good a player will be moving
+# forward (including for the rest of the current season)", not next season.
+# projection_fwd = his expected level over the 12 months after the data date:
+# the shipped predictor's level part — unchanged; its fit (end of a season ->
+# the next season) already looks ~7 months ahead — plus FWD_YEARS of the age
+# step (the middle of the window) instead of a full year. SHIP 'full' adds
+# age_delta with coefficient 1, so this is exact. Live rows only: a completed
+# season's forward look is its summer projection. A change of DEFINITION, not
+# a fit: no rest-of-season ratings exist to fit or test it on (~0.5 pts mean
+# change vs projection_asof on 2026/27). The value keeps projection_asof.
+FWD_YEARS = 0.5
+_fwd = asof_out['projection_asof'] - (1.0 - FWD_YEARS) * asof_out['age_delta']
+asof_out['projection_fwd'] = _fwd.where(asof_out['is_live'].astype(bool))
+asof_out['projection_fwd_abs'] = asof_out['projection_fwd'] - np.where(
+    asof_out['league'] == 'CAMP', asof_out['yr'].map(_rec_asof), 0.0)
+# its band: TODAY's role band (G2 above: test residuals of the shipped
+# predictor on pairs that ended before the live season) — the same ± the
+# summer projection shows, so the band doesn't jump when live starts
+asof_out['band_fwd'] = (asof_out['value_role'].map(band).fillna(float(te2['resid'].std()))
+                        .where(asof_out['projection_fwd'].notna()))
 asof_out.to_parquet(_OUT / 'acp_projection_asof.parquet')
 print(f"\n  acp_projection_asof.parquet ({len(asof_out):,} player-seasons; "
       f"{int(asof_out['is_live'].sum())} live as of {AS_OF.date() if AS_OF is not None else '—'})")

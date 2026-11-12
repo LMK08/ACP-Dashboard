@@ -1494,6 +1494,15 @@ def load_player_engine():
         df['value_w_now'] = df['playerId'].map(_w)
         df['value_mins_now'] = df['playerId'].map(_m)
         df['value_label_now'] = df['playerId'].map(_lab)
+        # Today's PROJECTION (2026-11-12, Lucas: "how good a player will be
+        # moving forward, including for the rest of the current season"):
+        # his live row's 12-month forward projection once his club has
+        # played enough league matches (live_ok), else the summer projection
+        # of the row picked above (models/ratings/projection_now.py).
+        # merge_engine_values_into_stats shows it whenever the scope holds
+        # the season in progress or is All Seasons. An engine without fwd
+        # gets no projection_now columns.
+        df = engine_projection_now.attach(df, _pick)
         meta = {}
         if os.path.exists(meta_path):
             with open(meta_path) as f:
@@ -1775,6 +1784,12 @@ def render_tendencies_panel(player_id, season_ids, st_container=None):
     return True
 
 
+# Engine columns the scored stats frame keeps as NaN ('no rating / no
+# projection') instead of the frame-wide fillna(0) — readers test .notna()
+# to decide whether a scope has projections at all (2026-11-12).
+ENGINE_NAN_COLUMNS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
+                      'ACP Projection (abs)', 'Projection Band', 'Evidence Weight']
+
 ENGINE_DISPLAY_METRICS = ['ACP Rating', 'ACP Rating (abs)', 'ACP Projection',
                            'ACP Projection (abs)', 'Projection Band',
                            'Evidence Weight', 'Offensive Value %',
@@ -1820,10 +1835,14 @@ ENGINE_METRIC_HELP = {
                         "equivalent): a Campeonato rating shifts down by the "
                         "league gap fitted at each engine rebuild "
                         f"({_RATING_GAP_PTS} points).",
-    'ACP Projection': "Forecast of next season's ACP Rating from career "
-                      "form, how far that record can be trusted (Evidence "
-                      "Weight) and an age curve peaking around 26. Same "
-                      "50 ± 17 scale.",
+    'ACP Projection': "Forecast of the ACP Rating from career form, how far "
+                      "that record can be trusted (Evidence Weight) and an "
+                      "age curve peaking around 26. Same 50 ± 17 scale. A "
+                      "past season: next season's level, as forecast at its "
+                      "end. The season in progress and All Seasons: the "
+                      "expected level over the next 12 months (the rest of "
+                      "this season included), live from every match so far "
+                      "once his club has played 6 league matches.",
     'ACP Projection (abs)': "ACP Projection on the Liga 3-equivalent scale: "
                             "a Campeonato projection shifts down by the "
                             f"recruit league gap ({_PROJECTION_GAP_PTS} "
@@ -1966,6 +1985,15 @@ we trust it** (an evidence weight from career minutes), and an **age curve**
   season, with a **± band** (uncertainty) and a **"seasons ago"** marker — a
   player last seen a few seasons back keeps the same central estimate but a
   **wider band**, not a lower number.
+
+**During the season in progress** (and on All Seasons) the boards and tables
+show the **live** projection: his expected level over the **next 12 months**,
+the rest of this season included, from his whole career up to the latest
+match — the same forecast with half a year of the age curve instead of a full
+one. It starts once his club has played 6 league matches; before that the
+summer projection stands. The player card shows the same live number
+('Projection (next 12 months)'); the € value stays on the forecast of next
+season.
 
 *In short: the **Index** shows who's been best; the **Projection** shows who's
 the best bet going forward, with the uncertainty made explicit.*
@@ -2162,6 +2190,24 @@ def engine_rows_for_scope(season_ids=None):
              .drop(columns='_has_proj'))
 
 
+def scope_shows_todays_projection(season_ids):
+    """True when merge_engine_values_into_stats shows TODAY's projection
+    (projection_now: live forward once valued, else summer) for this scope:
+    All Seasons (None) or a scope holding the season in progress, AND an
+    engine built with the forward projection. The boards' 'live' wording
+    reads this, so it can never claim live for a summer number."""
+    if not engine_projection_now.includes_live_season(season_ids):
+        return False
+    eng, _ = load_player_engine()
+    return eng is not None and 'projection_now_abs' in eng.columns
+
+
+def scope_projection_is_headline(season_ids):
+    """Whether the boards / Overview tables rank this scope by projection
+    (models/ratings/projection_now.projection_is_headline); else by rating."""
+    return engine_projection_now.projection_is_headline(season_ids)
+
+
 def season_short_label(season_id):
     """'25/26' for a seasonId ('' when unknown)."""
     from league_config import SEASON_YEAR
@@ -2228,13 +2274,20 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     # value: All Seasons -> today's; a season -> as of that season (the
     # live season before it is valued -> today's), with the evidence behind it
     _val = engine_value_for_scope(e, season_ids)
+    # projection: a scope holding the season in progress, or All Seasons,
+    # shows TODAY's (load_player_engine: the live 12-month forward
+    # projection once his club has played enough matches, else the summer
+    # one); a past season keeps the projection made at its end
+    _proj, _proj_abs, _band = e['projection'], e['projection_abs'], e['band_sd']
+    if 'projection_now_abs' in e.columns and scope_shows_todays_projection(season_ids):
+        _proj, _proj_abs, _band = e['projection_now'], e['projection_now_abs'], e['band_now']
     out = pd.DataFrame({
         'playerId': e['playerId'],
         'ACP Rating': e['acp_rating'],
         'ACP Rating (abs)': e['acp_rating_abs'],
-        'ACP Projection': e['projection'],
-        'ACP Projection (abs)': e['projection_abs'],
-        'Projection Band': e['band_sd'],
+        'ACP Projection': _proj,
+        'ACP Projection (abs)': _proj_abs,
+        'Projection Band': _band,
         'Evidence Weight': e['w_evidence'],
         'Offensive Value %': e['off_pct'] * 100.0,
         'Def Quality Grade %': e['qual_pct'] * 100.0,
@@ -3589,6 +3642,7 @@ from models.value.cvi import *
 from models.similarity import similar_players  # like-for-like search (pure)
 from models.strength import sos as sos_model  # strength-of-schedule adjustment (pure)
 from models.ratings.card_scope import card_row as engine_card_row  # ACP Index card row-pick (pure)
+from models.ratings import projection_now as engine_projection_now  # today's (live forward) projection (pure)
 from models.templates import percentiles as template_pct  # minutes floor + sub-floor radar scoring (pure)
 from models.value import availability as value_availability  # engine value's playing-time factor (pure)
 from models.value.eur_intervals import (  # engine value + fee-calibrated interval
@@ -5278,6 +5332,9 @@ def _engine_build_stamp():
     # @date — today's value is aged to the week's Monday (eur_intervals.
     # value_date), so the cached frames refresh week by week with it
     base = f"{base} value:asof2@{value_date().date()}"
+    # proj:fwd1 — the live / All-Seasons projection is today's forward one,
+    # and the engine rating / projection columns stay NaN (2026-11-12)
+    base = f"{base} proj:fwd1"
     return f"{base} avail:{av_stamp}" if av_stamp else base
 
 
@@ -5400,6 +5457,11 @@ def calculate_player_percentiles_and_scores(_player_data_df, _position_groups, _
 
     print("✅ Player percentiles and scores calculated.")
     result = data.fillna(0)
+    # the engine rating / projection stay NaN = 'none' (2026-11-12): a 0 here
+    # made the role board and the Overview tables rank all of 2026/27 on a
+    # tie of zero projections
+    _keep_nan = [c for c in ENGINE_NAN_COLUMNS if c in data.columns]
+    result[_keep_nan] = data[_keep_nan]
 
     # Save to disk cache for fast loading on restart (canonical frame only)
     if not disk_cache:
