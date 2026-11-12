@@ -611,6 +611,12 @@ def render():
         h[4].metric('W-D-L', f"{s['wins']}-{s['draws']}-{s['losses']}")
     st.caption(f"{league_name} matches in the data, {rows.date.min():%b %Y} to {rows.date.max():%b %Y}. "
                "Matches he coached in other leagues are not here.")
+    tm_id = getattr(info, 'tm_coach_id', None) if info is not None else None
+    if tm_id is not None and not pd.isna(tm_id):
+        note = '' if bool(getattr(info, 'resolved', True)) else (
+            ' The event data does not name this coach; the name is the manager Transfermarkt lists at his '
+            'clubs on the dates of his matches.')
+        st.caption(f'[Transfermarkt profile](https://www.transfermarkt.com/-/profil/trainer/{int(tm_id)}).' + note)
 
     lr = table[table.coachId == coach_id]
     league_row = lr.iloc[0].to_dict() if len(lr) else None

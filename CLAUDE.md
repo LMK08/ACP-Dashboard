@@ -366,6 +366,21 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   (`line_up`: matches vote for the formation, each match's eleven is
   fitted to its slots from `models/coaches/team_match_places.parquet`).
   `team.formation` is no longer loaded or read anywhere.
+  TRANSFERMARKT LINKS for teams and coaches (2026-11,
+  `transfermarkt_links.py`; players are `scrape_transfermarkt.py`).
+  Steps `teams` → `managers` → `verify` → `coaches`, run by hand (not in
+  a workflow): `valuations/tm_team_links.csv` (teamId → club id; set
+  status `manual` to settle a `review` row, it is never overwritten),
+  `tm_team_managers.parquet` (each club's manager stints),
+  `tm_coach_links.csv` (coachId → Transfermarkt coach, matched by the
+  DATES of his matches against those stints: ≥ 70 % and ≥ 8 matches, else
+  `review`). `verify` checks each club link against coaches the provider
+  did name and sends doubtful ones to `review`. `build_coaches.
+  add_transfermarkt` names a coach Wyscout cannot name from an `ok` link
+  (hand overrides still win; a stale name is withdrawn) and stamps
+  `tm_coach_id`. zerozero.pt is NOT usable: it sits behind a human-
+  verification check. Requests: plain client name, ~2 s apart, capped,
+  stop at the first refusal — keep it that way.
   NO NOISY PREDICTIVE METRICS on the coach pages (Lucas 2026-11). A
   measure read as a TRAIT (style, flexibility, tendencies: how he sets
   up, what he would do again) is shown only if a coach's odd and even

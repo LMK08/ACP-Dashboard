@@ -54,6 +54,10 @@ __pycache__/
 !models/coaches/coach_team_match.parquet
 !models/coaches/coach_player.parquet
 !models/coaches/team_match_places.parquet
+# Transfermarkt links for teams and coaches (transfermarkt_links.py)
+!valuations/tm_team_links.csv
+!valuations/tm_team_managers.parquet
+!valuations/tm_coach_links.csv
 !models/coaches/coach_names.csv
 
 # System files

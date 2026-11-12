@@ -46,6 +46,7 @@ COACHES = HERE / 'coaches.parquet'
 TEAM_MATCH = HERE / 'coach_team_match.parquet'
 COACH_PLAYER = HERE / 'coach_player.parquet'
 PLACES = HERE / 'team_match_places.parquet'
+TM_COACH_LINKS = ROOT / 'valuations' / 'tm_coach_links.csv'
 NAME_OVERRIDES = HERE / 'coach_names.csv'
 
 LOADER_DB = ROOT.parents[1] / 'wyscout_loader' / 'data' / 'wyscout.duckdb'
@@ -161,6 +162,35 @@ def build_coach_match(match_ids, use_api=True):
     return have
 
 
+def add_transfermarkt(coaches, links_path=None):
+    """Stamp each coach with his Transfermarkt profile id where the link is
+    sure (transfermarkt_links.py: one Transfermarkt coach in charge on the
+    dates of at least 70 % of his matches), and give a coach the event
+    provider could not name that profile's name and date of birth. A coach
+    the provider did name keeps that name."""
+    out = coaches.copy()
+    out['tm_coach_id'] = pd.array([pd.NA] * len(out), dtype='Int64')
+    # start every coach the provider could not name from 'unnamed': a name an
+    # earlier run took from a link that is no longer sure must not linger
+    blank = ~out.resolved.astype(bool)
+    out.loc[blank, 'name'] = 'Coach #' + out.loc[blank, 'coachId'].astype(str)
+    out.loc[blank, 'fullName'] = ''
+    out.loc[blank, 'birthDate'] = None
+    path = Path(links_path) if links_path else TM_COACH_LINKS
+    if not path.exists():
+        return out
+    ln = pd.read_csv(path)
+    ln = ln[(ln.status == 'ok') & ln.tm_coach_id.notna()].drop_duplicates('coachId').set_index('coachId')
+    hit = out.coachId.isin(ln.index)
+    out.loc[hit, 'tm_coach_id'] = out.loc[hit, 'coachId'].map(ln.tm_coach_id).astype('Int64')
+    unnamed = hit & (~out.resolved.astype(bool) | out.name.astype(str).str.startswith('Coach #'))
+    out.loc[unnamed, 'name'] = out.loc[unnamed, 'coachId'].map(ln.tm_name)
+    out.loc[unnamed, 'fullName'] = out.loc[unnamed, 'name']
+    dob = pd.to_datetime(out.loc[unnamed, 'coachId'].map(ln.tm_dob), errors='coerce').dt.strftime('%Y-%m-%d')
+    out.loc[unnamed, 'birthDate'] = dob.where(dob.notna(), out.loc[unnamed, 'birthDate'])
+    return out
+
+
 def build_coaches(coach_ids, use_api=True):
     have = pd.read_parquet(COACHES) if COACHES.exists() else pd.DataFrame(
         columns=['coachId', 'name', 'fullName', 'birthDate', 'nationality', 'resolved'])
@@ -201,7 +231,9 @@ def build_coaches(coach_ids, use_api=True):
                              'birthDate': None, 'nationality': None, 'resolved': False}
     out['coachId'] = out['coachId'].astype('int64')
     out['resolved'] = out['resolved'].astype(bool)
-    # hand-kept names for coaches the API refuses (coachId,name[,nationality,birthDate])
+    out = add_transfermarkt(out)
+    # hand-kept names for coaches the API refuses (coachId,name[,nationality,birthDate]);
+    # these win over everything above
     if NAME_OVERRIDES.exists():
         ov = pd.read_csv(NAME_OVERRIDES).dropna(subset=['coachId', 'name']).set_index('coachId')
         hit = out.coachId.isin(ov.index)
@@ -825,7 +857,10 @@ def main():
           f'{cm.loc[cm.coachId > 0, "coachId"].nunique()} coaches')
     print('coach details …')
     co = build_coaches(set(cm.coachId), use_api=not args.no_api)
-    print(f'  {int(co.resolved.sum())} of {len(co)} named')
+    named = ~co.name.astype(str).str.startswith('Coach #')
+    print(f'  {int(named.sum())} of {len(co)} named ({int(co.resolved.sum())} by the event provider, '
+          f'{int((named & ~co.resolved).sum())} from Transfermarkt or by hand); '
+          f'{int(co.tm_coach_id.notna().sum())} linked to a Transfermarkt profile')
     print('team-match table …')
     tm = build_team_match(cm)
     print(f'  {len(tm)} team-matches, {tm.has_events.mean():.1%} with events, '
