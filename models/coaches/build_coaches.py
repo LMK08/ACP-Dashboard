@@ -68,6 +68,7 @@ EVENT_COLS = [
     'opponentTeam.id', 'pass.accurate', 'pass.length', 'possession.id',
     'possession.types', 'possession.team.id', 'shot.isGoal', 'shot.xg',
     'possession.attack.flank', 'infraction.yellowCard', 'infraction.redCard',
+    'possession.duration',
 ]
 LATE_MINUTE = 75          # 'late' = from this minute of the second half on
 SHORT_GOAL_KICK = 25.0    # metres: goal kicks split cleanly into ~15 m and ~55 m
@@ -307,6 +308,14 @@ def team_match_counts(ev):
     out = f.groupby(['matchId', 'teamId']).sum()
     poss = ev.loc[own_poss, ['matchId', 'team.id', 'possession.id']].drop_duplicates()
     out['possessions'] = poss.groupby(['matchId', 'team.id']).size().reindex(out.index).fillna(0)
+    # tempo (2026-11): seconds the side had the ball, each own possession's length once
+    if 'possession.duration' in ev.columns:
+        dur = ev.loc[own_poss, ['matchId', 'team.id', 'possession.id']].assign(
+            d=pd.to_numeric(ev.loc[own_poss, 'possession.duration'], errors='coerce'))
+        dur = dur.dropna(subset=['d']).drop_duplicates(['matchId', 'team.id', 'possession.id'])
+        out['poss_seconds'] = dur.groupby(['matchId', 'team.id'])['d'].sum().reindex(out.index)
+    else:
+        out['poss_seconds'] = np.nan
     counter = np.asarray(ptypes.has('counterattack')) & own_poss.to_numpy()
     cp = ev.loc[counter, ['matchId', 'team.id', 'possession.id']].drop_duplicates()
     out['counterattacks'] = cp.groupby(['matchId', 'team.id']).size().reindex(out.index).fillna(0)

@@ -471,3 +471,32 @@ def test_built_tendency_counts_are_consistent():
     prev = t.groupby('teamId').points.shift()
     ok = t.prev_points.notna()
     assert (t.prev_points[ok] == prev[ok]).all() and (t.rest_days.dropna() > 0).all()
+
+
+def test_tempo_possession_length_and_fixed_eleven():
+    """The three tendencies added 2026-11-12 (odd/even agreement on Liga 3:
+    0.90, 0.89, 0.82). Plain arithmetic on the per-match counts."""
+    from models.coaches import coach_metrics as cm
+    rows = pd.DataFrame({
+        'has_events': [True, True, True, False],
+        'passes': [300, 500, 400, 999], 'possessions': [100, 120, 80, 999],
+        'poss_seconds': [1200.0, 1800.0, np.nan, 9999.0],     # a match with no possession time is left out
+    })
+    t = cm.tendencies(rows)
+    assert t['tempo'] == pytest.approx(800 / (3000 / 60))            # 16 passes per minute on the ball
+    assert t['poss_length'] == pytest.approx(3000 / 220)
+    assert np.isnan(t['core_xi_share'])                             # no line-up sheets in these rows
+
+    same = list(range(1, 12))
+    rotated = list(range(1, 11)) + [99]
+    sheets = [same] * 6 + [rotated] * 2                              # 8 sheets: 88 starts, 12 different starters
+    one = pd.DataFrame({'teamId': 1, 'seasonId': 10, 'xi': sheets})
+    # the 11 most-used: ten ever-presents (8 each) + player 11 (6) = 86 of 88 starts
+    assert cm.core_xi_share(one) == pytest.approx(86 / 88)
+    assert cm.core_xi_share(pd.DataFrame({'teamId': 1, 'seasonId': 10, 'xi': [same] * 8})) == 1.0
+    # too few sheets in a club-season: not counted; a short sheet is ignored
+    assert np.isnan(cm.core_xi_share(one.head(7)))
+    two = pd.concat([one, pd.DataFrame({'teamId': 2, 'seasonId': 10, 'xi': [same] * 8 + [[1, 2, 3]]})])
+    assert cm.core_xi_share(two) == pytest.approx((86 / 88 * 8 + 1.0 * 8) / 16)
+    for k in ('tempo', 'poss_length', 'core_xi_share'):
+        assert k in cm.TENDENCIES

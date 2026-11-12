@@ -259,9 +259,11 @@ def _tendencies(s, table, rel, league_name):
                "there. Percentile = share of those coaches with a lower number: it says high or low, not good "
                "or bad. 'How stable' is the agreement between a coach's odd and even matches (1 = a fixed "
                "trait, 0 = noise). Only measures at 0.40 or better are shown.")
-    st.caption("Attack flanks use the event provider's tag on each attack. These are read as how he sets his "
-               "sides up, so only measures that repeat are shown. Tested and left out as noise: line-up "
-               "changes after a defeat.")
+    st.caption("Attack flanks use the event provider's tag on each attack. Tempo and possession length use "
+               "the time his side had the ball; fixed eleven counts starts on the line-up sheets, per club "
+               "and season. These are read as how he sets his sides up, so only measures that repeat are "
+               "shown. Tested and left out as noise: line-up changes after a defeat, substitutions by the "
+               "score, and how possession and long balls shift between leading and trailing.")
 
 
 def _in_game(s, rel, table, league_name):

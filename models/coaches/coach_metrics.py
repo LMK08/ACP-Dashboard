@@ -472,6 +472,9 @@ TENDENCIES = {
     'left_minus_right':   ('Left ↔ right balance', 'share of attacks down the left minus down the right', '{:+.0%}'),
     'fouls_pm':           ('Fouls per match', 'fouls committed', '{:.1f}'),
     'cards_pm':           ('Cards per match', 'yellow and red cards', '{:.2f}'),
+    'tempo':              ('Tempo', 'passes per minute his side has the ball', '{:.1f}'),
+    'poss_length':        ('Possession length', 'seconds per possession', '{:.1f}'),
+    'core_xi_share':      ('Fixed eleven', 'share of all starts taken by his 11 most-used starters', '{:.0%}'),
 }
 
 
@@ -483,11 +486,35 @@ NOISY_HIDDEN = {
     # tables) are shown whatever their agreement, and say that they describe.
     'opp_adapt': 0.26, 'style_travel': 0.0,
     'changes_after_loss': 0.06, 'loss_reaction': -0.20,
+    # tested 2026-11-12 and not built (Lucas: too noisy): substitutions by the
+    # score (first sub when behind / ahead at half-time 0.05 / 0.06, the gap
+    # 0.09, share of subs made while trailing -0.23) and style by the score
+    # (possession leading minus trailing -0.05, long-ball share 0.17).
     # kept at Lucas's request although below the line: set-piece share of xG
     # (0.02, in Style), first-substitution minute (0.30) and substitutions
     # before 60' (0.37), both in the In-game record.
 }
 MIN_SHOWN_RELIABILITY = 0.40
+
+
+MIN_CORE_MATCHES = 8       # line-up sheets of one club-season for the fixed-eleven share
+
+
+def core_xi_share(rows):
+    """Share of all starts taken by the eleven most-used starters, per
+    club-season with enough line-up sheets, averaged by matches. 1.0 = the
+    same eleven every match; lower = more rotation."""
+    if not {'xi', 'teamId', 'seasonId'} <= set(rows.columns):
+        return np.nan
+    num = den = 0.0
+    for _, g in rows.groupby(['teamId', 'seasonId']):
+        sheets = [list(x) for x in g.xi if isinstance(x, (list, np.ndarray)) and len(x) == 11]
+        if len(sheets) < MIN_CORE_MATCHES:
+            continue
+        starts = pd.Series([p for x in sheets for p in x]).value_counts()
+        num += starts.iloc[:11].sum() / starts.sum() * len(sheets)
+        den += len(sheets)
+    return num / den if den else np.nan
 
 
 def tendencies(rows):
@@ -511,6 +538,12 @@ def tendencies(rows):
         h, a = ev[ev.side == 'home'].xgd, ev[ev.side == 'away'].xgd
         if len(h) >= 3 and len(a) >= 3:
             out['home_minus_away'] = float(h.mean() - a.mean())
+    if len(ev) and 'poss_seconds' in ev.columns:
+        t = ev[ev.poss_seconds.notna() & (ev.poss_seconds > 0)]
+        if len(t):
+            out['tempo'] = _div(t.passes.sum(), t.poss_seconds.sum() / 60.0)
+            out['poss_length'] = _div(t.poss_seconds.sum(), t.possessions.sum())
+    out['core_xi_share'] = core_xi_share(rows)
     if {'prev_points', 'xi_changes'} <= set(rows.columns):
         x = rows.dropna(subset=['xi_changes', 'prev_points'])
         lost, won = x[x.prev_points == 0].xi_changes, x[x.prev_points == 3].xi_changes

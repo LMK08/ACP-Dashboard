@@ -505,6 +505,12 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   fouls, cards, xGD after 75', home-away gap, changes after a defeat,
   reaction to defeat; each with league median, percentile and odd/even
   stability (0.79 … -0.20; the noisy ones are labelled, not hidden).
+  Added 2026-11-12: tempo (passes per minute on the ball, 0.90),
+  possession length (0.89; `poss_seconds` = each own possession's
+  duration once) and fixed eleven (`core_xi_share`, share of starts taken
+  by the 11 most-used starters per club-season with 8+ sheets, 0.82).
+  Tested the same day and NOT built (Lucas: too noisy): substitutions by
+  the score and style leading vs trailing (-0.23 … 0.17).
   Coach RATING: feasibility tested 2026-11 and NOT built — after removing
   squad quality (starters' prior OBV/90, r 0.66 with team-season xGD) a
   coach's residual does not agree between odd and even matches of one
