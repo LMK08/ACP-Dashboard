@@ -449,7 +449,11 @@ def test_tendencies_arithmetic():
     assert t['fouls_pm'] == pytest.approx(15.0) and t['cards_pm'] == pytest.approx(2.25)
     assert t['late_xgd'] == pytest.approx(0.05) and t['home_minus_away'] == pytest.approx(1.5)
     assert t['changes_after_loss'] == pytest.approx(4.5) and t['loss_reaction'] == pytest.approx(3.5)
-    assert set(t) == set(cm.TENDENCIES)
+    # every shown tendency is produced (subs_used comes from summarise); nothing shown is a hidden-noisy one
+    assert set(cm.TENDENCIES) - {'subs_used'} <= set(t)
+    assert not set(cm.TENDENCIES) & set(cm.NOISY_HIDDEN) and not set(cm.FLEX_KEYS) & set(cm.NOISY_HIDDEN)
+    assert not set(cm.STYLE_METRICS) & set(cm.NOISY_HIDDEN)
+    assert all(v < cm.MIN_SHOWN_RELIABILITY for v in cm.NOISY_HIDDEN.values())
     # no events, no result history: everything blank, nothing raised
     assert all(pd.isna(v) for v in cm.tendencies(rows.assign(has_events=False, prev_points=np.nan)).values())
 

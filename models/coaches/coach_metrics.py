@@ -41,7 +41,6 @@ STYLE_METRICS = {
     'forward_share':     ('Forward-pass share', 'more direct', '{:.1%}'),
     'cross_share':       ('Crosses per final-third pass', 'more crossing', '{:.1%}'),
     'counters':          ('Counter-attacks per match', 'more counters', '{:.2f}'),
-    'set_piece_share':   ('Set-piece share of xG', 'more reliant on set pieces', '{:.1%}'),
     'press_intensity':   ('Pressing (PPDA, lower = more)', 'more pressing', '{:.1f}'),
     'def_height':        ('Defensive-action height', 'defends higher up', '{:.1f}'),
     'high_recoveries':   ('Final-third recoveries per match', 'wins it high', '{:.1f}'),
@@ -179,7 +178,7 @@ Z_COLS = ['z_possession', 'z_field_tilt', 'z_passes_per_poss', 'z_long_share',
           'z_forward_share', 'z_def_height', 'z_log_ppda']
 AGE_CUTS = (21, 23)
 MIN_ADAPT_MATCHES = 12    # context-adjusted matches needed for the opponent-adaptation slope
-FLEX_KEYS = ('eff_formations', 'formation_change_rate', 'back_line_change_rate', 'opp_adapt')
+FLEX_KEYS = ('eff_formations', 'formation_change_rate', 'back_line_change_rate')
 # the settled ↔ fluid score: formation variety alone, the steadiest of the
 # three formation measures with our own formations (formations.py, 2026-11:
 # 0.64 odd/even on Liga 3, against 0.49 and 0.43 for the two change rates,
@@ -191,7 +190,6 @@ FLEX_LABELS = {
     'formation_change_rate': ('Changes structure between matches',
                               'share of matches starting with a different back line or number of strikers'),
     'back_line_change_rate': ('Switches back three ↔ four', 'share of matches changing the back line'),
-    'opp_adapt': ('Adapts style to the opponent', 'style shift per unit of opponent strength, beyond the league norm'),
 }
 
 
@@ -461,25 +459,39 @@ def coach_table(tm, competition_id=None, min_matches=MIN_MATCHES):
 # Tested and left out (2026-11): rotation on short rest (Liga 3 has almost no
 # matches within 4 days of the last one - 2 coaches had enough) and a
 # 'late-game lift' (late xGD per 90 minus the rest; 0.21 / -0.04 odd/even).
+# SHOWN measures only. A measure is shown when a coach's odd and even matches
+# agree at 0.40 or better on Liga 3 (Lucas 2026-11: no noisy metrics on the
+# pages). NOISY_HIDDEN lists what that rule removed, with the number.
 TENDENCIES = {
     # key: (label, what it counts, format)
+    'subs_used':          ('Substitutions per match', 'changes made', '{:.1f}'),
     'gk_short_share':     ('Goal kicks played short', 'share of goal kicks under 25 m', '{:.0%}'),
     'corner_short_share': ('Corners played short', 'share of corners under 20 m', '{:.0%}'),
     'centre_attack_share': ('Attacks through the middle', 'share of attacks not down a flank', '{:.0%}'),
     'left_minus_right':   ('Left ↔ right balance', 'share of attacks down the left minus down the right', '{:+.0%}'),
     'fouls_pm':           ('Fouls per match', 'fouls committed', '{:.1f}'),
     'cards_pm':           ('Cards per match', 'yellow and red cards', '{:.2f}'),
-    'late_xgd':           ('xG difference after 75\'', 'per match, last quarter of an hour', '{:+.2f}'),
-    'home_minus_away':    ('Home ↔ away gap', 'xG difference per match at home minus away', '{:+.2f}'),
-    'changes_after_loss': ('Line-up changes after a defeat', 'starters changed following a loss', '{:.1f}'),
-    'loss_reaction':      ('Reaction to defeat', 'changes after a loss minus after a win', '{:+.1f}'),
 }
+
+
+NOISY_HIDDEN = {
+    # key: odd/even agreement on Liga 3 when it was hidden (2026-11)
+    'pts_minus_xpts': 0.10, 'impact': 0.34, 'set_piece_share': 0.02, 'opp_adapt': 0.26,
+    'late_xgd': 0.37, 'home_minus_away': 0.02, 'changes_after_loss': 0.06, 'loss_reaction': -0.20,
+    'first_sub_min': 0.30, 'subs_before_60_share': 0.37, 'ppg_after_trailing': 0.31,
+    'led_not_won_share': 0.05, 'xgd90_lead': 0.17, 'xgd90_draw': 0.28, 'xgd90_trail': 0.00,
+    'xgd90_vs_exp_lead': 0.08, 'xgd90_vs_exp_draw': 0.20, 'xgd90_vs_exp_trail': -0.42,
+    'min_share_lead': 0.00, 'min_share_draw': -0.11, 'min_share_trail': -0.21,
+    'player_development': 0.13, 'youth_progress': 0.22,
+}
+MIN_SHOWN_RELIABILITY = 0.40
 
 
 def tendencies(rows):
     """More ways a coach's sides behave (2026-11). Every one is a plain share
     or per-match mean over his matches; none is a quality judgement."""
-    out = {k: np.nan for k in TENDENCIES}
+    out = {k: np.nan for k in TENDENCIES if k != 'subs_used'}        # subs_used comes from summarise
+    out.update({k: np.nan for k in ('late_xgd', 'home_minus_away', 'changes_after_loss', 'loss_reaction')})
     ev = rows[rows.has_events]
     need = {'goal_kicks', 'corners', 'attacks_left', 'fouls', 'xg_late', 'opp_xg_late'}
     if len(ev) and need <= set(ev.columns):

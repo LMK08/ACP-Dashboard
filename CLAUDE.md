@@ -366,6 +366,17 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   (`line_up`: matches vote for the formation, each match's eleven is
   fitted to its slots from `models/coaches/team_match_places.parquet`).
   `team.formation` is no longer loaded or read anywhere.
+  NO NOISY METRICS on the coach pages (Lucas 2026-11): a measure is shown
+  only if a coach's odd and even matches agree at ≥ 0.40 on Liga 3
+  (`coach_metrics.MIN_SHOWN_RELIABILITY`); `NOISY_HIDDEN` lists what that
+  removed with its number — points − expected, change since arrival,
+  set-piece share, opponent adaptation, the whole In-game section (sub
+  timing, game-state xGD raw and vs expected, points after trailing),
+  late xGD, home-away gap, reaction to defeat, the player-development
+  tables and the style-travel block. They are still computed (and
+  tested) so one can be restored by adding it back to the page. Points
+  per match / W-D-L stay as the plain record. Measure a new metric's
+  odd/even agreement before adding it.
   Tendencies section (2026-11): `coach_metrics.TENDENCIES` / `tendencies()`
   — goal kicks short, short corners, centre attacks, left-right balance,
   fouls, cards, xGD after 75', home-away gap, changes after a defeat,
