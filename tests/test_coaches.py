@@ -91,9 +91,13 @@ def test_coached_by_shares():
                         'first_date': pd.Timestamp('2025-01-01'), 'last_date': pd.Timestamp('2025-03-01'),
                         'matches': 8, 'starts': 6, 'minutes': 540.0, 'obv_minutes': 540.0, 'obv': 0.6, 'points': 12,
                         'prior_minutes': 900.0, 'prior_obv': 0.5, 'team_matches_in_span': 10,
-                        'named': 9, 'named_played': 8}])
+                        'named': 9, 'named_played': 8, 'team_minutes_in_span': 950.0}])
     r = cm.coached_by(cp, None, 5).iloc[0]
     assert r.start_share == pytest.approx(0.6) and r.played_share == pytest.approx(0.8)
+    assert r.minutes_share == pytest.approx(540 / 950)
+    # never above 100 %, and blank without a denominator
+    assert cm.minutes_share(cp.assign(team_minutes_in_span=500.0)).iloc[0] == 1.0
+    assert cm.minutes_share(cp.assign(team_minutes_in_span=0.0)).isna().all()
     assert r.obv90 == pytest.approx(0.1) and r.team_ppg_with == pytest.approx(1.5)
     dev, summ = cm.player_development(cp, 7)
     assert summ['n'] == 1 and dev.change.iloc[0] == pytest.approx(0.1 - 0.05)

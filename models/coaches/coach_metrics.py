@@ -509,9 +509,19 @@ def player_development(cp, coach_id, min_minutes=MIN_PLAYER_MINUTES):
     return r.sort_values('change', ascending=False), summary
 
 
+def minutes_share(cp):
+    """Share of the minutes available: the player's exact minutes over the
+    minutes the coach's matches lasted between his first and last appearance
+    under him."""
+    if 'team_minutes_in_span' not in cp.columns:
+        return pd.Series(np.nan, index=cp.index)
+    return (cp.minutes / cp.team_minutes_in_span.where(cp.team_minutes_in_span > 0)).clip(upper=1.0)
+
+
 def coached_by(cp, tm, player_id):
-    """The coaches a player has played under: exact minutes, share of the
-    coach's matches he played in while he was there, OBV per 90."""
+    """The coaches a player has played under: exact minutes, the share of
+    the available minutes he played and of the matches he started while he
+    was there, OBV per 90."""
     r = cp[cp.playerId == player_id].copy()
     if r.empty:
         return r
@@ -519,7 +529,7 @@ def coached_by(cp, tm, player_id):
     r['start_share'] = r.starts / r.team_matches_in_span
     r['played_share'] = r.matches / r.team_matches_in_span
     r['played_when_named'] = r.named_played / r.named
-    r['minutes_share'] = r.minutes / (r.team_matches_in_span * 90.0)
+    r['minutes_share'] = minutes_share(r)
     r['team_ppg_with'] = r.points / r.matches
     return r.sort_values('last_date', ascending=False).reset_index(drop=True)
 

@@ -338,11 +338,15 @@ def _squad(app, s, cp, coach_id, table, league_name):
     used = cp[cp.coachId == coach_id].sort_values('minutes', ascending=False).head(15)
     if not used.empty:
         st.markdown('**Most-used players**')
+        pct = st.column_config.ProgressColumn(format='percent', min_value=0, max_value=1)
         t = pd.DataFrame({'Player': used.playerId.map(_name), 'Team': used.team,
-                          'Minutes': used.minutes.round(0).astype(int), 'Matches': used.matches,
-                          'Starts': used.starts.astype(int),
-                          'Matches played while there': (used.matches / used.team_matches_in_span).map('{:.0%}'.format)})
-        st.dataframe(t, hide_index=True, use_container_width=True)
+                          'Minutes': used.minutes.round(0).astype(int),
+                          'Share of minutes': cm.minutes_share(used),
+                          'Matches started': used.starts / used.team_matches_in_span})
+        st.dataframe(t, hide_index=True, use_container_width=True,
+                     column_config={'Share of minutes': pct, 'Matches started': pct})
+        st.caption("Both shares are of the coach's matches between the player's first and last appearance under "
+                   "him: his exact minutes over the minutes those matches lasted, and the matches he started.")
 
 
 def _matches(rows):
@@ -474,17 +478,19 @@ def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name, tabl
         t = pd.DataFrame({
             'Player': mine.playerId.map(_name), 'Team': mine.team,
             'Age at first match': mine.age_first.round(1),
-            'Minutes': mine.minutes.round(0).astype(int), 'Matches': mine.matches,
-            'Starts': mine.starts.astype(int), 'Named in squad': mine.named,
-            'Played when named': mine.named_played / mine.named,
+            'Minutes': mine.minutes.round(0).astype(int),
+            'Share of minutes': cm.minutes_share(mine),
+            'Matches started': mine.starts / mine.team_matches_in_span,
+            'Named in squad': mine.named,
             'First Liga 3 match in the data': np.where(debut, 'yes', ''),
         })
         st.dataframe(t, hide_index=True, use_container_width=True, height=min(38 * (len(t) + 1), 400),
-                     column_config={'Played when named': st.column_config.ProgressColumn(
-                         format='percent', min_value=0, max_value=1)})
+                     column_config={k_: st.column_config.ProgressColumn(format='percent', min_value=0, max_value=1)
+                                    for k_ in ('Share of minutes', 'Matches started')})
         st.caption(f"{int(debut.sum())} of these players made their first appearance in our data under him "
                    "(counted from 2022/23, after one season of history). A young player named but never used "
-                   "is in the squad share above, not in this table.")
+                   "is in the squad share above, not in this table. Share of minutes and matches started are "
+                   "of the coach's matches between the player's first and last appearance under him.")
 
     st.markdown('**Do they get better under him?**')
     dev, summ = cm.youth_development(pairs, coach_id, cut)
@@ -652,20 +658,19 @@ def render_coached_by(player_id):
     t = pd.DataFrame({
         'Coach': [coach_name(coaches, c) for c in r.coachId], 'Team': r.team,
         'From': r.first_date.dt.strftime('%b %Y'), 'To': r.last_date.dt.strftime('%b %Y'),
-        'Matches': r.matches, 'Starts': r.starts.astype(int),
         'Minutes': r.minutes.round(0).astype(int),
-        'Started (of coach\'s matches)': r.start_share,
-        'Played in': r.played_share,
+        'Share of minutes': r.minutes_share,
+        'Matches started': r.start_share,
         'OBV/90': r.obv90.round(3),
         'Team pts/match with him': r.team_ppg_with.round(2),
     })
     pct = st.column_config.ProgressColumn(format='percent', min_value=0, max_value=1)
     ev = st.dataframe(t, hide_index=True, use_container_width=True, on_select='rerun',
                       selection_mode='single-row', key=f'coached_by_{int(player_id)}',
-                      column_config={'Started (of coach\'s matches)': pct, 'Played in': pct})
-    st.caption("Exact minutes. 'Started' and 'Played in' count the coach's matches between the player's "
-               "first and last appearance under him — how much that coach relied on him while he was "
-               "available. OBV/90 is on-ball value per 90 in those matches; under 450 minutes it is noise. "
+                      column_config={'Share of minutes': pct, 'Matches started': pct})
+    st.caption("Exact minutes. Share of minutes and matches started are of the coach's matches between the "
+               "player's first and last appearance under him (his minutes over the minutes those matches "
+               "lasted) — how much that coach relied on him while he was available. OBV/90 is on-ball value per 90 in those matches; under 450 minutes it is noise. "
                "Select a row to open the coach.")
     sel = getattr(getattr(ev, 'selection', None), 'rows', None) or []
     if sel:

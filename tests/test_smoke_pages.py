@@ -462,7 +462,8 @@ def test_profile_coached_by_section(app):
     assert tables or any('known coach' in str(i.value) for i in app.info)
     if tables:
         t = tables[0].value
-        assert (t['Minutes'] > 0).all() and (t['Starts'] <= t['Matches']).all()
+        assert (t['Minutes'] > 0).all() and t['Share of minutes'].dropna().between(0, 1).all() \
+            and t['Matches started'].dropna().between(0, 1).all()
         print(t.to_string())
     section.set_value('Player Radar')
     app.run()

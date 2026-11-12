@@ -761,10 +761,17 @@ def build_coach_player(tm):
     out['named_played'] = out.named_played.fillna(0)
     # team matches the coach took between the player's first and last match
     # under him — the denominator for 'share of matches played'
-    span = tm[tm.coachId > 0][['coachId', 'teamId', 'date']]
+    # and the minutes those matches lasted — the denominator for 'share of
+    # minutes'. A match's length is the longest exact minutes any of the
+    # side's players has in it (stoppage time included, as in the player's
+    # own minutes); matches without exact minutes add nothing to it.
+    length = pm.groupby(['matchId', 'teamId']).minutes.max().rename('match_minutes').reset_index()
+    span = tm[tm.coachId > 0][['coachId', 'teamId', 'date', 'matchId']].merge(length, on=['matchId', 'teamId'], how='left')
     m = out[['coachId', 'teamId', 'playerId', 'first_date', 'last_date']].merge(span, on=['coachId', 'teamId'])
     m = m[(m.date >= m.first_date) & (m.date <= m.last_date)]
-    out = out.merge(m.groupby(['coachId', 'teamId', 'playerId']).size().rename('team_matches_in_span').reset_index(),
+    g = m.groupby(['coachId', 'teamId', 'playerId'])
+    out = out.merge(pd.concat([g.size().rename('team_matches_in_span'),
+                               g.match_minutes.sum().rename('team_minutes_in_span')], axis=1).reset_index(),
                     on=['coachId', 'teamId', 'playerId'], how='left')
     out.to_parquet(COACH_PLAYER, index=False)
     return out
