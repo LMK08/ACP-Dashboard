@@ -437,9 +437,17 @@ def fetch_squads(limit=None, cap=900):
         columns=['teamId', 'year', 'squad_rows', 'stat_rows'])
     seen = set(zip(done.teamId, done.year))
     todo = todo[[k not in seen for k in zip(todo.teamId, todo.year)]] if len(todo) else todo
+    squads = pd.read_parquet(SQUADS) if SQUADS.exists() else pd.DataFrame()
+    # a Transfermarkt club-season already stored under ANOTHER of our team ids is left alone:
+    # storing it again would move its rows to the new id and unlink the first club's players
+    if len(squads) and len(todo):
+        stored = set(zip(squads.tm_team_id.astype(int), squads.year.astype(int)))
+        clash = [(int(t), int(y)) in stored for t, y in zip(todo.tm_team_id, todo.year)]
+        for r in todo[clash].itertuples():
+            print(f'  SKIPPED {r.year} {r.team}: Transfermarkt club {int(r.tm_team_id)} is already stored for another team id')
+        todo = todo[[not c for c in clash]]
     if limit:
         todo = todo.head(limit)
-    squads = pd.read_parquet(SQUADS) if SQUADS.exists() else pd.DataFrame()
     stats = pd.read_parquet(CLUB_SEASONS) if CLUB_SEASONS.exists() else pd.DataFrame()
     cl = Client(cap)
     try:

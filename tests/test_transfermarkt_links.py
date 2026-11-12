@@ -272,3 +272,30 @@ def test_career_tables():
     _, _, shown = pc.career(1, links, seasons, tr)
     assert shown.To.tolist() == ['Y']
     assert pc.career(2, links, seasons, tr.assign(playerId=2))[2].empty
+
+
+def test_squad_fetch_leaves_a_club_season_stored_under_another_team_id(monkeypatch, tmp_path):
+    """Two of our team ids pointing at one Transfermarkt club must not move the
+    stored squad to the second id (that unlinked the first club's players)."""
+    import transfermarkt_links as tl
+    links, squads = tmp_path / 'links.csv', tmp_path / 'squads.parquet'
+    pd.DataFrame([dict(teamId=1, team='First', tm_team_id=50.0, tm_slug='c', status='ok'),
+                  dict(teamId=2, team='Second', tm_team_id=50.0, tm_slug='c', status='manual')]).to_csv(links, index=False)
+    pd.DataFrame([dict(tm_player_id=7, name='A', dob='1990-01-01', teamId=1, team='First',
+                       tm_team_id=50, year=2024)]).to_parquet(squads, index=False)
+    monkeypatch.setattr(tl, 'TEAM_LINKS', links)
+    monkeypatch.setattr(tl, 'SQUADS', squads)
+    monkeypatch.setattr(tl, 'CLUB_SEASONS', tmp_path / 'stats.parquet')
+    monkeypatch.setattr(tl, 'CLUB_SEASONS_DONE', tmp_path / 'done.csv')
+    monkeypatch.setattr(tl, 'our_club_seasons',
+                        lambda: pd.DataFrame([dict(teamId=2, seasonId=9, year=2024)]))
+
+    class NoRequests:
+        def __init__(self, cap):
+            pass
+
+        def get(self, path):
+            raise AssertionError('no request expected: ' + path)
+    monkeypatch.setattr(tl, 'Client', NoRequests)
+    tl.fetch_squads()
+    assert pd.read_parquet(squads).teamId.tolist() == [1]
