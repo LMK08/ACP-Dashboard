@@ -26,6 +26,14 @@ def season_id_list(active_season_ids):
     return None
 
 
+def _latest_by_year(rows):
+    """The player's row of the latest football year (most minutes within it)."""
+    from league_config import SEASON_YEAR
+    y = rows['seasonId'].map(lambda s: SEASON_YEAR.get(int(s)) if pd.notna(s) else None)
+    return rows.assign(_y=pd.to_numeric(y, errors='coerce')).sort_values(
+        ['_y', 'mins_played'], kind='stable').iloc[-1]
+
+
 def card_row(eng_df, player_id, active_season_ids):
     """Resolve the card's engine row for ``player_id`` in a scope.
 
@@ -48,6 +56,13 @@ def card_row(eng_df, player_id, active_season_ids):
     """
     erows = (eng_df[eng_df['playerId'] == int(player_id)]
              if eng_df is not None and not eng_df.empty else pd.DataFrame())
+    # 'Career (as-of)' on EVERY row (2026-11-12): the engine's career_asof sits
+    # only on projection rows (blank for the live season and for older seasons
+    # of players who kept playing); asof_career — build_projection's as-of
+    # career, identical wherever both exist — fills the rest
+    if not erows.empty and 'asof_career' in erows.columns:
+        erows = erows.assign(career_asof=pd.to_numeric(erows['career_asof'], errors='coerce')
+                             .fillna(pd.to_numeric(erows['asof_career'], errors='coerce')))
     e_sids = season_id_list(active_season_ids)
     career_view = False
     if erows.empty:
@@ -91,6 +106,10 @@ def card_row(eng_df, player_id, active_season_ids):
         if 'mins_lineup' in escope.columns:
             e['mins_lineup'] = float(pd.to_numeric(
                 escope['mins_lineup'], errors='coerce').fillna(0.0).sum())
+        # career (as-of) = through his LATEST season by football year (seasonId
+        # is not chronological across leagues), never a minutes-weighted mean
+        # of each season's career-to-date
+        e['career_asof'] = _latest_by_year(escope).get('career_asof', e.get('career_asof'))
     proj_src = erows[erows['projection'].notna()]
     if not proj_src.empty:
         pr = proj_src.sort_values('seasonId').iloc[-1]

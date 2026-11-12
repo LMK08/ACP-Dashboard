@@ -277,3 +277,18 @@ def test_fan_before_the_live_switch_keeps_the_summer_projection():
     rows, labels = _fan_rows(live=False)
     ser = pi.projection_series(rows, labels)
     assert not ser['live'] and ser['proj'] == 61.0 and ser['band'] == 8.0 and ser['x_proj'] == 2027
+
+
+# ---- the card's 'Career (as-of)' (2026-11-12: "Yes, fix it") ----------------
+
+def test_card_career_asof_is_filled_for_every_season():
+    from models.ratings.card_scope import card_row
+    eng = _card_engine()
+    # the engine's own career_asof sits on projection rows only; asof_career on every row
+    eng['career_asof'] = np.where(eng['projection'].notna(), 57.0, np.nan)
+    eng['asof_career'] = np.where(eng['projection'].notna(), 57.0, 59.5)
+    assert card_row(eng, 1, L3_26)['e']['career_asof'] == 59.5     # live season: was blank
+    assert card_row(eng, 1, L3_25)['e']['career_asof'] == 57.0     # its own season's career
+    assert card_row(eng, 1, None)['e']['career_asof'] == 59.5      # All Seasons: through the latest season
+    old = eng.drop(columns=['asof_career'])                          # engine before the rebuild
+    assert np.isnan(card_row(old, 1, L3_26)['e']['career_asof'])

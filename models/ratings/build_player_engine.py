@@ -147,10 +147,14 @@ if _asof_path.exists():
     a['fwd_band'] = a['band_fwd'] if 'band_fwd' in a.columns else np.nan
     a = a[['playerId', 'seasonId', 'projection_asof', 'projection_asof_abs', 'age', 'w_evidence',
            'evidence', 'is_live', 'as_of_date', 'value_role',
-           'projection_fwd', 'projection_fwd_abs', 'fwd_band']].rename(columns={
+           'projection_fwd', 'projection_fwd_abs', 'fwd_band', 'career_asof']].rename(columns={
         'projection_asof_abs': 'asof_abs', 'age': 'asof_age', 'w_evidence': 'asof_w_evidence',
         'evidence': 'asof_evidence', 'is_live': 'asof_live', 'as_of_date': 'asof_date',
-        'value_role': 'asof_role', 'projection_fwd': 'fwd', 'projection_fwd_abs': 'fwd_abs'})
+        'value_role': 'asof_role', 'projection_fwd': 'fwd', 'projection_fwd_abs': 'fwd_abs',
+        # asof_career: every row's career as of its season (the live one at the
+        # data date) — the card's 'Career (as-of)'; the engine's own career_asof
+        # sits only on projection rows (identical where both exist), 2026-11-12
+        'career_asof': 'asof_career'})
     eng = eng.merge(a, on=['playerId', 'seasonId'], how='left')
     eng['asof_live'] = eng['asof_live'].fillna(False).astype(bool)
     _ms = pd.read_parquet(_DASH / 'matches_summary.parquet',

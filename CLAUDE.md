@@ -238,6 +238,13 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
     forward projection in every scope — label 'Projection (next 12
     months)', ± `band_now`, Evidence = the live row's `asof_w_evidence`.
     Otherwise the summer 'Projection (next season)' as before.
+  - **Career (as-of)** on the card: the engine's `career_asof` sits only on
+    projection rows, so card_row fills every row from `asof_career`
+    (build_player_engine: the as-of file's career, identical where both
+    exist) — the live season and older seasons of players who kept playing
+    were blank until 2026-11-12. All Seasons shows the career through his
+    latest season by football year (`_latest_by_year`), never a
+    minutes-weighted mean of careers-to-date.
   - **Band:** build_projection writes `band_fwd` on live rows = TODAY's
     role band (G2: the summer projection's role SD of next-season forecast
     error, on pairs that ended before the live season), so the ± doesn't
