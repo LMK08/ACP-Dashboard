@@ -53,6 +53,7 @@ __pycache__/
 !models/coaches/coaches.parquet
 !models/coaches/coach_team_match.parquet
 !models/coaches/coach_player.parquet
+!models/coaches/team_match_places.parquet
 !models/coaches/coach_names.csv
 
 # System files

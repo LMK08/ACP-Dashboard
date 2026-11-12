@@ -337,3 +337,96 @@ def test_touches_from_events_and_restarts():
     assert t[t.received].iloc[0].playerId == 2 and t[t.received].iloc[0].x == 60.0
     assert t.loc[t.playerId == 3, 'restart'].all()
     assert t.loc[(t.playerId == 2) & ~t.received, 't'].iloc[0] == pytest.approx(50.5 + fm.HALF_GAP)
+
+
+# ───────────────────── line-ups from our own formations ─────────────────────
+def _own_tables(monkeypatch, shapes_by_match):
+    """Fake coach tables: one side (team 1) laid out in the given shape per match."""
+    import own_formations as of
+    form, by_match = {}, {}
+    for mid, (shape, ids) in shapes_by_match.items():
+        rows = [{'matchId': mid, 'teamId': 1, 'playerId': ids[0], 'x': 8.0, 'y': 50.0, 'n': 20, 'gk': True}]
+        for pid, (d, w) in zip(ids[1:], fm.TEMPLATES[shape]):
+            rows.append({'matchId': mid, 'teamId': 1, 'playerId': pid, 'x': 80 * d, 'y': 50 + 40 * w, 'n': 20, 'gk': False})
+        form[(mid, 1)] = shape
+        by_match[(mid, 1)] = pd.DataFrame(rows)
+    monkeypatch.setattr(of, 'tables', lambda: (form, by_match))
+    return of
+
+
+def test_line_up_votes_and_slots(monkeypatch):
+    a = list(range(100, 111))
+    b = [100] + list(range(201, 211))               # same keeper, ten other outfielders
+    of = _own_tables(monkeypatch, {1: ('4-4-2', a), 2: ('3-5-2', b), 3: ('4-4-2', a)})
+    names = {p: f'P{p}' for p in a + b}
+    f, xi = of.line_up(1, {1: 1.0, 2: 1.0, 3: 1.0}, names)
+    assert f == '4-4-2' and list(xi) == ['GK'] + fm.SLOTS['4-4-2']
+    assert xi['GK']['id'] == 100
+    # the two matches in that shape put each of their players in his own slot
+    assert [xi[s]['id'] for s in fm.SLOTS['4-4-2']] == a[1:]
+    # recency weights: 3 for the 3-5-2 match beats 1 + 1; a 3-3 tie goes to the heaviest match
+    assert of.line_up(1, {1: 1.0, 2: 3.0, 3: 1.0}, names)[0] == '3-5-2'
+    assert of.line_up(1, {1: 1.0, 2: 2.0, 3: 1.0}, names)[0] == '3-5-2'
+    # one player per slot, excluded names never appear, unread matches are ignored
+    f, xi = of.line_up(1, {1: 3.0, 2: 2.0, 9: 5.0}, names, exclude={'P101'})
+    ids = [v['id'] for v in xi.values()]
+    assert f == '4-4-2' and len(ids) == len(set(ids)) and 101 not in ids
+    assert of.line_up(1, {9: 1.0}, names) == (None, {})
+    assert of.line_up(None, {1: 1.0}, names) == (None, {})
+
+
+def test_assign_slots_sides_and_any_shape():
+    """Low y is the left side; a side can be fitted to a shape it was not read as."""
+    ids = np.arange(1, 11)
+    xy = np.array([(80 * d, 50 + 40 * w) for d, w in fm.TEMPLATES['4-3-3']])
+    s = fm.assign_slots(ids, xy, '4-3-3')
+    assert s == dict(zip(fm.SLOTS['4-3-3'], ids.tolist()))
+    assert xy[s['LB'] - 1][1] < 50 < xy[s['RB'] - 1][1]
+    other = fm.assign_slots(ids, xy, '3-5-2')
+    assert sorted(other) == sorted(fm.SLOTS['3-5-2']) and sorted(other.values()) == ids.tolist()
+    for shape, slots in fm.SLOTS.items():
+        assert len(slots) == len(fm.TEMPLATES[shape]) == 10 and len(set(slots)) == 10
+
+
+def test_line_up_merges_aliased_ids(monkeypatch):
+    """A player whose events sit under two ids votes as one, under the
+    canonical id the app's names use."""
+    import own_formations as of
+    a = list(range(100, 111))
+    b = a[:1] + [901] + a[2:]                      # match 2 has player 101 under his other id
+    of = _own_tables(monkeypatch, {1: ('4-4-2', a), 2: ('4-4-2', b)})
+    monkeypatch.setattr(of, 'PLAYER_ID_ALIASES', {901: 101})
+    names = {p: f'P{p}' for p in a}                # the app only knows the canonical id
+    f, xi = of.line_up(1, {1: 1.0, 2: 3.0}, names)
+    assert [v['id'] for v in xi.values()] == a and len(xi) == 11
+    assert of.read_matches(1, [5, 2, 1]) == [2, 1]
+
+
+def test_slots_exist_in_both_drawing_tables():
+    import re
+    import pitch_visualizations as pv
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'app.py')).read()
+    for shape, slots in fm.SLOTS.items():
+        assert set(pv.FORMATION_COORDS[shape]['positions']) == {'GK', *slots}, shape
+        m = re.search(r"    '%s': \{\s*'positions': \[([^\]]*)\]" % re.escape(shape), src)
+        assert m, f'{shape} missing from app.FORMATION_COORDS'
+        assert {p.strip().strip("'") for p in m.group(1).split(',')} == {'GK', *slots}, shape
+
+
+PLACES_BUILT = os.path.join(os.path.dirname(os.path.abspath(bc.__file__)), 'team_match_places.parquet')
+
+
+@pytest.mark.skipif(not (os.path.exists(BUILT) and os.path.exists(PLACES_BUILT)), reason='coach tables not built')
+def test_line_up_from_the_built_tables():
+    """The real parquet round trip: keys, the gk flag and a full eleven."""
+    import own_formations as of
+    form, by_match = of.tables()
+    # (places also exist for a few matches the team-match table leaves out;
+    # line_up only ever uses matches that have a formation)
+    assert form and len(set(by_match) & set(form)) > 0.9 * len(form)
+    (mid, tid), g = next((k, v) for k, v in by_match.items() if k in form)
+    assert len(g) == 11 and int(g.gk.sum()) == 1
+    names = {int(p): f'P{int(p)}' for p in g.playerId}
+    names.update({of._canonical(p): f'P{int(p)}' for p in g.playerId})
+    f, xi = of.line_up(tid, {mid: 1.0}, names)
+    assert f == form[(mid, tid)] and len(xi) == 11 and len({v['id'] for v in xi.values()}) == 11

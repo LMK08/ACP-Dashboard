@@ -346,84 +346,27 @@ def _get_projected_starting_xi(events_df, matches_df, team_name, season_id):
 
     tm = tm[tm['score'].apply(_is_played)].copy()
     tm['dateutc'] = pd.to_datetime(tm['dateutc'], errors='coerce')
-    tm = tm.sort_values('dateutc', ascending=False).head(3)
+    tm = tm.sort_values('dateutc', ascending=False)
 
     if tm.empty:
         return '4-4-2', {}
 
-    # Formation from most recent match
-    most_recent_id = tm.iloc[0]['matchId']
-    mr_events = events_df[
-        (events_df['matchId'] == most_recent_id) &
-        (events_df['team.name'] == team_name)
-    ]
-
-    formation = '4-4-2'
-    if 'team.formation' in mr_events.columns:
-        fc = mr_events['team.formation'].dropna().value_counts()
-        # team.formation is categorical: value_counts reports zero-count
-        # categories too — drop them or an absent formation wins the fallback
-        fc = fc[fc > 0]
-        if len(fc) > 0:
-            formation = fc.index[0]
-
-    # Weighted position-player mapping
-    weights = [3, 2, 1]
-    position_player_weights = {}
-
-    for i, (_, match) in enumerate(tm.iterrows()):
-        if i >= 3:
-            break
-        w = weights[i]
-        me = events_df[
-            (events_df['matchId'] == match['matchId']) &
-            (events_df['team.name'] == team_name)
-        ]
-        if 'player.position' not in me.columns or 'player.name' not in me.columns:
-            continue
-
-        pp = me.drop_duplicates(subset=['player.name'])[
-            ['player.position', 'player.name', 'player.id']
-        ].dropna()
-
-        for _, row in pp.iterrows():
-            pos = row['player.position']
-            name = row['player.name']
-            pid = row['player.id']
-            if pos not in position_player_weights:
-                position_player_weights[pos] = Counter()
-            position_player_weights[pos][(name, pid)] += w
-
-    # Filter out transferred players before building the XI
-    transferred = _get_transferred_players()
-    for pos in position_player_weights:
-        position_player_weights[pos] = Counter({
-            k: v for k, v in position_player_weights[pos].items()
-            if k[0] not in transferred
-        })
-
-    # Build raw XI from best player per position
-    raw_xi = {}
-    for pos, counter in position_player_weights.items():
-        if counter:
-            best = counter.most_common(1)[0][0]
-            raw_xi[pos] = {'name': best[0], 'id': best[1]}
-
-    # Constrain to exactly 11 unique players (10 outfield + 1 GK)
-    # Use the formation slots to pick the best 11 via map_players_to_formation
-    # which already handles dedup and tier-based matching.
-    # If there are >11 unique players, the mapping naturally selects 11.
-    # Remove any duplicate names (same player listed under multiple positions)
-    seen_names = set()
-    starting_xi = {}
-    for pos, info in raw_xi.items():
-        if info['name'] not in seen_names:
-            starting_xi[pos] = info
-            seen_names.add(info['name'])
-
-    # If still >11, let map_players_to_formation in app.py handle it
-    # (it maps to exactly 11 formation slots and discards extras)
-
+    # Formation and line-up from OUR OWN read of touch locations
+    # (own_formations.py): the three most recent matches that could be read
+    # vote 3-2-1 (a match the coach tables do not have yet, or one too short
+    # to read, is skipped rather than costing a vote), every match's eleven
+    # is fitted to the winning formation's slots, and each slot takes its
+    # strongest vote. No provider formation or position code is used.
+    import own_formations
+    te = events_df[events_df['team.name'] == team_name]
+    tid = own_formations.team_id(te, team_name)
+    recent = own_formations.read_matches(tid, tm['matchId'])[:3]
+    weights = {m: w for m, w in zip(recent, [3, 2, 1])}
+    formation, starting_xi = own_formations.line_up(
+        tid, weights,
+        own_formations.player_names(te, team_name), exclude=_get_transferred_players())
+    if formation is None:
+        return '4-4-2', {}
     return formation, starting_xi
 
 
@@ -1130,6 +1073,10 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             )
             _show_opp_png('formation', pdf_key='formation',
                           extra=(formation, _xi_key), payload=starting_xi)
+
+            st.caption("Formation and slots are our own read of where the starters touched the ball in the "
+                       "last three matches (most recent counts most): the shape with the ball, so a side "
+                       "with a full-back who plays high reads as three at the back.")
 
         with col_subs:
             st.markdown("**Projected Substitutes**")

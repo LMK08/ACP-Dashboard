@@ -649,7 +649,6 @@ def load_data():
             'possession.id', 'possession.eventIndex', 'possession.duration', 'possession.team.name', 'possession.types',
             'infraction.type', 'infraction.yellowCard', 'infraction.redCard',
             'is_dribble_attempt', 'is_custom_dribble_success',
-            'team.formation'
         ]
         # Load parquet, falling back to exclude competitionId if it doesn't exist yet
         try:
@@ -699,7 +698,7 @@ def load_data():
         # type.primary rewrite above ('shot' has to exist as a value first).
         _cat_cols = [
             'type.primary', 'player.name', 'player.position', 'team.name',
-            'opponentTeam.name', 'possession.team.name', 'team.formation',
+            'opponentTeam.name', 'possession.team.name',
             'groundDuel.duelType', 'infraction.type', 'shot.bodyPart',
         ]
         for _cc in _cat_cols:
@@ -3730,6 +3729,11 @@ FORMATION_COORDS = {
         'coords': [(50, 7), (75, 25), (50, 25), (25, 25), (85, 50),
                    (62, 50), (38, 50), (15, 50), (80, 75), (50, 80), (20, 75)]
     },
+    '4-3-1-2': {
+        'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'LCM', 'CDM', 'RCM', 'CAM', 'LST', 'RST'],
+        'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
+                   (70, 48), (50, 40), (30, 48), (50, 62), (62, 78), (38, 78)]
+    },
     '4-1-4-1': {
         'positions': ['GK', 'LB', 'LCB', 'RCB', 'RB', 'CDM', 'LM', 'LCM', 'RCM', 'RM', 'CF'],
         'coords': [(50, 7), (85, 25), (62, 25), (38, 25), (15, 25),
@@ -3843,45 +3847,34 @@ POSITION_SLOT_TO_ROLES = {
 # ==============================================================================
 
 # --- Helper Functions for Team Formation XI Graphic ---
+def _team_line_up(events_df, team_name):
+    """(formation, {slot: {'id', 'name'}}) over the matches in events_df,
+    from our own formations (own_formations.py); (None, {}) if none is read."""
+    import own_formations
+    te = events_df[events_df['team.name'] == team_name]
+    mids = pd.to_numeric(te['matchId'], errors='coerce').dropna().astype('int64').unique()
+    return own_formations.line_up(own_formations.team_id(te, team_name), {int(m): 1.0 for m in mids},
+                                  own_formations.player_names(te, team_name))
+
+
 def get_team_primary_formation(events_df, team_name):
-    """Get the most commonly used formation for a team."""
-    team_events = events_df[events_df['team.name'] == team_name]
-    if 'team.formation' not in team_events.columns:
-        return '4-4-2'
-    formation_counts = team_events['team.formation'].dropna().value_counts()
-    # team.formation is categorical: value_counts lists every category, so
-    # drop zero-count rows or an absent formation could win the fallback.
-    formation_counts = formation_counts[formation_counts > 0]
-    if len(formation_counts) > 0:
-        return formation_counts.index[0]
-    return '4-4-2'  # Default fallback
+    """The side's most-used formation - our own read of touch locations
+    (models/coaches/formations.py), not a provider label. None if no match
+    in scope could be read."""
+    return _team_line_up(events_df, team_name)[0]
+
 
 def get_team_starting_xi(events_df, team_name):
-    """Get the most frequent player at each position for a team."""
-    team_events = events_df[events_df['team.name'] == team_name]
+    """The player most often in each slot of that formation, keyed by slot."""
+    return _team_line_up(events_df, team_name)[1]
 
-    position_players = {}
-    # Include all position codes used in the data (Wyscout format)
-    all_positions = ['GK',
-                     'RB', 'RB5', 'RCB', 'RCB3', 'CB', 'LCB', 'LCB3', 'LB', 'LB5',
-                     'RWB', 'LWB',
-                     'RDMF', 'DMF', 'LDMF', 'RCMF', 'RCMF3', 'CMF', 'LCMF', 'LCMF3',
-                     'RAMF', 'AMF', 'LAMF',
-                     'RW', 'RWF', 'LW', 'LWF',
-                     'RCF', 'CF', 'LCF', 'SS']
-
-    for pos in all_positions:
-        pos_events = team_events[team_events['player.position'] == pos]
-        if len(pos_events) > 0:
-            player_counts = pos_events.groupby(['player.id', 'player.name']).size()
-            if len(player_counts) > 0:
-                top_player = player_counts.idxmax()
-                position_players[pos] = {'id': top_player[0], 'name': top_player[1]}
-
-    return position_players
 
 def map_players_to_formation(starting_xi, formation_slots):
-    """Map actual player positions to formation display slots."""
+    """Map a line-up to formation display slots. A line-up already keyed by
+    slot (own_formations.line_up) is used as it is; the position-code path
+    below remains for callers that still pass provider position codes."""
+    if starting_xi and set(starting_xi) <= set(formation_slots):
+        return {slot: starting_xi.get(slot, {'name': slot, 'id': None}) for slot in formation_slots}
     mapping = {}
 
     # Position equivalencies - which Wyscout positions can fill each formation slot

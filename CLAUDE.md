@@ -361,8 +361,11 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   three). `back3_share` is a stable coach trait (0.91 odd/even). The
   settled ↔ fluid score is formation variety alone (0.64); the change
   rates (0.49 / 0.43) are shown, not scored; an in-match change read was
-  tested and dropped (noise). Team Analysis / Opposition Report / Match
-  Analysis line-up graphics still use Wyscout formation + position codes.
+  tested and dropped (noise). The Team Analysis and Opposition Report
+  line-up graphics use the same read through `own_formations.py`
+  (`line_up`: matches vote for the formation, each match's eleven is
+  fitted to its slots from `models/coaches/team_match_places.parquet`).
+  `team.formation` is no longer loaded or read anywhere.
   Flexibility + Young players sections (2026-11): `flexibility` =
   formation variety / structure change rate / back-line switch (see above),
   plus `opp_adapt` (noise-corrected slope of the context-adjusted style

@@ -331,13 +331,19 @@ def render():
             # (team_events_df, team) i.e. the scope key + team, so the
             # scope pins the XI too — the formation is included because it
             # is cheap and makes the key self-evident.
-            _show_team_png('formation_xi', extra=(primary_formation,),
+            _show_team_png('formation_xi',
+                           extra=(primary_formation, 'own',
+                                  tuple((s_, p_.get('id')) for s_, p_ in starting_xi.items())),
                            payload=starting_xi)
         else:
-            st.info("Formation data not available for this team.")
+            st.info("No formation could be read for this team in this scope.")
 
     with col_xi2:
-        st.write(f"**Formation:** {primary_formation}")
+        st.write(f"**Formation:** {primary_formation or '–'}")
+        st.caption("Our own read: where the starters touched the ball up to the first substitution or red "
+                   "card, matched to seven reference shapes. It is the shape with the ball, so a side with a "
+                   "full-back who plays high reads as three at the back. Each slot shows the player most "
+                   "often placed there.")
 
         # Build roster table with unique players
         if starting_xi:

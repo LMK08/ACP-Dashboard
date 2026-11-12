@@ -57,6 +57,17 @@ TEMPLATES = {
     '3-4-3':   _CB3 + _WB + [(0.50, -0.22), (0.50, 0.22), (0.76, -0.60), (0.76, 0.60), (0.90, 0.0)],
     '3-4-1-2': _CB3 + _WB + [(0.48, -0.22), (0.48, 0.22), (0.70, 0.0), (0.88, -0.25), (0.88, 0.25)],
 }
+# the line-up slot each reference place stands for, in TEMPLATES order (the
+# names the dashboard's line-up graphics draw; negative width = left)
+SLOTS = {
+    '4-4-2':   ['LCB', 'RCB', 'LB', 'RB', 'LCM', 'RCM', 'LM', 'RM', 'LST', 'RST'],
+    '4-3-3':   ['LCB', 'RCB', 'LB', 'RB', 'CDM', 'LCM', 'RCM', 'LW', 'RW', 'CF'],
+    '4-2-3-1': ['LCB', 'RCB', 'LB', 'RB', 'LDM', 'RDM', 'CAM', 'LAM', 'RAM', 'CF'],
+    '4-3-1-2': ['LCB', 'RCB', 'LB', 'RB', 'CDM', 'LCM', 'RCM', 'CAM', 'LST', 'RST'],
+    '3-5-2':   ['CB', 'LCB', 'RCB', 'LWB', 'RWB', 'CDM', 'LCM', 'RCM', 'LST', 'RST'],
+    '3-4-3':   ['CB', 'LCB', 'RCB', 'LM', 'RM', 'LCM', 'RCM', 'LW', 'RW', 'CF'],
+    '3-4-1-2': ['CB', 'LCB', 'RCB', 'LM', 'RM', 'LCM', 'RCM', 'CAM', 'LST', 'RST'],
+}
 STRIKERS = {'4-4-2': 2, '4-3-3': 1, '4-2-3-1': 1, '4-3-1-2': 2, '3-5-2': 2, '3-4-3': 1, '3-4-1-2': 2}
 
 RESTARTS = ('corner', 'free_kick', 'throw_in', 'goal_kick', 'penalty')
@@ -107,6 +118,16 @@ def _clock(ev):
     return t + HALF_GAP * (ev['matchPeriod'].astype(str) == '2H')
 
 
+def assign_slots(ids, xy, shape):
+    """Ten outfield players and their places → {slot: playerId} for `shape`
+    (any reference shape, not only the best-fitting one), by the same
+    one-to-one assignment the fit uses."""
+    p = _standardise(xy)
+    d = ((p[:, None, :] - _T[shape][None, :, :]) ** 2).sum(axis=2)
+    r, c = linear_sum_assignment(d)
+    return {SLOTS[shape][j]: int(ids[i]) for i, j in zip(r, c)}
+
+
 def touches(ev):
     """Long table of touches: one row per action and one per open-play pass
     received. Columns matchId, teamId, playerId, t (minutes on one clock), x,
@@ -139,7 +160,8 @@ def _places(g):
 
 
 def _shape_of(g):
-    """Fit one side over one stretch. None when it cannot be read."""
+    """Fit one side over one stretch → (fit, places) or None when it cannot
+    be read. `places` is _places() with a `gk` flag on the deepest player."""
     a = _places(g)
     if len(a) != 11:
         return None
@@ -147,15 +169,18 @@ def _shape_of(g):
     out = a.drop(index=gk)
     if out.n.min() < MIN_TOUCHES:
         return None
-    return fit_shape(out[['x', 'y']].to_numpy())
+    return fit_shape(out[['x', 'y']].to_numpy()), a.assign(gk=a.index == gk)
 
 
-def team_match_shapes(tch, red_minutes=None):
-    """One row per side per match: formation, fit cost, margin and the
-    length of the window read. `tch` is touches(); `red_minutes` maps
-    (matchId, teamId) → minute of the side's first red card."""
+def shapes_and_places(tch, red_minutes=None):
+    """(shapes, places). shapes: one row per side per match with formation,
+    fit cost, margin and the length of the window read. places: one row per
+    starter of every match that was read - matchId, teamId, playerId, x, y,
+    n, gk - the eleven places the formation was fitted on. `tch` is
+    touches(); `red_minutes` maps (matchId, teamId) → minute of the side's
+    first red card."""
     red_minutes = red_minutes or {}
-    rows = []
+    rows, places = [], []
     for (mid, tid), g in tch.groupby(['matchId', 'teamId'], sort=False):
         first = g.groupby('playerId').t.min().sort_values()
         row = {'matchId': mid, 'teamId': tid, 'formation': None, 'formation_cost': np.nan,
@@ -183,11 +208,19 @@ def team_match_shapes(tch, red_minutes=None):
         if end - start < MIN_WINDOW_MIN:
             continue
         w = g[(g.t >= start) & (g.t < end) & g.playerId.isin(starters)]
-        fit = _shape_of(w)
-        if fit is None:
+        got = _shape_of(w)
+        if got is None:
             continue
-        row['formation'], row['formation_cost'], row['formation_margin'] = fit
-    return pd.DataFrame(rows)
+        row['formation'], row['formation_cost'], row['formation_margin'] = got[0]
+        places.append(got[1].reset_index().assign(matchId=mid, teamId=tid))
+    cols = ['matchId', 'teamId', 'playerId', 'x', 'y', 'n', 'gk']
+    pl = pd.concat(places, ignore_index=True)[cols] if places else pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows), pl
+
+
+def team_match_shapes(tch, red_minutes=None):
+    """The shapes half of shapes_and_places()."""
+    return shapes_and_places(tch, red_minutes)[0]
 
 
 def red_card_minutes(ev):
@@ -200,5 +233,5 @@ def red_card_minutes(ev):
 
 
 def formations_from_events(ev):
-    """Events (EVENT_COLS) → one row per side per match."""
-    return team_match_shapes(touches(ev), red_card_minutes(ev))
+    """Events (EVENT_COLS) → (shapes, places), see shapes_and_places()."""
+    return shapes_and_places(touches(ev), red_card_minutes(ev))

@@ -45,6 +45,7 @@ COACH_MATCH = HERE / 'coach_match.parquet'
 COACHES = HERE / 'coaches.parquet'
 TEAM_MATCH = HERE / 'coach_team_match.parquet'
 COACH_PLAYER = HERE / 'coach_player.parquet'
+PLACES = HERE / 'team_match_places.parquet'
 NAME_OVERRIDES = HERE / 'coach_names.csv'
 
 LOADER_DB = ROOT.parents[1] / 'wyscout_loader' / 'data' / 'wyscout.duckdb'
@@ -669,7 +670,10 @@ def build_team_match(coach_match):
     # formations are OUR OWN read of touch locations (formations.py): no
     # provider formation or position label is read anywhere in this build
     print('  formations …')
-    shapes = formations_from_events(pd.read_parquet(ROOT / 'raw_events.parquet', columns=FORMATION_EVENT_COLS))
+    shapes, places = formations_from_events(pd.read_parquet(ROOT / 'raw_events.parquet', columns=FORMATION_EVENT_COLS))
+    # the eleven places each formation was fitted on: the line-up graphics
+    # (own_formations.py) place players from these
+    places.to_parquet(PLACES, index=False)
     tm = tm.merge(shapes[['matchId', 'teamId', 'formation', 'formation_margin']],
                   on=['matchId', 'teamId'], how='left')
     del ev
