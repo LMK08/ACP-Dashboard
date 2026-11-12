@@ -14,6 +14,7 @@ name: Engine Rebuild (ACP ratings/projections)
 permissions:
   contents: write
   actions: write      # dispatches deploy_to_hf.yml after committing
+  issues: write       # the alert job opens an issue when a rebuild fails
 
 on:
   workflow_run:
@@ -299,3 +300,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run deploy_to_hf.yml --ref main
+
+      - name: OBV coverage (every match in raw_events has OBV rows)
+        # After the commit + deploy on purpose: whatever was rebuilt still
+        # ships, and a match without OBV fails the job so the alert below
+        # fires. The match report hides its OBV sections for such a match.
+        working-directory: Match_Reports_API/Dashboard
+        run: python scripts/check_obv_coverage.py
+
+  alert:
+    # A failed rebuild used to go unnoticed: 1-9 Nov 2026 seven nightly runs
+    # failed and the match reports lost OBV for 20 matches. Open (or add to)
+    # one issue so the repo owner gets an email. Validate-only dispatches are
+    # watched by whoever started them and do not alert.
+    needs: [check-inputs, rebuild-engine]
+    if: ${{ always() && (github.event_name == 'workflow_run' || inputs.deploy == 'true') && (needs.check-inputs.result == 'failure' || needs.rebuild-engine.result == 'failure' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WHAT: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure') && 'The scheduled data update failed, so the engine rebuild did not run.' || 'The engine rebuild failed.' }}
+        run: |
+          TITLE="Engine rebuild is failing - match-report OBV and ratings are going stale"
+          BODY="$WHAT New matches get no OBV, ratings or projections until a rebuild succeeds. Run: $RUN_URL"
+          N=$(gh issue list --repo "$REPO" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$N" ]; then
+            gh issue comment "$N" --repo "$REPO" --body "$BODY"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
