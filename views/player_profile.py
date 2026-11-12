@@ -504,7 +504,22 @@ def render():
         foot_display = "N/A"
         if foot_value and not pd.isna(foot_value):
             foot_display = foot_value.capitalize()
-        _bio_cards = [("Team", current_team),
+        # Team: his club on Transfermarkt when he joined it after his last
+        # match in our data (views/player_career.team_now); else ours.
+        _team_card, _team_note = current_team, None
+        try:
+            from views import player_career as _pc
+            _cur = _pc.current_club(int(player_id), _pc.tables()[0], _pc.metadata())
+            if _cur:
+                # date of his last match from the match list (the events'
+                # matchTimestamp is not a match date)
+                _mids = raw_events_df.loc[raw_events_df['player.id'] == int(player_id), 'matchId'].unique()
+                _last = pd.to_datetime(matches_summary_df.loc[
+                    matches_summary_df['matchId'].isin(_mids), 'dateutc'], errors='coerce').max()
+                _team_card, _team_note = _pc.team_now(current_team, _last, _cur)
+        except Exception as _e:
+            print(f"Warning: Transfermarkt current club not applied: {_e}")
+        _bio_cards = [("Team", _team_card),
                       ("Position", current_pos),
                       ("Nationality", player_bio.get('passportArea', 'N/A')),
                       ("Age", age_display),
@@ -521,6 +536,8 @@ def render():
                 _row = st.columns(4)
             for _c, (_lbl, _v) in zip(_row, _row_cards):
                 _c.metric(_lbl, _v)
+        if _team_note:
+            st.caption(_team_note)
 
         # Headline value — ENGINE projected value for outfielders;
         # GOALKEEPERS keep the prior CVI→EUR value (Lucas) since the

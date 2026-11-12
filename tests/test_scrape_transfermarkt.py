@@ -122,3 +122,63 @@ def test_relink_targets_conflict_players_not_yet_read(monkeypatch, tmp_path):
     monkeypatch.setattr(st, 'LINK_CONFLICTS_PATH', conf)
     monkeypatch.setattr(st, 'METADATA_PATH', meta)
     assert st.players_to_relink(v) == [2, 3]      # 1 is already read from his verified profile
+
+
+def test_verified_run_targets_unread_and_stale_profiles(monkeypatch, tmp_path):
+    v = {p: st.TMMatch(tm_id=t, tm_url='u', name='', dob=None, club=None)
+         for p, t in ((1, 111), (2, 222), (3, 333), (4, 444))}
+    meta = tmp_path / 'meta.parquet'
+    pd.DataFrame({'playerId': [1, 2, 3], 'tm_id': [111, 222, 999],
+                  'fetched_at': ['2026-11-01T00:00:00', '2026-05-29T00:00:00', '2026-11-01T00:00:00']}
+                 ).to_parquet(meta, index=False)
+    monkeypatch.setattr(st, 'METADATA_PATH', meta)
+    # 1 read recently: skipped. 2 stale, 3 read from another profile, 4 never read.
+    assert st.players_to_read_verified(v, today='2026-11-12') == [2, 3, 4]
+
+
+def test_long_run_saves_as_it_goes(monkeypatch, tmp_path):
+    saves = []
+    monkeypatch.setattr(st, 'SAVE_EVERY', 2)
+    monkeypatch.setattr(st, 'load_player_universe',
+                        lambda: pd.DataFrame([dict(playerId=i, playerName=f'P {i}') for i in range(1, 6)]))
+    monkeypatch.setattr(st, 'load_player_dob_map', lambda: {})
+    monkeypatch.setattr(st, 'load_verified_links', lambda path=None: {
+        i: st.TMMatch(tm_id=100 + i, tm_url='u', name='', dob=None, club=None) for i in range(1, 6)})
+    monkeypatch.setattr(st, 'load_existing_valuations', lambda: pd.DataFrame())
+    monkeypatch.setattr(st, 'make_session', lambda: None)
+    monkeypatch.setattr(st, 'fetch_tm_player_profile', lambda s, url: {'dob': None})
+    monkeypatch.setattr(st, 'fetch_market_value_history', lambda s, tm_id: [])
+    monkeypatch.setattr(st, 'fetch_tm_transfer_history', lambda s, tm_id: [{'date': '2025-07-01'}])
+    monkeypatch.setattr(st, 'append_rows', lambda rows: None)
+    monkeypatch.setattr(st, 'append_transfers', lambda rows: None)
+    monkeypatch.setattr(st, 'append_metadata', lambda rows: saves.append([r['playerId'] for r in rows]))
+    monkeypatch.setattr(st, 'MATCH_LOG_PATH', tmp_path / 'log.csv')
+    st.run()
+    assert saves == [[1, 2], [3, 4], [5]]                       # nothing saved twice, nothing lost
+    assert sorted(pd.read_csv(tmp_path / 'log.csv').playerId) == [1, 2, 3, 4, 5]
+
+
+def test_failed_transfer_read_is_not_recorded_as_read(monkeypatch, tmp_path):
+    saved = {}
+    monkeypatch.setattr(st, 'load_player_universe',
+                        lambda: pd.DataFrame([dict(playerId=1, playerName='A'), dict(playerId=2, playerName='B')]))
+    monkeypatch.setattr(st, 'load_player_dob_map', lambda: {})
+    monkeypatch.setattr(st, 'load_verified_links', lambda path=None: {
+        i: st.TMMatch(tm_id=100 + i, tm_url='u', name='', dob=None, club=None) for i in (1, 2)})
+    monkeypatch.setattr(st, 'load_existing_valuations', lambda: pd.DataFrame())
+    monkeypatch.setattr(st, 'make_session', lambda: None)
+    monkeypatch.setattr(st, 'fetch_tm_player_profile', lambda s, url: {'dob': None})
+    monkeypatch.setattr(st, 'fetch_market_value_history',
+                        lambda s, tm_id: [{'value_eur': 1.0, 'as_of_date': '2026-01-01'}])
+
+    def transfers(s, tm_id):
+        if tm_id == 101:
+            raise st.FetchFailed('HTTP 429')
+        return [{'date': '2025-07-01'}]
+    monkeypatch.setattr(st, 'fetch_tm_transfer_history', transfers)
+    for name in ('append_rows', 'append_metadata', 'append_transfers'):
+        monkeypatch.setattr(st, name, lambda rows, name=name: saved.__setitem__(name, [r['playerId'] for r in rows]))
+    monkeypatch.setattr(st, 'MATCH_LOG_PATH', tmp_path / 'log.csv')
+    st.run()
+    assert saved == {'append_rows': [2], 'append_transfers': [2], 'append_metadata': [2]}
+    assert pd.read_csv(tmp_path / 'log.csv').set_index('playerId')['status'].to_dict() == {1: 'fetch_failed', 2: 'verified'}

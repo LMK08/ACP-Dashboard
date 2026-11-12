@@ -398,6 +398,14 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   name-search links had 179 players on a namesake's profile
   (`tm_link_conflicts.csv`); the rows read from those profiles were
   removed 2026-11-12 (1,690 value, 1,448 transfer, 147 profile rows).
+  Career lists EVERY club from the transfer record (`player_career.clubs`);
+  the Team card shows Transfermarkt's club only when he joined it after
+  his last match in our data (`team_now`; match date = matches_summary
+  `dateutc`, NOT the events' matchTimestamp). Transfermarkt's per-season
+  page is not readable as an ordinary page, so the full club list needs
+  the transfer record: `python scrape_transfermarkt.py --verified` reads
+  every linked player not yet read or read >120 days ago (saves every 25,
+  safe to stop and re-run, ~4 h for all).
   `python scrape_transfermarkt.py --relink` re-reads those players from
   the verified profile; it calls Transfermarkt's internal data service,
   so Lucas runs it himself (Claude must not).

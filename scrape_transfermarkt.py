@@ -69,6 +69,8 @@ USER_AGENT = (
     'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36'
 )
 RATE_LIMIT_SEC = 1.2   # polite delay between requests
+SAVE_EVERY = 25        # players between saves in a run
+MAX_FAILS_IN_A_ROW = 8 # failed reads in a row before a run stops
 
 LOG = logging.getLogger('scrape_transfermarkt')
 
@@ -267,6 +269,10 @@ def make_session() -> requests.Session:
     s.headers.update({'User-Agent': USER_AGENT,
                        'Accept-Language': 'en-US,en;q=0.9'})
     return s
+
+
+class FetchFailed(Exception):
+    """A page that should have data could not be read."""
 
 
 def polite_get(session: requests.Session, url: str, **kw) -> requests.Response | None:
@@ -626,12 +632,15 @@ def fetch_tm_transfer_history(session: requests.Session,
     r = polite_get(session, url,
                     headers={'X-Requested-With': 'XMLHttpRequest',
                               'Referer': f'{TM_BASE}/'})
+    # a failed read is NOT 'no transfers': the caller must not record the
+    # player as read
     if r is None or r.status_code != 200:
-        return []
+        raise FetchFailed(f"transfer history {tm_id}: "
+                          f"{'no response' if r is None else 'HTTP ' + str(r.status_code)}")
     try:
         payload = r.json()
     except ValueError:
-        return []
+        raise FetchFailed(f"transfer history {tm_id}: not JSON")
     if not isinstance(payload, dict):
         return []
     rows = payload.get('transfers') or payload.get('list') or []
@@ -788,6 +797,23 @@ def players_to_relink(verified: dict) -> list:
     return [p for p in pids if p in verified and have.get(p) != verified[p].tm_id]
 
 
+def players_to_read_verified(verified: dict, stale_days: int = 120, today=None) -> list:
+    """Verified players whose verified profile has not been read, or was last
+    read more than `stale_days` ago (the club on a profile goes out of date)."""
+    today = pd.Timestamp(today or date.today())
+    read = {}
+    if METADATA_PATH.exists():
+        meta = pd.read_parquet(METADATA_PATH)
+        when = pd.to_datetime(meta.get('fetched_at'), errors='coerce')
+        read = {int(p): (t, w) for p, t, w in zip(meta['playerId'], _row_tm_ids(meta), when)}
+    out = []
+    for pid, m in verified.items():
+        tm_id, when = read.get(pid, (None, pd.NaT))
+        if tm_id != m.tm_id or pd.isna(when) or (today - when).days > stale_days:
+            out.append(pid)
+    return sorted(out)
+
+
 def write_match_log(audit: list) -> None:
     """Players this run did not look at (recently read, or outside a
     partial run) keep their log rows."""
@@ -872,9 +898,27 @@ def run(*, limit: int | None = None, player_id: int | None = None,
     # where TM's current-club listing diverges from our last team.
     MIN_MATCH_SCORE = 100.0
 
+    def save() -> None:
+        # Metadata last: --relink / --verified take a player's metadata row as
+        # proof that his values and transfers were written too.
+        append_rows(fresh_rows)
+        append_transfers(fresh_transfers)
+        append_metadata(fresh_metadata)
+        if match_audit:
+            write_match_log(match_audit)
+        for rows in (fresh_rows, fresh_transfers, fresh_metadata, match_audit):
+            rows.clear()
+
+    counts = {'matched': 0, 'low_confidence': 0, 'no_match': 0, 'dob_mismatch': 0, 'fetch_failed': 0}
+    failed_in_a_row = 0
     from tqdm import tqdm
-    for _, row in tqdm(list(universe.iterrows()), total=len(universe),
-                        desc="TM scrape"):
+    for n_seen, (_, row) in enumerate(tqdm(list(universe.iterrows()), total=len(universe),
+                                           desc="TM scrape")):
+        # a long run keeps what it has read: saved every SAVE_EVERY players
+        if n_seen and n_seen % SAVE_EVERY == 0:
+            for r in match_audit:
+                counts[{'verified': 'matched'}.get(r['status'], r['status'])] += 1
+            save()
         pid = int(row['playerId'])
         # Skip if scraped recently
         last = newest.get(pid)
@@ -1013,20 +1057,25 @@ def run(*, limit: int | None = None, player_id: int | None = None,
                 x['playerId'] = pid
                 x['tm_id'] = best.tm_id
                 fresh_transfers.append(x)
+            failed_in_a_row = 0
         except Exception as e:
+            # not read: drop his profile row too, so the next run reads him again
             LOG.warning(f"Transfer-history fetch failed for {pid}: {e}")
+            fresh_metadata[:] = [m for m in fresh_metadata if m.get('playerId') != pid]
+            fresh_rows[:] = [r for r in fresh_rows if r.get('playerId') != pid]
+            match_audit[-1]['status'] = 'fetch_failed'
+            failed_in_a_row += 1
+            if failed_in_a_row >= MAX_FAILS_IN_A_ROW:
+                LOG.error(f"{failed_in_a_row} players in a row could not be read: Transfermarkt is "
+                          f"refusing. Stopping; what was read is saved. Run again later.")
+                break
 
-    # Metadata last: --relink takes a player's metadata row as proof that
-    # his values and transfers were written too.
-    append_rows(fresh_rows)
-    append_transfers(fresh_transfers)
-    append_metadata(fresh_metadata)
-    if match_audit:
-        write_match_log(match_audit)
-        LOG.info(f"Match audit written to {MATCH_LOG_PATH} "
-                  f"({sum(1 for r in match_audit if r['status'] in ('matched', 'verified'))} matched, "
-                  f"{sum(1 for r in match_audit if r['status']=='low_confidence')} low-confidence, "
-                  f"{sum(1 for r in match_audit if r['status']=='no_match')} no-match)")
+    for r in match_audit:
+        counts[{'verified': 'matched'}.get(r['status'], r['status'])] += 1
+    save()
+    LOG.info(f"Done: {counts['matched']} read, {counts['low_confidence']} low-confidence, "
+             f"{counts['no_match']} no-match, {counts['dob_mismatch']} refused on date of birth, "
+             f"{counts['fetch_failed']} not read (run again)")
 
 
 def main() -> int:
@@ -1038,6 +1087,9 @@ def main() -> int:
                     help='drop rows read from a profile that is not the verified one, '
                          'then read the verified profile of the players in '
                          'tm_link_conflicts.csv')
+    ap.add_argument('--verified', action='store_true',
+                    help='read every verified player whose profile has not been read or '
+                         'was read more than 120 days ago; safe to stop and run again')
     ap.add_argument('--verbose', '-v', action='store_true')
     args = ap.parse_args()
     logging.basicConfig(
@@ -1052,6 +1104,11 @@ def main() -> int:
             LOG.info(f"{name}: dropped {rows:,} rows of {players} players (wrong profile)")
         only = players_to_relink(verified)
         LOG.info(f"{len(only)} players to read from their verified profile")
+        if not only:
+            return 0
+    elif args.verified:
+        only = players_to_read_verified(load_verified_links())
+        LOG.info(f"{len(only)} verified players to read")
         if not only:
             return 0
     run(limit=args.limit, player_id=args.player_id,
