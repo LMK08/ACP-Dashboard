@@ -27,6 +27,8 @@ What is measured, and where the idea comes from:
 import numpy as np
 import pandas as pd
 
+from models.coaches.formations import STRIKERS
+
 MIN_MATCHES = 10          # a coach needs this many event matches to be ranked
 MIN_PLAYER_MINUTES = 450  # each side of a before / under comparison
 
@@ -154,23 +156,9 @@ def summarise(rows):
     out['formations'] = f.value_counts().to_dict()
     out['main_formation'] = f.mode().iloc[0] if len(f) else None
     out['main_formation_share'] = _div((f == out['main_formation']).sum(), len(f)) if len(f) else np.nan
-    out['in_match_switch_share'] = _div((r.formations_in_match > 1).sum(), r.formations_in_match.notna().sum())
-    # our own read of the shape with the ball (formations.py), beside the
-    # provider's nominal formation: how often he builds with three at the
-    # back, and how often a nominal back four does
-    out.update({'ball_shapes': {}, 'main_ball_shape': None, 'main_ball_shape_share': np.nan,
-                'ball_back3_share': np.nan, 'three_from_four_share': np.nan, 'ball_shape_matches': 0})
-    if 'ball_shape' in r.columns:
-        b = r.dropna(subset=['ball_shape'])
-        out['ball_shape_matches'] = len(b)
-        if len(b):
-            out['ball_shapes'] = b.ball_shape.value_counts().to_dict()
-            out['main_ball_shape'] = b.ball_shape.mode().iloc[0]
-            out['main_ball_shape_share'] = _div((b.ball_shape == out['main_ball_shape']).sum(), len(b))
-            three = b.ball_shape.map(_back_line) == 3
-            out['ball_back3_share'] = float(three.mean())
-            four = b.formation.map(_back_line) == 4
-            out['three_from_four_share'] = _div(int((three & four).sum()), int(four.sum()))
+    # share of matches read as three at the back (our formations are the
+    # shape with the ball, so this is how often he builds with a back three)
+    out['back3_share'] = float((f.map(_back_line) == 3).mean()) if len(f) else np.nan
     players = set()
     for xi, subs in zip(r.xi, r.sub_in_ids):
         players.update(int(p) for p in xi)
@@ -179,7 +167,6 @@ def summarise(rows):
     if 'u21_minutes' in r.columns:
         out['u21_share'] = _div(r.u21_minutes.sum(), r.squad_minutes.sum())
     flex = flexibility(r)
-    flex.pop('in_match_switch_share', None)      # computed above from the same rows
     out.update(flex)
     for cut in AGE_CUTS:
         out.update(youth_trust(r, cut))
@@ -191,18 +178,25 @@ Z_COLS = ['z_possession', 'z_field_tilt', 'z_passes_per_poss', 'z_long_share',
           'z_forward_share', 'z_def_height', 'z_log_ppda']
 AGE_CUTS = (21, 23)
 MIN_ADAPT_MATCHES = 12    # context-adjusted matches needed for the opponent-adaptation slope
-FLEX_KEYS = ('eff_formations', 'formation_change_rate', 'back_line_change_rate',
-             'in_match_switch_share', 'opp_adapt')
-# the settled ↔ fluid score: only the measures that are stable coach traits
-# (opp_adapt scored 0.24 odd/even once its sample-size bias was removed)
-FLUIDITY_KEYS = FLEX_KEYS[:4]
+FLEX_KEYS = ('eff_formations', 'formation_change_rate', 'back_line_change_rate', 'opp_adapt')
+# the settled ↔ fluid score: formation variety alone, the steadiest of the
+# three formation measures with our own formations (formations.py, 2026-11:
+# 0.64 odd/even on Liga 3, against 0.49 and 0.43 for the two change rates,
+# which are shown, labelled, but not scored; opp_adapt likewise at 0.26). A
+# 'changed shape during the match' measure was removed: from touches it is noise.
+FLUIDITY_KEYS = FLEX_KEYS[:1]
 FLEX_LABELS = {
     'eff_formations': ('Formation variety', 'effective number of starting shapes'),
-    'formation_change_rate': ('Changes shape between matches', 'share of matches starting in a new shape'),
+    'formation_change_rate': ('Changes structure between matches',
+                              'share of matches starting with a different back line or number of strikers'),
     'back_line_change_rate': ('Switches back three ↔ four', 'share of matches changing the back line'),
-    'in_match_switch_share': ('Changes shape during matches', 'share of matches with more than one shape'),
     'opp_adapt': ('Adapts style to the opponent', 'style shift per unit of opponent strength, beyond the league norm'),
 }
+
+
+def _strikers(formation):
+    """Strikers in one of our shapes (formations.STRIKERS); None if unknown."""
+    return STRIKERS.get(str(formation))
 
 
 def _back_line(formation):
@@ -218,10 +212,12 @@ def flexibility(rows):
     eff_formations         effective number of starting shapes (inverse Simpson,
                            unbiased in the number of matches): 1 = always the
                            same shape, 3 = three shapes used equally.
-    formation_change_rate  share of matches starting in a different shape from
-                           the previous match of the same spell.
-    back_line_change_rate  the same for a back three ↔ back four / five.
-    in_match_switch_share  share of matches with more than one shape.
+    formation_change_rate  share of matches starting with a different
+                           structure (back line or number of strikers) from
+                           the previous match of the same spell. The full
+                           shape name is not compared: close names (4-3-3 /
+                           4-2-3-1) flip on detection noise.
+    back_line_change_rate  the same for a back three ↔ back four alone.
     opp_adapt              how strongly his context-adjusted style still moves
                            with opponent strength (RMS slope over the style
                            scores): the league-typical shift is already
@@ -231,7 +227,7 @@ def flexibility(rows):
     match-to-match style distance (Hooker / Hudl 2025) and the spread of the
     style scores — on this data they are match noise, not a coach trait.
     """
-    out = {k: np.nan for k in FLEX_KEYS if k != 'in_match_switch_share'}
+    out = {k: np.nan for k in FLEX_KEYS}
     out.update({'style_matches': 0, 'opp_slopes': {}})
     r = rows.sort_values(['spell', 'date'])
     f = r.formation.dropna()
@@ -246,9 +242,11 @@ def flexibility(rows):
     ff = r.dropna(subset=['formation'])
     same_spell = ff.spell == ff.spell.shift()
     if same_spell.sum():
-        out['formation_change_rate'] = float((ff.formation != ff.formation.shift())[same_spell].mean())
         back = ff.formation.map(_back_line)
-        out['back_line_change_rate'] = float((back != back.shift())[same_spell].mean())
+        strikers = ff.formation.map(_strikers)
+        new_back = back != back.shift()
+        out['formation_change_rate'] = float((new_back | (strikers != strikers.shift()))[same_spell].mean())
+        out['back_line_change_rate'] = float(new_back[same_spell].mean())
     if not set(Z_COLS) <= set(r.columns):
         return out
     z = r.dropna(subset=Z_COLS)
@@ -452,7 +450,7 @@ def coach_table(tm, competition_id=None, min_matches=MIN_MATCHES):
         pool = t.loc[q, k].dropna().to_numpy()
         t[k + '_pct'] = [float((pool < v).mean() + 0.5 * (pool == v).mean()) * 100
                          if len(pool) and not pd.isna(v) else np.nan for v in t[k]]
-    # fluid ↔ settled: the mean of the four formation percentiles
+    # fluid ↔ settled: the percentile(s) of FLUIDITY_KEYS
     cols = [k + '_pct' for k in FLUIDITY_KEYS if k + '_pct' in t.columns]
     if cols:
         t['fluidity'] = t[cols].mean(axis=1).where(t[cols].notna().all(axis=1))

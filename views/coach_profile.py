@@ -48,7 +48,7 @@ def league_table(signature, comp_id):
     return cm.coach_table(tm, comp_id)
 
 
-RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['ball_back3_share', 'three_from_four_share'] + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
+RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['back3_share', 'main_formation_share'] + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
                                            'age_gap', 'first_sub_min', 'subs_before_60_share',
                                            'ppg_after_trailing', 'xgd90_trail', 'xgd90_lead', 'xi_changes',
                                            'set_piece_share']
@@ -247,18 +247,15 @@ def _style(s, league_row, table, coaches, coach_id, league_name):
 
 
 def _in_game(s, rel, table, league_name):
-    c = st.columns(4)
+    c = st.columns(3)
     c[0].metric('Substitutions per match', _fmt(s['subs_used'], '{:.1f}'))
     c[1].metric('First substitution', _fmt(s['first_sub_min'], "{:.0f}'"))
     c[2].metric('Substitutions before 60\'', _fmt(s['subs_before_60_share'], '{:.0%}'))
-    c[3].metric('Formation changed in-match', _fmt(s['in_match_switch_share'], '{:.0%}'),
-                help='Share of matches in which the side used more than one formation.')
     st.caption(f"Substitution minutes are the recorded ones ({s['sub_matches']} matches with a line-up sheet).")
     _vs_league(table, s, [
         ('subs_used', 'Substitutions per match', lambda v: _fmt(v, '{:.1f}')),
         ('first_sub_min', 'First substitution (minute)', lambda v: _fmt(v, '{:.0f}')),
         ('subs_before_60_share', "Substitutions before 60'", lambda v: _fmt(v, '{:.0%}')),
-        ('in_match_switch_share', 'Formation changed in-match', lambda v: _fmt(v, '{:.0%}')),
         ('ppg_after_trailing', 'Points per match after trailing', _fmt),
         ('led_not_won_share', 'Leads not won', lambda v: _fmt(v, '{:.0%}')),
         ('xgd90_vs_exp_lead', 'xG difference vs expected, leading', _signed),
@@ -355,7 +352,7 @@ def _matches(rows):
         'Opponent': r.opponent + np.where(r.side == 'home', ' (H)', ' (A)'),
         'Score': [f'{int(a)}-{int(b)}' for a, b in zip(r.gf, r.ga)],
         'xG': r.xg.round(2), 'xG against': r.opp_xg.round(2), 'xPts': r.xpts.round(2),
-        'Formation': r.formation, 'Shape with ball': r.ball_shape if 'ball_shape' in r.columns else None,
+        'Formation': r.formation,
         'First sub': r.first_sub_min, 'XI changes': r.xi_changes,
     })
     st.dataframe(t, hide_index=True, use_container_width=True, height=520)
@@ -369,8 +366,9 @@ def _flexibility(s, league_row, table, rel, vectors, persistence, coach_id, leag
     word = '–' if pd.isna(fl) else 'Settled' if fl < 33 else 'Fluid' if fl > 67 else 'In between'
     c = st.columns(3)
     c[0].metric('Settled ↔ fluid', word,
-                help='From the mean of the four formation percentiles below. Opponent adaptation is shown '
-                     'but left out of the score: it is too noisy to be a trait.')
+                help='From formation variety, the steadiest of the flexibility measures. '
+                     'The change rates and opponent adaptation are shown below with how stable they are, '
+                     'but are too noisy to score.')
     c[1].metric('Fluidity percentile', _fmt(fl, '{:.0f}'))
     c[2].metric('Most-used formation', (s['main_formation'] or '–') + _fmt(s['main_formation_share'], ' · {:.0%}', ''),
                 help='Share of matches started in it.')
@@ -386,9 +384,9 @@ def _flexibility(s, league_row, table, rel, vectors, persistence, coach_id, leag
                  column_config={'Percentile': st.column_config.ProgressColumn(format='%.0f', min_value=0, max_value=100)})
     st.caption(f"Percentiles are among {league_name} coaches with {cm.MIN_MATCHES}+ matches; high = more fluid. "
                "'How stable' is the agreement between a coach's odd and even matches (1 = a fixed trait, "
-               "0 = noise). Wyscout names close shapes separately (4-2-3-1, 4-4-1-1, 4-3-3), so formation "
-               "variety runs high for everyone — the back-line switch is the cleaner signal. Injuries and "
-               "suspensions also change shapes; this cannot tell choice from necessity.")
+               "0 = noise). Changes between matches are counted on structure (back line or number of strikers), "
+               "not on the shape's name. Injuries and suspensions also change shapes; this cannot tell "
+               "choice from necessity. Changes of shape during a match cannot be read reliably and are not shown.")
     st.caption("Tested and left out: how much his style numbers move from one match to the next "
                "(the measure in Hudl's 2025 'Manager Bounce' study). In this league it does not agree "
                "between a coach's odd and even matches at all, so it is noise here, not a trait.")
@@ -413,24 +411,13 @@ def _flexibility(s, league_row, table, rel, vectors, persistence, coach_id, leag
         total = sum(f.values())
         top = sorted(f.items(), key=lambda kv: -kv[1])[:8]
         st.markdown('**Starting formations** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
-    b = s.get('ball_shapes') or {}
-    if b:
-        total = sum(b.values())
-        top = sorted(b.items(), key=lambda kv: -kv[1])[:7]
-        st.markdown('**Shape with the ball (our read)** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
-        _vs_league(table, s, [
-            ('ball_back3_share', 'Builds with three at the back', lambda v: _fmt(v, '{:.0%}')),
-            ('three_from_four_share', 'Builds with three from a nominal back four', lambda v: _fmt(v, '{:.0%}'))],
-            league_name)
-        st.caption("Starting formations are Wyscout's labels (the nominal shape). Shape with the ball is our own: "
-                   "where each starter touched the ball in open play (his actions and the passes he received) from "
-                   "kick-off to the side's first substitution or red card (after a very early change, the "
-                   "stretch up to the next one), matched to seven reference shapes, with no "
-                   "provider formation or position label. It often differs from the nominal shape: a full-back "
-                   "who plays high leaves three at the back, so a 4-2-3-1 can build as a 3-4-3. The back line "
-                   "is the firm part of the read (two random halves of a match's touches agree 89 % of the "
-                   "time); the full name is softer (68 %). How stable as a coach trait: builds with three "
-                   f"{_stable(rel, 'ball_back3_share')}, three from a back four {_stable(rel, 'three_from_four_share')}.")
+    _vs_league(table, s, [
+        ('back3_share', 'Builds with three at the back', lambda v: _fmt(v, '{:.0%}')),
+        ('main_formation_share', 'Share of matches in his most-used formation', lambda v: _fmt(v, '{:.0%}'))],
+        league_name)
+    st.caption("Formations are our own: where each starter touched the ball in open play (his actions and the passes he received) from kick-off to the side's first substitution or red card (after a very early change, the stretch up to the next one), matched to seven reference shapes. It is the shape with the ball, so a side with a full-back who plays high reads as three at the back, 5-3-2 reads as 3-5-2 and 4-1-4-1 as 4-3-3. The back line is the firm part of the read (two random halves of a match's touches agree 89 % of the time); the full name is softer (68 %)." + ' How stable as a coach trait: builds with three '
+               f"{_stable(rel, 'back3_share')}, share in his most-used formation "
+               f"{_stable(rel, 'main_formation_share')}.")
 
 
 def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name, table):

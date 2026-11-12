@@ -441,7 +441,7 @@ def test_coach_profile_sections(app):
     assert 'Trust ratio' in seen['Young players']
     show('Flexibility')
     flex = [d for d in app.dataframe if 'How stable the measure is' in list(d.value.columns)][0].value
-    assert len(flex) == 5 and flex['Percentile'].dropna().between(0, 100).all()
+    assert len(flex) == 4 and flex['Percentile'].dropna().between(0, 100).all()
     show('Young players')
     [r for r in app.radio if r.label == 'Young means'][0].set_value(23)
     app.run()

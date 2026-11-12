@@ -1,5 +1,6 @@
-"""Our own read of each side's shape WITH THE BALL in each match, from event
-locations only. Shown beside the provider's nominal formation, not in place of it.
+"""Our own formation for each side in each match, from event locations only.
+It is the only formation the dashboard shows (Lucas, 2026-11): no provider
+formation label is used anywhere.
 
 No provider formation label and no provider position label is read. A side's
 shape is worked out from where its players touched the ball:

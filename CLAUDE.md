@@ -352,16 +352,19 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   Game-state rows use only matches whose event goals equal the final
   score (own goals are not shot events). Tests: `tests/test_coaches.py`
   (no-look-ahead on a prefix of the shipped table).
-  Shape with the ball (2026-11, `models/coaches/formations.py`): OUR OWN
-  read beside Wyscout's nominal `formation` (Lucas chose both, not a
-  replacement) — starters' mean touch locations to first sub/red card,
-  fitted to 7 reference shapes, no provider formation/position label.
-  `ball_back3_share` is a stable coach trait (0.91 odd/even);
-  `three_from_four_share` moderate. It is the in-possession shape, never
-  call it the formation. An in-match change read was tested and dropped.
+  Formations on the coach pages are OUR OWN (2026-11,
+  `models/coaches/formations.py`; Lucas: use only ours, no Wyscout
+  formation) — starters' mean open-play touch locations to first sub/red
+  card, fitted to 7 reference shapes; `team.formation` and position labels
+  must not be read in models/coaches (test enforces it). It is the shape
+  WITH THE BALL (5-3-2 reads 3-5-2; a high full-back reads as a back
+  three). `back3_share` is a stable coach trait (0.91 odd/even). The
+  settled ↔ fluid score is formation variety alone (0.64); the change
+  rates (0.49 / 0.43) are shown, not scored; an in-match change read was
+  tested and dropped (noise). Team Analysis / Opposition Report / Match
+  Analysis line-up graphics still use Wyscout formation + position codes.
   Flexibility + Young players sections (2026-11): `flexibility` =
-  formation variety / change rates / back-line switch / in-match shape
-  change (these four make the settled ↔ fluid score, `FLUIDITY_KEYS`),
+  formation variety / structure change rate / back-line switch (see above),
   plus `opp_adapt` (noise-corrected slope of the context-adjusted style
   scores on opponent strength — shown, labelled noisy at 0.24, NOT in the
   score; before the correction it read 0.44 only because short records

@@ -314,7 +314,8 @@ def test_formation_reads_only_the_starting_window():
 def test_formation_reads_no_provider_label():
     banned = ('formation', 'position')
     assert not [c for c in fm.EVENT_COLS if any(b in c for b in banned)]
-    src = open(fm.__file__).read()
+    assert not [c for c in bc.EVENT_COLS if any(b in c for b in banned)]
+    src = open(fm.__file__).read() + open(bc.__file__).read() + open(cm.__file__).read()
     assert "team.formation" not in src and "player.position" not in src
 
 

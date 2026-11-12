@@ -62,7 +62,7 @@ SET_PIECE_TYPES = ('set_piece_attack', 'corner', 'free_kick_cross', 'direct_free
 
 EVENT_COLS = [
     'matchId', 'matchPeriod', 'minute', 'second', 'type.primary',
-    'type.secondary', 'location.x', 'team.id', 'team.name', 'team.formation',
+    'type.secondary', 'location.x', 'team.id', 'team.name',
     'opponentTeam.id', 'pass.accurate', 'pass.length', 'possession.id',
     'possession.types', 'possession.team.id', 'shot.isGoal', 'shot.xg',
 ]
@@ -666,18 +666,11 @@ def build_team_match(coach_match):
     nil = tm.has_events & (tm.gf + tm.ga == 0)
     tm.loc[nil, 'state_ok'] = True
 
-    form = ev.sort_values(['matchId', 'matchPeriod', 'minute', 'second']) \
-        .dropna(subset=['team.formation']).groupby(['matchId', 'team.id'])['team.formation']
-    start = form.first().rename('formation')
-    nform = form.nunique().rename('formations_in_match')
-    tm = tm.merge(pd.concat([start, nform], axis=1).reset_index().rename(columns={'team.id': 'teamId'}),
-                  on=['matchId', 'teamId'], how='left')
-    # our own read of the shape with the ball (formations.py), beside the
-    # provider's nominal formation above
-    print('  shapes with the ball …')
+    # formations are OUR OWN read of touch locations (formations.py): no
+    # provider formation or position label is read anywhere in this build
+    print('  formations …')
     shapes = formations_from_events(pd.read_parquet(ROOT / 'raw_events.parquet', columns=FORMATION_EVENT_COLS))
-    shapes = shapes.rename(columns={'formation': 'ball_shape', 'formation_margin': 'ball_shape_margin'})
-    tm = tm.merge(shapes[['matchId', 'teamId', 'ball_shape', 'ball_shape_margin']],
+    tm = tm.merge(shapes[['matchId', 'teamId', 'formation', 'formation_margin']],
                   on=['matchId', 'teamId'], how='left')
     del ev
 
