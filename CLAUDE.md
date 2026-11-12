@@ -406,6 +406,11 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   the transfer record: `python scrape_transfermarkt.py --verified` reads
   every linked player not yet read or read >120 days ago (saves every 25,
   safe to stop and re-run, ~4 h for all).
+  SCHEDULED: `.github/workflows/transfermarkt_refresh.yml` runs the whole
+  chain (new clubs, every club's coaches, new squads, player links, every
+  linked player's profile + transfers) at 01:00 US Eastern on 1 Jan, 1 Feb,
+  1 Jun, 1 Aug, 1 Sep; commits, deploys, and opens an issue if
+  Transfermarkt refuses it. Not yet proven from GitHub's servers.
   `python scrape_transfermarkt.py --relink` re-reads those players from
   the verified profile; it calls Transfermarkt's internal data service,
   so Lucas runs it himself (Claude must not).

@@ -182,3 +182,39 @@ def test_failed_transfer_read_is_not_recorded_as_read(monkeypatch, tmp_path):
     st.run()
     assert saved == {'append_rows': [2], 'append_transfers': [2], 'append_metadata': [2]}
     assert pd.read_csv(tmp_path / 'log.csv').set_index('playerId')['status'].to_dict() == {1: 'fetch_failed', 2: 'verified'}
+
+
+def test_stale_days_zero_reads_everyone_not_read_today(monkeypatch, tmp_path):
+    v = {p: st.TMMatch(tm_id=100 + p, tm_url='u', name='', dob=None, club=None) for p in (1, 2)}
+    meta = tmp_path / 'meta.parquet'
+    pd.DataFrame({'playerId': [1, 2], 'tm_id': [101, 102],
+                  'fetched_at': ['2026-11-12T03:00:00', '2026-11-01T00:00:00']}).to_parquet(meta, index=False)
+    monkeypatch.setattr(st, 'METADATA_PATH', meta)
+    # a run stopped part-way and started again the same day skips what it already read
+    assert st.players_to_read_verified(v, stale_days=0, today='2026-11-12') == [2]
+
+
+def test_run_reports_a_refusal(monkeypatch, tmp_path):
+    monkeypatch.setattr(st, 'MAX_FAILS_IN_A_ROW', 2)
+    monkeypatch.setattr(st, 'load_player_universe',
+                        lambda: pd.DataFrame([dict(playerId=i, playerName=f'P {i}') for i in range(1, 6)]))
+    monkeypatch.setattr(st, 'load_player_dob_map', lambda: {})
+    monkeypatch.setattr(st, 'load_verified_links', lambda path=None: {
+        i: st.TMMatch(tm_id=100 + i, tm_url='u', name='', dob=None, club=None) for i in range(1, 6)})
+    monkeypatch.setattr(st, 'load_existing_valuations', lambda: pd.DataFrame())
+    monkeypatch.setattr(st, 'make_session', lambda: None)
+    monkeypatch.setattr(st, 'fetch_tm_player_profile', lambda s, url: {'dob': None})
+    monkeypatch.setattr(st, 'fetch_market_value_history', lambda s, tm_id: [])
+    seen = []
+
+    def transfers(s, tm_id):
+        seen.append(tm_id)
+        raise st.FetchFailed('HTTP 403')
+    monkeypatch.setattr(st, 'fetch_tm_transfer_history', transfers)
+    saved = []
+    monkeypatch.setattr(st, 'append_rows', lambda rows: None)
+    monkeypatch.setattr(st, 'append_transfers', lambda rows: None)
+    monkeypatch.setattr(st, 'append_metadata', lambda rows: saved.extend(rows))
+    monkeypatch.setattr(st, 'MATCH_LOG_PATH', tmp_path / 'log.csv')
+    assert st.run() is True
+    assert seen == [101, 102] and saved == []          # stopped after two, nobody recorded as read

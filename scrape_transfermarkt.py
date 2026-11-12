@@ -859,7 +859,7 @@ def append_rows(rows: list[dict]) -> None:
 # Orchestration
 # ---------------------------------------------------------------------
 def run(*, limit: int | None = None, player_id: int | None = None,
-        max_age_days: int = 14, only=None) -> None:
+        max_age_days: int = 14, only=None) -> bool:
     """`only`: playerIds to read now, whatever their last read date."""
     universe = load_player_universe()
     dob_map = load_player_dob_map()
@@ -911,6 +911,7 @@ def run(*, limit: int | None = None, player_id: int | None = None,
 
     counts = {'matched': 0, 'low_confidence': 0, 'no_match': 0, 'dob_mismatch': 0, 'fetch_failed': 0}
     failed_in_a_row = 0
+    stopped = False      # True when Transfermarkt refused several players in a row
     from tqdm import tqdm
     for n_seen, (_, row) in enumerate(tqdm(list(universe.iterrows()), total=len(universe),
                                            desc="TM scrape")):
@@ -1068,6 +1069,7 @@ def run(*, limit: int | None = None, player_id: int | None = None,
             if failed_in_a_row >= MAX_FAILS_IN_A_ROW:
                 LOG.error(f"{failed_in_a_row} players in a row could not be read: Transfermarkt is "
                           f"refusing. Stopping; what was read is saved. Run again later.")
+                stopped = True
                 break
 
     for r in match_audit:
@@ -1076,6 +1078,7 @@ def run(*, limit: int | None = None, player_id: int | None = None,
     LOG.info(f"Done: {counts['matched']} read, {counts['low_confidence']} low-confidence, "
              f"{counts['no_match']} no-match, {counts['dob_mismatch']} refused on date of birth, "
              f"{counts['fetch_failed']} not read (run again)")
+    return stopped
 
 
 def main() -> int:
@@ -1090,6 +1093,9 @@ def main() -> int:
     ap.add_argument('--verified', action='store_true',
                     help='read every verified player whose profile has not been read or '
                          'was read more than 120 days ago; safe to stop and run again')
+    ap.add_argument('--stale-days', type=int, default=120,
+                    help='--verified: read a profile again when it was read more than this many '
+                         'days ago (0 = read every verified player)')
     ap.add_argument('--verbose', '-v', action='store_true')
     args = ap.parse_args()
     logging.basicConfig(
@@ -1107,13 +1113,13 @@ def main() -> int:
         if not only:
             return 0
     elif args.verified:
-        only = players_to_read_verified(load_verified_links())
+        only = players_to_read_verified(load_verified_links(), stale_days=args.stale_days)
         LOG.info(f"{len(only)} verified players to read")
         if not only:
             return 0
-    run(limit=args.limit, player_id=args.player_id,
-        max_age_days=args.max_age_days, only=only)
-    return 0
+    stopped = run(limit=args.limit, player_id=args.player_id,
+                  max_age_days=args.max_age_days, only=only)
+    return 2 if stopped else 0      # 2: Transfermarkt refused; what was read is saved
 
 
 if __name__ == '__main__':

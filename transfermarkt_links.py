@@ -381,7 +381,9 @@ def _save_team_links(have, rows):
     pd.concat([d for d in (keep, new) if len(d)], ignore_index=True).sort_values('team').to_csv(TEAM_LINKS, index=False)
 
 
-def fetch_managers(limit=None):
+def fetch_managers(limit=None, refresh=False):
+    """`refresh`: read every linked club's page again (new coaches since the last read) and
+    replace that club's rows."""
     links = pd.read_csv(TEAM_LINKS)
     if 'managers' not in links.columns:
         links['managers'] = pd.NA
@@ -389,7 +391,7 @@ def fetch_managers(limit=None):
     got_before = have.groupby('teamId').size() if len(have) else pd.Series(dtype='int64')
     links['managers'] = links['managers'].where(links['managers'].notna(), links.teamId.map(got_before))
     # a club is fetched once: 'managers' records how many rows its page gave (0 included)
-    todo = links[links.status.isin(['ok', 'manual']) & links.managers.isna()
+    todo = links[links.status.isin(['ok', 'manual']) & (links.managers.isna() | refresh)
                  & links.tm_team_id.notna() & links.tm_slug.notna()]
     if limit:
         todo = todo.head(limit)
@@ -398,9 +400,12 @@ def fetch_managers(limit=None):
         for r in todo.itertuples():
             html = cl.get(f'/{r.tm_slug}/mitarbeiterhistorie/verein/{int(r.tm_team_id)}')
             got = parse_manager_history(html or '')
+            if got and len(have):
+                have = have[have.teamId != r.teamId]          # a page read again replaces the club's old rows
             rows += [dict(x, teamId=r.teamId, team=r.team, tm_team_id=int(r.tm_team_id)) for x in got]
             print(f'  {r.team:28s} {len(got)} managers', flush=True)
-            links.loc[links.teamId == r.teamId, 'managers'] = len(got)
+            if got or not refresh:                              # a refresh that reads nothing keeps what we had
+                links.loc[links.teamId == r.teamId, 'managers'] = len(got)
             links.to_csv(TEAM_LINKS, index=False)
             if rows:
                 pd.concat([d for d in (have, pd.DataFrame(rows)) if len(d)], ignore_index=True).to_parquet(MANAGERS, index=False)
@@ -674,14 +679,14 @@ def link_coaches(team_match=None, managers=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('step', choices=['teams', 'managers', 'verify', 'coaches', 'squads', 'players'])
-    ap.add_argument('--retry', action='store_true', help="teams: search 'review' / 'not_found' teams again")
+    ap.add_argument('--retry', action='store_true', help="teams: search 'review' / 'not_found' teams again; managers: read every club again")
     ap.add_argument('--limit', type=int)
     ap.add_argument('--team')
     a = ap.parse_args()
     if a.step == 'teams':
         link_teams(a.limit, a.team, a.retry)
     elif a.step == 'managers':
-        fetch_managers(a.limit)
+        fetch_managers(a.limit, refresh=a.retry)
     elif a.step == 'squads':
         fetch_squads(a.limit)
     elif a.step == 'players':

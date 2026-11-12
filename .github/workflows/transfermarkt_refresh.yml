@@ -1,0 +1,135 @@
+name: Transfermarkt refresh (clubs, coaches, players, transfers)
+
+# Five times a year, after the points where squads and clubs change:
+# 1 Jan, 1 Feb (winter window opens / closes), 1 Jun (season over),
+# 1 Aug, 1 Sep (summer window, new season's squads). 01:00 US Eastern
+# time: Eastern is UTC-5 in winter (EST) and UTC-4 in summer (EDT), and
+# cron is always UTC.
+on:
+  schedule:
+    - cron: '0 6 1 1,2 *'      # 1 Jan, 1 Feb  01:00 Eastern (EST, UTC-5)
+    - cron: '0 5 1 6,8,9 *'    # 1 Jun, 1 Aug, 1 Sep  01:00 Eastern (EDT, UTC-4)
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Players to read (blank = every linked player). Use 20 for a test.'
+        required: false
+        default: ''
+      deploy:
+        description: 'Commit what was read and deploy (false = read only, nothing kept)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+  actions: write       # dispatches deploy_to_hf.yml after committing
+  issues: write        # opens an issue when Transfermarkt refuses the run
+
+concurrency:
+  group: transfermarkt-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350       # ~3,600 players at ~4.3 s each is about 4.5 hours
+    env:
+      KEEP: ${{ github.event_name == 'schedule' || inputs.deploy == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q "pandas==2.3.3" "pyarrow==24.0.0" requests beautifulsoup4 tqdm
+
+      - name: Download canonical raw_events from HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          curl -L -f -o raw_events.parquet \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            "https://huggingface.co/spaces/ACP-Analytics/ACP-Dashboard/resolve/main/raw_events.parquet"
+
+      # Ordinary club pages. Each step saves what it read and stops at the
+      # first refusal; a stopped step leaves the earlier links as they were.
+      - name: Clubs new to our data, and every club's coaches
+        run: |
+          python -u transfermarkt_links.py teams
+          python -u transfermarkt_links.py managers --retry
+          python -u transfermarkt_links.py verify
+          python -u transfermarkt_links.py coaches
+
+      - name: Squads of club-seasons not read yet, then link players
+        run: |
+          python -u transfermarkt_links.py squads
+          python -u transfermarkt_links.py players
+
+      # Profile, transfer record and market values of every linked player.
+      # Exit 2 = Transfermarkt refused several players in a row: what was
+      # read is saved and committed below, then the job fails so the alert
+      # fires.
+      - name: Players' profiles and transfer records
+        id: players
+        env:
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          set +e
+          if [ -n "$LIMIT" ]; then
+            python -u scrape_transfermarkt.py --verified --stale-days 0 --limit "$LIMIT"
+          else
+            python -u scrape_transfermarkt.py --verified --stale-days 0
+          fi
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: What changed
+        run: git status --short valuations/ | head -30
+
+      - name: Commit and deploy
+        if: ${{ env.KEEP == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'github-actions-bot@users.noreply.github.com'
+          git add valuations/tm_team_links.csv valuations/tm_team_managers.parquet \
+                  valuations/tm_coach_links.csv valuations/tm_squads.parquet \
+                  valuations/tm_player_club_seasons.parquet valuations/tm_club_seasons_fetched.csv \
+                  valuations/tm_player_links.csv valuations/tm_match_log.csv \
+                  valuations/tm_player_metadata.parquet valuations/tm_transfer_history.parquet \
+                  valuations/valuations.parquet
+          if [ -n "$(git diff --cached --name-only)" ]; then
+            git commit -m "chore: scheduled Transfermarkt refresh"
+            git pull --rebase --autostash origin main
+            git push origin main
+            gh workflow run deploy_to_hf.yml --ref main
+          else
+            echo "Nothing new from Transfermarkt."
+          fi
+
+      - name: Fail when Transfermarkt refused the run
+        if: ${{ steps.players.outputs.code != '0' }}
+        run: |
+          echo "scrape_transfermarkt.py exited ${{ steps.players.outputs.code }}"
+          exit 1
+
+  alert:
+    needs: [refresh]
+    if: ${{ always() && needs.refresh.result == 'failure' && (github.event_name == 'schedule' || inputs.deploy == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Transfermarkt refresh failed - clubs, coaches and transfer records are going stale"
+          BODY="The scheduled Transfermarkt refresh did not finish. Whatever it read was kept. It can be run by hand from the dashboard folder: python scrape_transfermarkt.py --verified. Run: $RUN_URL"
+          N=$(gh issue list --repo "$REPO" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$N" ]; then
+            gh issue comment "$N" --repo "$REPO" --body "$BODY"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
