@@ -244,3 +244,14 @@ def test_state_vs_expected_arithmetic():
     assert s['exp_min_share_lead'] == pytest.approx(20 / 90) and s['min_share_vs_exp_lead'] == pytest.approx(10 / 90)
     assert s['exp_xgd90_lead'] == pytest.approx(0.1 * 90 / 30) and s['xgd90_vs_exp_lead'] == pytest.approx(0.2 * 90 / 30)
     assert s['xgd90_vs_exp_trail'] == pytest.approx(-0.1 * 90 / 15)
+
+
+def test_league_comparison():
+    table = pd.DataFrame({'coachId': range(1, 8), 'qualifies': [True] * 6 + [False],
+                          'ppg': [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 9.0]})
+    c = cm.league_comparison(table, {'ppg': 1.6, 'other': 3.0}, ['ppg', 'other', 'missing'])
+    assert c[0]['n'] == 6 and c[0]['median'] == pytest.approx(1.5)
+    assert c[0]['pct'] == pytest.approx((3 + 0.5) / 6 * 100)      # the non-qualifier is not in the pool
+    assert pd.isna(c[1]['pct']) and pd.isna(c[2]['pct']) and c[1]['n'] == 0
+    # too few coaches: no percentile
+    assert pd.isna(cm.league_comparison(table.head(3), {'ppg': 1.2}, ['ppg'])[0]['pct'])

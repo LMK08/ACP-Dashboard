@@ -103,6 +103,7 @@ def summarise(rows):
            'xgd': _div(ev.xgd.sum(), len(ev)),
            'xpts_pg': _div(ev.xpts.sum(), len(ev)),
            'pts_minus_xpts': float((ev.points - ev.xpts).sum()) if len(ev) else np.nan,
+           'pts_minus_xpts_pg': float((ev.points - ev.xpts).mean()) if len(ev) else np.nan,
            'ppg_events': _div(ev.points.sum(), len(ev))}
     home = np.where(ev.side == 'home', 1.0, -1.0)
     # vs an average side at a neutral venue: remove the opponent and the venue
@@ -141,6 +142,7 @@ def summarise(rows):
     out['led_n'] = len(led)
     out['ppg_after_leading'] = _div(led.points.sum(), len(led))
     out['led_not_won'] = int((led.points < 3).sum())
+    out['led_not_won_share'] = _div(out['led_not_won'], len(led))
 
     sub = r[r.subs_used.notna()]
     out['sub_matches'] = len(sub)
@@ -439,6 +441,24 @@ def coach_table(tm, competition_id=None, min_matches=MIN_MATCHES):
     if cols:
         t['fluidity'] = t[cols].mean(axis=1).where(t[cols].notna().all(axis=1))
     return t
+
+
+def league_comparison(table, s, keys):
+    """Where the numbers in summary `s` stand among the league's qualifying
+    coaches (each on his whole record there): one dict per key with the
+    value, the league median, the percentile (share of those coaches with a
+    lower number, ties counted half) and the pool size. `s` may be any scope
+    (one spell, one season) - the pool is always whole records."""
+    out = []
+    pool_rows = table[table.qualifies] if len(table) and 'qualifies' in table.columns else table.iloc[0:0]
+    for k in keys:
+        v = s.get(k, np.nan)
+        pool = pd.to_numeric(pool_rows[k], errors='coerce').dropna().to_numpy() if k in pool_rows.columns else np.array([])
+        ok = len(pool) >= 5 and v is not None and not pd.isna(v)
+        out.append({'key': k, 'value': v, 'n': int(len(pool)),
+                    'median': float(np.median(pool)) if len(pool) >= 5 else np.nan,
+                    'pct': float((pool < v).mean() + 0.5 * (pool == v).mean()) * 100 if ok else np.nan})
+    return out
 
 
 def similar_coaches(table, coach_id, n=5):

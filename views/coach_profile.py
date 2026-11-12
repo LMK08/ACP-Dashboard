@@ -109,7 +109,23 @@ def _layout(fig, height=320, **kw):
 
 
 # ─────────────────────────────── sections ───────────────────────────────
-def _overview(rows, s, league_row, league_name, coaches):
+def _vs_league(table, s, spec, league_name):
+    """Under a row of cards: the same numbers against the league's coaches.
+    spec = [(summary key, label, formatter)]."""
+    comp = cm.league_comparison(table, s, [k for k, _, _ in spec])
+    if not comp or max(c['n'] for c in comp) < 5:
+        st.caption(f'No league comparison: fewer than 5 {league_name} coaches have {cm.MIN_MATCHES}+ matches.')
+        return
+    rows = [{'Measure': label, 'His number': f(c['value']), 'League median': f(c['median']),
+             'Percentile': c['pct']} for (_, label, f), c in zip(spec, comp)]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                 column_config={'Percentile': st.column_config.ProgressColumn(format='%.0f', min_value=0, max_value=100)})
+    st.caption(f"Against the {max(c['n'] for c in comp)} {league_name} coaches with {cm.MIN_MATCHES}+ matches, "
+               "each on his whole record there. Percentile = share of those coaches with a lower number: "
+               "it says high or low, not good or bad.")
+
+
+def _overview(rows, s, league_row, league_name, coaches, table):
     c = st.columns(3) + st.columns(3)
     c[0].metric('Points per match', _fmt(s['ppg']))
     c[1].metric('Expected points per match', _fmt(s['xpts_pg']),
@@ -124,6 +140,13 @@ def _overview(rows, s, league_row, league_name, coaches):
     c[5].metric('Change since arrival', _pm(s['impact'], s['impact_ci']),
                 help='xG difference per match against what the team\'s level on the day he arrived '
                      'predicted for the same fixtures.')
+    _vs_league(table, s, [
+        ('ppg', 'Points per match', _fmt),
+        ('xpts_pg', 'Expected points per match', _fmt),
+        ('pts_minus_xpts_pg', 'Points − expected, per match', _signed),
+        ('xgd', 'xG difference per match', _signed),
+        ('adj_xgd', 'Team level', _signed),
+        ('impact', 'Change since arrival', _signed)], league_name)
     notes = [f"{s['event_matches']} of {s['matches']} matches have event data."]
     if league_row is not None and league_row.get('qualifies'):
         notes.append(f"Among {league_name} coaches with {cm.MIN_MATCHES}+ matches: team level "
@@ -223,7 +246,7 @@ def _style(s, league_row, table, coaches, coach_id, league_name):
         st.markdown('**Starting formations** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
 
 
-def _in_game(s, rel):
+def _in_game(s, rel, table, league_name):
     c = st.columns(4)
     c[0].metric('Substitutions per match', _fmt(s['subs_used'], '{:.1f}'))
     c[1].metric('First substitution', _fmt(s['first_sub_min'], "{:.0f}'"))
@@ -231,6 +254,16 @@ def _in_game(s, rel):
     c[3].metric('Formation changed in-match', _fmt(s['in_match_switch_share'], '{:.0%}'),
                 help='Share of matches in which the side used more than one formation.')
     st.caption(f"Substitution minutes are the recorded ones ({s['sub_matches']} matches with a line-up sheet).")
+    _vs_league(table, s, [
+        ('subs_used', 'Substitutions per match', lambda v: _fmt(v, '{:.1f}')),
+        ('first_sub_min', 'First substitution (minute)', lambda v: _fmt(v, '{:.0f}')),
+        ('subs_before_60_share', "Substitutions before 60'", lambda v: _fmt(v, '{:.0%}')),
+        ('in_match_switch_share', 'Formation changed in-match', lambda v: _fmt(v, '{:.0%}')),
+        ('ppg_after_trailing', 'Points per match after trailing', _fmt),
+        ('led_not_won_share', 'Leads not won', lambda v: _fmt(v, '{:.0%}')),
+        ('xgd90_vs_exp_lead', 'xG difference vs expected, leading', _signed),
+        ('xgd90_vs_exp_draw', 'xG difference vs expected, level', _signed),
+        ('xgd90_vs_exp_trail', 'xG difference vs expected, trailing', _signed)], league_name)
     if not s['state_matches']:
         st.info('No matches with a clean goal timeline in this scope.')
         return
@@ -268,7 +301,7 @@ def _in_game(s, rel):
                f"{_stable(rel, 'xgd90_vs_exp_trail')}. Read the noisy ones as what happened, not as how he manages.")
 
 
-def _squad(app, s, cp, coach_id):
+def _squad(app, s, cp, coach_id, table, league_name):
     c = st.columns(4)
     c[0].metric('Line-up changes per match', _fmt(s['xi_changes'], '{:.1f}'),
                 help='Starters changed from the team\'s previous match of the same season.')
@@ -276,6 +309,12 @@ def _squad(app, s, cp, coach_id):
     c[2].metric('Under-21 share of minutes', _fmt(s.get('u21_share'), '{:.0%}'))
     c[3].metric('Most-used formation', (s['main_formation'] or '–') + _fmt(s['main_formation_share'], ' · {:.0%}', ''),
                 help='Share of matches started in it.')
+    _vs_league(table, s, [
+        ('xi_changes', 'Line-up changes per match', lambda v: _fmt(v, '{:.1f}')),
+        ('u21_share', 'Under-21 share of minutes', lambda v: _fmt(v, '{:.0%}')),
+        ('main_formation_share', 'Share of matches in his most-used formation', lambda v: _fmt(v, '{:.0%}'))],
+        league_name)
+    st.caption('Players used is not compared: it grows with the number of matches.')
     details = app.load_player_details()
 
     def _name(pid):
@@ -375,7 +414,7 @@ def _flexibility(s, league_row, table, rel, vectors, persistence, coach_id, leag
         st.markdown('**Starting formations** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
 
 
-def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name):
+def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name, table):
     cut = st.radio('Young means', [21, 23], format_func=lambda c: f'Under {c}', horizontal=True,
                    key='coach_profile_age_cut')
     k = f'u{cut}'
@@ -395,6 +434,12 @@ def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name):
                 help=f"Minutes-weighted age on the pitch {_fmt(s.get('age_on_pitch'), '{:.1f}')} against the "
                      f"average age of the matchday squad {_fmt(s.get('age_of_squad'), '{:.1f}')}. "
                      'Negative = he plays younger than the squad he names.')
+    _vs_league(table, s, [
+        (f'{k}_minutes_share', 'Share of minutes', lambda v: _fmt(v, '{:.0%}')),
+        (f'{k}_named_share', 'Share of matchday squad', lambda v: _fmt(v, '{:.0%}')),
+        (f'{k}_trust', 'Trust ratio', _fmt),
+        (f'{k}_start_share', 'Share of starts', lambda v: _fmt(v, '{:.0%}')),
+        ('age_gap', 'Age on pitch vs squad (years)', lambda v: _signed(v, '{:+.1f}'))], league_name)
     note = [f"{s[f'{k}_matches']} matches with exact minutes and a line-up sheet; "
             f"{_fmt(s[f'{k}_named_per_match'], '{:.1f}')} under-{cut} players named per match."]
     if league_row is not None and league_row.get('qualifies') and not pd.isna(league_row.get(f'{k}_trust_pct', np.nan)):
@@ -565,7 +610,7 @@ def render():
     active = st.radio('Coach section', sections, horizontal=True, label_visibility='collapsed',
                       key='coach_profile_section')
     if active == 'Overview':
-        _overview(rows, s, league_row, league_name, coaches)
+        _overview(rows, s, league_row, league_name, coaches, table)
         st.markdown('**Spells**')
         _spell_table(sp)
     elif active == 'Style':
@@ -575,12 +620,12 @@ def render():
         _flexibility(s, league_row, table, league_reliability(sig, comp_id), vectors, persistence,
                      coach_id, league_name)
     elif active == 'In-game':
-        _in_game(s, league_reliability(sig, comp_id))
+        _in_game(s, league_reliability(sig, comp_id), table, league_name)
     elif active == 'Young players':
         _young(app, rows, s, league_row, league_reliability(sig, comp_id), cp,
-               league_development_pairs(sig), coach_id, league_name)
+               league_development_pairs(sig), coach_id, league_name, table)
     elif active == 'Squad & players':
-        _squad(app, s, cp, coach_id)
+        _squad(app, s, cp, coach_id, table, league_name)
     else:
         _matches(rows)
 
