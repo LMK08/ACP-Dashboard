@@ -1,0 +1,10 @@
+# The dashboard is designed light (cream page, dark sidebar - theme.py and
+# the CSS in app.py). Without a fixed base Streamlit follows the VIEWER's
+# system setting, and in dark mode its own widgets, tables and charts turned
+# dark while the page stayed cream: dark text on dark selectboxes, pale chart
+# titles on the cream ground (2026-11). Keep these in step with theme.py.
+[theme]
+base = "light"
+backgroundColor = "#F8F5F0"            # theme.PAGE_BG
+secondaryBackgroundColor = "#F0ECE4"   # theme.PAGE_BG_WARM
+textColor = "#1a1a1a"                  # theme.PAGE_INK
