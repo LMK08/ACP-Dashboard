@@ -117,6 +117,7 @@ def summarise(rows):
     imp = base.xgd - (base.r_inherited - base.r_opp_pre + hb * base.hfa_pre)
     out['impact'], out['impact_ci'], out['impact_n'] = _mean_ci(imp)
     out.update(style_values(r))
+    out.update(tendencies(r))
 
     st = r[r.state_ok.eq(True)]
     out['state_matches'] = len(st)
@@ -455,6 +456,54 @@ def coach_table(tm, competition_id=None, min_matches=MIN_MATCHES):
     if cols:
         t['fluidity'] = t[cols].mean(axis=1).where(t[cols].notna().all(axis=1))
     return t
+
+
+# Tested and left out (2026-11): rotation on short rest (Liga 3 has almost no
+# matches within 4 days of the last one - 2 coaches had enough) and a
+# 'late-game lift' (late xGD per 90 minus the rest; 0.21 / -0.04 odd/even).
+TENDENCIES = {
+    # key: (label, what it counts, format)
+    'gk_short_share':     ('Goal kicks played short', 'share of goal kicks under 25 m', '{:.0%}'),
+    'corner_short_share': ('Corners played short', 'share of corners under 20 m', '{:.0%}'),
+    'centre_attack_share': ('Attacks through the middle', 'share of attacks not down a flank', '{:.0%}'),
+    'left_minus_right':   ('Left ↔ right balance', 'share of attacks down the left minus down the right', '{:+.0%}'),
+    'fouls_pm':           ('Fouls per match', 'fouls committed', '{:.1f}'),
+    'cards_pm':           ('Cards per match', 'yellow and red cards', '{:.2f}'),
+    'late_xgd':           ('xG difference after 75\'', 'per match, last quarter of an hour', '{:+.2f}'),
+    'home_minus_away':    ('Home ↔ away gap', 'xG difference per match at home minus away', '{:+.2f}'),
+    'changes_after_loss': ('Line-up changes after a defeat', 'starters changed following a loss', '{:.1f}'),
+    'loss_reaction':      ('Reaction to defeat', 'changes after a loss minus after a win', '{:+.1f}'),
+}
+
+
+def tendencies(rows):
+    """More ways a coach's sides behave (2026-11). Every one is a plain share
+    or per-match mean over his matches; none is a quality judgement."""
+    out = {k: np.nan for k in TENDENCIES}
+    ev = rows[rows.has_events]
+    need = {'goal_kicks', 'corners', 'attacks_left', 'fouls', 'xg_late', 'opp_xg_late'}
+    if len(ev) and need <= set(ev.columns):
+        n = len(ev)
+        out['gk_short_share'] = _div(ev.goal_kicks_short.sum(), ev.goal_kicks.sum())
+        out['corner_short_share'] = _div(ev.corners_short.sum(), ev.corners.sum())
+        att = ev.attacks_left.sum() + ev.attacks_center.sum() + ev.attacks_right.sum()
+        out['centre_attack_share'] = _div(ev.attacks_center.sum(), att)
+        out['left_minus_right'] = _div(ev.attacks_left.sum() - ev.attacks_right.sum(), att)
+        out['fouls_pm'] = _div(ev.fouls.sum(), n)
+        out['cards_pm'] = _div(ev.yellows.sum() + ev.reds.sum(), n)
+        late = (ev.xg_late - ev.opp_xg_late)
+        out['late_xgd'] = float(late.mean())
+        h, a = ev[ev.side == 'home'].xgd, ev[ev.side == 'away'].xgd
+        if len(h) >= 3 and len(a) >= 3:
+            out['home_minus_away'] = float(h.mean() - a.mean())
+    if {'prev_points', 'xi_changes'} <= set(rows.columns):
+        x = rows.dropna(subset=['xi_changes', 'prev_points'])
+        lost, won = x[x.prev_points == 0].xi_changes, x[x.prev_points == 3].xi_changes
+        if len(lost) >= 3:
+            out['changes_after_loss'] = float(lost.mean())
+            if len(won) >= 3:
+                out['loss_reaction'] = float(lost.mean() - won.mean())
+    return out
 
 
 def league_comparison(table, s, keys):

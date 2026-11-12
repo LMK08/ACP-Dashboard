@@ -48,7 +48,7 @@ def league_table(signature, comp_id):
     return cm.coach_table(tm, comp_id)
 
 
-RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['back3_share', 'main_formation_share'] + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
+RELIABILITY_KEYS = list(cm.FLEX_KEYS) + list(cm.TENDENCIES) + ['back3_share', 'main_formation_share'] + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
                                            'age_gap', 'first_sub_min', 'subs_before_60_share',
                                            'ppg_after_trailing', 'xgd90_trail', 'xgd90_lead', 'xi_changes',
                                            'set_piece_share']
@@ -244,6 +244,28 @@ def _style(s, league_row, table, coaches, coach_id, league_name):
         total = sum(f.values())
         top = sorted(f.items(), key=lambda kv: -kv[1])[:6]
         st.markdown('**Starting formations** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
+
+
+def _tendencies(s, table, rel, league_name):
+    comp = cm.league_comparison(table, s, list(cm.TENDENCIES))
+    rows = []
+    for c in comp:
+        label, what, spec = cm.TENDENCIES[c['key']]
+        rows.append({'Measure': label, 'What it counts': what, 'His number': _fmt(c['value'], spec),
+                     'League median': _fmt(c['median'], spec), 'Percentile': c['pct'],
+                     'How stable the measure is': _stable(rel, c['key'])})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                 column_config={'Percentile': st.column_config.ProgressColumn(format='%.0f', min_value=0, max_value=100)})
+    n = max((c['n'] for c in comp), default=0)
+    st.caption(f"Against the {n} {league_name} coaches with {cm.MIN_MATCHES}+ matches, each on his whole record "
+               "there. Percentile = share of those coaches with a lower number: it says high or low, not good "
+               "or bad. 'How stable' is the agreement between a coach's odd and even matches (1 = a fixed "
+               "trait, 0 = noise): trust the stable rows as how he sets his sides up, and read the noisy "
+               "ones as what happened.")
+    st.caption("Attack flanks use the event provider's tag on each attack. The home ↔ away gap is not adjusted "
+               "for opponents. Line-up changes compare with the side's previous match of the same season. "
+               "Tested and left out: rotation on short rest (Liga 3 has almost no matches within four days "
+               "of the last one) and a late-game lift measure (noise).")
 
 
 def _in_game(s, rel, table, league_name):
@@ -618,7 +640,7 @@ def render():
 
     lr = table[table.coachId == coach_id]
     league_row = lr.iloc[0].to_dict() if len(lr) else None
-    sections = ['Overview', 'Style', 'Flexibility', 'In-game', 'Young players', 'Squad & players', 'Matches']
+    sections = ['Overview', 'Style', 'Flexibility', 'Tendencies', 'In-game', 'Young players', 'Squad & players', 'Matches']
     active = st.radio('Coach section', sections, horizontal=True, label_visibility='collapsed',
                       key='coach_profile_section')
     if active == 'Overview':
@@ -631,6 +653,8 @@ def render():
         vectors, persistence = league_club_vectors(sig, comp_id)
         _flexibility(s, league_row, table, league_reliability(sig, comp_id), vectors, persistence,
                      coach_id, league_name)
+    elif active == 'Tendencies':
+        _tendencies(s, table, league_reliability(sig, comp_id), league_name)
     elif active == 'In-game':
         _in_game(s, league_reliability(sig, comp_id), table, league_name)
     elif active == 'Young players':

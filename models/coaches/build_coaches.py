@@ -66,7 +66,11 @@ EVENT_COLS = [
     'type.secondary', 'location.x', 'team.id', 'team.name',
     'opponentTeam.id', 'pass.accurate', 'pass.length', 'possession.id',
     'possession.types', 'possession.team.id', 'shot.isGoal', 'shot.xg',
+    'possession.attack.flank', 'infraction.yellowCard', 'infraction.redCard',
 ]
+LATE_MINUTE = 75          # 'late' = from this minute of the second half on
+SHORT_GOAL_KICK = 25.0    # metres: goal kicks split cleanly into ~15 m and ~55 m
+SHORT_CORNER = 20.0
 
 
 # ───────────────────────── coach per team per match ─────────────────────────
@@ -244,6 +248,9 @@ def team_match_counts(ev):
         sp |= np.asarray(ptypes.has(t))
     sp |= (tp == 'penalty').to_numpy()
     own_poss = ev['possession.team.id'] == ev['team.id']
+    plen = pd.to_numeric(ev['pass.length'], errors='coerce')
+    late = ((ev['matchPeriod'].astype(str) == '2H')
+            & (pd.to_numeric(ev['minute'], errors='coerce') >= LATE_MINUTE)).to_numpy()
     f = pd.DataFrame({
         'matchId': ev['matchId'].to_numpy(), 'teamId': ev['team.id'].to_numpy(),
         'passes': is_pass, 'passes_acc': is_pass & ev['pass.accurate'].fillna(False).astype(bool),
@@ -256,6 +263,14 @@ def team_match_counts(ev):
         'counterpress': tags.has('counterpressing_recovery'),
         'shots': xg.notna(), 'xg': xg.fillna(0), 'xg_set_piece': xg.fillna(0).where(sp, 0),
         'dribbles': tags.has('dribble'),
+        # tendencies (2026-11)
+        'goal_kicks': tp == 'goal_kick',
+        'goal_kicks_short': (tp == 'goal_kick') & (plen < SHORT_GOAL_KICK),
+        'corners': tp == 'corner', 'corners_short': (tp == 'corner') & (plen < SHORT_CORNER),
+        'fouls': tp == 'infraction',
+        'yellows': ev['infraction.yellowCard'].fillna(False).astype(bool),
+        'reds': ev['infraction.redCard'].fillna(False).astype(bool),
+        'xg_late': xg.fillna(0).where(late, 0),
     })
     out = f.groupby(['matchId', 'teamId']).sum()
     poss = ev.loc[own_poss, ['matchId', 'team.id', 'possession.id']].drop_duplicates()
@@ -263,6 +278,14 @@ def team_match_counts(ev):
     counter = np.asarray(ptypes.has('counterattack')) & own_poss.to_numpy()
     cp = ev.loc[counter, ['matchId', 'team.id', 'possession.id']].drop_duplicates()
     out['counterattacks'] = cp.groupby(['matchId', 'team.id']).size().reindex(out.index).fillna(0)
+    # attacks by flank: one count per own possession that the provider tagged as an attack
+    flank = ev.loc[own_poss & ev['possession.attack.flank'].notna(),
+                   ['matchId', 'team.id', 'possession.id', 'possession.attack.flank']].drop_duplicates(
+                       ['matchId', 'team.id', 'possession.id'])
+    fl = flank.groupby(['matchId', 'team.id', 'possession.attack.flank'], observed=True).size().unstack(fill_value=0)
+    for side in ('left', 'center', 'right'):
+        out['attacks_' + side] = (fl[side] if side in fl.columns else 0)
+        out['attacks_' + side] = out['attacks_' + side].reindex(out.index).fillna(0) if hasattr(out['attacks_' + side], 'reindex') else 0
     return out.reset_index()
 
 
@@ -645,7 +668,7 @@ def build_team_match(coach_match):
     opp = counts.rename(columns={c: 'opp_' + c for c in counts.columns if c not in ('matchId', 'teamId')}) \
         .rename(columns={'teamId': 'oppId'})
     keep = ['matchId', 'oppId', 'opp_xg', 'opp_shots', 'opp_passes', 'opp_passes_f3',
-            'opp_press_passes', 'opp_xg_set_piece', 'opp_box_touches']
+            'opp_press_passes', 'opp_xg_set_piece', 'opp_box_touches', 'opp_xg_late', 'opp_fouls']
     tm = tm.merge(opp[keep], on=['matchId', 'oppId'], how='left')
     tm['has_events'] = tm.passes.notna() & tm.opp_passes.notna()
     tm['xgd'] = (tm.xg - tm.opp_xg).where(tm.has_events)
@@ -703,6 +726,13 @@ def build_team_match(coach_match):
         return float(len(set(cur) - set(prev)))
     tm['xi_changes'] = [_changes(c, p) if s == ps else np.nan
                         for c, p, s, ps in zip(tm.xi, prev_xi, tm.seasonId, prev_season)]
+    # for the reaction / rotation tendencies: the result of the side's previous
+    # match of the same season and the days since it (both known before kick-off)
+    prev_pts = tm.groupby('teamId')['points'].shift()
+    prev_date = tm.groupby('teamId')['date'].shift()
+    same = tm.seasonId == prev_season
+    tm['prev_points'] = prev_pts.where(same)
+    tm['rest_days'] = (tm.date - prev_date).dt.total_seconds().div(86400).where(same)
     tm['team'] = tm.teamId.map(id_to_name).fillna(tm.team)
     tm['xi'] = tm.xi.apply(lambda v: list(v) if isinstance(v, (list, np.ndarray)) else [])
     tm['sub_in_ids'] = tm.sub_in_ids.apply(lambda v: list(v) if isinstance(v, (list, np.ndarray)) else [])

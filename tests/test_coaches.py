@@ -430,3 +430,40 @@ def test_line_up_from_the_built_tables():
     names.update({of._canonical(p): f'P{int(p)}' for p in g.playerId})
     f, xi = of.line_up(tid, {mid: 1.0}, names)
     assert f == form[(mid, tid)] and len(xi) == 11 and len({v['id'] for v in xi.values()}) == 11
+
+
+def test_tendencies_arithmetic():
+    rows = pd.DataFrame({
+        'has_events': [True] * 4, 'side': ['home', 'away', 'home', 'away'] * 1,
+        'goal_kicks': [10, 10, 10, 10], 'goal_kicks_short': [5, 0, 5, 0],
+        'corners': [4, 4, 4, 4], 'corners_short': [1, 0, 1, 0],
+        'attacks_left': [10] * 4, 'attacks_center': [10] * 4, 'attacks_right': [20] * 4,
+        'fouls': [12, 14, 16, 18], 'yellows': [2, 2, 2, 2], 'reds': [0, 1, 0, 0],
+        'xg_late': [0.3, 0.1, 0.3, 0.1], 'opp_xg_late': [0.1, 0.2, 0.1, 0.2],
+        'xgd': [1.0, -0.5, 1.0, -0.5],
+        'xi_changes': [np.nan, 4.0, 1.0, 5.0], 'prev_points': [np.nan, 0, 3, 0]})
+    rows = pd.concat([rows] * 3, ignore_index=True)       # enough home / away / after-result rows
+    t = cm.tendencies(rows)
+    assert t['gk_short_share'] == pytest.approx(0.25) and t['corner_short_share'] == pytest.approx(0.125)
+    assert t['centre_attack_share'] == pytest.approx(0.25) and t['left_minus_right'] == pytest.approx(-0.25)
+    assert t['fouls_pm'] == pytest.approx(15.0) and t['cards_pm'] == pytest.approx(2.25)
+    assert t['late_xgd'] == pytest.approx(0.05) and t['home_minus_away'] == pytest.approx(1.5)
+    assert t['changes_after_loss'] == pytest.approx(4.5) and t['loss_reaction'] == pytest.approx(3.5)
+    assert set(t) == set(cm.TENDENCIES)
+    # no events, no result history: everything blank, nothing raised
+    assert all(pd.isna(v) for v in cm.tendencies(rows.assign(has_events=False, prev_points=np.nan)).values())
+
+
+@pytest.mark.skipif(not os.path.exists(BUILT), reason='coach tables not built')
+def test_built_tendency_counts_are_consistent():
+    tm = pd.read_parquet(BUILT)
+    ev = tm[tm.has_events]
+    assert (ev.goal_kicks_short <= ev.goal_kicks).all() and (ev.corners_short <= ev.corners).all()
+    assert (ev.xg_late <= ev.xg + 1e-9).all()
+    both = ev.groupby('matchId').filter(lambda g: len(g) == 2)
+    assert abs((both.xg_late - both.opp_xg_late).sum()) < 1e-6          # one side's late xG is the other's conceded
+    # previous result and rest are from an EARLIER match of the same side
+    t = tm.sort_values(['teamId', 'date', 'matchId'])
+    prev = t.groupby('teamId').points.shift()
+    ok = t.prev_points.notna()
+    assert (t.prev_points[ok] == prev[ok]).all() and (t.rest_days.dropna() > 0).all()

@@ -366,6 +366,17 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   (`line_up`: matches vote for the formation, each match's eleven is
   fitted to its slots from `models/coaches/team_match_places.parquet`).
   `team.formation` is no longer loaded or read anywhere.
+  Tendencies section (2026-11): `coach_metrics.TENDENCIES` / `tendencies()`
+  — goal kicks short, short corners, centre attacks, left-right balance,
+  fouls, cards, xGD after 75', home-away gap, changes after a defeat,
+  reaction to defeat; each with league median, percentile and odd/even
+  stability (0.79 … -0.20; the noisy ones are labelled, not hidden).
+  Coach RATING: feasibility tested 2026-11 and NOT built — after removing
+  squad quality (starters' prior OBV/90, r 0.66 with team-season xGD) a
+  coach's residual does not agree between odd and even matches of one
+  spell (-0.05, 39 spells) and carries to the next club at +0.40
+  [-0.18, +0.89] on 15 pairs; implied true sd ~0.14 xGD/match against
+  0.18 of noise at 20+ matches. Scripts: scratchpad only.
   Flexibility + Young players sections (2026-11): `flexibility` =
   formation variety / structure change rate / back-line switch (see above),
   plus `opp_adapt` (noise-corrected slope of the context-adjusted style
