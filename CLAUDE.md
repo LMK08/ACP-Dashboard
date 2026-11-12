@@ -352,6 +352,13 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   Game-state rows use only matches whose event goals equal the final
   score (own goals are not shot events). Tests: `tests/test_coaches.py`
   (no-look-ahead on a prefix of the shipped table).
+  Shape with the ball (2026-11, `models/coaches/formations.py`): OUR OWN
+  read beside Wyscout's nominal `formation` (Lucas chose both, not a
+  replacement) — starters' mean touch locations to first sub/red card,
+  fitted to 7 reference shapes, no provider formation/position label.
+  `ball_back3_share` is a stable coach trait (0.91 odd/even);
+  `three_from_four_share` moderate. It is the in-possession shape, never
+  call it the formation. An in-match change read was tested and dropped.
   Flexibility + Young players sections (2026-11): `flexibility` =
   formation variety / change rates / back-line switch / in-match shape
   change (these four make the settled ↔ fluid score, `FLUIDITY_KEYS`),

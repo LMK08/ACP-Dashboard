@@ -155,6 +155,22 @@ def summarise(rows):
     out['main_formation'] = f.mode().iloc[0] if len(f) else None
     out['main_formation_share'] = _div((f == out['main_formation']).sum(), len(f)) if len(f) else np.nan
     out['in_match_switch_share'] = _div((r.formations_in_match > 1).sum(), r.formations_in_match.notna().sum())
+    # our own read of the shape with the ball (formations.py), beside the
+    # provider's nominal formation: how often he builds with three at the
+    # back, and how often a nominal back four does
+    out.update({'ball_shapes': {}, 'main_ball_shape': None, 'main_ball_shape_share': np.nan,
+                'ball_back3_share': np.nan, 'three_from_four_share': np.nan, 'ball_shape_matches': 0})
+    if 'ball_shape' in r.columns:
+        b = r.dropna(subset=['ball_shape'])
+        out['ball_shape_matches'] = len(b)
+        if len(b):
+            out['ball_shapes'] = b.ball_shape.value_counts().to_dict()
+            out['main_ball_shape'] = b.ball_shape.mode().iloc[0]
+            out['main_ball_shape_share'] = _div((b.ball_shape == out['main_ball_shape']).sum(), len(b))
+            three = b.ball_shape.map(_back_line) == 3
+            out['ball_back3_share'] = float(three.mean())
+            four = b.formation.map(_back_line) == 4
+            out['three_from_four_share'] = _div(int((three & four).sum()), int(four.sum()))
     players = set()
     for xi, subs in zip(r.xi, r.sub_in_ids):
         players.update(int(p) for p in xi)

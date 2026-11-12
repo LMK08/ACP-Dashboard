@@ -38,6 +38,8 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 
 from event_tags import TagIndex  # noqa: E402
+from models.coaches.formations import EVENT_COLS as FORMATION_EVENT_COLS  # noqa: E402
+from models.coaches.formations import formations_from_events  # noqa: E402
 
 COACH_MATCH = HERE / 'coach_match.parquet'
 COACHES = HERE / 'coaches.parquet'
@@ -669,6 +671,13 @@ def build_team_match(coach_match):
     start = form.first().rename('formation')
     nform = form.nunique().rename('formations_in_match')
     tm = tm.merge(pd.concat([start, nform], axis=1).reset_index().rename(columns={'team.id': 'teamId'}),
+                  on=['matchId', 'teamId'], how='left')
+    # our own read of the shape with the ball (formations.py), beside the
+    # provider's nominal formation above
+    print('  shapes with the ball …')
+    shapes = formations_from_events(pd.read_parquet(ROOT / 'raw_events.parquet', columns=FORMATION_EVENT_COLS))
+    shapes = shapes.rename(columns={'formation': 'ball_shape', 'formation_margin': 'ball_shape_margin'})
+    tm = tm.merge(shapes[['matchId', 'teamId', 'ball_shape', 'ball_shape_margin']],
                   on=['matchId', 'teamId'], how='left')
     del ev
 

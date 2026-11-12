@@ -48,7 +48,7 @@ def league_table(signature, comp_id):
     return cm.coach_table(tm, comp_id)
 
 
-RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
+RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['ball_back3_share', 'three_from_four_share'] + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
                                            'age_gap', 'first_sub_min', 'subs_before_60_share',
                                            'ppg_after_trailing', 'xgd90_trail', 'xgd90_lead', 'xi_changes',
                                            'set_piece_share']
@@ -355,7 +355,8 @@ def _matches(rows):
         'Opponent': r.opponent + np.where(r.side == 'home', ' (H)', ' (A)'),
         'Score': [f'{int(a)}-{int(b)}' for a, b in zip(r.gf, r.ga)],
         'xG': r.xg.round(2), 'xG against': r.opp_xg.round(2), 'xPts': r.xpts.round(2),
-        'Formation': r.formation, 'First sub': r.first_sub_min, 'XI changes': r.xi_changes,
+        'Formation': r.formation, 'Shape with ball': r.ball_shape if 'ball_shape' in r.columns else None,
+        'First sub': r.first_sub_min, 'XI changes': r.xi_changes,
     })
     st.dataframe(t, hide_index=True, use_container_width=True, height=520)
 
@@ -412,6 +413,24 @@ def _flexibility(s, league_row, table, rel, vectors, persistence, coach_id, leag
         total = sum(f.values())
         top = sorted(f.items(), key=lambda kv: -kv[1])[:8]
         st.markdown('**Starting formations** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
+    b = s.get('ball_shapes') or {}
+    if b:
+        total = sum(b.values())
+        top = sorted(b.items(), key=lambda kv: -kv[1])[:7]
+        st.markdown('**Shape with the ball (our read)** — ' + ' · '.join(f'{k} {v / total:.0%}' for k, v in top))
+        _vs_league(table, s, [
+            ('ball_back3_share', 'Builds with three at the back', lambda v: _fmt(v, '{:.0%}')),
+            ('three_from_four_share', 'Builds with three from a nominal back four', lambda v: _fmt(v, '{:.0%}'))],
+            league_name)
+        st.caption("Starting formations are Wyscout's labels (the nominal shape). Shape with the ball is our own: "
+                   "where each starter touched the ball in open play (his actions and the passes he received) from "
+                   "kick-off to the side's first substitution or red card (after a very early change, the "
+                   "stretch up to the next one), matched to seven reference shapes, with no "
+                   "provider formation or position label. It often differs from the nominal shape: a full-back "
+                   "who plays high leaves three at the back, so a 4-2-3-1 can build as a 3-4-3. The back line "
+                   "is the firm part of the read (two random halves of a match's touches agree 89 % of the "
+                   "time); the full name is softer (68 %). How stable as a coach trait: builds with three "
+                   f"{_stable(rel, 'ball_back3_share')}, three from a back four {_stable(rel, 'three_from_four_share')}.")
 
 
 def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name, table):

@@ -255,3 +255,80 @@ def test_league_comparison():
     assert pd.isna(c[1]['pct']) and pd.isna(c[2]['pct']) and c[1]['n'] == 0
     # too few coaches: no percentile
     assert pd.isna(cm.league_comparison(table.head(3), {'ppg': 1.2}, ['ppg'])[0]['pct'])
+
+
+# ───────────────────────── our own formations ─────────────────────────
+from models.coaches import formations as fm  # noqa: E402
+
+
+def _side(shape, rng, team=1, match=1, n=30, sub_at=None, noise=4.0):
+    """Touch rows for one side laid out in `shape`; an optional substitute
+    appears at `sub_at` minutes and stands somewhere misleading."""
+    rows = [{'playerId': 100 * team, 'x': 8.0, 'y': 50.0}]
+    for i, (d, w) in enumerate(fm.TEMPLATES[shape]):
+        rows.append({'playerId': 100 * team + i + 1, 'x': 100 * d * 0.8, 'y': 50 + 40 * w})
+    out = []
+    for r in rows:
+        for k in range(n):
+            out.append({'matchId': match, 'teamId': team, 'playerId': r['playerId'],
+                        't': 1 + k * (60 / n) + rng.uniform(0, 1),
+                        'x': r['x'] + rng.normal(0, noise), 'y': r['y'] + rng.normal(0, noise),
+                        'restart': False, 'received': False})
+    if sub_at is not None:
+        for k in range(n):
+            out.append({'matchId': match, 'teamId': team, 'playerId': 100 * team + 50,
+                        't': sub_at + k, 'x': 95.0, 'y': 5.0,
+                        'restart': False, 'received': False})
+    return pd.DataFrame(out)
+
+
+def test_formation_recovers_each_reference_shape():
+    rng = np.random.default_rng(5)
+    for shape in fm.TEMPLATES:
+        got = fm.team_match_shapes(_side(shape, rng)).iloc[0]
+        assert got.formation == shape, (shape, got.formation)
+
+
+def test_formation_reads_only_the_starting_window():
+    """A substitute's touches, and the starters' touches after he came on,
+    must not move the shape."""
+    rng = np.random.default_rng(6)
+    g = _side('4-4-2', rng, sub_at=40.0)
+    # after the change the shape itself changes: the strikers drop onto the
+    # centre-backs and the wide midfielders come inside
+    late = g.t >= 40
+    for p_ in (109, 110):
+        g.loc[late & (g.playerId == p_), 'x'] = 0.0
+    for p_ in (107, 108):
+        g.loc[late & (g.playerId == p_), ['x', 'y']] = [20.0, 50.0]
+    g = pd.concat([g] + [g[g.t >= 40]] * 5, ignore_index=True)          # most touches come after it
+    whole = g[g.playerId != 150].assign(t=lambda d: d.t.where(d.t < 40, 30.0))   # same touches, no change
+    assert fm.team_match_shapes(whole).iloc[0].formation != '4-4-2'      # the swap does change the read
+    got = fm.team_match_shapes(g).iloc[0]
+    assert got.formation == '4-4-2' and got.formation_window_min == pytest.approx(40.0)
+    # a red card ends the window too
+    red = fm.team_match_shapes(_side('3-5-2', rng), {(1, 1): 10.0}).iloc[0]
+    assert red.formation is None                               # under MIN_WINDOW_MIN
+
+
+def test_formation_reads_no_provider_label():
+    banned = ('formation', 'position')
+    assert not [c for c in fm.EVENT_COLS if any(b in c for b in banned)]
+    src = open(fm.__file__).read()
+    assert "team.formation" not in src and "player.position" not in src
+
+
+def test_touches_from_events_and_restarts():
+    ev = pd.DataFrame({
+        'matchId': [1, 1, 1], 'matchPeriod': ['1H', '2H', '1H'], 'minute': [10, 50, 12], 'second': [0, 30, 0],
+        'type.primary': ['pass', 'pass', 'throw_in'], 'team.id': [7, 7, 7], 'player.id': [1, 2, 3],
+        'location.x': [30.0, 40.0, 100.0], 'location.y': [50.0, 20.0, 0.0],
+        'pass.accurate': [True, False, True], 'pass.recipient.id': [2, 3, 4],
+        'pass.endLocation.x': [60.0, 70.0, 90.0], 'pass.endLocation.y': [55.0, 25.0, 50.0],
+        'infraction.redCard': [None, None, None]})
+    t = fm.touches(ev)
+    # 3 own actions + 1 reception (the inaccurate pass and the throw-in give none)
+    assert len(t) == 4 and t.received.sum() == 1
+    assert t[t.received].iloc[0].playerId == 2 and t[t.received].iloc[0].x == 60.0
+    assert t.loc[t.playerId == 3, 'restart'].all()
+    assert t.loc[(t.playerId == 2) & ~t.received, 't'].iloc[0] == pytest.approx(50.5 + fm.HALF_GAP)
