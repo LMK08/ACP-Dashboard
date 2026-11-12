@@ -1132,7 +1132,7 @@ def render():
         player_stats_with_scores_df, active_season_ids, selected_comp_ids)
 
     _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log",
-                         "Similar Players", "Coached by"]
+                         "Similar Players", "Coached by", "Career"]
     _active_tab = st.radio("Profile section", _profile_sections,
                             horizontal=True, label_visibility="collapsed",
                             key="profile_active_tab")
@@ -2665,3 +2665,8 @@ def render():
         # the other sections. A row opens the coach's profile.
         from views import coach_profile
         coach_profile.render_coached_by(int(selected_player_id))
+
+    elif _active_tab == "Career":
+        # Transfermarkt's record of his clubs, seasons and minutes; lazy too
+        from views import player_career
+        player_career.render(int(selected_player_id))

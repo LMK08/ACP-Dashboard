@@ -366,8 +366,8 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   (`line_up`: matches vote for the formation, each match's eleven is
   fitted to its slots from `models/coaches/team_match_places.parquet`).
   `team.formation` is no longer loaded or read anywhere.
-  TRANSFERMARKT LINKS for teams and coaches (2026-11,
-  `transfermarkt_links.py`; players are `scrape_transfermarkt.py`).
+  TRANSFERMARKT LINKS for teams, coaches and players (2026-11,
+  `transfermarkt_links.py`).
   Steps `teams` → `managers` → `verify` → `coaches`, run by hand (not in
   a workflow): `valuations/tm_team_links.csv` (teamId → club id; set
   status `manual` to settle a `review` row, it is never overwritten),
@@ -381,6 +381,21 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   `tm_coach_id`. zerozero.pt is NOT usable: it sits behind a human-
   verification check. Requests: plain client name, ~2 s apart, capped,
   stop at the first refusal — keep it that way.
+  PLAYERS: steps `squads` → `players`. `squads` reads, per linked club
+  and season, the squad page (ids, birth dates) and the season statistics
+  page (appearances, minutes, all competitions) → `tm_squads.parquet`,
+  `tm_player_club_seasons.parquet`. `players` links a player when his
+  date of birth equals exactly ONE man's in the squad of the same club
+  and season → `tm_player_links.csv` (80 % linked; 93 % Liga 3).
+  Player Profile → Career (`views/player_career.py`) shows it, labelled
+  as Transfermarkt's count (90 per full match, cups included) — never
+  mix it into our exact minutes. Transfermarkt's per-player career page
+  is NOT readable (it loads from an internal service; do not call it).
+  The OLDER name-search links (`scrape_transfermarkt.py` →
+  `tm_match_log.csv`) put 179 players on a namesake's profile
+  (`tm_link_conflicts.csv`): ~30 % of the Transfermarkt rows in
+  valuations.parquet and 19 % of tm_transfer_history are the wrong
+  person's until that scraper is re-pointed at `tm_player_links.csv`.
   NO NOISY PREDICTIVE METRICS on the coach pages (Lucas 2026-11). A
   measure read as a TRAIT (style, flexibility, tendencies: how he sets
   up, what he would do again) is shown only if a coach's odd and even

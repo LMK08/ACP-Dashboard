@@ -5,6 +5,8 @@
     python transfermarkt_links.py managers   [--limit N]
     python transfermarkt_links.py verify
     python transfermarkt_links.py coaches
+    python transfermarkt_links.py squads     [--limit N]
+    python transfermarkt_links.py players
 
   teams     our teamId → Transfermarkt club id, by searching the club name.
             Writes valuations/tm_team_links.csv. A row whose status you set
@@ -18,7 +20,16 @@
             the matches he took at each club against those manager stints.
             Writes valuations/tm_coach_links.csv. No request is made.
 
-(Players are linked by scrape_transfermarkt.py → valuations/tm_match_log.csv.)
+  squads    for every linked club and every season we have for it: the squad
+            (ids, names, birth dates) and the season statistics (appearances,
+            minutes, all competitions). Writes valuations/tm_squads.parquet
+            and tm_player_club_seasons.parquet.
+  players   our playerId → Transfermarkt player, matched inside the squad of
+            the same club and season by date of birth and name.
+            Writes valuations/tm_player_links.csv. No request is made.
+
+(scrape_transfermarkt.py links players by searching their names, for market
+values; this file links them through squads, which is surer.)
 
 Rules this script keeps:
   * It identifies itself with a plain client name and sends no browser
@@ -44,12 +55,18 @@ VAL = HERE / 'valuations'
 TEAM_LINKS = VAL / 'tm_team_links.csv'
 MANAGERS = VAL / 'tm_team_managers.parquet'
 COACH_LINKS = VAL / 'tm_coach_links.csv'
+SQUADS = VAL / 'tm_squads.parquet'                       # who was in each club's squad each season (id, name, birth date)
+CLUB_SEASONS = VAL / 'tm_player_club_seasons.parquet'    # appearances and minutes per player per club-season
+CLUB_SEASONS_DONE = VAL / 'tm_club_seasons_fetched.csv'
+PLAYER_LINKS = VAL / 'tm_player_links.csv'
+OBV_PLAYERS = HERE / 'obv_match_player.parquet'
+PLAYER_DETAILS = HERE / 'player_details.pkl'
 TEAM_MATCH = HERE / 'models' / 'coaches' / 'coach_team_match.parquet'
 
 TM_BASE = 'https://www.transfermarkt.com'
 CLIENT = 'club-data-research/1.0'
 PAUSE = (1.8, 2.6)          # seconds between requests
-MAX_REQUESTS = 400          # per run
+MAX_REQUESTS = 400          # per run (the players step, two pages per club-season, passes its own)
 
 SENIOR_LEAGUES = ('Liga Portugal', 'Liga 3', 'Campeonato de Portugal')     # incl. '… - Série B'
 
@@ -71,15 +88,16 @@ class Refused(Exception):
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, cap=MAX_REQUESTS):
         import requests
+        self.cap = cap
         self.s = requests.Session()
         self.s.headers.update({'User-Agent': CLIENT, 'Accept-Language': 'en'})
         self.n = 0
 
     def get(self, path):
-        if self.n >= MAX_REQUESTS:
-            raise Refused(f'request cap of {MAX_REQUESTS} reached for this run')
+        if self.n >= self.cap:
+            raise Refused(f'request cap of {self.cap} reached for this run')
         time.sleep(random.uniform(*PAUSE))
         self.n += 1
         import requests
@@ -201,6 +219,83 @@ def parse_manager_history(html):
     return [r for r in out if pd.notna(r['start'])]
 
 
+def _int(text):
+    """'2.626\'' → 2626, '-' → 0, '' → None (Transfermarkt writes thousands with a dot)."""
+    t = (text or '').replace("'", '').replace('.', '').replace(',', '').strip()
+    if t == '-':
+        return 0
+    return int(t) if t.isdigit() else None
+
+
+def _player_link(tr):
+    a = next((x for x in tr.select('a[href*="/profil/spieler/"]') if x.get_text(strip=True)), None)
+    m = re.match(r'/([^/]+)/profil/spieler/(\d+)', a['href']) if a is not None else None
+    return (a, m) if m else (None, None)
+
+
+def _header(table):
+    out = []
+    for th in table.select('thead > tr > th'):
+        t = th.get_text(' ', strip=True)
+        if not t:                                   # icon-only columns carry their name in a title
+            t = next((x.get('title') for x in th.find_all(True) if x.get('title')), '')
+        out.append(t.strip())
+    return out
+
+
+def parse_squad(html):
+    """[{tm_player_id, tm_player_slug, name, dob}] from a club's squad page (detailed view)."""
+    from bs4 import BeautifulSoup
+    t = BeautifulSoup(html, 'html.parser').select_one('table.items')
+    if t is None:
+        return []
+    head = _header(t)
+    i = next((k for k, h in enumerate(head) if h.lower().startswith('date of birth')), None)
+    out = []
+    for tr in t.select('tbody > tr'):
+        a, m = _player_link(tr)
+        tds = [td.get_text(' ', strip=True) for td in tr.find_all('td', recursive=False)]
+        if m is None or i is None or len(tds) <= i:
+            continue
+        out.append({'tm_player_id': int(m.group(2)), 'tm_player_slug': m.group(1),
+                    'name': a.get_text(strip=True), 'dob': _date(tds[i])})
+    return out
+
+
+STAT_COLS = {'In squad': 'in_squad', 'Appearances': 'appearances', 'Goals': 'goals', 'Assists': 'assists',
+             'Yellow cards': 'yellows', 'Second yellow cards': 'second_yellows', 'Red cards': 'reds',
+             'Substitutions on': 'subs_on', 'Substitutions off': 'subs_off', 'Minutes played': 'minutes'}
+
+
+def parse_squad_stats(html):
+    """[{tm_player_id, name, in_squad, appearances, …, minutes}] from a club's season statistics page
+    (all competitions of that season). Columns are found by their header, not by position."""
+    from bs4 import BeautifulSoup
+    t = BeautifulSoup(html, 'html.parser').select_one('table.items')
+    if t is None:
+        return []
+    head = _header(t)
+    where = {col: head.index(h) for h, col in STAT_COLS.items() if h in head}
+    if 'minutes' not in where or 'appearances' not in where:
+        return []
+    out = []
+    for tr in t.select('tbody > tr'):
+        a, m = _player_link(tr)
+        tds = [td.get_text(' ', strip=True) for td in tr.find_all('td', recursive=False)]
+        if m is None:
+            continue
+        row = {'tm_player_id': int(m.group(2)), 'name': a.get_text(strip=True)}
+        # a man who never played may get one merged cell ('Not used during this
+        # season') in place of the numeric ones: he is kept, with zeros
+        aligned = len(tds) == len(head)
+        row.update({col: (_int(tds[k]) if aligned else None) for col, k in where.items()})
+        # 'Not used during this season' style rows have text in the numeric cells
+        if row['appearances'] is None:
+            row.update({col: 0 for col in where if col != 'in_squad'})
+        out.append(row)
+    return out
+
+
 # ───────────────────────────── steps ─────────────────────────────
 def our_teams():
     tm = pd.read_parquet(TEAM_MATCH, columns=['teamId', 'team', 'date'])
@@ -313,6 +408,144 @@ def fetch_managers(limit=None):
     return rows
 
 
+def our_club_seasons():
+    """(teamId, year) for every season a linked club has matches in our data; year = the season's first year."""
+    tm = pd.read_parquet(TEAM_MATCH, columns=['teamId', 'seasonId', 'date'])
+    g = tm.groupby(['teamId', 'seasonId']).date.min().reset_index()
+    g['year'] = g.date.dt.year.where(g.date.dt.month >= 7, g.date.dt.year - 1)
+    return g[['teamId', 'seasonId', 'year']]
+
+
+def _append(have, rows, key):
+    """`have` plus `rows`, one row per `key` (a re-fetched club-season replaces its old rows). Either may be empty."""
+    new = pd.DataFrame(rows)
+    parts = [d for d in (have, new) if len(d)]
+    if not parts:
+        return have
+    return pd.concat(parts, ignore_index=True).drop_duplicates(key, keep='last').reset_index(drop=True)
+
+
+def fetch_squads(limit=None, cap=900):
+    """Two pages per club-season: the squad (ids, names, birth dates) and the season statistics
+    (appearances, minutes). A club-season is fetched once; CLUB_SEASONS_DONE records it."""
+    links = pd.read_csv(TEAM_LINKS)
+    links = links[links.status.isin(['ok', 'manual']) & links.tm_team_id.notna() & links.tm_slug.notna()]
+    todo = our_club_seasons().merge(links[['teamId', 'team', 'tm_team_id', 'tm_slug']], on='teamId')
+    # one fetch per Transfermarkt club-season, even if two of our team ids point at the same club
+    todo = todo.drop_duplicates(['tm_team_id', 'year']).sort_values(['year', 'team'], ascending=[False, True])
+    done = pd.read_csv(CLUB_SEASONS_DONE) if CLUB_SEASONS_DONE.exists() else pd.DataFrame(
+        columns=['teamId', 'year', 'squad_rows', 'stat_rows'])
+    seen = set(zip(done.teamId, done.year))
+    todo = todo[[k not in seen for k in zip(todo.teamId, todo.year)]] if len(todo) else todo
+    if limit:
+        todo = todo.head(limit)
+    squads = pd.read_parquet(SQUADS) if SQUADS.exists() else pd.DataFrame()
+    stats = pd.read_parquet(CLUB_SEASONS) if CLUB_SEASONS.exists() else pd.DataFrame()
+    cl = Client(cap)
+    try:
+        for r in todo.itertuples():
+            tid, y = int(r.tm_team_id), int(r.year)
+            key = {'teamId': r.teamId, 'team': r.team, 'tm_team_id': tid, 'year': y}
+            sq = parse_squad(cl.get(f'/{r.tm_slug}/kader/verein/{tid}/saison_id/{y}/plus/1') or '')
+            stt = parse_squad_stats(cl.get(f'/{r.tm_slug}/leistungsdaten/verein/{tid}/reldata/%26{y}/plus/1') or '')
+            squads = _append(squads, [dict(x, **key) for x in sq], ['tm_team_id', 'year', 'tm_player_id'])
+            stats = _append(stats, [dict(x, **key) for x in stt], ['tm_team_id', 'year', 'tm_player_id'])
+            done.loc[len(done)] = {'teamId': r.teamId, 'year': y, 'squad_rows': len(sq), 'stat_rows': len(stt)}
+            if len(squads):
+                squads.to_parquet(SQUADS, index=False)
+            if len(stats):
+                stats.to_parquet(CLUB_SEASONS, index=False)
+            done.to_csv(CLUB_SEASONS_DONE, index=False)
+            print(f'  {y} {r.team:28s} squad {len(sq):3d}  stats {len(stt):3d}', flush=True)
+    except Refused as e:
+        print(f'STOPPED: {e}. Saved what was read; wait before the next run.')
+    return done
+
+
+def our_players():
+    """One row per (playerId, teamId, year) a player appeared for in our events, with his name and birth date.
+    Ids are the canonical ones (league_config.PLAYER_ID_ALIASES)."""
+    import pickle
+    from league_config import PLAYER_ID_ALIASES
+    ob = pd.read_parquet(OBV_PLAYERS, columns=['seasonId', 'teamId', 'playerId']).drop_duplicates()
+    ob['playerId'] = ob.playerId.map(lambda p: PLAYER_ID_ALIASES.get(int(p), int(p)))
+    ob = ob.merge(our_club_seasons()[['teamId', 'seasonId', 'year']], on=['teamId', 'seasonId'])
+    with open(PLAYER_DETAILS, 'rb') as fh:
+        d = pd.DataFrame(pickle.load(fh)).dropna(subset=['playerId'])
+    d['playerId'] = pd.to_numeric(d.playerId, errors='coerce')
+    d = d.dropna(subset=['playerId']).astype({'playerId': 'int64'}).drop_duplicates('playerId')
+    d['our_name'] = d.shortName.fillna('')
+    d['our_full'] = (d.firstName.fillna('') + ' ' + d.lastName.fillna('')).str.strip()
+    d['our_dob'] = pd.to_datetime(d.birthDate, errors='coerce')
+    return ob[['playerId', 'teamId', 'year']].drop_duplicates().merge(
+        d[['playerId', 'our_name', 'our_full', 'our_dob']], on='playerId', how='left')
+
+
+def _name_words(*names):
+    return {w for n in names for w in fold(n).replace('.', ' ').split() if len(w) > 1} - _STOP
+
+
+def link_players(players=None, squads=None):
+    """Our playerId → Transfermarkt player, inside the squad of the SAME club and season.
+
+      ok      same date of birth as exactly ONE man in that squad (the names usually share a
+              word; when they do not it is a nickname, and `how` says 'dob_name_differs')
+      review  no birth date on one side but one clear name match; or his club-seasons point at
+              different profiles
+    A player is 'ok' when every club-season that found him agrees on one profile."""
+    pl = our_players() if players is None else players
+    sq = pd.read_parquet(SQUADS) if squads is None else squads
+    sq = sq.drop_duplicates(['teamId', 'year', 'tm_player_id'])     # a man listed twice must not hide his own birth date
+    by = {k: g for k, g in sq.groupby(['teamId', 'year'])}
+    votes = []
+    for r in pl.itertuples():
+        g = by.get((r.teamId, r.year))
+        if g is None:
+            continue
+        mine = _name_words(r.our_name, r.our_full)
+        cand = g.assign(shared=[len(mine & _name_words(n)) for n in g.name])
+        how = None
+        if pd.notna(r.our_dob):
+            same = cand[cand.dob == r.our_dob]
+            if len(same) == 1:
+                # the only man in that squad born that day: sure even when Transfermarkt
+                # lists him under a nickname ('Pepê' for Pedro Medeiros)
+                how = 'dob+name' if same.shared.iloc[0] > 0 else ('dob_only' if not mine else 'dob_name_differs')
+                hit = same.iloc[0]
+        if how is None:
+            named = cand[cand.shared == cand.shared.max()] if cand.shared.max() >= 2 else cand.iloc[0:0]
+            if len(named) == 1 and (pd.isna(r.our_dob) or pd.isna(named.dob.iloc[0])):
+                how, hit = 'name_only', named.iloc[0]
+        if how:
+            votes.append({'playerId': r.playerId, 'tm_player_id': int(hit.tm_player_id), 'tm_name': hit['name'],
+                          'tm_dob': hit.dob, 'tm_player_slug': hit.tm_player_slug, 'how': how,
+                          'teamId': r.teamId, 'year': r.year})
+    v = pd.DataFrame(votes)
+    seen = pl.groupby('playerId').agg(our_name=('our_name', 'first'), our_dob=('our_dob', 'first'),
+                                      club_seasons=('year', 'size')).reset_index()
+    in_squads = pl[[k in by for k in zip(pl.teamId, pl.year)]].groupby('playerId').size().rename('club_seasons_fetched')
+    seen = seen.merge(in_squads, on='playerId', how='left').fillna({'club_seasons_fetched': 0})
+    rows = []
+    for r in seen.itertuples():
+        g = v[v.playerId == r.playerId] if len(v) else v
+        row = {'playerId': r.playerId, 'our_name': r.our_name, 'our_dob': r.our_dob,
+               'club_seasons': r.club_seasons, 'club_seasons_fetched': int(r.club_seasons_fetched),
+               'tm_player_id': None, 'tm_name': None, 'tm_dob': None, 'tm_player_slug': None,
+               'votes': 0, 'how': '', 'status': 'no_squad_fetched' if not r.club_seasons_fetched else 'not_in_squad'}
+        if len(g):
+            ids = g.tm_player_id.value_counts()
+            top = g[g.tm_player_id == ids.index[0]].iloc[0]
+            sure = set(g.how) <= {'dob+name', 'dob_only', 'dob_name_differs'} and len(ids) == 1
+            row.update({'tm_player_id': int(ids.index[0]), 'tm_name': top.tm_name, 'tm_dob': top.tm_dob,
+                        'tm_player_slug': top.tm_player_slug, 'votes': int(ids.iloc[0]),
+                        'how': ','.join(sorted(set(g.how))), 'status': 'ok' if sure else 'review'})
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    if players is None:
+        out.to_csv(PLAYER_LINKS, index=False)
+    return out
+
+
 def close_stints(mg):
     """Manager stints with every end filled except the club's latest: a
     stint with no end date that is NOT the club's most recent one ends the
@@ -410,7 +643,7 @@ def link_coaches(team_match=None, managers=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('step', choices=['teams', 'managers', 'verify', 'coaches'])
+    ap.add_argument('step', choices=['teams', 'managers', 'verify', 'coaches', 'squads', 'players'])
     ap.add_argument('--retry', action='store_true', help="teams: search 'review' / 'not_found' teams again")
     ap.add_argument('--limit', type=int)
     ap.add_argument('--team')
@@ -419,6 +652,11 @@ def main():
         link_teams(a.limit, a.team, a.retry)
     elif a.step == 'managers':
         fetch_managers(a.limit)
+    elif a.step == 'squads':
+        fetch_squads(a.limit)
+    elif a.step == 'players':
+        out = link_players()
+        print(out.status.value_counts().to_string())
     elif a.step == 'verify':
         out = verify_team_links()
         print(out.status.value_counts().to_string())

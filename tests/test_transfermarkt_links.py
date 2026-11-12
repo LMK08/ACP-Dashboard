@@ -63,6 +63,7 @@ STAFF = '''<table class="items"><tbody>
 
 
 def test_parsers():
+    pytest.importorskip('bs4')        # only the scraper needs it; the Space's environment does not install it
     clubs = tl.parse_club_search(SEARCH)
     assert [(c['tm_team_id'], c['tm_name'], c['country'], c['league']) for c in clubs] == [
         (3326, 'AD Fafe', 'Portugal', 'Liga 3'), (20727, 'AD Fafe U19', 'Portugal', None)]
@@ -182,3 +183,92 @@ def test_stale_transfermarkt_name_is_withdrawn(tmp_path):
                   'status': ['review']}).to_csv(links, index=False)
     out = bc.add_transfermarkt(coaches, links).iloc[0]
     assert out['name'] == 'Coach #1' and out['birthDate'] is None and pd.isna(out['tm_coach_id'])
+
+
+SQUAD = '''<table class="items"><thead><tr><th>#</th><th>Player</th><th>Date of birth/Age</th><th>Nat.</th></tr></thead><tbody>
+<tr><td>1</td><td><a href="/joao-silva/profil/spieler/111"><img></a><a href="/joao-silva/profil/spieler/111">João Silva</a> Goalkeeper</td><td>28/09/1998 (27)</td><td></td></tr>
+<tr><td>9</td><td><a href="/pepe/profil/spieler/222">Pepê</a> Centre-Forward</td><td>05/09/2003 (22)</td><td></td></tr>
+</tbody></table>'''
+STATS = '''<table class="items"><thead><tr><th>#</th><th>Player</th><th>Age</th>
+<th><span title="In squad"></span></th><th><span title="Appearances"></span></th><th><span title="Goals"></span></th>
+<th><span title="Assists"></span></th><th><a title="Minutes played"></a></th></tr></thead><tbody>
+<tr><td>1</td><td><a href="/joao-silva/profil/spieler/111">João Silva</a></td><td>27</td><td>31</td><td>30</td><td>-</td><td>2</td><td>2.626'</td></tr>
+<tr><td>9</td><td><a href="/pepe/profil/spieler/222">Pepê</a></td><td>22</td><td>4</td><td>Not used during this season</td><td></td><td></td><td></td></tr>
+</tbody></table>'''
+
+
+def test_squad_and_stats_parsers():
+    pytest.importorskip('bs4')        # only the scraper needs it; the Space's environment does not install it
+    sq = tl.parse_squad(SQUAD)
+    assert [(r['tm_player_id'], r['name'], r['dob']) for r in sq] == [
+        (111, 'João Silva', pd.Timestamp('1998-09-28')), (222, 'Pepê', pd.Timestamp('2003-09-05'))]
+    st = tl.parse_squad_stats(STATS)
+    assert st[0] == {'tm_player_id': 111, 'name': 'João Silva', 'in_squad': 31, 'appearances': 30, 'goals': 0,
+                     'assists': 2, 'minutes': 2626}                    # thousands dot, '-' is zero
+    assert st[1]['appearances'] == 0 and st[1]['minutes'] == 0 and st[1]['in_squad'] == 4
+    merged = STATS.replace("<td>4</td><td>Not used during this season</td><td></td><td></td><td></td>",
+                           '<td colspan="5">Not used during this season</td>')
+    kept = tl.parse_squad_stats(merged)
+    assert len(kept) == 2 and kept[1]['tm_player_id'] == 222 and kept[1]['appearances'] == 0 and kept[1]['minutes'] == 0
+    assert tl.parse_squad_stats('<table class="items"><thead><tr><th>Player</th></tr></thead></table>') == []
+    assert tl._int("1.432'") == 1432 and tl._int('-') == 0 and tl._int('') is None
+
+
+def test_link_players_inside_the_same_squad():
+    squads = pd.DataFrame([
+        {'teamId': 1, 'year': 2025, 'tm_player_id': 111, 'tm_player_slug': 'a', 'name': 'João Silva', 'dob': pd.Timestamp('1998-09-28')},
+        {'teamId': 1, 'year': 2025, 'tm_player_id': 222, 'tm_player_slug': 'b', 'name': 'Pepê', 'dob': pd.Timestamp('2003-09-05')},
+        {'teamId': 1, 'year': 2025, 'tm_player_id': 333, 'tm_player_slug': 'c', 'name': 'Twin One', 'dob': pd.Timestamp('2000-01-01')},
+        {'teamId': 1, 'year': 2025, 'tm_player_id': 444, 'tm_player_slug': 'd', 'name': 'Twin Two', 'dob': pd.Timestamp('2000-01-01')},
+        {'teamId': 2, 'year': 2025, 'tm_player_id': 999, 'tm_player_slug': 'e', 'name': 'João Silva', 'dob': pd.Timestamp('1998-09-28')}])
+    def p(pid, team, name, dob, year=2025):
+        return {'playerId': pid, 'teamId': team, 'year': year, 'our_name': name, 'our_full': name,
+                'our_dob': pd.Timestamp(dob) if dob else pd.NaT}
+    players = pd.DataFrame([
+        p(1, 1, 'J. Silva', '1998-09-28'),            # birth date + shared word
+        p(2, 1, 'Pedro Medeiros', '2003-09-05'),      # nickname on Transfermarkt: the birth date is unique in the squad
+        p(3, 1, 'Twin One', '2000-01-01'),            # two men born that day: the birth date settles nothing
+        p(4, 1, 'Nobody Here', '1990-05-05'),         # not in the squad
+        p(5, 3, 'Other Club', '1998-09-28'),          # club-season never fetched
+        p(6, 1, 'João Silva', '1998-09-28'), p(6, 2, 'João Silva', '1998-09-28')])   # two clubs, two different profiles
+    out = tl.link_players(players, squads).set_index('playerId')
+    assert out.loc[1, ['tm_player_id', 'status']].tolist() == [111, 'ok']
+    assert out.loc[2, ['tm_player_id', 'status']].tolist() == [222, 'ok'] and 'name_differs' in out.loc[2, 'how']
+    assert out.loc[3, 'status'] != 'ok'
+    assert out.loc[4, 'status'] == 'not_in_squad' and out.loc[5, 'status'] == 'no_squad_fetched'
+    assert out.loc[6, 'status'] == 'review'
+    # a man listed twice in one squad still links; a name-only match is never 'ok'
+    twice = pd.concat([squads, squads.iloc[[0]]], ignore_index=True)
+    assert tl.link_players(players, twice).set_index('playerId').loc[1, 'status'] == 'ok'
+    no_dob = pd.DataFrame([p(7, 1, 'João Silva', None)])
+    got = tl.link_players(no_dob, squads).iloc[0]
+    assert got.tm_player_id == 111 and got.status == 'review' and got.how == 'name_only'
+
+
+def test_append_handles_empty_and_refetch():
+    assert tl._append(pd.DataFrame(), [], ['a']).empty
+    one = tl._append(pd.DataFrame(), [{'a': 1, 'v': 10}], ['a'])
+    assert tl._append(one, [], ['a']).v.tolist() == [10]
+    assert tl._append(one, [{'a': 1, 'v': 11}, {'a': 2, 'v': 20}], ['a']).v.tolist() == [11, 20]
+
+
+def test_career_tables():
+    from views import player_career as pc
+    links = pd.DataFrame({'playerId': [1, 2], 'tm_player_id': [111, 222], 'tm_name': ['A', 'B'],
+                          'tm_player_slug': ['a', 'b'], 'status': ['ok', 'review']})
+    seasons = pd.DataFrame({'tm_player_id': [111, 111, 222], 'team': ['X', 'Y', 'Z'], 'year': [2024, 2025, 2025],
+                            'in_squad': [30, 10, 5], 'appearances': [28, 9, 1], 'goals': [3, 0, 0],
+                            'assists': [1, 0, 0], 'minutes': [2400, 700, 20]})
+    assert pc.career(1, links, seasons.drop(columns=['in_squad', 'assists']), pd.DataFrame())[1]['In squad'].isna().all()
+    link, sea, tr = pc.career(1, links, seasons, pd.DataFrame())
+    assert link.tm_player_id == 111 and sea.Season.tolist() == ['2025/26', '2024/25'] and sea.Minutes.tolist() == [700, 2400]
+    assert tr.empty
+    link, sea, _ = pc.career(2, links, seasons, pd.DataFrame())           # an unsure link shows nothing
+    assert link is None and sea.empty
+    # transfers read from another profile (a namesake the old name search picked) are never shown
+    tr = pd.DataFrame({'playerId': [1, 1], 'tm_id': [111, 999], 'date': ['2024-07-01', '2020-07-01'], 'season': ['24/25', '20/21'],
+                       'from_club': ['X', 'Famous FC'], 'to_club': ['Y', 'Bigger FC'], 'is_loan': [False, False],
+                       'fee_eur': [None, 5e6]})
+    _, _, shown = pc.career(1, links, seasons, tr)
+    assert shown.To.tolist() == ['Y']
+    assert pc.career(2, links, seasons, tr.assign(playerId=2))[2].empty

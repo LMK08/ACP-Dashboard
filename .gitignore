@@ -58,6 +58,11 @@ __pycache__/
 !valuations/tm_team_links.csv
 !valuations/tm_team_managers.parquet
 !valuations/tm_coach_links.csv
+!valuations/tm_squads.parquet
+!valuations/tm_player_club_seasons.parquet
+!valuations/tm_club_seasons_fetched.csv
+!valuations/tm_player_links.csv
+!valuations/tm_link_conflicts.csv
 !models/coaches/coach_names.csv
 
 # System files

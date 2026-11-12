@@ -1,0 +1,180 @@
+playerId,name,old_status,old_tm_id,tm_name_old,old_matched_on,our_dob,new_tm_id,tm_name_new,tm_dob
+51103,Paulo José de Oliveira,low_confidence,1502178.0,Paulo José,name,1986-04-09,58475.0,Paulinho,1986-04-09
+70079,Kadú,matched,61296.0,Kadú,name,1994-11-30,134400.0,Kadú,1994-11-30
+70105,Mika,low_confidence,565821.0,Mika Biereth,name,1991-03-08,138285.0,Mika,1991-03-08
+70339,Bura,low_confidence,34987.0,Burak Yılmaz,name,1988-12-17,58957.0,Bura,1988-12-17
+70625,Alex,low_confidence,79960.0,Alex Sandro,name,1991-08-27,86811.0,Alex,1991-08-27
+70919,Perdigão,matched,54021.0,Perdigão,name,1991-07-17,256696.0,Perdigão,1991-07-17
+71045,Tiago Henrique Damil Gomes,matched,968027.0,Tiago Henrique Damil Gomes,name,1986-07-29,13222.0,Tiago Gomes,1986-07-29
+71241,Brito,matched,229661.0,Brito,name,1987-11-16,204453.0,Brito,1987-11-16
+71397,Madureira,matched,266637.0,Madureira,name,1992-12-14,551032.0,Madureira,1992-12-14
+71459,Elísio,matched,1506205.0,Elísio,name,1989-05-05,130553.0,Elísio,1989-05-05
+71950,Bruno Alves,matched,13121.0,Bruno Alves,name,1990-06-09,235643.0,Bruno Alves,1990-06-09
+222697,Gilberto Silva,matched,3194.0,Gilberto Silva,name,1987-03-26,56922.0,Gilberto,1987-03-26
+232309,Gonçalo Silva,matched,194214.0,Gonçalo Silva,name,1993-05-14,234457.0,Gonçalo Silva,1993-05-14
+236999,André Pinto,matched,58923.0,André Pinto,name,1994-04-29,258837.0,André Pinto,1994-04-29
+237028,Sérgio Ribeiro,matched,217389.0,Sérgio Ribeiro,name,1996-01-18,223997.0,Sérgio Ribeiro,1996-01-18
+248063,Samu,low_confidence,991268.0,Samu Aghehowa,name,1990-07-03,352897.0,Samu,1990-07-03
+251303,Xandão,matched,100009.0,Xandão,name,1990-05-08,439389.0,Xandão,1990-05-08
+252782,Matheus Souza,matched,797734.0,Matheus Souza,name,1993-09-15,258615.0,Matheus Souza,1993-09-15
+258157,Rui Pedro Oliveira Silva,low_confidence,304827.0,Rui Silva,name,1996-06-05,290290.0,Rui Silva,1996-06-05
+258729,Vitinho,matched,213605.0,Vitinho,name,1993-05-10,306820.0,Vitinho,1993-05-10
+273776,Jimmy,low_confidence,200626.0,Jimmy Armfield,name,1994-07-15,291324.0,Jimmy,1994-07-15
+273992,Lamine Bá,matched,353374.0,Lamine Ba,name,1994-04-04,292719.0,Lamine Bá,1994-04-04
+279056,Jefferson,matched,74550.0,Jefferson,name,1993-04-14,311867.0,Jefferson,1993-04-14
+279160,Bruno José Rodrigues,low_confidence,1350208.0,Bruno José,name,1993-05-11,544791.0,Angola,1993-05-11
+284644,Bosingwa,matched,9813.0,Bosingwa,name,1993-06-11,842595.0,Bosingwa,1993-06-11
+294871,Marcelo Santos,matched,292160.0,Marcelo Santos,name,1995-08-29,628566.0,Marcelo Santos,1995-08-29
+297362,Eurico,matched,668874.0,Eurico,name,1994-04-16,329847.0,Eurico,1994-04-16
+338220,Miguel Silva,matched,336756.0,Miguel Silva,name,1995-12-20,345881.0,Miguel Silva,1995-12-20
+338234,Miguel Ângelo,matched,33255.0,Miguel Ângelo,name,1995-03-20,353615.0,Miguel Ângelo,1995-03-20
+338246,Luís Ká,low_confidence,21725.0,Filipe Luís,name,1996-05-05,340490.0,Luís Ká,1996-05-05
+343420,Ibrahim Coulibaly,matched,178317.0,Ibrahim Coulibaly,"name,age±1",1994-04-25,707382.0,Ibra Coulibaly,1994-04-25
+343476,Pedrinho,matched,515208.0,Pedrinho,name,1991-02-15,352974.0,Pedrinho,1991-02-15
+345743,João Tavares,matched,91647.0,Joao Tavares,name,1998-12-12,314989.0,João Tavares,1998-12-12
+351927,Diogo Casimiro,matched,1463213.0,Diogo Casimiro,name,1998-12-14,383806.0,Casimiro,1998-12-14
+358659,Paulinho,matched,57229.0,Paulinho,name,1997-12-25,372670.0,Paulinho,1997-12-25
+358744,Diogo Pereira,matched,1173054.0,Diogo Pereira,name,1995-12-18,329661.0,Diogo Pereira,1995-12-18
+363944,Jeferson,matched,123628.0,Jeferson,name,1992-05-28,443124.0,Jeferson Bahia,1992-05-28
+374928,Bruno Silva,matched,33260.0,Bruno Silva,name,1996-05-23,547144.0,Bruno Silva,1996-05-23
+382747,Antônio Carlos,matched,31753.0,Antônio Carlos,name,1998-05-17,731516.0,Antônio Carlos,1998-05-17
+385648,Vieirinha,matched,35247.0,Vieirinha,name,1996-10-28,385593.0,Vieirinha,1996-10-28
+397113,Jorginho,matched,102017.0,Jorginho,name,1999-03-08,415330.0,Jorginho,1999-03-08
+401298,Leandro Silva,matched,192462.0,Leandro Silva,name,1995-07-27,377601.0,Leandro Silva,1995-07-27
+401401,André Martins,matched,90367.0,André Martins,name,1996-02-14,643203.0,André Martins,1996-02-14
+408139,Iago Oliveira,low_confidence,1230825.0,Oliveira,name,2000-03-01,371993.0,Iago Oliveira Campos,2000-03-01
+410015,Vitor Gabriel,matched,575373.0,Vitor Gabriel,name,1997-11-23,563121.0,Vitor Alves,1997-11-23
+416882,Gabriel Lima,matched,137440.0,Gabriel Lima,name,1998-04-27,672653.0,Gabriel Lima,1998-04-27
+419911,Cesar,low_confidence,57500.0,César Azpilicueta,name,1997-05-06,674730.0,César Morais,1997-05-06
+427685,João Victor,matched,671145.0,João Victor,name,1994-12-07,599068.0,João Victor,1994-12-07
+433105,Litos,matched,7777.0,Litos,name,1997-11-03,755171.0,Litos,1997-11-03
+445079,Chico,low_confidence,728056.0,Chico Formiga,name,1997-01-06,707118.0,Chico,1997-01-06
+446481,Kiko Rodrigues,matched,979950.0,Kiko Rodrigues,name,1997-02-27,364404.0,Kiko,1997-02-27
+446492,Mouhamed Mbaye,matched,865484.0,Mouhamed Mbaye,"name,age±3",1997-10-13,410226.0,Momo Mbaye,1997-10-13
+471746,Rafa Santos,matched,232177.0,Rafa Santos,name,1997-02-14,596204.0,Rafa Santos,1997-02-14
+472672,Benny,matched,450790.0,Benny,name,2000-03-27,375380.0,Benny,2000-03-27
+479577,Miguel Pereira,matched,8949.0,Miguel Pereira,name,1999-01-31,470869.0,Miguel Pereira,1999-01-31
+486126,João Silva,matched,461903.0,João Silva,name,1999-10-07,641146.0,João Silva,1999-10-07
+488480,Serginho,matched,5819.0,Serginho,name,1999-12-01,836547.0,Serginho,1999-12-01
+488953,Guilherme Soares,matched,547946.0,Guilherme Soares,name,2001-02-08,657385.0,Guilherme Soares,2001-02-08
+489314,Rafael Santos da Silva,low_confidence,944459.0,Rafael,"name,age±1",1999-06-27,1195579.0,Rafa Tchê,1999-06-27
+489332,Nathan,low_confidence,177476.0,Nathan Aké,name,1999-08-04,725993.0,Nathan Palafoz,1999-08-04
+490189,Gildo,low_confidence,1078248.0,Gildo Foda,name,1996-04-15,1256213.0,Gildo,1996-04-15
+490937,João Guilherme,matched,27369.0,João Guilherme,name,1995-02-01,604793.0,João Guilherme,1995-02-01
+499153,João Silva,matched,461903.0,João Silva,name,1998-02-18,605090.0,João Silva,1998-02-18
+504260,Welton,matched,858213.0,Welton,name,1998-11-22,527193.0,Welton,1998-11-22
+505510,Saná,low_confidence,23914.0,Lassana Diarra,name,1999-10-10,520300.0,Saná,1999-10-10
+518633,Maga,low_confidence,435338.0,Gabriel,name,1999-04-19,527881.0,Maga,1999-04-19
+527625,Vilmar,matched,814.0,Vilmar,name,1995-06-20,558740.0,Vilmar Júnior,1995-06-20
+527680,Pedro Matos,matched,485575.0,Pedro Matos,name,1998-05-11,1064079.0,Pedro Matos,1998-05-11
+541607,Mohammed Iddriss,matched,1184646.0,Mohammed Iddriss,"name,age±3",2000-07-26,499857.0,Tampico,2000-07-26
+551015,Michel,matched,117613.0,Míchel,name,1997-05-12,711455.0,Michel,1997-05-12
+551591,Alysson,matched,1005583.0,Alysson,name,2002-09-26,574761.0,Alysson,2002-09-26
+551765,Ivan,low_confidence,32467.0,Ivan Rakitic,name,1999-11-18,991486.0,Iván Quivira,1999-11-18
+553277,Guilherme Oliveira,matched,257369.0,Guilherme Oliveira,name,1999-12-02,728597.0,Guilherme Ferreira,1999-12-02
+555822,Vinícius Alves,low_confidence,1472602.0,Vinicius,name,1999-09-10,698821.0,Vinícius Alves,1999-09-10
+556473,Talison,matched,1232350.0,Talison,"name,club:Atlético CP",2000-06-02,704430.0,Talison,2000-06-02
+557834,Kiko,matched,934031.0,Kiko,name,2000-03-25,591054.0,Kiko,2000-03-25
+557972,Danny,matched,14119.0,Danny,name,1998-02-19,712644.0,Danny,1998-02-19
+558046,Luiz Gustavo,matched,10471.0,Luiz Gustavo,name,1999-09-02,597106.0,Luiz Gustavo,1999-09-02
+558950,Matheus Índio,matched,288498.0,Matheus Índio,name,1999-08-27,842384.0,Matheus Índio,1999-08-27
+560738,Nico,low_confidence,948294.0,Nico Paz,name,1994-12-06,568046.0,Nicolau Gomes,1994-12-06
+567008,Diogo Almeida,matched,514240.0,Diogo Almeida,name,2002-01-30,489226.0,Diogo Almeida,2002-01-30
+576654,Bruninho,matched,1500420.0,Bruninho,name,1999-07-20,555752.0,Bruninho,1999-07-20
+580064,Gustavo Fernandes,matched,751222.0,Gustavo Fernandes,name,1999-07-05,1063799.0,Gustavo Fernandes,1999-07-05
+582258,João Araújo,matched,1093907.0,João Araújo,name,1997-11-18,608442.0,João Araújo,1997-11-18
+585337,Vanilson,matched,1359781.0,Vanílson,name,1999-03-20,568240.0,Vanilson,1999-03-20
+585736,Aldair,matched,4151.0,Aldair,name,1999-10-11,588072.0,Aldair,1999-10-11
+592362,Pedro Miguel,low_confidence,9811.0,Pedro Mendes,name,2000-02-16,657164.0,Pedro Miguel,2000-02-16
+593097,Bruno Rodrigues,matched,406766.0,Bruno Rodrigues,name,2001-06-08,657386.0,Bruno Rodrigues,2001-06-08
+593106,Vitinha,matched,487469.0,Vitinha,name,2000-03-15,586853.0,Vitinha,2000-03-15
+594932,Pedro Silva,matched,34408.0,Pedro Silva,name,2002-03-26,504091.0,Pedrinho,2002-03-26
+594977,André Gonçalves,matched,111418.0,André Gonçalves,name,2003-05-16,548993.0,André Gonçalves,2003-05-16
+598229,Lucas Henrique,matched,1239473.0,Lucas Henrique,name,2000-06-14,739357.0,Lucas Henrique,2000-06-14
+599766,Neném,matched,201227.0,Neném,name,2000-06-16,906168.0,Neném,2000-06-16
+599855,Lucão,matched,270191.0,Lucão,name,2000-05-29,727853.0,Lucão,2000-05-29
+600742,Edmilson,matched,5343.0,Edmílson,name,1997-04-19,902747.0,Edmilson,1997-04-19
+603354,João Victor,matched,671145.0,João Victor,name,1999-09-19,943899.0,João Victor,1999-09-19
+604031,Diogo Brito,matched,552963.0,Diogo Brito,name,1999-06-16,671058.0,Diogo Brito,1999-06-16
+604067,Daniel Alves,matched,408052.0,Daniel Alves,name,2002-01-04,662336.0,Dani Alves,2002-01-04
+605338,Pedro Santos,matched,131163.0,Pedro Santos,name,2000-10-12,657435.0,Pedro Santos,2000-10-12
+614369,Henrique Martins,low_confidence,1497925.0,Henrique,name,1998-01-14,479601.0,Henrique Martins,1998-01-14
+619538,Alberto Soto,matched,71507.0,Alberto Soto,name,2001-03-17,628465.0,Alberto Soto,2001-03-17
+619583,Rodrigo Freitas,matched,631785.0,Rodrigo Freitas,name,2002-04-28,681724.0,Rodrigo Freitas,2002-04-28
+621881,Dinho,matched,210037.0,Dinho,name,2000-02-19,684246.0,Dinho,2000-02-19
+622151,Francisco Varela,matched,478836.0,Francisco Varela,name,2000-08-20,695506.0,Francisco Varela,2000-08-20
+622412,Nuno Silva,matched,22547.0,Nuno Silva,name,1999-04-09,672609.0,Nuno Silva,1999-04-09
+622457,Manu,low_confidence,624690.0,Manu Koné,name,2001-06-12,699592.0,Manu Silva,2001-06-12
+624867,Hugo Alves,matched,720191.0,Hugo Alves,name,1999-09-02,447469.0,Hugo Alves,1999-09-02
+625240,Bruno Silva,matched,33260.0,Bruno Silva,name,1998-02-05,759330.0,Bruno Silva,1998-02-05
+626952,Costinha,matched,9826.0,Costinha,name,2001-04-05,700936.0,Costinha,2001-04-05
+631936,André Ferreira,matched,389097.0,André Ferreira,name,2003-04-08,667120.0,André Ferreira,2003-04-08
+633282,Clé,low_confidence,182904.0,Clément Lenglet,name,1997-12-12,719217.0,Clé,1997-12-12
+633627,Bernardo,matched,364258.0,Bernardo,name,2002-07-23,719646.0,Bernardo,2002-07-23
+637601,Kevin Lopez,matched,931942.0,Kevin López,name,2000-09-27,740093.0,Kevin Lopez,2000-09-27
+644909,José Rodrigues,low_confidence,870244.0,Rodrigues Alves,name,2005-07-14,741539.0,Dinis Rodrigues,2005-07-14
+645025,Diogo Pinto,matched,462252.0,Diogo Pinto,name,2004-06-18,670711.0,Diogo Pinto,2004-06-18
+646616,José Pedro,matched,503222.0,José Pedro,name,2002-01-16,744072.0,Zé Pedro,2002-01-16
+646907,Rafa,low_confidence,238055.0,Rafa Silva,name,2003-09-28,870187.0,Rafa,2003-09-28
+646915,Maga,low_confidence,435338.0,Gabriel,name,2002-11-16,729140.0,Maga,2002-11-16
+646993,Tomás Mendes,matched,646734.0,Tomás Mendes,name,2002-08-28,795063.0,Tomás Mendes,2002-08-28
+647011,André Alves,matched,74306.0,André Alves,name,2001-06-08,911868.0,André Alves,2001-06-08
+647070,Guga,matched,592344.0,Guga,name,2003-10-23,1043030.0,Guga,2003-10-23
+647076,Maycon Douglas,matched,554061.0,Maycon Douglas,name,2001-02-06,863689.0,Maycon,2001-02-06
+647126,Edson Silva,matched,67838.0,Édson Silva,name,2001-05-17,816576.0,Edson Silva,2001-05-17
+647127,Mamede,matched,6072.0,Mamede,name,2002-03-18,506150.0,Mamede,2002-03-18
+647240,Diogo Martins,matched,548332.0,Diogo Martins,name,2001-03-22,891972.0,Diogo Martins,2001-03-22
+648558,Paulinho,matched,57229.0,Paulinho,name,1999-08-26,614928.0,Paulinho,1999-08-26
+649735,Wilson Silva,matched,276453.0,Wilson Silva,name,2000-05-25,989497.0,Wilson Silva,2000-05-25
+650402,Luiz Miguel,matched,729594.0,Luiz Miguel,name,2002-04-20,997050.0,Luiz Miguel,2002-04-20
+650464,Douglão,matched,55255.0,Douglão,name,2000-10-20,823407.0,Douglão,2000-10-20
+650618,Jonathan,low_confidence,533738.0,Jonathan David,name,2002-10-26,980980.0,Jota,2002-10-26
+650763,Eduardo,matched,34159.0,Eduardo,name,2001-01-10,752554.0,Eduardo,2001-01-10
+650776,Guilherme Marques,matched,372439.0,Guilherme Marques,name,2002-05-05,963774.0,Guilherme Marques,2002-05-05
+651286,Patrick,low_confidence,3183.0,Patrick Vieira,name,2000-03-09,993436.0,Patrick,2000-03-09
+651862,Kauan Ferreira,matched,1499455.0,Kauan Ferreira,name,2003-03-09,1066521.0,Kauan,2003-03-09
+658762,Tulio,matched,59324.0,Tulio,name,1999-11-21,954478.0,Túlio Silva,1999-11-21
+661035,Carlos Eduardo,matched,52406.0,Carlos Eduardo,name,2002-08-10,927714.0,Carlos Eduardo,2002-08-10
+661942,Tuga,low_confidence,3703.0,Tugay Kerimoğlu,name,2000-03-08,1045639.0,Tuga,2000-03-08
+663656,Gonçalo Batista,matched,649292.0,Gonçalo Batista,name,2002-01-20,719991.0,Gonçalo Batista,2002-01-20
+663669,Miguel Mota,matched,864318.0,Miguel Mota,name,2003-08-26,549028.0,Miguel Mota,2003-08-26
+663913,João Soares,matched,1501441.0,João Soares,name,2002-09-23,923767.0,João Soares,2002-09-23
+674111,João Santos,matched,947236.0,João Santos,name,2003-06-30,1041543.0,João Santos,2003-06-30
+674113,Rodrigo Macedo,matched,752594.0,Rodrigo Macedo,name,2003-07-09,801463.0,Rodrigo Macedo,2003-07-09
+690434,Vitinho,matched,213605.0,Vitinho,name,2001-11-21,1063167.0,Vitinho,2001-11-21
+690443,Vitinho,matched,213605.0,Vitinho,name,2002-06-25,813117.0,Vitinho,2002-06-25
+703970,João Costa,matched,936536.0,João Costa,name,2000-03-07,856423.0,João Costa,2000-03-07
+709803,Eirô,low_confidence,8198.0,Cristiano Ronaldo,name,2001-01-06,933713.0,Eirô,2001-01-06
+714355,Francisco António Gomes,low_confidence,1460594.0,Tonho,name,1998-03-05,818081.0,Francisco Mendes,1998-03-05
+715509,Paulo Costa,matched,6177.0,Paulo Costa,name,2000-08-30,842854.0,Paulo Costa,2000-08-30
+746130,Bruno,low_confidence,240306.0,Bruno Fernandes,name,2000-09-27,936558.0,Bruno,2000-09-27
+747023,Eduardo Barbosa,matched,1073146.0,Eduardo Barbosa,"name,club:São João Ver",2003-01-18,549002.0,Eduardo Barbosa,2003-01-18
+754597,Isaac,matched,1084667.0,Isaac,name,2004-03-21,965613.0,Isaac,2004-03-21
+754903,Roger,low_confidence,176053.0,Roger Hunt,name,2005-11-21,906329.0,Roger Fernandes,2005-11-21
+766686,Balotelli,low_confidence,1145822.0,Kléber Balotelli,"name,club:Atlético CP",1997-02-03,642374.0,Balotelli,1997-02-03
+766700,Amadu Baldé,matched,765388.0,Amadu Baldé,name,2005-06-27,936483.0,Amadu Baldé,2005-06-27
+769920,Diogo Costa,matched,357153.0,Diogo Costa,name,2003-07-27,927641.0,Diogo Costa,2003-07-27
+775318,Rodrigo Marquês,matched,420505.0,Rodrigo Marques,name,2003-04-25,795060.0,Rodrigo Marquês,2003-04-25
+803182,Gustavo França,matched,919745.0,Gustavo França,name,2002-06-30,1095825.0,Gustavo França,2002-06-30
+816231,Miguel Teixeira,matched,203035.0,Miguel Teixeira,name,2003-07-29,965822.0,Miguel Teixeira,2003-07-29
+819006,Hugo Oliveira,matched,735822.0,Hugo Oliveira,name,2004-08-26,982572.0,Hugo Oliveira,2004-08-26
+846362,Tomás Silva,matched,984072.0,Tomás Silva,name,2003-10-25,1041169.0,Tomás Silva,2003-10-25
+846818,Vasco Sousa,matched,575716.0,Vasco Sousa,name,2004-04-06,1044871.0,Vasco Sousa,2004-04-06
+852807,Kula,low_confidence,266907.0,Edouard Kula,name,1999-07-26,1063165.0,Kula,1999-07-26
+852822,Nuno Martins,matched,487592.0,Nuno Martins,name,2003-02-05,1069750.0,Nuninho,2003-02-05
+859534,José Silva,low_confidence,9813.0,Bosingwa,name,2005-08-20,1102159.0,José Silva,2005-08-20
+872852,João Martins,matched,52214.0,João Martins,name,2007-06-02,1052317.0,João Martins,2007-06-02
+872896,Rodrigo Duarte,matched,1540000.0,Rodrigo Duarte,"name,club:Vitória Guimarães II",2006-02-07,1050219.0,Rodrigo Duarte,2006-02-07
+878400,Hélder Oliveira,matched,130873.0,Hélder Oliveira,name,2001-06-02,1074247.0,Hélder Oliveira,2001-06-02
+883075,Alex Monteiro,matched,1043863.0,Alex Monteiro,name,2000-06-25,1105624.0,Alex Monteiro,2000-06-25
+914179,Kazuki Takahashi,matched,972246.0,Kazuki Takahashi,"name,age±1",2000-02-23,1160383.0,Kazuki Takahashi,2000-02-23
+914675,Xavi,matched,7607.0,Xavi,name,2003-03-26,1065896.0,Xavi,2003-03-26
+915016,Miguel Ângelo Silva,low_confidence,1210089.0,Miguel Ângelo,name,1998-10-13,1067560.0,Miguel Silva,1998-10-13
+915418,João Costa,matched,936536.0,João Costa,name,2003-10-23,1077761.0,João Costa,2003-10-23
+958349,Danilson,matched,75703.0,Danilson,name,2003-10-31,1065897.0,Danilson,2003-10-31
+958807,Edgar Costa,matched,126956.0,Edgar Costa,name,2004-03-31,1179089.0,Melvin Costa,2004-03-31
+960140,Dani,low_confidence,15951.0,Dani Alves,name,2003-02-08,1163310.0,Dani,2003-02-08
+1010872,Luís Pinto,matched,1467878.0,Luís Pinto,name,2006-08-16,1333915.0,Luisinho,2006-08-16
+1063674,Rúben Ribeiro,matched,52480.0,Rúben Ribeiro,name,2004-07-01,1254109.0,Rúben Ribeiro,2004-07-01
+1089863,Rafael Silva,matched,1187685.0,Rafael Silva,"name,age±1",2006-01-25,1291661.0,Rafa Gomes,2006-01-25
+1218663,Feliciano Mendes,matched,1052684.0,Feliciano Mendes,"name,age±1",2003-03-02,1298164.0,Feliciano,2003-03-02
