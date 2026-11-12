@@ -10,7 +10,7 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 671443,75,75,74028.0,Miguel Valença,1989-12-15,74,0.987,ok,Miguel Valença 74; Bruno China 1
 71989,74,74,10264.0,Vítor Paneira,1966-02-16,74,1.0,ok,Vítor Paneira 74
 1025836,71,71,121327.0,Pedro Caneco,1987-12-10,70,0.986,ok,Pedro Caneco 70; João Vaz Cardoso 1
-71091,70,47,25153.0,Filipe Moreira,1964-05-30,44,0.936,ok,Filipe Moreira 44; Renato Coimbra 1; Afonso Cabral 1
+71091,70,70,25153.0,Filipe Moreira,1964-05-30,67,0.957,ok,Filipe Moreira 67; Renato Coimbra 1; Afonso Cabral 1
 709822,70,70,96965.0,Pedro Lomba,1980-06-29,68,0.971,ok,Pedro Lomba 68; João Nívea 1; Rafael Sousa 1
 71437,69,69,38323.0,Agostinho Bento,1970-02-03,69,1.0,ok,Agostinho Bento 69
 453183,67,67,72282.0,António Barbosa,1982-08-16,67,1.0,ok,António Barbosa 67
@@ -34,7 +34,7 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 581903,48,48,57309.0,Eurico Couto,1986-02-27,47,0.979,ok,Eurico Couto 47; Alex 1
 918287,48,48,69335.0,André Anastácio,1980-05-16,48,1.0,ok,André Anastácio 48
 279459,47,47,36070.0,Alex,1979-09-06,47,1.0,ok,Alex 47
-71214,45,40,24955.0,António Pereira,1956-09-27,39,0.975,ok,António Pereira 39; Filipe Moreira 1
+71214,45,45,24955.0,António Pereira,1956-09-27,42,0.933,ok,António Pereira 42; Wilson Teixeira 2; Filipe Moreira 1
 915502,45,45,109006.0,Ricardo Vargas,1985-06-13,45,1.0,ok,Ricardo Vargas 45
 655451,44,44,60970.0,Ricardo Pessoa,1982-02-05,44,1.0,ok,Ricardo Pessoa 44
 902536,44,44,108386.0,Pedro Machado,1984-11-16,42,0.955,ok,Pedro Machado 42; António Barbosa 1; Fausto Lourenço 1
@@ -127,9 +127,9 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 1046691,18,18,152825.0,Aníbal Teixeira,1972-08-10,18,1.0,ok,Aníbal Teixeira 18
 637530,17,17,69992.0,Pedro Barroso,1985-09-21,16,0.941,ok,Pedro Barroso 16; Mário Ferreira 1
 913852,17,17,108158.0,Rui Sacramento,1985-01-31,17,1.0,ok,Rui Sacramento 17
-222689,17,0,,,,0,0.0,no_linked_club,
+222689,17,17,7716.0,Lázaro Oliveira,1967-08-27,17,1.0,ok,Lázaro Oliveira 17
 328544,16,16,41540.0,Monteiro,1967-10-11,10,0.625,review,Monteiro 10; Nelsinho 6
-1261899,16,12,142552.0,Wilson Teixeira,1987-02-05,12,1.0,ok,Wilson Teixeira 12
+1261899,16,16,142552.0,Wilson Teixeira,1987-02-05,16,1.0,ok,Wilson Teixeira 16
 1015665,16,16,121132.0,Fábio Oliveira,1989-02-03,16,1.0,ok,Fábio Oliveira 16
 1275381,16,16,149962.0,Lourenço Freitas,1995-11-03,16,1.0,ok,Lourenço Freitas 16
 1171144,16,16,113873.0,Rui Mota,1981-04-02,16,1.0,ok,Rui Mota 16
@@ -146,7 +146,7 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 453496,14,14,,,,0,0.0,no_stint,
 346317,13,13,10427.0,Zé Nando,1968-09-12,13,1.0,ok,Zé Nando 13
 166687,13,13,11271.0,João Sousa,1960-03-01,13,1.0,ok,João Sousa 13
-279442,13,0,,,,0,0.0,no_linked_club,
+279442,13,13,109446.0,Ricardo Moreira,1966-11-07,13,1.0,ok,Ricardo Moreira 13
 1233395,13,13,146902.0,Ruca Sá,1994-12-31,13,1.0,ok,Ruca Sá 13
 1039083,13,13,140082.0,Fajardo,1978-10-27,13,1.0,ok,Fajardo 13
 504003,12,12,88658.0,Miguel Moreira,1984-10-06,12,1.0,ok,Miguel Moreira 12
@@ -155,7 +155,7 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 279073,12,12,10179.0,Tuck,1969-10-31,12,1.0,ok,Tuck 12
 273848,12,12,121537.0,Rogério,1976-03-01,11,0.917,ok,Rogério 11
 847004,12,12,106698.0,Carlos Pinto,1989-12-23,12,1.0,ok,Carlos Pinto 12
-1280998,12,0,,,,0,0.0,no_linked_club,
+1280998,12,12,147768.0,Rui Pereira,1991-02-23,11,0.917,ok,Rui Pereira 11; Miguel Silva 1
 71679,12,12,11086.0,Micael Sequeira,1973-07-06,12,1.0,ok,Micael Sequeira 12
 71355,12,12,24960.0,Quim Berto,1971-10-09,9,0.75,ok,Quim Berto 9; Nélson Almeida 2; Nuno Manta Santos 1
 1328705,11,11,95311.0,Gonçalo Brandão,1986-10-09,11,1.0,ok,Gonçalo Brandão 11
@@ -203,7 +203,7 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 284624,6,6,18172.0,Sérgio Gaminha,1980-11-12,6,1.0,review,Sérgio Gaminha 6
 1282450,6,6,151034.0,Daniel Silva,1991-09-01,6,1.0,review,Daniel Silva 6
 343403,6,6,69297.0,Ivo Soares,1971-04-30,4,0.667,review,Ivo Soares 4; João Pedro Brás 2
-1227903,6,0,,,,0,0.0,no_linked_club,
+1227903,6,6,147769.0,Ruas,1977-04-08,5,0.833,review,Ruas 5; Filipe Moreira 1
 739159,6,6,107676.0,Luisinho,1985-05-05,5,0.833,review,Luisinho 5; João Nívea 1
 1295261,6,6,145782.0,José Santos,1992-12-15,6,1.0,review,José Santos 6
 401409,6,6,125334.0,Pedro Canário,1976-03-21,5,0.833,review,Pedro Canário 5
@@ -226,28 +226,28 @@ coachId,matches,matches_at_linked_clubs,tm_coach_id,tm_name,tm_dob,matches_cover
 1221334,4,4,147618.0,Zé Paulo,1980-08-01,4,1.0,review,Zé Paulo 4
 643516,4,4,77527.0,Rui Gomes,1983-09-24,4,1.0,review,Rui Gomes 4
 1322536,4,4,115036.0,Cristiano Brito,1989-11-11,4,1.0,review,Cristiano Brito 4
-1054127,4,0,,,,0,0.0,no_linked_club,
+1054127,4,4,120906.0,Leandro Palma,1983-06-29,4,1.0,review,Leandro Palma 4
 778077,4,4,49592.0,Hugo Martins,1977-12-12,4,1.0,review,Hugo Martins 4
 1253097,4,4,108344.0,Gonçalo,1988-08-26,4,1.0,review,Gonçalo 4
 1264694,4,4,112105.0,Élio Martins,1985-03-26,3,0.75,review,Élio Martins 3; Rui Carvalhal 1
 987380,4,4,117649.0,Maia,1972-08-23,4,1.0,review,Maia 4
-1268526,4,0,,,,0,0.0,no_linked_club,
-1040805,4,0,,,,0,0.0,no_linked_club,
+1268526,4,4,154990.0,Miguel Silva,1996-08-06,4,1.0,review,Miguel Silva 4
+1040805,4,4,120906.0,Leandro Palma,1983-06-29,4,1.0,review,Leandro Palma 4
 582686,3,3,101102.0,Tó Pê,1979-01-24,3,1.0,review,Tó Pê 3
 845417,3,3,62201.0,Nuno Silva,1987-04-13,3,1.0,review,Nuno Silva 3
 1317367,3,3,155864.0,Anderson Dantas,1979-09-09,3,1.0,review,Anderson Dantas 3
 477579,3,3,49592.0,Hugo Martins,1977-12-12,3,1.0,review,Hugo Martins 3
-1308084,3,0,,,,0,0.0,no_linked_club,
+1308084,3,3,7716.0,Lázaro Oliveira,1967-08-27,3,1.0,review,Lázaro Oliveira 3
 1301449,3,3,147867.0,Danielson,1981-01-09,2,0.667,review,Danielson 2; Nuno Guimarães 1
 1305764,3,3,147867.0,Danielson,1981-01-09,3,1.0,review,Danielson 3
-1040540,3,0,,,,0,0.0,no_linked_club,
+1040540,3,3,120906.0,Leandro Palma,1983-06-29,3,1.0,review,Leandro Palma 3
 71886,3,3,106294.0,Bock,1975-09-19,3,1.0,review,Bock 3
 799159,3,3,60496.0,Bruno China,1982-08-05,3,1.0,review,Bruno China 3
 663632,3,3,70507.0,Marco Bicho,1980-03-07,3,1.0,review,Marco Bicho 3
 343435,3,3,48080.0,Rui Amorim,1977-04-08,3,1.0,review,Rui Amorim 3
 72201,3,3,63524.0,Flávio das Neves,1958-05-18,3,1.0,review,Flávio das Neves 3
 302660,3,3,53182.0,Ricardo Monsanto,1978-10-13,3,1.0,review,Ricardo Monsanto 3
-1218552,3,0,,,,0,0.0,no_linked_club,
+1218552,3,3,,,,0,0.0,no_stint,
 1301648,2,2,134130.0,Pedro Emanuel,1981-04-14,2,1.0,review,Pedro Emanuel 2
 1261870,2,2,60216.0,Marco Almeida,1979-04-15,2,1.0,review,Marco Almeida 2
 1317382,2,2,153741.0,Abel Pereira,1990-04-15,2,1.0,review,Abel Pereira 2

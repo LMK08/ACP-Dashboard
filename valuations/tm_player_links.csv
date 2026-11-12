@@ -1,5 +1,5 @@
 playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name,tm_dob,tm_player_slug,votes,how,status
-0,,,237,231,,,,,0,,not_in_squad
+0,,,237,235,,,,,0,,not_in_squad
 184,P. Kieszek,1984-04-16,1,1,17592.0,Paweł Kieszek,1984-04-16,pawel-kieszek,1,dob+name,ok
 3268,C. Figueiredo,1990-11-29,1,1,100127.0,Cristiano Figueiredo,1990-11-29,cristiano-figueiredo,1,dob+name,ok
 3390,Diogo Salomão,1988-09-14,1,1,145918.0,Diogo Salomão,1988-09-14,diogo-salomao,1,dob+name,ok
@@ -60,7 +60,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 70412,Diogo Valente,1984-09-23,2,2,23270.0,Diogo Valente,1984-09-23,diogo-valente,2,dob+name,ok
 70432,Miguel Rosa,1989-01-13,1,1,58944.0,Miguel Rosa,1989-01-13,miguel-rosa,1,dob+name,ok
 70442,Cássio,1980-08-12,1,1,53841.0,Cássio,1980-08-12,cassio,1,dob+name,ok
-70445,António Filipe,1985-04-14,2,1,25289.0,António Filipe,1985-04-14,antonio-filipe,1,dob+name,ok
+70445,António Filipe,1985-04-14,2,2,25289.0,António Filipe,1985-04-14,antonio-filipe,2,dob+name,ok
 70473,Igor Rocha,1984-05-03,1,1,52376.0,Igor Rocha,1984-05-03,igor-rocha,1,dob+name,ok
 70500,Tiago Rocha,1990-09-04,1,1,129256.0,Tiago Rocha,1990-09-04,tiago-rocha,1,dob+name,ok
 70506,Vítor Bruno,1990-01-13,3,3,130635.0,Vítor Bruno,1990-01-13,vitor-bruno,3,dob+name,ok
@@ -120,13 +120,13 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 71057,Licá,1988-09-08,1,0,,,,,0,,no_squad_fetched
 71068,Luís Ribeiro,1992-04-19,4,4,118319.0,Luís Ribeiro,1992-04-19,luis-ribeiro,4,dob+name,ok
 71073,João Góis,1990-05-05,2,2,292736.0,João Góis,1990-05-05,joao-gois,2,dob+name,ok
-71085,Marocas,1988-02-17,1,0,,,,,0,,no_squad_fetched
+71085,Marocas,1988-02-17,1,1,295168.0,Marocas,1988-02-17,marocas,1,dob+name,ok
 71102,Daniel Almeida,1984-04-22,1,1,172938.0,Daniel Almeida,1984-04-22,daniel-almeida,1,dob+name,ok
 71118,Marco Baixinho,1989-07-11,2,2,131015.0,Marco Baixinho,1989-07-11,marco-baixinho,2,dob+name,ok
 71125,L. Alves,1988-05-09,1,1,288696.0,Leo Alves,1988-05-09,leo-alves,1,dob+name,ok
 71167,Ruca,1990-01-07,1,1,58932.0,Ruca,1990-01-07,ruca,1,dob+name,ok
 71172,Filipe Brigues,1990-07-24,2,2,105299.0,Filipe Brigues,1990-07-24,filipe-brigues,2,dob+name,ok
-71178,Alex Soares,1991-03-01,1,0,,,,,0,,no_squad_fetched
+71178,Alex Soares,1991-03-01,1,1,207571.0,Alex Soares,1991-03-01,alex-soares,1,dob+name,ok
 71179,André Soares,1990-03-05,2,2,131014.0,André Soares,1990-03-05,andre-soares,2,dob+name,ok
 71187,Ricardo Barros,1990-04-27,2,2,167951.0,Ricardo Barros,1990-04-27,ricardo-barros,2,dob+name,ok
 71190,João Vieira,1991-12-19,4,4,225770.0,João Vieira,1991-12-19,joao-vieira,4,dob+name,ok
@@ -173,7 +173,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 71473,Ruizinho,1989-03-13,2,2,168899.0,Ruizinho,1989-03-13,ruizinho,1,dob+name,ok
 71486,João Ventura,1994-01-14,1,1,249957.0,João Ventura,1994-01-14,joao-ventura,1,dob+name,ok
 71518,Gil Barros,1991-07-04,1,1,168414.0,Gil Barros,1991-07-04,gil-barros,1,dob+name,ok
-71521,Hugo Ventosa,1989-05-08,3,2,130938.0,Hugo Ventosa,1989-05-08,hugo-ventosa,2,dob+name,ok
+71521,Hugo Ventosa,1989-05-08,3,3,130938.0,Hugo Ventosa,1989-05-08,hugo-ventosa,3,dob+name,ok
 71522,Juary Soares,1992-02-20,2,2,177851.0,Juary Soares,1992-02-20,juary-soares,2,dob+name,ok
 71524,Adílson Vaz,1988-10-29,1,1,168423.0,Adilson,1988-10-29,adilson,1,dob+name,ok
 71531,João Traquina,1988-08-29,1,1,116390.0,Traquina,1988-08-29,traquina,1,dob+name,ok
@@ -244,7 +244,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 72366,Serginho,1982-12-06,1,1,40555.0,Serginho,1982-12-06,serginho,1,dob+name,ok
 72368,Carlos Henriques,1993-07-07,1,1,194507.0,Carlos Henriques,1993-07-07,carlos-henriques,1,dob+name,ok
 72370,Rúben Fernandes,1986-05-06,1,1,27178.0,Rúben Fernandes,1986-05-06,ruben-fernandes,1,dob+name,ok
-72384,S. Semedo,1988-02-23,1,0,,,,,0,,no_squad_fetched
+72384,S. Semedo,1988-02-23,1,1,138649.0,Sérgio Semedo,1988-02-23,sergio-semedo,1,dob+name,ok
 72387,Vítor Gonçalves,1992-03-29,2,2,194547.0,Vítor Gonçalves,1992-03-29,vitor-goncalves,2,dob+name,ok
 72388,Robson,1988-04-26,1,1,128029.0,Robson,1988-04-26,robson,1,dob+name,ok
 74954,Evandro Brandão,1991-05-04,2,2,,,,,0,,not_in_squad
@@ -266,7 +266,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 135916,Tomás Podstawski,1995-01-30,2,2,182718.0,Tomás Podstawski,1995-01-30,tomas-podstawski,2,dob+name,ok
 135921,Frédéric Maciel,1994-03-15,1,1,234499.0,Frédéric Maciel,1994-03-15,frederic-maciel,1,dob+name,ok
 135928,André Preto,1993-04-18,1,1,149647.0,André Preto,1993-04-18,andre-preto,1,dob+name,ok
-135933,Fábio Nunes,1992-07-24,1,0,,,,,0,,no_squad_fetched
+135933,Fábio Nunes,1992-07-24,1,1,138350.0,Fábio Nunes,1992-07-24,fabio-nunes,1,dob+name,ok
 141185,C. Okoua,1991-11-08,4,4,81915.0,Fabrice Okoua,1991-11-08,fabrice-okoua,4,dob+name,ok
 142766,Y. Bamba,1995-06-20,3,3,189466.0,Yaya Bamba,1995-06-20,yaya-bamba,3,dob+name,ok
 144389,Leo Araújo,1992-06-28,2,2,468616.0,Leo Araújo,1992-06-28,leo-araujo,2,dob+name,ok
@@ -280,7 +280,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 211850,Luís Oliveira,1994-01-09,2,2,225738.0,Luís Oliveira,1994-01-09,luis-oliveira,2,dob+name,ok
 211851,Miguel Rodrigues,1993-03-16,4,4,225742.0,Miguel Rodrigues,1993-03-16,miguel-rodrigues,4,dob+name,ok
 211857,Leandro Borges,1992-04-29,4,4,227685.0,Leandro Borges,1992-04-29,leandro-borges,4,dob+name,ok
-211873,Nélson Pinhão,1994-01-10,2,1,402795.0,Nélson Pinhão,1994-01-10,nelson-pinhao,1,dob+name,ok
+211873,Nélson Pinhão,1994-01-10,2,2,402795.0,Nélson Pinhão,1994-01-10,nelson-pinhao,2,dob+name,ok
 211875,Manuel Cordeiro,1994-11-24,1,1,352933.0,Manuel Cordeiro,1994-11-24,manuel-cordeiro,1,dob+name,ok
 213149,A. Pérez,1993-05-10,1,1,255968.0,Antony Pérez,1993-05-10,antony-perez,1,dob+name,ok
 222664,Marcos Valente,1994-02-04,4,4,260321.0,Marcos Valente,1994-02-04,marcos-valente,4,dob+name,ok
@@ -341,9 +341,9 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 232631,J. Reis Amaral,1991-09-07,1,1,352898.0,João Amaral,1991-09-07,joao-amaral,1,dob+name,ok
 232636,Rúben Neves,1991-05-12,4,4,254547.0,Rúben Neves,1991-05-12,ruben-neves,4,dob+name,ok
 232648,D. Lamas,1990-10-05,1,1,708662.0,Diogo Lamas,1990-10-05,diogo-lamas,1,dob+name,ok
-232660,Bruno Torres,1988-06-09,1,0,,,,,0,,no_squad_fetched
+232660,Bruno Torres,1988-06-09,1,1,,,,,0,,not_in_squad
 232679,Pipas,1990-11-30,2,2,555809.0,Pipas,1990-11-30,pipas,2,dob+name,ok
-232684,Luisinho,1989-08-14,2,1,553359.0,Luisinho,1989-08-14,luisinho,1,dob+name,ok
+232684,Luisinho,1989-08-14,2,2,553359.0,Luisinho,1989-08-14,luisinho,2,dob+name,ok
 232694,Fábio Rola,1989-10-06,2,2,258153.0,Fábio Rola,1989-10-06,fabio-rola,2,dob+name,ok
 236988,Platiny,1990-10-02,1,1,248901.0,Platiny,1990-10-02,platiny,1,dob+name,ok
 236999,André Pinto,1994-04-29,1,1,258837.0,André Pinto,1994-04-29,andre-pinto,1,dob+name,ok
@@ -395,7 +395,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 265670,Bruno Mendonça,1994-02-07,3,3,312648.0,Bruno Mendonça,1994-02-07,bruno-mendonca,3,dob+name,ok
 265671,Erivaldo,1994-02-08,3,3,290269.0,Eri,1994-02-08,eritm,3,dob_name_differs,ok
 266525,P. Addico,1994-06-05,3,3,274762.0,Prince Addico,1994-06-05,prince-addico,3,dob+name,ok
-267254,Adul Seidi,1992-11-20,3,2,316828.0,Adul Seidi,1992-11-20,adul-seidi,2,dob+name,ok
+267254,Adul Seidi,1992-11-20,3,3,316828.0,Adul Seidi,1992-11-20,adul-seidi,3,dob+name,ok
 267490,Luan Sérgio,1994-08-18,3,3,629660.0,Luan Sérgio,1994-08-18,luan-sergio,3,dob+name,ok
 273754,João Abreu,1994-08-20,2,2,608394.0,João Abreu,1994-08-20,joao-abreu,2,dob+name,ok
 273763,Fred Martins,1995-08-28,2,2,352831.0,Fred Martins,1995-08-28,fred-martins,2,dob+name,ok
@@ -459,7 +459,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 279234,Diogo Careca,1989-10-11,4,4,167836.0,Diogo Careca,1989-10-11,diogo-careca,4,dob+name,ok
 279330,Nelson Cardoso,1989-01-07,1,0,,,,,0,,no_squad_fetched
 279358,Vítor Rodrigues,1995-02-14,1,1,290389.0,Vítor Rodrigues,1995-02-14,vitor-rodrigues,1,dob+name,ok
-279450, João Pias,1989-02-21,1,0,,,,,0,,no_squad_fetched
+279450, João Pias,1989-02-21,1,1,,,,,0,,not_in_squad
 279451,André Vieira,1992-09-13,2,2,433258.0,André Vieira,1992-09-13,andre-vieira,2,dob+name,ok
 279462,Hélder Pedro,1993-09-05,6,6,593114.0,Hélder Pedro,1993-09-05,helder-pedro,6,dob+name,ok
 279482,Diogo Braz,1992-07-06,1,0,,,,,0,,no_squad_fetched
@@ -528,7 +528,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 338220,Miguel Silva,1995-12-20,1,1,345881.0,Miguel Silva,1995-12-20,miguel-silva,1,dob+name,ok
 338224,Mica,1995-03-19,2,2,558065.0,Mica,1995-03-19,mica,2,dob+name,ok
 338234,Miguel Ângelo,1995-03-20,1,1,353615.0,Miguel Ângelo,1995-03-20,miguel-angelo,1,dob+name,ok
-338236,Marcos Barbeiro,1995-07-29,3,2,329653.0,Marcos Barbeiro,1995-07-29,marcos-barbeiro,2,dob+name,ok
+338236,Marcos Barbeiro,1995-07-29,3,3,329653.0,Marcos Barbeiro,1995-07-29,marcos-barbeiro,3,dob+name,ok
 338246,Luís Ká,1996-05-05,2,2,340490.0,Luís Ká,1996-05-05,luis-ka,2,dob+name,ok
 338252,Muelson Samate,1995-09-16,3,3,358172.0,Muelson Samate,1995-09-16,muelson-samate,3,dob+name,ok
 338267,João Vigário,1995-11-20,3,3,336735.0,João Vigário,1995-11-20,joao-vigario,3,dob+name,ok
@@ -559,7 +559,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 343546,Pedro Faustino,1992-11-26,2,2,361741.0,Pedro Faustino,1992-11-26,pedro-faustino,2,dob+name,ok
 343550,Mauro Leal,1989-02-10,1,1,202341.0,Mauro Leal,1989-02-10,mauro-leal,1,dob+name,ok
 343557,João Vasco,1994-12-26,3,3,514019.0,João Vasco,1994-12-26,joao-vasco,3,dob+name,ok
-343571,Sandro Cabral,1991-11-19,1,0,,,,,0,,no_squad_fetched
+343571,Sandro Cabral,1991-11-19,1,1,,,,,0,,not_in_squad
 343577,B. Sow,1995-07-26,3,3,365068.0,Baba Sow,1995-07-26,baba-sow,2,dob+name,ok
 343584,André Galamba,1995-02-16,2,2,710253.0,André Galamba,1995-02-16,andre-galamba,2,dob+name,ok
 343649,Fábio China,1992-07-07,1,1,435497.0,China,1992-07-07,china,1,dob+name,ok
@@ -580,7 +580,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 345749,J. Pereira,2001-10-04,2,2,,,,,0,,not_in_squad
 346267,Ivo Palma,1996-09-08,2,2,1074832.0,Ivo Palma,1996-09-08,ivo-palma,2,dob+name,ok
 346289,Pedro Henriques,1997-09-22,1,1,637818.0,Pedro Henriques,1997-09-22,pedro-henriques,1,dob+name,ok
-347772,Didi,1998-01-05,2,1,639257.0,Didi,1998-01-05,didi,1,dob+name,ok
+347772,Didi,1998-01-05,2,2,639257.0,Didi,1998-01-05,didi,2,dob+name,ok
 348070,Pedro Pinto,2000-01-08,5,5,689117.0,Pedro Pinto,2000-01-08,pedro-pinto,5,dob+name,ok
 348076,Fábio Baldé,2000-05-03,4,4,570227.0,Fábio Baldé,2000-05-03,fabio-balde,4,dob+name,ok
 348294,André Serra,1998-08-26,4,4,946564.0,André Serra,1998-08-26,andre-serra,4,dob+name,ok
@@ -600,7 +600,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 351893,Diogo Martins,1996-08-21,3,3,548332.0,Diogo Martins,1996-08-21,diogo-martins,3,dob+name,ok
 351910,José Marinheiro,1997-01-02,1,1,340520.0,José Marinheiro,1997-01-02,jose-marinheiro,1,dob+name,ok
 351917,Ká Semedo,1994-09-01,4,4,337978.0,Ká Semedo,1994-09-01,ka-semedo,4,dob+name,ok
-351919,Samuel Nóbrega,1997-07-10,1,0,,,,,0,,no_squad_fetched
+351919,Samuel Nóbrega,1997-07-10,1,1,342238.0,Samuel Nóbrega,1997-07-10,samuel-nobrega,1,dob+name,ok
 351923,Gonçalo Maria,1996-01-18,4,4,342239.0,Gonçalo Maria,1996-01-18,goncalo-maria,4,dob+name,ok
 351924,Fábio Ferreira,1998-05-29,3,3,396578.0,Fábio Ferreira,1998-05-29,fabio-ferreira,3,dob+name,ok
 351927,Diogo Casimiro,1998-12-14,1,1,383806.0,Casimiro,1998-12-14,casimiro,1,dob+name,ok
@@ -688,7 +688,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 385669,Gustavo Filipe,1996-07-20,1,1,596419.0,Gustavo Burity,1996-07-20,gustavo-burity,1,dob+name,ok
 385672,Filipe Dinis,1998-01-21,1,1,314887.0,Filipe Dinis,1998-01-21,filipe-dinis,1,dob+name,ok
 386575,A. Cabrera,1995-01-28,1,1,617673.0,Andrés Cabrera,1995-01-28,andres-cabrera,1,dob+name,ok
-388159,Rafa Pinto,1997-02-12,1,0,,,,,0,,no_squad_fetched
+388159,Rafa Pinto,1997-02-12,1,1,709406.0,Rafa,1997-02-12,rafa,1,dob+name,ok
 388169,Pedro Simões,1999-02-05,1,1,599922.0,Pedro Simões,1999-02-05,pedro-simoes,1,dob+name,ok
 388172,Tiago Camilo,1998-12-18,1,1,,,,,0,,not_in_squad
 388849,Fran Roldán,1997-08-10,1,1,393233.0,Fran Roldán,1997-08-10,fran-roldan,1,dob+name,ok
@@ -703,7 +703,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 397860,Pedro Albino,1998-12-21,2,2,390523.0,Pedro Albino,1998-12-21,pedro-albino,2,dob+name,ok
 399649,João Lameira,1999-04-19,1,1,357165.0,João Lameira,1999-04-19,joao-lameira,1,dob+name,ok
 399656,Leandro Tipote,1999-02-26,3,3,357151.0,Tipote,1999-02-26,tipote,3,dob+name,ok
-399671,Ruster,1996-08-24,1,0,,,,,0,,no_squad_fetched
+399671,Ruster,1996-08-24,1,1,399758.0,Ruster,1996-08-24,ruster,1,dob+name,ok
 400372,Mário Évora,1999-01-28,3,3,396583.0,Mário Évora,1999-01-28,mario-evora,3,dob+name,ok
 401279,David Santos,1994-01-30,3,3,731271.0,David Santos,1994-01-30,david-santos,3,dob+name,ok
 401290,Guilherme Morais,1996-03-02,1,1,372487.0,Guilherme Morais,1996-03-02,guilherme-morais,1,dob+name,ok
@@ -797,7 +797,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 417393,Nuno Silva,1996-10-27,1,1,939368.0,Nuno Silva,1996-10-27,nuno-silva,1,dob+name,ok
 417394,Bruno Bolas,1996-06-24,2,2,595284.0,Bruno Bolas,1996-06-24,bruno-bolas,2,dob+name,ok
 417395,Cláudio Mateus,1996-01-18,1,1,349961.0,Cláudio Mateus,1996-01-18,claudio-mateus,1,dob+name,ok
-417405,Tidjane Baldé,1996-12-10,1,0,,,,,0,,no_squad_fetched
+417405,Tidjane Baldé,1996-12-10,1,1,307944.0,Tidjane Baldé,1996-12-10,tidjane-balde,1,dob+name,ok
 417452,Kika,1996-07-30,1,1,544787.0,Kika,1996-07-30,kika,1,dob+name,ok
 417481,Guilherme Quichini,1993-12-15,1,1,446779.0,Guilherme Quichini,1993-12-15,guilherme-quichini,1,dob+name,ok
 419222,A. Sousa,1998-09-17,1,1,417485.0,Aires Sousa,1998-09-17,aires-sousa,1,dob+name,ok
@@ -925,13 +925,13 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 472672,Benny,2000-03-27,1,1,375380.0,Benny,2000-03-27,benny,1,dob+name,ok
 472675,Tiago Rodrigues,2000-06-21,2,2,375386.0,Tiago Rodrigues,2000-06-21,tiago-rodrigues,2,dob+name,ok
 472677,Rodrigo Conceição,2000-01-02,1,1,,,,,0,,not_in_squad
-473361,Ézio Pinto,1997-07-05,3,2,646929.0,Ézio Pinto,1997-07-05,ezio-pinto,2,dob+name,ok
+473361,Ézio Pinto,1997-07-05,3,3,646929.0,Ézio Pinto,1997-07-05,ezio-pinto,3,dob+name,ok
 473390,Nuno Silva,1997-08-03,5,5,598036.0,Nuno Silva,1997-08-03,nuno-silva,5,dob+name,ok
 473395,Luís Monteiro,1992-12-10,1,1,541569.0,Luís,1992-12-10,luis,1,dob+name,ok
 473400,André Paulo,1996-12-18,3,3,647098.0,André Paulo,1996-12-18,andre-paulo,3,dob+name,ok
 473585,Vítor Rodrigues,1997-09-29,1,1,556656.0,Vítor Rodrigues,1997-09-29,vitor-rodrigues,1,dob+name,ok
 473598,Hudson,1996-03-12,1,1,1077573.0,Hudson,1996-03-12,hudson,1,dob+name,ok
-473605,Fabinho,1998-07-25,2,1,599525.0,Fabinho,1998-07-25,fabinho,1,dob+name,ok
+473605,Fabinho,1998-07-25,2,2,599525.0,Fabinho,1998-07-25,fabinho,2,dob+name,ok
 473606,I. Boakye,1997-03-20,4,4,443559.0,Isaac Boakye,1997-03-20,isaac-boakye,4,dob+name,ok
 474817,Zé Maria,1999-04-16,1,1,417351.0,Zé Maria,1999-04-16,ze-maria,1,dob+name,ok
 475450,Marculino Ninte,1997-07-01,1,1,382032.0,Marculino Ninte,1997-07-01,marculino-ninte,1,dob+name,ok
@@ -963,7 +963,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 481279,Miguel Sousa,1999-02-18,1,1,1076225.0,Flecha,1999-02-18,flecha,1,dob_name_differs,ok
 482852,Rafael Tavares,1999-04-04,2,2,468317.0,Rafael Tavares,1999-04-04,rafael-tavares,2,dob+name,ok
 482893,Filipe Cascão,1997-03-11,2,2,556649.0,Filipe Cascão,1997-03-11,filipe-cascao,2,dob+name,ok
-483263,Tommy Batista,1995-12-01,2,1,728888.0,Tommy,1995-12-01,tommy,1,dob+name,ok
+483263,Tommy Batista,1995-12-01,2,2,728888.0,Tommy,1995-12-01,tommy,2,dob+name,ok
 483406,Manuel Sousa,1999-09-12,1,1,676116.0,Manuel Sousa,1999-09-12,manuel-sousa,1,dob+name,ok
 483487,Rui Santos,1994-01-03,2,2,1064488.0,Rui Santos,1994-01-03,rui-santos,2,dob+name,ok
 483850,Mauro Andrade,1997-01-30,2,2,588200.0,Mauro Andrade,1997-01-30,mauro-andrade,2,dob+name,ok
@@ -985,7 +985,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 486121,Hircane Graça,1998-04-20,5,5,682107.0,Hircane Graça,1998-04-20,hircane-graca,5,dob+name,ok
 486126,João Silva,1999-10-07,4,4,641146.0,João Silva,1999-10-07,joao-silva,4,dob+name,ok
 486356,Hudson,1998-08-21,1,1,961334.0,Pantera,1998-08-21,pantera,1,dob_name_differs,ok
-486387,Eury Bento,1998-12-10,1,0,,,,,0,,no_squad_fetched
+486387,Eury Bento,1998-12-10,1,1,1456532.0,Eury Bento,1998-12-10,eury-bento,1,dob+name,ok
 486397,Mada Pereira,1999-11-14,1,1,751575.0,Mada Pereira,1999-11-14,mada-pereira,1,dob+name,ok
 486399,Diogo Macedo,1998-02-28,1,1,1193060.0,Diogo Macedo,1998-02-28,diogo-macedo,1,dob+name,ok
 486401,João António,1998-05-22,1,1,1076246.0,João António,1998-05-22,joao-antonio,1,dob+name,ok
@@ -993,7 +993,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 486887,Pedro Araújo,1999-09-21,5,5,478903.0,Pedro Araújo,1999-09-21,pedro-araujo,5,dob+name,ok
 487064,Miranda,1998-05-09,1,1,602031.0,Miranda,1998-05-09,miranda,1,dob+name,ok
 487069,Pedro do Rio,2000-11-21,3,3,735121.0,Pedro do Rio,2000-11-21,pedro-do-rio,3,dob+name,ok
-487142,Andre Oliveira,1998-02-04,1,0,,,,,0,,no_squad_fetched
+487142,Andre Oliveira,1998-02-04,1,1,645750.0,André Oliveira,1998-02-04,andre-oliveira,1,dob+name,ok
 487240,Fábio Fonseca,1997-01-28,2,2,383012.0,Fábio Fonseca,1997-01-28,fabio-fonseca,1,dob+name,ok
 487765,Eduardo,1998-08-19,3,3,422411.0,Eduardo Love,1998-08-19,eduardo-love,3,dob+name,ok
 487773,Desailly,1998-06-27,2,2,796292.0,Desailly,1998-06-27,desailly,2,dob+name,ok
@@ -1082,7 +1082,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 508554,Gonçalo Gomes,2001-03-05,1,1,479650.0,Gonçalo Gomes,2001-03-05,goncalo-gomes,1,dob+name,ok
 508559,Rafael Pereira,2001-05-26,2,2,479645.0,Rafa Pereira,2001-05-26,rafa-pereira,2,dob+name,ok
 508563,Rodrigo Valente,2001-02-15,2,2,479646.0,Rodrigo Valente,2001-02-15,rodrigo-valente,2,dob+name,ok
-509167,Leandro Ari,1997-03-07,3,2,752595.0,Leandro Ari,1997-03-07,leandro-ari,2,dob+name,ok
+509167,Leandro Ari,1997-03-07,3,3,752595.0,Leandro Ari,1997-03-07,leandro-ari,3,dob+name,ok
 509610,Nélson da Luz,1998-02-04,1,1,514304.0,Nélson da Luz,1998-02-04,nelson-da-luz,1,dob+name,ok
 509633,Daniel Rodriguez,1994-12-08,3,3,647514.0,Daniel Rodríguez,1994-12-08,daniel-rodriguez,3,dob+name,ok
 509634,J. Rodríguez,1997-10-04,1,1,636559.0,Jamil,1997-10-04,jamil,1,dob+name,ok
@@ -1179,7 +1179,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 532817,Luis Vacas,1999-06-22,1,1,523978.0,Luis Vacas,1999-06-22,luis-vacas,1,dob+name,ok
 532916,Pedro Martelo,1999-10-12,3,3,410322.0,Pedro Martelo,1999-10-12,pedro-martelo,3,dob+name,ok
 533486,Rúben Costa,2001-04-02,1,1,541775.0,Rúben Costa,2001-04-02,ruben-costa,1,dob+name,ok
-534029,A. Pimenta,1999-03-02,1,0,,,,,0,,no_squad_fetched
+534029,A. Pimenta,1999-03-02,1,1,529834.0,Alex Pimenta,1999-03-02,alex-pimenta,1,dob+name,ok
 534251,Á. Vega,2000-03-18,1,1,543371.0,Aníbal Vega,2000-03-18,anibal-vega,1,dob+name,ok
 536062,Tiago Matos,2001-01-22,1,1,479644.0,Tiago Matos,2001-01-22,tiago-matos,1,dob+name,ok
 536149,Elliot Gómez,1999-06-11,1,1,523995.0,Elliot Gómez,1999-06-11,elliot-gomez,1,dob+name,ok
@@ -1228,7 +1228,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 556473,Talison,2000-06-02,4,4,704430.0,Talison,2000-06-02,talison,4,dob+name,ok
 556800,Marcelo,1999-03-01,2,2,1183367.0,Marcelo Benia,1999-03-01,marcelo-benia,2,dob+name,ok
 557053,Miguel Vinagre,1996-11-29,2,2,842351.0,Miguel Vinagre,1996-11-29,miguel-vinagre,1,dob+name,ok
-557060,Tomás Martins,1998-09-15,2,1,615432.0,Tommi,1998-09-15,tommi,1,dob_name_differs,ok
+557060,Tomás Martins,1998-09-15,2,2,615432.0,Tommi,1998-09-15,tommi,2,dob_name_differs,ok
 557334,Erik,1998-04-17,4,4,599219.0,Erik,1998-04-17,erik,4,dob+name,ok
 557549,P. Kudakovskiy,2001-01-25,1,1,520068.0,Petr Kudakovskiy,2001-01-25,petr-kudakovskiy,1,dob+name,ok
 557834,Kiko,2000-03-25,1,1,591054.0,Kiko,2000-03-25,kiko,1,dob+name,ok
@@ -1390,7 +1390,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 588868,Gonçalo Batalha,2002-02-18,4,4,551982.0,Gonçalo Batalha,2002-02-18,goncalo-batalha,3,dob+name,ok
 589020,João Daniel,2002-06-28,5,5,549017.0,João Daniel,2002-06-28,joao-daniel,4,dob+name,ok
 589090,Michel Borges,1999-12-23,1,0,,,,,0,,no_squad_fetched
-589736,Dário Bernardo,1999-12-28,1,0,,,,,0,,no_squad_fetched
+589736,Dário Bernardo,1999-12-28,1,1,752593.0,Dário Bernardo,1999-12-28,dario-bernardo,1,dob+name,ok
 589739,O. Okenwa,1999-03-15,2,2,533764.0,Frank Okenwa,1999-03-15,frank-okenwa,1,dob+name,ok
 589822,Francisco Miranda,1996-10-23,1,1,379133.0,Francisco Miranda,1996-10-23,francisco-miranda,1,dob+name,ok
 590342,L. Horníček,2002-07-13,2,2,629773.0,Lukas Hornicek,2002-07-13,lukas-hornicek,2,dob+name,ok
@@ -1407,7 +1407,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 593060,Gabriel Oliveira,2000-03-12,1,1,697708.0,Gabi,2000-03-12,gabi,1,dob_name_differs,ok
 593064,Leandro Alves,1999-01-16,3,3,710860.0,Leandro Alves,1999-01-16,leandro-alves,3,dob+name,ok
 593076,M. Lamine,2000-02-02,1,1,575887.0,Mohammed Lamine,2000-02-02,mohammed-lamine,1,dob+name,ok
-593077,Ivanilson Magalhães,1999-04-04,2,1,534062.0,Ivanilson,1999-04-04,ivanilson,1,dob+name,ok
+593077,Ivanilson Magalhães,1999-04-04,2,2,534062.0,Ivanilson,1999-04-04,ivanilson,2,dob+name,ok
 593079,Gabriel Fornari,2001-03-03,1,1,674488.0,Gabriel Fornari,2001-03-03,gabriel-fornari,1,dob+name,ok
 593082,Caio Silva,1997-03-27,1,1,613522.0,Caio Silva,1997-03-27,caio-silva,1,dob+name,ok
 593091,Ricardo Nóbrega,2004-03-13,1,1,670687.0,Ricardo Nóbrega,2004-03-13,ricardo-nobrega,1,dob+name,ok
@@ -1551,7 +1551,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 605338,Pedro Santos,2000-10-12,2,2,657435.0,Pedro Santos,2000-10-12,pedro-santos,2,dob+name,ok
 605788,Afonso Valente,2001-03-10,4,4,598379.0,Afonso Valente,2001-03-10,afonso-valente,4,dob+name,ok
 605983,M. Woledzi,2001-07-02,1,1,658529.0,Maxwell Woledzi,2001-07-02,maxwell-woledzi,1,dob+name,ok
-606238,N. Pereira,1997-11-22,2,0,,,,,0,,no_squad_fetched
+606238,N. Pereira,1997-11-22,2,2,954771.0,Nuno Pereira,1997-11-22,nuno-pereira,1,dob+name,ok
 607551,Matheus Palmério,2001-09-11,3,3,718439.0,Matheus Palmério,2001-09-11,matheus-palmerio,3,dob+name,ok
 607600,Vinicius Ventura,2000-12-18,1,1,839766.0,Vinícius,2000-12-18,vinicius,1,dob+name,ok
 608273,Rafael Roque,2000-05-24,2,2,847600.0,Rafael Roque,2000-05-24,rafael-roque,2,dob+name,ok
@@ -1682,14 +1682,14 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 626952,Costinha,2001-04-05,2,2,700936.0,Costinha,2001-04-05,costinha,2,dob+name,ok
 627575,João Oliveira,2002-09-18,2,2,724421.0,Jota,2002-09-18,jota,2,dob_name_differs,ok
 627871,Rúben Vale,1999-09-26,1,1,600245.0,Rúben Vale,1999-09-26,ruben-vale,1,dob+name,ok
-627885,B. Sanneh,1999-04-04,1,0,,,,,0,,no_squad_fetched
+627885,B. Sanneh,1999-04-04,1,1,568689.0,Bun Sanneh,1999-04-04,bun-sanneh,1,dob+name,ok
 628007,E. Evaristus,1999-06-03,1,1,,,,,0,,not_in_squad
 628013,N. Haymamba,1999-03-30,1,1,829949.0,Norbert Haymamba,1999-03-30,norbert-haymamba,1,dob+name,ok
 628023,Zé Leite,1999-09-01,1,1,468338.0,Zé Leite,1999-09-01,ze-leite,1,dob+name,ok
 628504,F. Costantini,2000-01-23,1,1,908929.0,Facundo Costantini,2000-01-23,facundo-costantini,1,dob+name,ok
 628716,Daniel Sardinha,2000-02-26,1,1,750055.0,Daniel Sardinha,2000-02-26,daniel-sardinha,1,dob+name,ok
 629719,Valdir Júnior,2000-05-22,1,1,740376.0,Valdir,2000-05-22,valdir,1,dob+name,ok
-630739,Luís Cerejo,2000-03-21,2,2,686473.0,Luís Cerejo,,luis-cerejo,2,name_only,review
+630739,Luís Cerejo,2000-03-21,2,2,686473.0,Luís Cerejo,,luis-cerejo,2,manual: identical name at two clubs; Transfermarkt has no birth date,ok
 631030,P. Dwomoh,2004-06-21,1,1,652803.0,Pierre Dwomoh,2004-06-21,pierre-dwomoh,1,dob+name,ok
 631108,Neto,2000-01-29,1,1,974505.0,Neto,2000-01-29,neto,1,dob+name,ok
 631239,Brais Val,2002-06-01,1,1,707273.0,Brais Val,2002-06-01,brais-val,1,dob+name,ok
@@ -1718,19 +1718,19 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 634734,Ismael António,2000-07-02,1,1,1316383.0,Ismael Eduardo,2000-07-02,ismael-eduardo,1,dob+name,ok
 634739,Tiago Varandas,1999-08-12,1,1,1323501.0,Tiago Varandas,1999-08-12,tiago-varandas,1,dob+name,ok
 634742,Miguel Rosa,1999-08-29,1,1,1323497.0,Miguel Rosa,1999-08-29,miguel-rosa,1,dob+name,ok
-634900,Tomás Cardoso,1999-12-29,1,0,,,,,0,,no_squad_fetched
+634900,Tomás Cardoso,1999-12-29,1,1,514235.0,Tomás Cardoso,1999-12-29,tomas-cardoso,1,dob+name,ok
 634901,Rodrigo Dias,2000-01-13,3,3,713280.0,Rodrigo Dias,2000-01-13,rodrigo-dias,3,dob+name,ok
-635355,André Silva,2003-03-18,2,1,700646.0,André Silva,2003-03-18,andre-silva,1,dob+name,ok
+635355,André Silva,2003-03-18,2,2,700646.0,André Silva,2003-03-18,andre-silva,1,dob+name,ok
 635841,A. Bencze,2002-02-03,2,2,,,,,0,,not_in_squad
 635858,Rúben Pina,2000-01-20,1,1,647132.0,Rúben Pina,2000-01-20,ruben-pina,1,dob+name,ok
 635870,Rubinho,2002-12-14,1,1,712950.0,Rubinho,2002-12-14,rubinho,1,dob+name,ok
-636112,Daniel Oliveira,1997-08-02,1,0,,,,,0,,no_squad_fetched
-636329,N. Opara,1999-01-30,1,0,,,,,0,,no_squad_fetched
+636112,Daniel Oliveira,1997-08-02,1,1,,,,,0,,not_in_squad
+636329,N. Opara,1999-01-30,1,1,,,,,0,,not_in_squad
 636522,Celso Sidney,2001-05-18,2,2,943636.0,Celso Sidney,2001-05-18,celso-sidney,2,dob+name,ok
 636647,Anilson,2001-09-04,1,1,,,,,0,,not_in_squad
 637043,Tiago Matos,1999-10-09,3,3,729623.0,Tiago Matos,1999-10-09,tiago-matos,3,dob+name,ok
 637060,Samuka,1997-11-09,1,1,756978.0,Samuka,1997-11-09,samuka,1,dob+name,ok
-637394,Diogo Alves,2000-08-04,2,1,751447.0,Diogo Pina,2000-08-04,diogo-pina,1,dob+name,ok
+637394,Diogo Alves,2000-08-04,2,2,751447.0,Diogo Pina,2000-08-04,diogo-pina,1,dob+name,ok
 637396,Diogo Castro,2000-06-26,4,4,902723.0,Diogo Castro,2000-06-26,diogo-castro,4,dob+name,ok
 637405,Bruno Oliveira,1998-11-24,1,1,708493.0,Bruno Oliveira,1998-11-24,bruno-oliveira,1,dob+name,ok
 637410,Diogo Santos,2000-10-15,1,1,856422.0,Diogo Santos,2000-10-15,diogo-santos,1,dob+name,ok
@@ -1850,7 +1850,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 646785,João Nunes,2002-08-29,1,1,,,,,0,,not_in_squad
 646786,Miguel Baptista,2001-10-28,2,2,875372.0,Miguel Baptista,2001-10-28,miguel-baptista,2,dob+name,ok
 646788,Henrique  Pires,2002-04-08,1,1,,,,,0,,not_in_squad
-646789,Pedro Francisco,2001-06-26,3,2,1068268.0,Pedro Francisco,2001-06-26,pedro-francisco,2,dob+name,ok
+646789,Pedro Francisco,2001-06-26,3,3,1068268.0,Pedro Francisco,2001-06-26,pedro-francisco,3,dob+name,ok
 646807,Miguel Pires,2002-05-23,2,2,1056441.0,Miguel Pires,2002-05-23,miguel-pires,2,dob+name,ok
 646813,Legatheaux,2001-04-16,2,2,844786.0,Legatheaux,2001-04-16,legatheaux,2,dob+name,ok
 646819,Hugo Nunes,2002-02-15,2,2,1077059.0,Hugo Nunes,2002-02-15,hugo-nunes,2,dob+name,ok
@@ -1896,7 +1896,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 647014,Diogo Bebé,2001-02-22,1,1,881175.0,Diogo Bebé,2001-02-22,diogo-bebe,1,dob+name,ok
 647016,Braima Sambú,2001-03-20,2,2,817527.0,Braima Sambú,2001-03-20,braima-sambu,2,dob+name,ok
 647020,Rodrigo Ramos,2003-11-13,1,1,825834.0,Rodrigo Ramos,2003-11-13,rodrigo-ramos,1,dob+name,ok
-647021,Tiago Rodrigues,2001-05-26,2,1,,,,,0,,not_in_squad
+647021,Tiago Rodrigues,2001-05-26,2,2,848949.0,Tiago Rodrigues,2001-05-26,tiago-rodrigues,1,dob+name,ok
 647024,Filipe Marques,2002-01-17,3,3,927650.0,Pipo,2002-01-17,pipo,3,dob_name_differs,ok
 647031,Armando Pereira,2002-12-04,1,1,,,,,0,,not_in_squad
 647034,Francisco Tilli,2002-03-14,1,1,1045215.0,Francisco Tilli,2002-03-14,francisco-tilli,1,dob+name,ok
@@ -1929,7 +1929,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 647230,Alex Mendes,2001-01-10,1,1,419441.0,Alex Mendes,2001-01-10,alex-mendes,1,dob+name,ok
 647238,Bruno Ventura,2001-02-27,3,3,788995.0,Bruno Ventura,2001-02-27,bruno-ventura,3,dob+name,ok
 647240,Diogo Martins,2001-03-22,2,2,891972.0,Diogo Martins,2001-03-22,diogo-martins,2,dob+name,ok
-647243,Gui Ribeiro,2001-10-19,3,2,1065176.0,Gui Ribeiro,2001-10-19,gui-ribeiro,1,dob+name,ok
+647243,Gui Ribeiro,2001-10-19,3,3,1065176.0,Gui Ribeiro,2001-10-19,gui-ribeiro,2,dob+name,ok
 647244,João Mendes,2001-10-23,1,1,1322511.0,João Mendes,2001-10-23,joao-mendes,1,dob+name,ok
 647245,Paulo Pereira,2002-07-02,1,1,1608055.0,China,2002-07-02,china,1,dob_name_differs,ok
 647248,Tomás Lima,2002-02-06,3,3,891969.0,Tomás Lima,2002-02-06,tomas-lima,2,dob+name,ok
@@ -1973,7 +1973,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 651557,Juninho,2001-01-06,3,3,1065760.0,Juninho,2001-01-06,juninho,3,dob+name,ok
 651862,Kauan Ferreira,2003-03-09,1,1,1066521.0,Kauan,2003-03-09,kauan,1,dob+name,ok
 652105,Rodrigo Luís,2001-04-28,2,2,818037.0,Rodrigo Luís,2001-04-28,rodrigo-luis,2,dob+name,ok
-652220,P. Tear,1998-08-26,1,0,,,,,0,,no_squad_fetched
+652220,P. Tear,1998-08-26,1,1,654507.0,Philip Tear,1998-08-26,philip-tear,1,dob+name,ok
 654140,João Mucuia,1999-09-08,2,2,1068270.0,João Mucuia,1999-09-08,joao-mucuia,1,dob+name,ok
 654275,David Santos,2001-10-14,4,4,806982.0,David Santos,2001-10-14,david-santos,4,dob+name,ok
 654818,J. Alcantar,2003-07-30,1,1,796060.0,Jesús Alcántar,2003-07-30,jesus-alcantar,1,dob+name,ok
@@ -1989,7 +1989,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 657307,Xinhai Wang,2000-10-16,1,1,941444.0,Xinhai Wang,2000-10-16,xinhai-wang,1,dob+name,ok
 657790,Diegão,2003-07-29,1,1,886563.0,Diegão,2003-07-29,diegao,1,dob+name,ok
 658277,Óscar Garcia,2004-12-06,2,2,979057.0,Óscar Garcia,2004-12-06,oscar-garcia,2,dob+name,ok
-658286,João Pereira,2004-03-31,2,1,,,,,0,,not_in_squad
+658286,João Pereira,2004-03-31,2,2,572926.0,João Pereira,2004-03-31,joao-pereira,1,dob+name,ok
 658291,Rui Carreira,2004-01-22,2,2,1022945.0,Rui Carreira,2004-01-22,rui-carreira,2,dob+name,ok
 658293,David Moreira,2004-04-18,1,1,1044831.0,David Moreira,2004-04-18,david-moreira,1,dob+name,ok
 658296,Tiago Octávio,2004-07-08,1,1,742459.0,Tiago Octávio,2004-07-08,tiago-octavio,1,dob+name,ok
@@ -2001,7 +2001,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 658323,Martim Marques,2004-02-11,1,1,927734.0,Martim Marques,2004-02-11,martim-marques,1,dob+name,ok
 658325,Diego Callai,2004-07-18,4,4,848875.0,Diego Callai,2004-07-18,diego-callai,4,dob+name,ok
 658356,Tiago Sousa,2004-09-12,1,1,,,,,0,,not_in_squad
-658551,Lucas Teixeira,2000-06-20,1,0,,,,,0,,no_squad_fetched
+658551,Lucas Teixeira,2000-06-20,1,1,468572.0,Lucas Teixeira,2000-06-20,lucas-teixeira,1,dob+name,ok
 658692,Samuel Cazares,1999-06-20,1,1,1063244.0,Samuel Cazares,1999-06-20,samuel-cazares,1,dob+name,ok
 658762,Tulio,1999-11-21,2,2,954478.0,Túlio Silva,1999-11-21,tulio-silva,1,dob+name,ok
 659241,Tiago Caveira,2000-07-27,2,2,874317.0,Tiago Caveira,2000-07-27,tiago-caveira,2,dob+name,ok
@@ -2078,7 +2078,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 678755,Z. Barbatano,2002-11-05,1,1,1187459.0,Zachary Barbatano,2002-11-05,zachary-barbatano,1,dob+name,ok
 678860,B. Godwin,2001-12-05,1,1,783502.0,Bright Godwin,2001-12-05,bright-godwin,1,dob+name,ok
 679316,S. Osei,2004-02-14,2,2,807308.0,Sidney Osei,2004-02-14,sidney-osei,2,dob+name,ok
-685389,Alexandre Moutinho,2001-08-07,2,1,818286.0,Alexandre Moutinho,2001-08-07,alexandre-moutinho,1,dob+name,ok
+685389,Alexandre Moutinho,2001-08-07,2,2,818286.0,Alexandre Moutinho,2001-08-07,alexandre-moutinho,2,dob+name,ok
 685390,Fran Pereira,2002-02-06,3,3,818247.0,Fran Pereira,2002-02-06,fran-pereira,2,dob+name,ok
 686039,João Pais,1998-09-13,2,2,813458.0,João Pais,1998-09-13,joao-pais,2,dob+name,ok
 686140,João Castro,2001-01-19,1,1,820247.0,João Castro,2001-01-19,joao-castro,1,dob+name,ok
@@ -2092,7 +2092,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 689482,Rafael Tavares,2002-04-26,3,3,817525.0,Rafael Tavares,2002-04-26,rafael-tavares,3,dob+name,ok
 689942,João Santos,1999-11-17,1,1,502143.0,João Santos,1999-11-17,joao-santos,1,dob+name,ok
 689951,Átila Fontinha,1999-04-29,1,1,816504.0,Átila Fontinha,1999-04-29,atila-fontinha,1,dob+name,ok
-689959,Mica Évora,2001-01-31,2,1,816524.0,Mica Évora,2001-01-31,mica-evora,1,dob+name,ok
+689959,Mica Évora,2001-01-31,2,2,816524.0,Mica Évora,2001-01-31,mica-evora,2,dob+name,ok
 689985,Sadiq Abdulfatai,2001-03-12,1,1,813828.0,Sadiq Abdulfatai,2001-03-12,sadiq-abdulfatai,1,dob+name,ok
 689986,João Barros,2002-04-11,1,1,815291.0,João Barros,2002-04-11,joao-barros,1,dob+name,ok
 689989,João Araújo,2001-01-10,1,0,,,,,0,,no_squad_fetched
@@ -2124,7 +2124,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 697370,Ivo Nabais,2001-07-13,2,2,847601.0,Ivo Nabais,2001-07-13,ivo-nabais,2,dob+name,ok
 697405,Gustavo Pinto,2003-12-09,1,1,920780.0,Gustavo Pinto,2003-12-09,gustavo-pinto,1,dob+name,ok
 697408,Ricardo Esteves,2001-02-17,1,1,945163.0,Ricardo Esteves,2001-02-17,ricardo-esteves,1,dob+name,ok
-697433,E. Udokporo,1996-07-29,1,0,,,,,0,,no_squad_fetched
+697433,E. Udokporo,1996-07-29,1,1,,,,,0,,not_in_squad
 698850,Filipe Abreu,2001-01-03,1,1,1187972.0,Filipe Abreu,2001-01-03,filipe-abreu,1,dob+name,ok
 698932,Zé Simão,2000-05-23,3,3,1064778.0,Zé Simão,2000-05-23,ze-simao,3,dob+name,ok
 699027,Bernardo Lourenço,2002-08-21,2,2,889257.0,Bernardo Lourenço,2002-08-21,bernardo-lourenco,2,dob+name,ok
@@ -2139,7 +2139,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 699479,Marcos Soares,1997-02-01,3,3,828870.0,Marcos Soares,1997-02-01,marcos-soares,3,dob+name,ok
 699489,Rivaldo Semedo,2000-09-20,1,1,828875.0,Rivaldo Semedo,2000-09-20,rivaldo-semedo,1,dob+name,ok
 700171,Ricardo Fernandes,2002-08-28,3,3,830767.0,Ricardo Fernandes,2002-08-28,ricardo-fernandes,2,dob+name,ok
-701663,Pedro Ferreira,2002-10-27,1,0,,,,,0,,no_squad_fetched
+701663,Pedro Ferreira,2002-10-27,1,1,833732.0,Pedro Ferreira,2002-10-27,pedro-ferreira,1,dob+name,ok
 702118,Rogério Fernandes,2002-08-28,2,2,889683.0,Rogério,2002-08-28,rogerio,1,dob+name,ok
 702332,Moisés Fernandes,2001-11-08,1,1,842588.0,Moisés Fernandes,2001-11-08,moises-fernandes,1,dob+name,ok
 702468,Sylvestre Costa,2003-06-06,3,3,775177.0,Sylvestre,2003-06-06,sylvestre,2,dob+name,ok
@@ -2152,7 +2152,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 703977,S. Guzmán,2002-06-07,2,2,836551.0,Santi Hernández,2002-06-07,santi-hernandez,2,dob+name,ok
 704508,Anderson Nascimento,1998-03-28,1,1,1065921.0,Anderson Filho,1998-03-28,anderson-filho,1,dob+name,ok
 704866,Luís Mota,2003-09-25,1,1,834258.0,Luís Mota,2003-09-25,luis-mota,1,dob+name,ok
-704867,Zack Blackwell,1999-12-20,4,3,817531.0,Zack Blackwell,1999-12-20,zack-blackwell,3,dob+name,ok
+704867,Zack Blackwell,1999-12-20,4,4,817531.0,Zack Blackwell,1999-12-20,zack-blackwell,4,dob+name,ok
 705488,João Rafael,1997-08-28,2,2,842400.0,João Rafael,1997-08-28,joao-rafael,2,dob+name,ok
 705565,S. Saatçı,2003-02-14,1,1,655899.0,Serdar Saatçı,2003-02-14,serdar-saatci,1,dob+name,ok
 705644,João Carmo,1990-04-12,1,1,,,,,0,,not_in_squad
@@ -2257,7 +2257,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 730723,Rodrigo Fajardo,2003-03-01,3,3,875390.0,Rodrigo Fajardo,2003-03-01,rodrigo-fajardo,3,dob+name,ok
 730724,Agostinho,2000-07-01,1,1,875404.0,Agostinho,2000-07-01,agostinho,1,dob+name,ok
 731247,Diogo Nascimento,2002-09-20,5,5,1067165.0,Diogo Nascimento,2002-09-20,diogo-nascimento,4,dob+name,ok
-731917,L. Diedhiou,2001-09-21,2,2,877138.0,Diedhiou Landing,2001-09-21,diedhiou-landing,1,dob+name,review
+731917,L. Diedhiou,2001-09-21,2,2,1457118.0,Landing Diedhiou,2001-09-21,landing-diedhiou,1,"manual: same birth date; Transfermarkt has two profiles for him, this is the current one",ok
 731993,Atsushi Inoue,2000-09-21,1,1,887394.0,Atsushi Inoue,2000-09-21,atsushi-inoue,1,dob+name,ok
 732096,Mário Junior,2003-04-09,3,3,863667.0,Mário Júnior,2003-04-09,mario-junior,3,dob+name,ok
 732230,C. Acosta,2003-03-26,3,3,910646.0,Camilo Acosta,2003-03-26,camilo-acosta,3,dob+name,ok
@@ -2307,7 +2307,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 752956,José Monteiro,2005-02-21,1,1,801438.0,José Monteiro,2005-02-21,jose-monteiro,1,dob+name,ok
 752961,Diogo Aqueu,2004-05-18,1,1,1102789.0,Diogo Aqueu,2004-05-18,diogo-aqueu,1,dob+name,ok
 752963,Miguel Pinto,2003-08-08,2,2,1041229.0,Miguel Pinto,2003-08-08,miguel-pinto,2,dob+name,ok
-752964,Pedro Pato,2005-06-23,1,0,,,,,0,,no_squad_fetched
+752964,Pedro Pato,2005-06-23,1,1,1102639.0,Pedro Pato,2005-06-23,pedro-pato,1,dob+name,ok
 752968,Veloso Oliveira,2002-04-13,1,1,1045834.0,Eduardo Oliveira,2002-04-13,eduardo-oliveira,1,dob+name,ok
 752974,Ivaldo Rufé,2003-02-24,2,2,1136159.0,Ivaldo Rufé,2003-02-24,ivaldo-rufe,1,dob+name,ok
 752976,João Cunha,2002-10-08,1,1,1315351.0,João Cunha,2002-10-08,joao-cunha,1,dob+name,ok
@@ -2332,7 +2332,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 766700,Amadu Baldé,2005-06-27,3,3,936483.0,Amadu Baldé,2005-06-27,amadu-balde,3,dob+name,ok
 766758,Lucas Dias,2003-01-18,2,2,808573.0,Lucas Dias,2003-01-18,lucas-dias,2,dob+name,ok
 766915,Mario Rodrigues,2002-09-27,1,1,925406.0,Mário Rodrigues,2002-09-27,mario-rodrigues,1,dob+name,ok
-766916,Miguel Gonçalves,2000-01-27,1,0,,,,,0,,no_squad_fetched
+766916,Miguel Gonçalves,2000-01-27,1,1,682799.0,Miguel Gonçalves,2000-01-27,miguel-goncalves,1,dob+name,ok
 766918,Tiago Madeira,2001-05-23,2,2,925416.0,Tiago Madeira,2001-05-23,tiago-madeira,2,dob+name,ok
 767405,Ni,2003-03-01,4,4,927107.0,Ni,2003-03-01,nitm,3,dob+name,ok
 767415,Diogo Machado,2003-11-22,1,1,927611.0,Diogo Machado,2003-11-22,diogo-machado,1,dob+name,ok
@@ -2347,10 +2347,10 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 770280,J. Marcelo,2002-02-09,1,1,933285.0,João Marcelo,2002-02-09,joao-marcelo,1,dob+name,ok
 770289,Gabriel Okebe,2002-11-29,2,2,944131.0,Gabriel Okebe,2002-11-29,gabriel-okebe,2,dob+name,ok
 770293,Willian Gomes,2002-08-28,2,2,1196471.0,Willian Gomes,2002-08-28,willian-gomes,2,dob+name,ok
-770295,Ibu Mané,2000-04-22,1,0,,,,,0,,no_squad_fetched
+770295,Ibu Mané,2000-04-22,1,1,862716.0,Ibu Mané,2000-04-22,ibu-mane,1,dob+name,ok
 770323,T. Hirosawa,2002-10-21,1,1,861913.0,Toki Hirosawa,2002-10-21,toki-hirosawa,1,dob+name,ok
 770954,F. Gomes,2004-04-14,1,1,,,,,0,,not_in_squad
-771402,V. de Sousa Zacarias,,1,1,458488.0,Valter Zacarias,1997-10-28,valter-zacarias,1,name_only,review
+771402,V. de Sousa Zacarias,,1,1,458488.0,Valter Zacarias,1997-10-28,valter-zacarias,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 21 ours, 24 Transfermarkt",ok
 771718,Pedro Miguéis,2004-11-06,1,1,934032.0,Pedro Miguéis,2004-11-06,pedro-migueis,1,dob+name,ok
 771732,Jeremias Nhambirre,2000-01-08,1,1,744155.0,Jeremias Nhambire,2000-01-08,jeremias-nhambire,1,dob+name,ok
 771733,Gonçalo Ornelas,2002-07-09,1,1,927658.0,Gonzo,2002-07-09,gonzo,1,dob_name_differs,ok
@@ -2399,10 +2399,10 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 793648,Afonso Silva,2004-04-28,1,1,941937.0,Afonso Silva,2004-04-28,afonso-silva,1,dob+name,ok
 794297,João Lopes,2003-01-11,1,1,,,,,0,,not_in_squad
 796960,Carlos Balsa,2000-05-06,3,3,888374.0,Carlos Balsa,2000-05-06,carlos-balsa,2,dob+name,ok
-797256,R. Ramos,2008-07-01,1,0,,,,,0,,no_squad_fetched
-797293,D. Almeida,2007-05-03,1,0,,,,,0,,no_squad_fetched
-797331,G. Rebelo,2008-07-12,1,0,,,,,0,,no_squad_fetched
-797353,Isaac Firmino,2008-02-20,1,0,,,,,0,,no_squad_fetched
+797256,R. Ramos,2008-07-01,1,1,1537588.0,Renato Ramos,2008-07-01,renato-ramos,1,dob+name,ok
+797293,D. Almeida,2007-05-03,1,1,1526979.0,Daniel Almeida,2007-05-03,daniel-almeida,1,dob+name,ok
+797331,G. Rebelo,2008-07-12,1,1,1473323.0,Gabriel Rebelo,2008-07-12,gabriel-rebelo,1,dob+name,ok
+797353,Isaac Firmino,2008-02-20,1,1,1540453.0,Isaac Firmino,2008-02-20,isaac-firmino,1,dob+name,ok
 799134,F. Sukhikh,2003-04-23,1,1,929510.0,Filipp Sukhikh,2003-04-23,filipp-sukhikh,1,dob+name,ok
 801122,David Peres,2004-07-28,3,3,1090777.0,David Peres,2004-07-28,david-peres,3,dob+name,ok
 801179,Kauã Oliveira,2004-02-21,1,1,1052970.0,Kauã Vinicius,2004-02-21,kaua-vinicius,1,dob+name,ok
@@ -2428,7 +2428,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 803470,Camilo Duran,2002-02-10,2,2,997867.0,Camilo Durán,2002-02-10,camilo-duran,2,dob+name,ok
 803750,Tiago Torres,2003-02-20,1,1,908935.0,Tiago Torres,2003-02-20,tiago-torres,1,dob+name,ok
 803827,Diogo Neto,2003-05-07,1,1,1480943.0,Diogo Neto,2003-05-07,diogo-neto,1,dob+name,ok
-803828,I. Seidi,2003-01-01,2,1,1187679.0,Iero Seidi,2003-01-01,iero-seidi,1,dob+name,ok
+803828,I. Seidi,2003-01-01,2,2,1187679.0,Iero Seidi,2003-01-01,iero-seidi,2,dob+name,ok
 803940,Pedro Medeiros,2003-09-05,2,2,1095545.0,Pepê,2003-09-05,pepe,2,dob_name_differs,ok
 804191,Gustavo Teixeira,2003-11-07,2,2,954766.0,Gustavo Teixeira,2003-11-07,gustavo-teixeira,2,dob+name,ok
 804195,Martim Alberto,2004-04-20,2,2,967816.0,Martim Alberto,2004-04-20,martim-alberto,2,dob+name,ok
@@ -2491,8 +2491,8 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 817957,Guilherme Barbosa,2005-08-08,2,2,741504.0,Gui Barbosa,2005-08-08,gui-barbosa,2,dob+name,ok
 817958,Kyanno Silva,2005-05-24,1,1,904961.0,Kyanno Silva,2005-05-24,kyanno-silva,1,dob+name,ok
 817959,Nuno Patrício,2006-01-07,1,1,937728.0,Nuno Patrício,2006-01-07,nuno-patricio,1,dob+name,ok
-817987,G. Goncalves Costa,2005-01-10,1,0,,,,,0,,no_squad_fetched
-818002,T. Cintra,2005-01-28,1,0,,,,,0,,no_squad_fetched
+817987,G. Goncalves Costa,2005-01-10,1,1,1463567.0,Guilherme Costa,2005-01-10,guilherme-costa,1,dob+name,ok
+818002,T. Cintra,2005-01-28,1,1,1463560.0,Tomás Cintra,2005-01-28,tomas-cintra,1,dob+name,ok
 819006,Hugo Oliveira,2004-08-26,1,1,982572.0,Hugo Oliveira,2004-08-26,hugo-oliveira,1,dob+name,ok
 819007,Nuno Matos,2004-10-04,3,3,982559.0,Nuno Matos,2004-10-04,nuno-matos,3,dob+name,ok
 819010,Gonçalo Santos,2004-01-12,1,1,982573.0,Gonçalo Santos,2004-01-12,goncalo-santos,1,dob+name,ok
@@ -2513,7 +2513,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 827284,Manuel Miranda,2007-04-13,1,1,1051691.0,Manuel Miranda,2007-04-13,manuel-miranda,1,dob+name,ok
 831982,Wendel,2004-05-05,1,1,1083248.0,Wendel,2004-05-05,wendel,1,dob+name,ok
 831988,Carlinhos,2004-04-14,3,3,1082586.0,Carlinhos,2004-04-14,carlinhos,2,dob+name,ok
-832000,Vasco Djú,2003-01-15,1,0,,,,,0,,no_squad_fetched
+832000,Vasco Djú,2003-01-15,1,1,950375.0,Vasco Djú,2003-01-15,vasco-dju,1,dob+name,ok
 832042,Vitinho,2004-04-28,1,1,1083109.0,Vitinho,2004-04-28,vitinho,1,dob+name,ok
 832154,Chrystopher,2004-12-29,1,1,1224574.0,Chrystopher,2004-12-29,chrystopher,1,dob+name,ok
 832169,Breno Martins,2005-02-09,3,3,1096508.0,Breno,2005-02-09,breno,3,dob+name,ok
@@ -2730,7 +2730,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 900963,Chamito Alfândega,2004-01-14,2,2,1111613.0,Chamito,2004-01-14,chamito,2,dob+name,ok
 901861,Rodrigo Silva,2004-09-29,1,1,1110490.0,Rodrigo Silva,2004-09-29,rodrigo-silva,1,dob+name,ok
 901883,Pedro Santos,2004-07-09,3,3,637797.0,Pedro Santos,2004-07-09,pedro-santos,3,dob+name,ok
-902495,A. Kidmas,2003-04-05,1,0,,,,,0,,no_squad_fetched
+902495,A. Kidmas,2003-04-05,1,1,1367838.0,Aaron Kidmas,2003-04-05,aaron-kidmas,1,dob+name,ok
 902788,Marllon,2000-06-01,1,1,979446.0,Marllon,2000-06-01,marllon,1,dob+name,ok
 903075,Ewandro Santos,2004-06-11,2,2,1114911.0,Ewandro,2004-06-11,ewandro,2,dob+name,ok
 906590,S. Pollard,1999-02-21,1,1,1084954.0,Sam Pollard,1999-02-21,sam-pollard,1,dob+name,ok
@@ -2742,11 +2742,11 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 913843,Mboulou Júnior,1997-05-12,2,2,1062089.0,Mboulou Júnior,1997-05-12,mboulou-junior,2,dob+name,ok
 913850,David Lopes,2004-10-15,3,3,1064239.0,David Lopes,2004-10-15,david-lopes,3,dob+name,ok
 913916,Gui,2006-05-13,1,1,1093809.0,Gui,2006-05-13,guitm,1,dob+name,ok
-914033,Carimo Conté,1999-02-19,2,1,868020.0,Carimo Conté,1999-02-19,carimo-conte,1,dob+name,ok
+914033,Carimo Conté,1999-02-19,2,2,868020.0,Carimo Conté,1999-02-19,carimo-conte,2,dob+name,ok
 914058,Hugo Duque,1999-03-08,1,1,959918.0,Hugo Duque,1999-03-08,hugo-duque,1,dob+name,ok
 914073,Igarapé,2000-04-24,2,2,1150869.0,Igarapé,2000-04-24,igarape,2,dob+name,ok
 914078,G. Neiva,2001-03-15,2,2,1065761.0,Guilherme Neiva,2001-03-15,guilherme-neiva,2,dob+name,ok
-914091,D. Castillo,1997-11-02,2,1,1074662.0,Darwin Castillo,1997-11-02,darwin-castillo,1,dob+name,ok
+914091,D. Castillo,1997-11-02,2,2,1074662.0,Darwin Castillo,1997-11-02,darwin-castillo,2,dob+name,ok
 914128,Ibraima Culubali,2000-11-09,1,1,842445.0,Ibraima Culubali,2000-11-09,ibraima-culubali,1,dob+name,ok
 914133,Kenedi Oliveira,1998-06-16,1,1,1066019.0,Kenedi Oliveira,1998-06-16,kenedi-oliveira,1,dob+name,ok
 914144,Edgar Nanque,2003-05-20,2,2,1063713.0,Edgar Nanque,2003-05-20,edgar-nanque,2,dob+name,ok
@@ -2833,24 +2833,24 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 915122,M. Sukuni,2000-07-25,1,1,1064235.0,Musa Sukuni,2000-07-25,musa-sukuni,1,dob+name,ok
 915154,Hernâni Martins,2002-08-10,1,1,858654.0,Hernâni Martins,2002-08-10,hernani-martins,1,dob+name,ok
 915184,Cardoso,2002-09-17,3,3,1062264.0,Cardoso,2002-09-17,cardoso,3,dob+name,ok
-915219,Rachide,2001-07-27,1,0,,,,,0,,no_squad_fetched
+915219,Rachide,2001-07-27,1,1,1079128.0,Rachide,2001-07-27,rachide,1,dob+name,ok
 915262,Sandro Vidigal,2007-07-28,1,1,1006448.0,Sandro Vidigal,2007-07-28,sandro-vidigal,1,dob+name,ok
 915280,Tiago Ferreira,2007-01-12,2,2,1054148.0,Tiago Ferreira,2007-01-12,tiago-ferreira,2,dob+name,ok
-915311,Pedro Pereira,2003-02-28,1,0,,,,,0,,no_squad_fetched
+915311,Pedro Pereira,2003-02-28,1,1,1071164.0,Pedro Pereira,2003-02-28,pedro-pereira,1,dob+name,ok
 915312,F. Sanchez,1998-02-09,2,2,1071063.0,Freider Sanchez,1998-02-09,freider-sanchez,2,dob+name,ok
 915313,Bruno Figueiredo,1999-07-09,3,3,1065774.0,Bruno Figueiredo,1999-07-09,bruno-figueiredo,3,dob+name,ok
 915329,Nuno Machado,2000-04-23,2,2,1065775.0,Nuno Machado,2000-04-23,nuno-machado,2,dob+name,ok
 915337,António Maior,2002-01-20,1,1,,,,,0,,not_in_squad
-915348,Matheus Bova,1997-10-10,1,0,,,,,0,,no_squad_fetched
-915352,Pedro Rodrigues,1992-07-15,1,0,,,,,0,,no_squad_fetched
-915356,Williams Fadini,1999-12-13,1,0,,,,,0,,no_squad_fetched
+915348,Matheus Bova,1997-10-10,1,1,604910.0,Matheus Bova,1997-10-10,matheus-bova,1,dob+name,ok
+915352,Pedro Rodrigues,1992-07-15,1,1,1073230.0,Pedro Rodrigues,1992-07-15,pedro-rodrigues,1,dob+name,ok
+915356,Williams Fadini,1999-12-13,1,1,1073231.0,Willians Fadini,1999-12-13,willians-fadini,1,dob+name,ok
 915361,João Issenguele,1998-07-09,1,1,1064080.0,Jovani,1998-07-09,jovani,1,dob_name_differs,ok
-915364,Kaio Xavier,2003-03-20,1,0,,,,,0,,no_squad_fetched
-915365,Luisinho,1994-08-03,1,0,,,,,0,,no_squad_fetched
-915366,Afonso Fadigas,1997-08-16,1,0,,,,,0,,no_squad_fetched
+915364,Kaio Xavier,2003-03-20,1,1,1073236.0,Kaio Xavier,2003-03-20,kaio-xavier,1,dob+name,ok
+915365,Luisinho,1994-08-03,1,1,,,,,0,,not_in_squad
+915366,Afonso Fadigas,1997-08-16,1,1,1073234.0,Afonso Fadigas,1997-08-16,afonso-fadigas,1,dob+name,ok
 915368,Ivo Cláudio,2000-01-28,3,3,1064082.0,Ivo Cláudio,2000-01-28,ivo-claudio,3,dob+name,ok
 915378,Hugo Macedo,2001-01-16,1,1,1073227.0,Hugo Macedo,2001-01-16,hugo-macedo,1,dob+name,ok
-915379,Ricardo Ramos,1994-04-03,1,0,,,,,0,,no_squad_fetched
+915379,Ricardo Ramos,1994-04-03,1,1,,,,,0,,not_in_squad
 915389,Francisco Ganço,2004-02-23,1,1,1063248.0,Francisco Ganço,2004-02-23,francisco-ganco,1,dob+name,ok
 915390,Afonso Batista,2004-09-01,1,1,1063249.0,Afonso Batista,2004-09-01,afonso-batista,1,dob+name,ok
 915400,Donato Sabença,2004-11-24,1,1,1117378.0,Donato Sabença,2004-11-24,donato-sabenca,1,dob+name,ok
@@ -2902,12 +2902,12 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 946612,M. Manga,2004-05-10,3,3,1153568.0,Matar Manga,2004-05-10,matar-manga,3,dob+name,ok
 946623,G. Desembargador,2004-05-28,2,2,1061766.0,Guilherme Desembargador,2004-05-28,guilherme-desembargador,2,dob+name,ok
 948627,Brandão,2005-08-07,1,1,1159043.0,Brandão,2005-08-07,brandao,1,dob+name,ok
-949031,E. Ndow,2004-01-04,2,1,1159373.0,Ebrima Ndow,2004-01-04,ebrima-ndow,1,dob+name,ok
+949031,E. Ndow,2004-01-04,2,2,1159373.0,Ebrima Ndow,2004-01-04,ebrima-ndow,2,dob+name,ok
 950054,J. António,2004-10-23,1,1,1178910.0,Zé António,2004-10-23,ze-antonio,1,dob+name,ok
 950357,A. Soumare,2006-11-11,2,2,1429895.0,Abderrahmane Soumaré,2006-11-11,abderrahmane-soumare,2,dob+name,ok
 954635,Joaquim Rodrigues,2005-04-05,1,1,1159050.0,Quim Rodrigues,2005-04-05,quim-rodrigues,1,dob+name,ok
 957329,S. Iheanacho,2005-05-18,1,1,1171602.0,Stanley Iheanacho,2005-05-18,stanley-iheanacho,1,dob+name,ok
-958340,Baio da Silva,2004-04-09,2,1,1086838.0,Baio,2004-04-09,baio,1,dob+name,ok
+958340,Baio da Silva,2004-04-09,2,2,1086838.0,Baio,2004-04-09,baio,2,dob+name,ok
 958349,Danilson,2003-10-31,2,2,1065897.0,Danilson,2003-10-31,danilson,2,dob+name,ok
 958364,Simão Azevedo,2004-02-03,1,1,1163306.0,Simão,2004-02-03,simao,1,dob+name,ok
 958365,Gabriel Andrade,2004-04-26,1,1,1163307.0,Gabriel Andrade,2004-04-26,gabriel-andrade,1,dob+name,ok
@@ -2921,7 +2921,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 958427,J. Figueroa,2004-05-24,1,1,1163766.0,Juan Figueroa,2004-05-24,juan-figueroa,1,dob+name,ok
 958428,Miguel Bissula,2002-06-10,1,1,1163300.0,Miguel Bissula,2002-06-10,miguel-bissula,1,dob+name,ok
 958429,Rafael Carvalho,2004-08-11,1,1,1163302.0,Rafael Carvalho,2004-08-11,rafael-carvalho,1,dob+name,ok
-958430,Tomás Vilela,2004-03-16,2,1,1163309.0,Tomás Vilela,2004-03-16,tomas-vilela,1,dob+name,ok
+958430,Tomás Vilela,2004-03-16,2,2,1163309.0,Tomás Vilela,2004-03-16,tomas-vilela,2,dob+name,ok
 958435,Rodrigo Leite,2004-10-12,1,1,1163311.0,Rodrigo Leite,2004-10-12,rodrigo-leite,1,dob+name,ok
 958437,Silvério Indunga,2002-08-16,3,3,1163314.0,Silvério,2002-08-16,silverio,3,dob+name,ok
 958470,Sávio,2002-05-16,1,1,1113969.0,Sávio,2002-05-16,savio,1,dob+name,ok
@@ -3023,7 +3023,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 967623,J. Boss,1990-01-22,1,1,183247.0,João Patrão,1990-01-22,joao-patrao,1,dob+name,ok
 967644,Gonçalo Sá,2004-10-13,1,1,1322186.0,Gonçalo Sá,2004-10-13,goncalo-sa,1,dob+name,ok
 967648,André Guedes,2000-09-30,3,3,1190063.0,André Guedes,2000-09-30,andre-guedes,3,dob+name,ok
-967656,D. Ege Sen,2004-12-31,2,1,,,,,0,,not_in_squad
+967656,D. Ege Sen,2004-12-31,2,2,1456372.0,Deniz Sen,2004-12-31,deniz-sen,1,dob+name,ok
 967661,Vasco Pereira,2003-11-27,2,2,1183371.0,Vasco Pereira,2003-11-27,vasco-pereira,2,dob+name,ok
 967663,Miguel Nogueira,2005-02-27,2,2,1135545.0,Miguel Nogueira,2005-02-27,miguel-nogueira,2,dob+name,ok
 967669,Diogo Silva,2001-09-10,3,3,1183372.0,Diogo Silva,2001-09-10,diogo-silva,3,dob+name,ok
@@ -3057,7 +3057,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 968325,Julinho,1997-04-09,1,1,1076352.0,Julinho,1997-04-09,julinho,1,dob+name,ok
 968328,Rúben Santos,2002-07-17,2,2,1189000.0,Rúben Santos,2002-07-17,ruben-santos,2,dob+name,ok
 968336,Rodrigo Elias,2002-03-01,2,2,1071492.0,Rodrigo Elias,2002-03-01,rodrigo-elias,2,dob+name,ok
-968338,Jorzinho Miranda,2001-05-26,2,1,1189001.0,Jorzinho Miranda,2001-05-26,jorzinho-miranda,1,dob+name,ok
+968338,Jorzinho Miranda,2001-05-26,2,2,1189001.0,Jorzinho Miranda,2001-05-26,jorzinho-miranda,1,dob+name,ok
 968339,Nick Cruz,2000-07-20,1,1,1190316.0,Nick Cruz,2000-07-20,nick-cruz,1,dob+name,ok
 968341,Lionel Yombi,1994-02-05,1,1,708957.0,Lionel Yombi,1994-02-05,lionel-yombi,1,dob+name,ok
 968342,Adilson Baldé,2003-07-10,1,1,1035298.0,Adilson Baldé,2003-07-10,adilson-balde,1,dob+name,ok
@@ -3086,7 +3086,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 968390,Salvador Pendilhe,2003-10-21,1,1,1322510.0,Salvador Pendilhe,2003-10-21,salvador-pendilhe,1,dob+name,ok
 968399,Fabio Dieb,2003-10-08,1,1,,,,,0,,not_in_squad
 968403,Henrique Santos,1996-12-19,1,1,1065919.0,Henrique Santos,1996-12-19,henrique-santos,1,dob+name,ok
-968405,Bruno Pereira,2001-01-16,1,0,,,,,0,,no_squad_fetched
+968405,Bruno Pereira,2001-01-16,1,1,1184112.0,Bruno Pereira,2001-01-16,bruno-pereira,1,dob+name,ok
 968407,Manuel Esteves,2004-03-22,2,2,1067218.0,Manuel Esteves,2004-03-22,manuel-esteves,2,dob+name,ok
 968408,Diogo Santos,2005-02-07,1,1,1188574.0,Diogo Santos,2005-02-07,diogo-santos,1,dob+name,ok
 968420,M. Couto Lopes,2003-10-05,1,1,1187684.0,Jaca,2003-10-05,jaca,1,dob_name_differs,ok
@@ -3098,12 +3098,12 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 968430,Fábio Vieira,1994-03-23,1,1,,,,,0,,not_in_squad
 968433,Herivandro Banora,2001-07-05,1,1,1065918.0,Ivan Banora,2001-07-05,ivan-banora,1,dob+name,ok
 968434,Telmo Fonseca,2005-08-06,1,1,,,,,0,,not_in_squad
-968436,Auleocárcio,1998-07-10,1,0,,,,,0,,no_squad_fetched
-968437,J.  Fonseca,2000-11-04,2,1,,,,,0,,not_in_squad
+968436,Auleocárcio,1998-07-10,1,1,,,,,0,,not_in_squad
+968437,J.  Fonseca,2000-11-04,2,2,,,,,0,,not_in_squad
 968438,Pedro Ribeiro,1999-04-16,3,3,1187032.0,Pedro Ribeiro,1999-04-16,pedro-ribeiro,3,dob+name,ok
 968442,Francisco Zaragoza,2003-04-04,1,1,1188575.0,Francisco Zaragoza,2003-04-04,francisco-zaragoza,1,dob+name,ok
 968445,J. Mendes,2001-07-22,1,1,1065929.0,Charles,2001-07-22,charles,1,dob_name_differs,ok
-968453,Diego Prates,1997-05-14,1,0,,,,,0,,no_squad_fetched
+968453,Diego Prates,1997-05-14,1,1,1184108.0,Diego Prates,1997-05-14,diego-prates,1,dob+name,ok
 968454,Quim Zé,1998-05-09,2,2,1065928.0,Quim Zé,1998-05-09,quim-ze,2,dob+name,ok
 968456,Hélio Ocante,1995-10-06,1,1,1189753.0,Hélio Ocante,1995-10-06,helio-ocante,1,dob+name,ok
 968457,Rafael Possidonio,2004-08-26,1,1,1189719.0,Rafael Possidónio,2004-08-26,rafael-possidonio,1,dob+name,ok
@@ -3116,11 +3116,11 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 968476,Daniel Araújo,2004-06-04,1,1,1033918.0,Daniel Araújo,2004-06-04,daniel-araujo,1,dob+name,ok
 968479,Hugo Machado,2004-04-30,1,1,1188998.0,Hugo Machado Jr.,2004-04-30,hugo-machado-jr-,1,dob+name,ok
 968483,João Tomás,2000-11-18,1,1,1189716.0,João Tomás,2000-11-18,joao-tomas,1,dob+name,ok
-968487,Brayan Vera,2003-07-17,1,0,,,,,0,,no_squad_fetched
+968487,Brayan Vera,2003-07-17,1,1,1184110.0,Brayan Vera,2003-07-17,brayan-vera,1,dob+name,ok
 968489,Gonçalo Mendes,2003-04-21,1,1,1067223.0,Gonçalo Mendes,2003-04-21,goncalo-mendes,1,dob+name,ok
-968491,Tomas Mendes,2002-03-19,1,0,,,,,0,,no_squad_fetched
+968491,Tomas Mendes,2002-03-19,1,1,1184109.0,Tomás Mendes,2002-03-19,tomas-mendes,1,dob+name,ok
 968500,Russel Sandio,1999-08-01,3,3,609393.0,Russel Sandio,1999-08-01,russel-sandio,3,dob+name,ok
-968501,Marco Andrade,1996-02-27,1,0,,,,,0,,no_squad_fetched
+968501,Marco Andrade,1996-02-27,1,1,1184111.0,Marco Andrade,1996-02-27,marco-andrade,1,dob+name,ok
 968502,Eduardo Barradas,2004-12-23,2,2,1189717.0,Edu Barradas,2004-12-23,edu-barradas,2,dob+name,ok
 968505,Eduardo Ferreira,2001-10-09,1,1,,,,,0,,not_in_squad
 968512,António Pinheiro,1993-06-10,1,1,,,,,0,,not_in_squad
@@ -3200,7 +3200,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1011142,V. Kurylchyk,2001-03-05,1,1,866278.0,Vitaliy Kurylchyk,2001-03-05,vitaliy-kurylchyk,1,dob+name,ok
 1011153,S. Renteria,2004-05-13,1,1,,,,,0,,not_in_squad
 1011155,Tomás Franco,2004-02-08,1,1,,,,,0,,not_in_squad
-1011162,Lucas Pinto,2004-04-27,3,2,1189364.0,Lucas Pinto,2004-04-27,lucas-pinto,2,dob+name,ok
+1011162,Lucas Pinto,2004-04-27,3,3,1189364.0,Lucas Pinto,2004-04-27,lucas-pinto,3,dob+name,ok
 1011167,Rica Simões,2001-07-11,2,2,958112.0,Rica Simões,2001-07-11,rica-simoes,2,dob+name,ok
 1011212,Ruben Melo,1999-04-21,1,1,879018.0,Rúben Melo,1999-04-21,ruben-melo,1,dob+name,ok
 1011489,Rodrigo Pereira,2004-01-03,1,1,1193690.0,Rodrigo Pereira,2004-01-03,rodrigo-pereira,1,dob+name,ok
@@ -3255,9 +3255,9 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1029016,Salvador Blopa,2007-06-13,1,1,1294105.0,Salvador Blopa,2007-06-13,salvador-blopa,1,dob+name,ok
 1030235,Valter Monteiro,2005-11-08,1,1,1146096.0,Valter Monteiro,2005-11-08,valter-monteiro,1,dob+name,ok
 1030323,Rhonan Lima,2005-03-09,1,1,,,,,0,,not_in_squad
-1030486,R. Mendes Correia,2004-01-22,2,1,1196433.0,Rodrigo Correia,2004-01-22,rodrigo-correia,1,dob+name,ok
-1030490,A. Gomes Duarte,1994-12-12,1,0,,,,,0,,no_squad_fetched
-1030572,W. Tavares,2002-02-12,1,0,,,,,0,,no_squad_fetched
+1030486,R. Mendes Correia,2004-01-22,2,2,1196433.0,Rodrigo Correia,2004-01-22,rodrigo-correia,2,dob+name,ok
+1030490,A. Gomes Duarte,1994-12-12,1,1,1196427.0,Ailton Duarte,1994-12-12,ailton-duarte,1,dob+name,ok
+1030572,W. Tavares,2002-02-12,1,1,1207608.0,Wilson Tavares,2002-02-12,wilson-tavares,1,dob+name,ok
 1033228,Diogo Rodrigues,2005-01-11,1,1,,,,,0,,not_in_squad
 1033242,Tomás Coelho,2005-06-01,2,2,1416914.0,Tomás Coelho,2005-06-01,tomas-coelho,1,dob+name,ok
 1033243,Dinis  Duarte,2004-05-29,1,1,,,,,0,,not_in_squad
@@ -3265,7 +3265,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1033640,Diogo Verissimo,2005-05-06,1,1,,,,,0,,not_in_squad
 1033641,Rúben Mendes,2006-02-25,1,1,,,,,0,,not_in_squad
 1034598,D. Ferreira da Silva,1996-10-03,1,1,,,,,0,,not_in_squad
-1034681,William Júnior,1999-05-28,1,0,,,,,0,,no_squad_fetched
+1034681,William Júnior,1999-05-28,1,1,,,,,0,,not_in_squad
 1035379,David Santos,2004-02-04,1,1,1214182.0,David Santos,2004-02-04,david-santos,1,dob+name,ok
 1035510,D. Barbosa,2001-06-13,1,1,,,,,0,,not_in_squad
 1035575,Luary Figueiredo,2005-07-02,1,1,,,,,0,,not_in_squad
@@ -3277,7 +3277,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1037185,Gustavo Almeida,2004-08-11,1,1,1223073.0,Gustavo Almeida,2004-08-11,gustavo-almeida,1,dob+name,ok
 1037197,Kauan,2005-04-26,2,2,1223074.0,Kauan,2005-04-26,kauan,2,dob+name,ok
 1038037,Fernando Silva,2005-12-05,1,1,1222439.0,Fernando Azevedo,2005-12-05,fernando-azevedo,1,dob+name,ok
-1038651,Diogo Almeida,2006-08-09,1,0,,,,,0,,no_squad_fetched
+1038651,Diogo Almeida,2006-08-09,1,1,1315625.0,Diogo Almeida,2006-08-09,diogo-almeida,1,dob+name,ok
 1038654,André Motta,2006-02-27,1,1,1441017.0,André Motta,2006-02-27,andre-motta,1,dob+name,ok
 1038663,Guilherme Palminha,2006-03-06,1,1,1013777.0,Guilherme Palminha,2006-03-06,guilherme-palminha,1,dob+name,ok
 1038670,Gabriel Costa,2006-11-14,1,1,1333520.0,Gabriel Costa,2006-11-14,gabriel-costa,1,dob+name,ok
@@ -3301,7 +3301,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1038779,Luís Coelho,2005-03-21,1,1,1304151.0,Luís Coelho,2005-03-21,luis-coelho,1,dob+name,ok
 1038781,Luís Pereira,2006-05-29,1,1,,,,,0,,not_in_squad
 1038816,Pedro Pinto,2005-02-28,1,1,1292846.0,Pedro Pinto,2005-02-28,pedro-pinto,1,dob+name,ok
-1038834,Henrique Coelho,2005-06-22,1,0,,,,,0,,no_squad_fetched
+1038834,Henrique Coelho,2005-06-22,1,1,1487464.0,Henrique Coelho,2005-06-22,henrique-coelho,1,dob+name,ok
 1038838,Pedro Cauã,2005-06-14,1,1,1173171.0,Pedro Cauã Gomes,2005-06-14,pedro-caua-gomes,1,dob+name,ok
 1038869,Dinis Almeida,2005-09-21,2,2,1322534.0,Dinis Almeida,2005-09-21,dinis-almeida,2,dob+name,ok
 1038879,David Matthew,2005-09-17,1,1,1314687.0,David Mateus,2005-09-17,david-mateus,1,dob+name,ok
@@ -3343,17 +3343,17 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1039198,Guilherme Santos,2005-10-26,1,0,,,,,0,,no_squad_fetched
 1039210,Rodrigo Catraio,2005-06-04,1,1,1457605.0,Rodrigo Catraio,2005-06-04,rodrigo-catraio,1,dob+name,ok
 1039211,Chadai,2005-07-06,2,2,1298270.0,Chadai,2005-07-06,chadai,2,dob+name,ok
-1039216,Rodrigo Cardoso,2006-02-27,1,0,,,,,0,,no_squad_fetched
+1039216,Rodrigo Cardoso,2006-02-27,1,1,1456370.0,Rodrigo Cardoso,2006-02-27,rodrigo-cardoso,1,dob+name,ok
 1039231,Ivo Almeida,2005-01-28,1,1,1294082.0,Ivo Almeida,2005-01-28,ivo-almeida,1,dob+name,ok
 1039236,Duarte Carreira,2005-04-15,1,1,1160113.0,Duarte Carreira,2005-04-15,duarte-carreira,1,dob+name,ok
 1039243,Afonso Sousa,2008-03-19,2,2,1452580.0,Afonso Sousa,2008-03-19,afonso-sousa,2,dob+name,ok
 1039249,Guilherme Vasconcelos,2007-07-16,1,1,1455222.0,Guilherme Vasconcelos,2007-07-16,guilherme-vasconcelos,1,dob+name,ok
 1039281,José Bolivar,2005-08-26,1,1,1282881.0,José Bolivar,2005-08-26,jose-bolivar,1,dob+name,ok
-1039295,Lucas Dias,2005-04-06,1,0,,,,,0,,no_squad_fetched
+1039295,Lucas Dias,2005-04-06,1,1,1094403.0,Lucas Dias,2005-04-06,lucas-dias,1,dob+name,ok
 1039300,Santiago Silva,2008-05-05,2,2,1093061.0,Santi Verdi,2008-05-05,santi-verdi,2,dob+name,ok
 1039302,Zeega,2008-11-05,2,2,1199783.0,Zeega,2008-11-05,zeega,2,dob+name,ok
 1039341,Tiago Serrazina,2006-05-19,1,1,1294229.0,Tiago Serrazina,2006-05-19,tiago-serrazina,1,dob+name,ok
-1039356,Mateus Santos,2005-01-06,1,0,,,,,0,,no_squad_fetched
+1039356,Mateus Santos,2005-01-06,1,1,,,,,0,,not_in_squad
 1039358,Afonso Costa,2007-01-24,3,3,1083391.0,Costinha,2007-01-24,costinha,3,dob_name_differs,ok
 1039361,Artur Barros,2005-02-22,1,1,1271536.0,Artur Barros,2005-02-22,artur-barros,1,dob+name,ok
 1039460,Fábio Sambú,2007-09-06,1,1,,,,,0,,not_in_squad
@@ -3366,7 +3366,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1039650,João Vitor,2005-02-03,1,1,1141296.0,João Vítor,2005-02-03,joao-vitor,1,dob+name,ok
 1039655,Zidane Lima,2005-11-18,1,1,1528713.0,Zidane Lima,2005-11-18,zidane-lima,1,dob+name,ok
 1039680,Miguel Faneco,2006-06-17,1,1,1348218.0,Faneco,2006-06-17,faneco,1,dob+name,ok
-1039718,Guilherme Santos,2007-05-15,1,0,,,,,0,,no_squad_fetched
+1039718,Guilherme Santos,2007-05-15,1,1,1521605.0,Guilherme Santos,2007-05-15,guilherme-santos,1,dob+name,ok
 1039745,Diogo Varela,2007-03-01,1,1,1497679.0,Diogo Varela,2007-03-01,diogo-varela,1,dob+name,ok
 1039755,Rodrigo Gomes,2007-10-15,1,1,1307488.0,Rodrigo Gomes,2007-10-15,rodrigo-gomes,1,dob+name,ok
 1039763,Santiago Serra,2007-01-23,1,1,1293133.0,Santiago Serra,2007-01-23,santiago-serra,1,dob+name,ok
@@ -3379,20 +3379,20 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1039956,Antonio Sousa,2007-04-08,1,1,1501916.0,António Sousa,2007-04-08,antonio-sousa,1,dob+name,ok
 1039984,Guilherme Pinheiro,2006-06-18,1,1,1094298.0,Guilherme Pinheiro,2006-06-18,guilherme-pinheiro,1,dob+name,ok
 1040000,Guilherme Candeias,2005-11-03,1,1,1292741.0,Guilherme Candeias,2005-11-03,guilherme-candeias,1,dob+name,ok
-1040019,Guilherme Roma,2005-01-31,1,0,,,,,0,,no_squad_fetched
+1040019,Guilherme Roma,2005-01-31,1,1,1456375.0,Roma,2005-01-31,roma,1,dob+name,ok
 1040028,Zito Gomes,2007-04-25,1,1,1480397.0,Zito Gomes,2007-04-25,zito-gomes,1,dob+name,ok
 1040051,L. Paradela,2005-04-08,1,1,1452302.0,Louca Paradela,2005-04-08,louca-paradela,1,dob+name,ok
 1040061,Afonso Castanheira,2006-11-14,1,1,1436059.0,Afonso Castanheira,2006-11-14,afonso-castanheira,1,dob+name,ok
-1040066,Martim Freitas,2005-12-19,1,0,,,,,0,,no_squad_fetched
+1040066,Martim Freitas,2005-12-19,1,1,1290067.0,Martim Freitas,2005-12-19,martim-freitas,1,dob+name,ok
 1040070,Hélder Fernandes,2006-06-08,1,1,1277852.0,Samuca,2006-06-08,samuca,1,dob_name_differs,ok
 1040095,João Macedo,2005-01-20,1,1,1220587.0,João Macedo,2005-01-20,joao-macedo,1,dob+name,ok
 1040097,B. Diallo,2004-05-13,1,1,1151884.0,Brahima Diallo,2004-05-13,brahima-diallo,1,dob+name,ok
 1040525,Gonçalo Cunha,2005-12-20,1,1,,,,,0,,not_in_squad
 1040534,Filipe Fuaba,2003-09-02,1,1,,,,,0,,not_in_squad
-1040535,Gabri Sanches,1999-07-30,2,1,,,,,0,,not_in_squad
+1040535,Gabri Sanches,1999-07-30,2,2,1457167.0,Gabri Sanches,1999-07-30,gabri-sanches,1,dob+name,ok
 1040568,Diogo Vieira,2007-02-19,1,1,1475786.0,Vieirinha,2007-02-19,vieirinha,1,dob_name_differs,ok
 1040628,Danio Djassi,2006-09-21,1,1,,,,,0,,not_in_squad
-1040682,Martim Frutuoso,2005-06-03,1,0,,,,,0,,no_squad_fetched
+1040682,Martim Frutuoso,2005-06-03,1,1,1456377.0,Martim Frutuoso,2005-06-03,martim-frutuoso,1,dob+name,ok
 1040839,,,1,1,,,,,0,,not_in_squad
 1040845,N. dos Santos,2002-02-12,2,2,993553.0,Noah Santos,2002-02-12,noah-santos,2,dob+name,ok
 1040897,Simão Fernandes,2006-06-12,1,1,,,,,0,,not_in_squad
@@ -3492,7 +3492,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1094609,L. Neves,2006-07-03,1,1,1315109.0,Leo Marra,2006-07-03,leo-marra,1,dob+name,ok
 1094611,L. Silva,2006-07-19,1,1,1455799.0,Leonardo Silva,2006-07-19,leonardo-silva,1,dob+name,ok
 1094783,Davi Oliveira,2006-05-20,1,1,1461939.0,Davi Oliveira,2006-05-20,davi-oliveira,1,dob+name,ok
-1095059,Filipe Vieira,2006-05-21,1,0,,,,,0,,no_squad_fetched
+1095059,Filipe Vieira,2006-05-21,1,1,1294212.0,Filipe Otávio,2006-05-21,filipe-otavio,1,dob+name,ok
 1095351,Francisco Silva,2008-07-14,2,2,1546261.0,Francisco Silva,2008-07-14,francisco-silva,2,dob+name,ok
 1095504,I. Vulpe,2008-08-12,1,1,1552646.0,Ianis Vulpe,2008-08-12,ianis-vulpe,1,dob+name,ok
 1095978,Gustavo Vicente,2008-04-18,1,1,1490992.0,Gustavo Vicente,2008-04-18,gustavo-vicente,1,dob+name,ok
@@ -3551,10 +3551,10 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1099135,J. Simões,2003-10-29,1,1,1455145.0,João Simões,2003-10-29,joao-simoes,1,dob+name,ok
 1099138,D. Pereira Nunes,2002-11-16,2,2,1315513.0,Diogo Nunes,2002-11-16,diogo-nunes,2,dob+name,ok
 1099140,D. Teixeira,2004-06-12,2,2,1314854.0,Diogo Teixeira,2004-06-12,diogo-teixeira,2,dob+name,ok
-1099141,D. Ribeiro,2005-02-04,2,1,1160107.0,Diamantino Jr.,2005-02-04,diamantino-jr-,1,dob+name,ok
+1099141,D. Ribeiro,2005-02-04,2,2,1160107.0,Diamantino Jr.,2005-02-04,diamantino-jr-,2,dob+name,ok
 1099145,S. Ferreira Nogueira,1994-10-26,1,1,1312896.0,Serginho,1994-10-26,serginho,1,dob_name_differs,ok
 1099146,C. Mendes Fernandes,1999-11-29,1,1,1315520.0,Carlitos,1999-11-29,carlitos,1,dob_name_differs,ok
-1099180,A. Conceição Cotel,2000-10-21,1,0,,,,,0,,no_squad_fetched
+1099180,A. Conceição Cotel,2000-10-21,1,1,1313889.0,Adalberto Cotel,2000-10-21,adalberto-cotel,1,dob+name,ok
 1099182,R. Diogo,2001-01-16,1,1,1322112.0,Rodrigo Diogo,2001-01-16,rodrigo-diogo,1,dob+name,ok
 1099185,B. Amaral Navarro Marques,2007-06-28,1,1,1418393.0,Benny,2007-06-28,benny,1,dob_name_differs,ok
 1099208,M. Quinaz,2004-06-19,2,2,1322110.0,Martim Quinaz,2004-06-19,martim-quinaz,2,dob+name,ok
@@ -3578,7 +3578,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1132288,S. Diatara,2004-01-17,2,2,1312719.0,Samba Diatara,2004-01-17,samba-diatara,2,dob+name,ok
 1132619,David Miranda,2005-06-14,1,1,1316729.0,Deivid,2005-06-14,deivid,1,dob+name,ok
 1137457,João Silva,2009-12-03,1,1,1355068.0,JP Silva,2009-12-03,jp-silva,1,dob+name,ok
-1139043,E. Panelatti,2008-04-02,1,0,,,,,0,,no_squad_fetched
+1139043,E. Panelatti,2008-04-02,1,1,1516217.0,Ezio Panelatti,2008-04-02,ezio-panelatti,1,dob+name,ok
 1142997,V. Mambwe Ushindi Elonga,2003-01-15,1,1,1298193.0,Ushindi,2003-01-15,ushindi,1,dob+name,ok
 1143363,J. Junior,,1,1,,,,,0,,not_in_squad
 1143740,J. Silva,,1,1,,,,,0,,not_in_squad
@@ -3597,7 +3597,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1161745,H. Valladão,2003-12-21,1,1,1194001.0,Hugo Velloso,2003-12-21,hugo-velloso,1,dob+name,ok
 1162406,J. Kuange Makala,2005-09-09,1,1,1198572.0,Jordi Kuange,2005-09-09,jordi-kuange,1,dob+name,ok
 1165915,E. Vintoniv,2006-02-13,1,1,1452636.0,Eduardo Vintoniv,2006-02-13,eduardo-vintoniv,1,dob+name,ok
-1165916,V. Prysyazhnyuk,,1,1,1405039.0,Vladyslav Prysyazhnyuk,2006-03-12,vladyslav-prysyazhnyuk,1,name_only,review
+1165916,V. Prysyazhnyuk,,1,1,1405039.0,Vladyslav Prysyazhnyuk,2006-03-12,vladyslav-prysyazhnyuk,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 1 ours, 1 Transfermarkt",ok
 1167926,M. xx,,1,1,,,,,0,,not_in_squad
 1168008,J. Daniel,,1,1,,,,,0,,not_in_squad
 1168085,S. Lio,2000-04-20,2,2,1210261.0,Shuta Io,2000-04-20,shuta-io,2,dob+name,ok
@@ -3686,21 +3686,21 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1218289,C. Nogueira Pereira,2007-09-13,1,1,1457520.0,Carlos,2007-09-13,carlos,1,dob+name,ok
 1218298,R. Morais,2007-09-02,1,1,1457519.0,Morais,2007-09-02,morais,1,dob+name,ok
 1218299,John Duarte,2008-03-20,1,1,1457528.0,João Tomás,2008-03-20,joao-tomas,1,dob_name_differs,ok
-1218303,Miguel Salvador,2007-02-13,1,0,,,,,0,,no_squad_fetched
+1218303,Miguel Salvador,2007-02-13,1,1,1480453.0,Miguel Salvador,2007-02-13,miguel-salvador,1,dob+name,ok
 1218304,G. Paixao,2001-04-28,1,1,1457700.0,Gabriel Paixão,2001-04-28,gabriel-paixao,1,dob+name,ok
-1218308,D. Rodrigues Santos,2004-02-10,1,0,,,,,0,,no_squad_fetched
+1218308,D. Rodrigues Santos,2004-02-10,1,1,1476117.0,Duarte Santos,2004-02-10,duarte-santos,1,dob+name,ok
 1218309,T. Pinto Alves,2004-08-05,1,1,1453071.0,Tomás Alves,2004-08-05,tomas-alves,1,dob+name,ok
-1218315,Andre Nunes,2004-06-03,1,0,,,,,0,,no_squad_fetched
-1218316,Miguel Granada,2005-05-18,1,0,,,,,0,,no_squad_fetched
-1218318,Diogo Moreira,2000-07-26,1,0,,,,,0,,no_squad_fetched
-1218320,Frederico Fernandes,1997-09-18,1,0,,,,,0,,no_squad_fetched
-1218322,Goncalo Macieira,2004-06-07,1,0,,,,,0,,no_squad_fetched
+1218315,Andre Nunes,2004-06-03,1,1,1456371.0,Dedé,2004-06-03,dede,1,dob_name_differs,ok
+1218316,Miguel Granada,2005-05-18,1,1,1456380.0,Granada,2005-05-18,granada,1,dob+name,ok
+1218318,Diogo Moreira,2000-07-26,1,1,816054.0,Diogo Moreira,2000-07-26,diogo-moreira,1,dob+name,ok
+1218320,Frederico Fernandes,1997-09-18,1,1,1456373.0,Fred,1997-09-18,fred,1,dob_name_differs,ok
+1218322,Goncalo Macieira,2004-06-07,1,1,1456374.0,Gonçalo Macieira,2004-06-07,goncalo-macieira,1,dob+name,ok
 1218323,V. Neto,2002-04-11,1,1,1325778.0,Vilson,2002-04-11,vilson,1,dob+name,ok
-1218324,Rodrigo Fradique,2005-05-09,1,0,,,,,0,,no_squad_fetched
+1218324,Rodrigo Fradique,2005-05-09,1,1,1456369.0,Fradique,2005-05-09,fradique,1,dob+name,ok
 1218326,V. Amaral Soares,2003-09-16,1,1,1075305.0,Vasco Dimas,2003-09-16,vasco-dimas,1,dob+name,ok
 1218327,Ilunga Kitoko,2004-02-21,1,1,1455936.0,Ilunga Kitoko,2004-02-21,ilunga-kitoko,1,dob+name,ok
 1218329,S. Botelho Soares,2006-08-19,1,1,,,,,0,,not_in_squad
-1218331,Mathew Okoro,2001-01-28,1,0,,,,,0,,no_squad_fetched
+1218331,Mathew Okoro,2001-01-28,1,1,1456378.0,Mathew Okoro,2001-01-28,mathew-okoro,1,dob+name,ok
 1218335,M. Madaleno Silla,2004-03-17,1,1,1452697.0,Miguel Madaleno,2004-03-17,miguel-madaleno,1,dob+name,ok
 1218337,Bruno Amorim,1999-05-17,1,1,1455176.0,Bruno Amorim,1999-05-17,bruno-amorim,1,dob+name,ok
 1218339,L. Vladimir Matias Samaina,2005-05-23,1,1,,,,,0,,not_in_squad
@@ -3719,33 +3719,33 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1218425,M. Pinto Lopes,2003-08-14,1,1,,,,,0,,not_in_squad
 1218462,João Cruz,2004-06-24,2,2,1315244.0,João Cruz,2004-06-24,joao-cruz,2,dob+name,ok
 1218474,Tiago Santos,2004-09-24,1,1,,,,,0,,not_in_squad
-1218490,R. Carvalho,2004-09-02,1,0,,,,,0,,no_squad_fetched
+1218490,R. Carvalho,2004-09-02,1,1,1463561.0,Rodrigo Carvalho,2004-09-02,rodrigo-carvalho,1,dob+name,ok
 1218491,Rodrigo Cavalinhos,2005-10-27,1,1,1457389.0,Rodrigo Cavalinhos,2005-10-27,rodrigo-cavalinhos,1,dob+name,ok
-1218495,T. Reis,2004-06-21,1,0,,,,,0,,no_squad_fetched
+1218495,T. Reis,2004-06-21,1,1,1463563.0,Tiago Reis,2004-06-21,tiago-reis,1,dob+name,ok
 1218498,Bernardo Chorinha,2001-10-01,1,1,1063780.0,Bernardo Chorinha,2001-10-01,bernardo-chorinha,1,dob+name,ok
-1218500,G. Correia,2000-01-05,1,0,,,,,0,,no_squad_fetched
+1218500,G. Correia,2000-01-05,1,1,1455519.0,Gonçalo Correia,2000-01-05,goncalo-correia,1,dob+name,ok
 1218501,R. Delgado,2001-03-23,1,1,1459791.0,Rodrigo Delgado,2001-03-23,rodrigo-delgado,1,dob+name,ok
-1218504,R.  Carreira,2004-05-04,1,0,,,,,0,,no_squad_fetched
+1218504,R.  Carreira,2004-05-04,1,1,1463559.0,Rodrigo Carreira,2004-05-04,rodrigo-carreira,1,dob+name,ok
 1218505,R. Lopes's,2002-08-25,1,1,1455074.0,Rivaldo,2002-08-25,rivaldo,1,dob+name,ok
-1218506,V. Barros,2006-12-25,1,0,,,,,0,,no_squad_fetched
+1218506,V. Barros,2006-12-25,1,1,1468909.0,Valter Barros,2006-12-25,valter-barros,1,dob+name,ok
 1218507,G. Tobias,2001-03-23,1,1,1458487.0,Gabriel Tobias,2001-03-23,gabriel-tobias,1,dob+name,ok
-1218509,L. Oliveira,2001-09-13,1,0,,,,,0,,no_squad_fetched
+1218509,L. Oliveira,2001-09-13,1,1,1390537.0,Lukas Oliveira,2001-09-13,lukas-oliveira,1,dob+name,ok
 1218510,A. Omrani,2006-03-24,1,1,1458044.0,Alessio Omrani,2006-03-24,alessio-omrani,1,dob+name,ok
-1218512,R. Silva,2003-07-20,1,0,,,,,0,,no_squad_fetched
-1218513,I. Dragnev,2003-10-21,1,0,,,,,0,,no_squad_fetched
+1218512,R. Silva,2003-07-20,1,1,1463564.0,Rodrigo Silva,2003-07-20,rodrigo-silva,1,dob+name,ok
+1218513,I. Dragnev,2003-10-21,1,1,1218075.0,Ione Dragnev,2003-10-21,ione-dragnev,1,dob+name,ok
 1218514,P. Gaspar Ruivo,1999-09-25,1,1,1314389.0,Mantorras,1999-09-25,mantorras,1,dob_name_differs,ok
-1218516,R. Gonçalves,2003-07-11,1,0,,,,,0,,no_squad_fetched
-1218519,M. Costa,2003-11-28,1,0,,,,,0,,no_squad_fetched
-1218520,A. Dabó,2000-02-07,1,0,,,,,0,,no_squad_fetched
+1218516,R. Gonçalves,2003-07-11,1,1,1463566.0,Rodrigo Gonçalves,2003-07-11,rodrigo-goncalves,1,dob+name,ok
+1218519,M. Costa,2003-11-28,1,1,1455526.0,Miguel Costa,2003-11-28,miguel-costa,1,dob+name,ok
+1218520,A. Dabó,2000-02-07,1,1,1166855.0,Abulai Dabó,2000-02-07,abulai-dabo,1,dob+name,ok
 1218522,M. Ryskal,2006-10-31,1,1,1458047.0,Máximo Ryskal,2006-10-31,maximo-ryskal,1,dob+name,ok
 1218526,R. Sousa Santos,2005-01-05,1,1,1458046.0,Rafael Santos,2005-01-05,rafael-santos,1,dob+name,ok
 1218529,Rodrigo Antunes,2004-01-23,1,1,1315230.0,Rodrigo Antunes,2004-01-23,rodrigo-antunes,1,dob+name,ok
-1218537,E. James Frazier,,1,1,1476330.0,Ethan Frazier,2005-03-16,ethan-frazier,1,name_only,review
-1218540,A. Loja,2005-09-15,1,0,,,,,0,,no_squad_fetched
+1218537,E. James Frazier,,1,1,1476330.0,Ethan Frazier,2005-03-16,ethan-frazier,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 17 ours, 17 Transfermarkt",ok
+1218540,A. Loja,2005-09-15,1,1,,,,,0,,not_in_squad
 1218543,David Ribeiro,2000-03-04,1,1,1315234.0,David Ribeiro,2000-03-04,david-ribeiro,1,dob+name,ok
 1218544,João Farrajota,2006-05-04,1,1,1323539.0,João Farrajota,2006-05-04,joao-farrajota,1,dob+name,ok
 1218546,Rodrigo Estrela,2006-10-04,1,1,1456220.0,Rodrigo Estrela,2006-10-04,rodrigo-estrela,1,dob+name,ok
-1218547,D. Cabral,2000-07-02,1,0,,,,,0,,no_squad_fetched
+1218547,D. Cabral,2000-07-02,1,1,,,,,0,,not_in_squad
 1218549,D. Gameiro,1998-09-11,1,1,1314435.0,Diogo Gameiro,1998-09-11,diogo-gameiro,1,dob+name,ok
 1218597,Mateus Santos,2009-10-16,1,1,1540454.0,Mateus Santos,2009-10-16,mateus-santos,1,dob+name,ok
 1218605,V. Brandão da Silva,1996-06-15,1,1,1454803.0,Vinícius Brandão,1996-06-15,vinicius-brandao,1,dob+name,ok
@@ -3756,7 +3756,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1218612,E. Segun Alao,2004-05-16,2,2,1456221.0,Elijah Alao,2004-05-16,elijah-alao,1,dob+name,ok
 1218613,Welson Lopes,2000-04-08,1,1,1452221.0,Dinho,2000-04-08,dinho,1,dob_name_differs,ok
 1218616,D. Ventura Pires,2007-01-04,1,1,1454849.0,Dany Pires,2007-01-04,dany-pires,1,dob+name,ok
-1218630,Martim Dias,2004-07-26,1,0,,,,,0,,no_squad_fetched
+1218630,Martim Dias,2004-07-26,1,1,1457168.0,Martim Dias,2004-07-26,martim-dias,1,dob+name,ok
 1218633,Cristiano Quaresma,2005-08-04,1,1,1452270.0,Cristiano Quaresma,2005-08-04,cristiano-quaresma,1,dob+name,ok
 1218635,L. Santos,2002-08-08,1,1,1452216.0,Luciano Santos,2002-08-08,luciano-santos,1,dob+name,ok
 1218652,Wilson Castro,2002-05-21,1,1,1427100.0,Wilson Castro,2002-05-21,wilson-castro,1,dob+name,ok
@@ -3780,15 +3780,15 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1221144,J. Simon,,1,1,,,,,0,,not_in_squad
 1221145,A. Barros,2003-02-07,1,1,1452528.0,António Barros,2003-02-07,antonio-barros,1,dob+name,ok
 1221150,I. Santos,2005-03-28,1,1,1457388.0,Ivaldino Santos,2005-03-28,ivaldino-santos,1,dob+name,ok
-1221184,A. Gomes,,1,1,1323756.0,André Gomes,2005-08-28,andre-gomes,1,name_only,review
+1221184,A. Gomes,,1,1,1323756.0,André Gomes,2005-08-28,andre-gomes,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 2 ours, 2 Transfermarkt",ok
 1221218,H. Abreu,2006-01-25,1,1,1454793.0,Hugo Abreu,2006-01-25,hugo-abreu,1,dob+name,ok
 1221221,P. Pinto,1998-11-25,1,1,1453216.0,Pinto,1998-11-25,pinto,1,dob+name,ok
-1221222,J. Pereira,,1,1,641035.0,João Pereira,2005-04-20,joao-pereira,1,name_only,review
+1221222,J. Pereira,,1,1,641035.0,João Pereira,2005-04-20,joao-pereira,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 16 ours, 20 Transfermarkt",ok
 1221558,R. Vicente,2004-05-21,1,1,1457602.0,Rodrigo Vicente,2004-05-21,rodrigo-vicente,1,dob+name,ok
 1221584,Francisco Morais,2004-11-11,1,1,1326281.0,Deco,2004-11-11,deco,1,dob_name_differs,ok
 1221595,Diogo Gomes,2005-09-08,1,1,1457604.0,Diogo Gomes,2005-09-08,diogo-gomes,1,dob+name,ok
 1221603,Rodrigo Samarra,2006-05-12,1,1,1344602.0,Rodrigo Samarra,2006-05-12,rodrigo-samarra,1,dob+name,ok
-1221814,A. Sousa,,1,1,297852.0,André Sousa,1987-01-01,andre-sousa,1,name_only,review
+1221814,A. Sousa,,1,1,297852.0,André Sousa,1987-01-01,andre-sousa,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 24 ours, 25 Transfermarkt",ok
 1221816,M. Goncalves,2006-09-19,1,1,1458489.0,Martim Gonçalves,2006-09-19,martim-goncalves,1,dob+name,ok
 1221821,G. Monteiro,,1,1,,,,,0,,not_in_squad
 1221962,E. Jesus Cruz Vincent,1994-11-05,1,1,1323737.0,Manú Vincent,1994-11-05,manu-vincent,1,dob+name,ok
@@ -3799,18 +3799,18 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1221988,A. Pedro Rodrigues Alcaravela Matos,2008-06-03,1,1,1455077.0,Tópê,2008-06-03,tope,1,dob_name_differs,ok
 1221993,G. Alexandre Gonçalves Martins,2007-06-18,1,1,1323513.0,Guilherme Martins,2007-06-18,guilherme-martins,1,dob+name,ok
 1222217,Edmilson Nakhaliam,2000-10-22,1,1,1124153.0,Edmilson Nakhaliam,2000-10-22,edmilson-nakhaliam,1,dob+name,ok
-1222311,G. Loureiro,,1,1,1453837.0,Gonçalo Loureiro,2000-01-31,goncalo-loureiro,1,name_only,review
+1222311,G. Loureiro,,1,1,1453837.0,Gonçalo Loureiro,2000-01-31,goncalo-loureiro,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 26 ours, 26 Transfermarkt",ok
 1222410,Pedro Nóbrega,2005-06-29,1,1,1452530.0,Pedro Nóbrega,2005-06-29,pedro-nobrega,1,dob+name,ok
 1227482,P. Nunes Souza,2006-04-05,1,1,1452642.0,Pedro Souza,2006-04-05,pedro-souza,1,dob+name,ok
 1227590,D. Freitas,2005-12-10,1,1,1454317.0,Daniel Freitas,2005-12-10,daniel-freitas,1,dob+name,ok
-1227793,C. Bacalhau,1998-04-15,1,0,,,,,0,,no_squad_fetched
-1227796,I. Padinha,2006-09-23,1,0,,,,,0,,no_squad_fetched
+1227793,C. Bacalhau,1998-04-15,1,1,1079090.0,Carlos Bacalhau,1998-04-15,carlos-bacalhau,1,dob+name,ok
+1227796,I. Padinha,2006-09-23,1,1,1456376.0,Igor Padinha,2006-09-23,igor-padinha,1,dob+name,ok
 1228256,T. Santos,1996-05-06,1,1,1316442.0,Thierry Santos,1996-05-06,thierry-santos,1,dob+name,ok
-1228297,D. Azevedo Oliveira,,1,1,1457829.0,Danilo Azevedo,2004-07-25,danilo-azevedo,1,name_only,review
+1228297,D. Azevedo Oliveira,,1,1,1457829.0,Danilo Azevedo,2004-07-25,danilo-azevedo,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 1 ours, 2 Transfermarkt",ok
 1228643,B. Santos,2005-07-04,1,1,1458356.0,Bruno Santos,2005-07-04,bruno-santos,1,dob+name,ok
 1228655,J. Simões,2005-09-20,1,1,1455949.0,João Simões,2005-09-20,joao-simoes,1,dob+name,ok
 1230972,T. Soares,2010-06-05,1,1,1504270.0,Tiago Soares,2010-06-05,tiago-soares,1,dob+name,ok
-1232701,B. Oyetii,,1,1,664041.0,Bolaji Oyetii,1999-02-20,bolaji-oyetii,1,name_only,review
+1232701,B. Oyetii,,1,1,664041.0,Bolaji Oyetii,1999-02-20,bolaji-oyetii,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 14 ours, 20 Transfermarkt",ok
 1232732,G. Araújo,,1,1,,,,,0,,not_in_squad
 1232779,N. Viana,2002-01-08,1,1,1457751.0,Nuno Viana,2002-01-08,nuno-viana,1,dob+name,ok
 1232786,S. Silva Mendes,2008-07-06,1,1,1457753.0,Simão Mendes,2008-07-06,simao-mendes,1,dob+name,ok
@@ -3823,7 +3823,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1244109,G. Pereira Santos,2004-11-22,1,1,1452639.0,Guilherme Santos,2004-11-22,guilherme-santos,1,dob+name,ok
 1250898,A. Moreira,2008-04-02,1,1,1454785.0,Anderson Moreira,2008-04-02,anderson-moreira,1,dob+name,ok
 1252342,K. Onugo,2001-04-18,1,1,1334852.0,Kachi Onugo,2001-04-18,kachi-onugo,1,dob+name,ok
-1252387,G. Dias,,1,1,1314685.0,Gonçalo Dias,1998-12-11,goncalo-dias,1,name_only,review
+1252387,G. Dias,,1,1,1314685.0,Gonçalo Dias,1998-12-11,goncalo-dias,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 10 ours, 15 Transfermarkt",ok
 1252486,I. Natowicz,2005-07-18,1,1,1464232.0,Idan Natowicz,2005-07-18,idan-natowicz,1,dob+name,ok
 1252513,B. Januário Mendonça,2001-07-22,1,1,1453841.0,Choe,2001-07-22,choe,1,dob_name_differs,ok
 1252525,P. Miguel Rocha Macedo,2003-06-08,1,1,1072094.0,Pedro Macedo,2003-06-08,pedro-macedo,1,dob+name,ok
@@ -3831,7 +3831,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1252527,A. Oliveira Morais,2006-08-13,1,1,1453840.0,Afonso Morais,2006-08-13,afonso-morais,1,dob+name,ok
 1252767,C. Diogo,,1,1,,,,,0,,not_in_squad
 1252944,P. Pimentel,2006-12-20,1,1,1460088.0,Pedro Pimentel,2006-12-20,pedro-pimentel,1,dob+name,ok
-1253089,R. Tchê,,1,1,1195579.0,Rafa Tchê,1999-06-27,rafa-tche,1,name_only,review
+1253089,R. Tchê,,1,1,1195579.0,Rafa Tchê,1999-06-27,rafa-tche,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 5 ours, 18 Transfermarkt",ok
 1253106,C. Moteiro,,1,1,,,,,0,,not_in_squad
 1253662,R. Silva Lima,2006-03-29,1,1,1453838.0,Ricardo Lima,2006-03-29,ricardo-lima,1,dob+name,ok
 1258627,J. Collazos,2005-08-23,1,1,1466510.0,Jhon Ordoñez,2005-08-23,jhon-ordonez,1,dob+name,ok
@@ -3843,9 +3843,9 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1259325,M. Ramos,2003-05-19,1,1,1461522.0,Micael Ramos,2003-05-19,micael-ramos,1,dob+name,ok
 1259338,F. Almeida,,1,1,,,,,0,,not_in_squad
 1259420,A. Pato,2006-06-30,1,1,1463665.0,Afonso Pato,2006-06-30,afonso-pato,1,dob+name,ok
-1261798,T. Watche,,1,1,842414.0,Telmo Watche,2000-01-09,telmo-watche,1,name_only,review
-1261799,L. Queza,,1,1,1269234.0,Lello Queza,2006-09-30,lello-queza,1,name_only,review
-1261800,F. Pereira,,1,1,847223.0,Filipe Pereira,2001-06-15,filipe-pereira,1,name_only,review
+1261798,T. Watche,,1,1,842414.0,Telmo Watche,2000-01-09,telmo-watche,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 6 ours, 8 Transfermarkt",ok
+1261799,L. Queza,,1,1,1269234.0,Lello Queza,2006-09-30,lello-queza,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 15 ours, 19 Transfermarkt",ok
+1261800,F. Pereira,,1,1,847223.0,Filipe Pereira,2001-06-15,filipe-pereira,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 2 ours, 3 Transfermarkt",ok
 1261801,B. Souza,1997-07-30,2,2,1470091.0,Bruno Souza,1997-07-30,bruno-souza,2,dob+name,ok
 1261888,V. Savchuk,2004-04-17,1,1,1468671.0,Vitalli Savchuk,2004-04-17,vitalli-savchuk,1,dob+name,ok
 1262279,J. Magro,2005-01-19,1,1,1455914.0,Zé Pedro,2005-01-19,ze-pedro,1,dob_name_differs,ok
@@ -3862,15 +3862,15 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1277684,L. Carlos Oliveira Rebelo,2004-11-12,1,1,1453567.0,Luís Rebelo,2004-11-12,luis-rebelo,1,dob+name,ok
 1280559,J. Sicuba,2006-05-23,2,2,1380562.0,Josemar Sicuba,2006-05-23,josemar-sicuba,2,dob+name,ok
 1280685,Ruben Cerqueira,2003-07-15,1,1,1073229.0,Rúben Cerqueira,2003-07-15,ruben-cerqueira,1,dob+name,ok
-1280695,Pedro Aires,,1,1,1486712.0,Pedro Aires,2003-05-26,pedro-aires,1,name_only,review
+1280695,Pedro Aires,,1,1,1486712.0,Pedro Aires,2003-05-26,pedro-aires,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 13 ours, 16 Transfermarkt",ok
 1281179,M. Costa Rodrigues,2006-02-22,1,1,1487300.0,Miguel Rodrigues,2006-02-22,miguel-rodrigues,1,dob+name,ok
-1281216,J. Faria,,1,1,168679.0,João Faria,1990-07-12,joao-faria,1,name_only,review
-1281225,E. Fernandes,,1,1,1333696.0,Eduardo Fernandes,2006-09-11,eduardo-fernandes,1,name_only,review
+1281216,J. Faria,,1,1,168679.0,João Faria,1990-07-12,joao-faria,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 21 ours, 22 Transfermarkt",ok
+1281225,E. Fernandes,,1,1,1333696.0,Eduardo Fernandes,2006-09-11,eduardo-fernandes,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 12 ours, 14 Transfermarkt",ok
 1281229,João Costa,2008-10-08,1,1,1487315.0,Costinha,2008-10-08,costinha,1,dob_name_differs,ok
 1282377,Rodrigo Santo,2010-02-14,1,1,,,,,0,,not_in_squad
 1282381,Joaquim Jesus Carvalho,2004-02-27,1,1,1067217.0,Joaquim Carvalho,2004-02-27,joaquim-carvalho,1,dob+name,ok
 1282881,M. Casimiro,,1,1,,,,,0,,not_in_squad
-1283036,D. Levkin Cunha,2007-10-15,1,0,,,,,0,,no_squad_fetched
+1283036,D. Levkin Cunha,2007-10-15,1,1,1529491.0,Daniel Cunha,2007-10-15,daniel-cunha,1,dob+name,ok
 1283065,J. Saint Omer de Sá,2006-12-09,1,1,1489078.0,João Sá,2006-12-09,joao-sa,1,dob+name,ok
 1283493,Eric Oliveira,2007-01-17,1,1,1490154.0,Eric Oliveira,2007-01-17,eric-oliveira,1,dob+name,ok
 1285938,H. Teixeira Martins,2011-03-26,1,1,,,,,0,,not_in_squad
@@ -3891,7 +3891,7 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1291438,João Neves,2008-04-30,1,1,1501376.0,João Neves,2008-04-30,joao-neves,1,dob+name,ok
 1291683,F. António Carvalho Coelho,1998-05-08,1,1,1315363.0,Chiquinho,1998-05-08,chiquinho,1,dob_name_differs,ok
 1292574,Jean Maicol,2000-11-11,1,1,1502107.0,Jean Maicol,2000-11-11,jean-maicol,1,dob+name,ok
-1292814,I. dos Santos,2002-08-24,1,0,,,,,0,,no_squad_fetched
+1292814,I. dos Santos,2002-08-24,1,1,1505432.0,Ianick dos Santos,2002-08-24,ianick-dos-santos,1,dob+name,ok
 1292830,R. Castro,2007-07-05,1,1,1483940.0,Rodrigo Castro,2007-07-05,rodrigo-castro,1,dob+name,ok
 1292831,António Moreira,2008-10-30,1,1,1517353.0,António Moreira,2008-10-30,antonio-moreira,1,dob+name,ok
 1292835,D. Rocha,,1,1,,,,,0,,not_in_squad
@@ -3910,16 +3910,16 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1299308,D. Oliveira,,1,1,,,,,0,,not_in_squad
 1299310,Rorke Bishop,2005-04-18,1,1,1519588.0,Rorke Bishop,2005-04-18,rorke-bishop,1,dob+name,ok
 1299362,Ibrahim Al-Mustapha,2006-06-30,1,1,1511543.0,Ibrahim Mustapha,2006-06-30,ibrahim-mustapha,1,dob+name,ok
-1299836,José Mozer,,1,1,1463205.0,José Mozer,2006-03-31,jose-mozer,1,name_only,review
+1299836,José Mozer,,1,1,1463205.0,José Mozer,2006-03-31,jose-mozer,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 4 ours, 7 Transfermarkt",ok
 1300073,R. Brice,,1,1,,,,,0,,not_in_squad
 1301496,F. Ghorbani,2003-12-01,1,1,1516215.0,Farhan Ghorbani,2003-12-01,farhan-ghorbani,1,dob+name,ok
 1301673,Gui,2003-06-09,1,1,1075447.0,Gui,2003-06-09,guitm,1,dob+name,ok
 1301734,D. Quinones,,1,1,,,,,0,,not_in_squad
 1302953,A. Mota Oliveira,2006-09-29,1,1,1519992.0,Afonso Mota,2006-09-29,afonso-mota,1,dob+name,ok
-1303044,A. Niang,,1,1,1315192.0,Aliou Niang,2005-03-30,aliou-niang,1,name_only,review
+1303044,A. Niang,,1,1,1315192.0,Aliou Niang,2005-03-30,aliou-niang,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 3 ours, 3 Transfermarkt",ok
 1303504,Gabriel Aglio,2007-07-07,1,1,1519045.0,Gabriel Aglio,2007-07-07,gabriel-aglio,1,dob+name,ok
-1305739,D. Paulos Reis,2007-01-29,1,0,,,,,0,,no_squad_fetched
-1307882,Vinicius Rodrigues,,1,1,1463287.0,Vinícius Rodrigues,2004-01-16,vinicius-rodrigues,1,name_only,review
+1305739,D. Paulos Reis,2007-01-29,1,1,,,,,0,,not_in_squad
+1307882,Vinicius Rodrigues,,1,1,1463287.0,Vinícius Rodrigues,2004-01-16,vinicius-rodrigues,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 5 ours, 5 Transfermarkt",ok
 1309115,M. Danfaga Tamanaté,2007-10-26,1,1,1526933.0,Mady Tamanaté,2007-10-26,mady-tamanate,1,dob+name,ok
 1310637,Martim Silva Monteiro,2007-02-05,1,1,1526689.0,Martim Monteiro,2007-02-05,martim-monteiro,1,dob+name,ok
 1310910,W. Tendeng,2008-07-21,1,1,1510998.0,Baba,2008-07-21,baba,1,dob_name_differs,ok
@@ -3927,15 +3927,15 @@ playerId,our_name,our_dob,club_seasons,club_seasons_fetched,tm_player_id,tm_name
 1313103,T. Souza,2004-03-14,1,1,,,,,0,,not_in_squad
 1313117,U. Player,,1,1,,,,,0,,not_in_squad
 1314401,C. Passos,2009-07-15,1,1,,,,,0,,not_in_squad
-1315442,T. Dias,2008-10-02,1,0,,,,,0,,no_squad_fetched
+1315442,T. Dias,2008-10-02,1,1,1537587.0,Tomás Dias,2008-10-02,tomas-dias,1,dob+name,ok
 1317270, Manuel Batista,2006-02-20,1,1,1537778.0,Manuel Batista,2006-02-20,manuel-batista,1,dob+name,ok
 1317282,G. Pinto,2008-12-18,1,1,1528780.0,Gonçalo Pinto,2008-12-18,goncalo-pinto,1,dob+name,ok
 1317328,Santiago Leão,2008-03-11,1,1,1452578.0,Santiago Leão,2008-03-11,santiago-leao,1,dob+name,ok
-1317931,Tiago Silva,,1,0,,,,,0,,no_squad_fetched
+1317931,Tiago Silva,,1,1,1537611.0,Tiago Silva,2008-01-11,tiago-silva,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 1 ours, 1 Transfermarkt",ok
 1322976,Tomás Oliveira,2009-01-21,1,1,1538994.0,Xeka,2009-01-21,xeka,1,dob_name_differs,ok
 1322977,Simão Ramalho,2007-08-03,1,1,1516100.0,Simão Ramalho,2007-08-03,simao-ramalho,1,dob+name,ok
 1322978,Mamadu Camará,2001-11-20,1,1,1454799.0,Mamadu Camará,2001-11-20,mamadu-camara,1,dob+name,ok
-1326557,A. Alves,,1,1,1543528.0,Afonso Alves,2005-04-07,afonso-alves,1,name_only,review
+1326557,A. Alves,,1,1,1543528.0,Afonso Alves,2005-04-07,afonso-alves,1,"manual: no birth date in our data; only man of that first and last name in the squad; matches 1 ours, 1 Transfermarkt",ok
 1326675,A. Delgado Afonso,2006-08-29,1,1,1543804.0,André Afonso,2006-08-29,andre-afonso,1,dob+name,ok
 1351504,L. Carlos Pereira Soares,2001-11-16,1,1,1566030.0,Luisinho,2001-11-16,luisinho,1,dob_name_differs,ok
 1355970,A. Ngom,2006-05-12,1,1,1543500.0,Adama Ngom,2006-05-12,adama-ngom,1,dob+name,ok

@@ -11,7 +11,7 @@ teamId,team,tm_team_id,tm_slug,tm_name,score,status,candidates,agree_share,agree
 9777,Anadia,4747.0,anadia-fc,Anadia FC,1.0,ok,Anadia FC 1.00 (no league); Anadia FC Youth 0.67 (no league); Anadia FC Sub-19 0.63 (no league),0.936,78.0,27.0
 78744,Aparecida,92264.0,aparecida-fc,Aparecida FC,1.0,ok,Aparecida FC 1.00 (no league); Aparecida FC Youth 0.75 (no league); Aparecida FC Sub-19 0.72 (no league),1.0,26.0,2.0
 9706,Atlético CP,5227.0,atletico-cp,Atlético CP,1.0,ok,Atlético CP 1.00 (Liga 3); Atlético CP U19 0.85 (no league); Atlético CP U17 0.85 (no league),1.0,101.0,62.0
-31132,Atlético Malveira,,,,,not_found,,,,
+31132,Atlético Malveira,27745.0,ac-malveira,AC Malveira,,manual,,0.933,30.0,19.0
 9616,Beira-Mar,1436.0,sc-beira-mar,SC Beira-Mar,1.0,ok,SC Beira-Mar 1.00 (Campeonato de Portugal - Série B); GD Beira-Mar Monte Gordo 0.90 (no league); Beira-Mar de Almada 0.90 (no league),0.947,19.0,42.0
 9726,Benfica Castelo Branco,7811.0,sb-castelo-branco,Benfica Castelo Branco,1.0,ok,Benfica Castelo Branco 1.00 (Campeonato de Portugal - Série C); Benfica Castelo Branco Youth 0.88 (no league); Benfica Castelo Branco Sub-19 0.86 (no league),0.98,51.0,25.0
 9695,Bragança,7117.0,gd-braganca,GD Bragança,1.0,ok,GD Bragança 1.00 (Campeonato de Portugal - Série A); AE Africanos Bragança 0.90 (no league); AF Bragança 0.90 (no league),1.0,23.0,23.0
@@ -39,7 +39,7 @@ teamId,team,tm_team_id,tm_slug,tm_name,score,status,candidates,agree_share,agree
 9666,Fátima,6987.0,cd-fatima,CD Fátima,1.0,ok,CD Fátima 1.00 (Campeonato de Portugal - Série C); Paroquial de Fátima 0.90 (no league); CD Fátima Youth 0.67 (no league),1.0,25.0,29.0
 9681,Gondomar,3323.0,gondomar-sc,Gondomar SC,1.0,ok,Gondomar SC 1.00 (no league); GD Souto e Gondomar 0.90 (no league); Gondomar SC U19 0.80 (no league),,,15.0
 31528,Gouveia,31808.0,cd-gouveia,CD Gouveia,1.0,ok,CD Gouveia 1.00 (no league); CD Gouveia Youth 0.70 (no league); CD Gouveia Sub-15 0.67 (no league),1.0,46.0,8.0
-9705,Imortal Albufeira,,,,,not_found,,,,
+9705,Imortal Albufeira,3332.0,imortal-dc,Imortal DC,,manual,,0.65,20.0,11.0
 78745,JD Lajense,73224.0,juventude-desportiva-lajense,JD Lajense,1.0,ok,JD Lajense 1.00 (Campeonato de Portugal - Série D); JD Lajense U19 0.83 (no league); JD Lajense Youth 0.77 (no league),1.0,24.0,6.0
 9775,Juventude Évora,7790.0,juventude-evora-sc,Juventude Évora SC,1.0,ok,Juventude Évora SC 1.00 (Campeonato de Portugal - Série D); Juv. Évora U19 0.64 (no league),0.98,49.0,14.0
 9779,Lagoa,7536.0,gd-lagoa,GD Lagoa,1.0,ok,GD Lagoa 1.00 (Campeonato de Portugal - Série D); Operário Lagoa Sub-19 0.38 (no league); Clube Operário Desportivo 0.31 (no league),1.0,26.0,7.0
@@ -67,7 +67,7 @@ teamId,team,tm_team_id,tm_slug,tm_name,score,status,candidates,agree_share,agree
 9621,Paços de Ferreira,2995.0,fc-pacos-de-ferreira,FC Paços de Ferreira,1.0,ok,FC Paços de Ferreira 1.00 (Liga 3); FC Paços de Ferreira U19 0.88 (no league); FC Paços de Ferreira U17 0.88 (no league),1.0,9.0,52.0
 9815,Peniche,7637.0,gd-peniche,GD Peniche,1.0,ok,GD Peniche 1.00 (no league); GD Peniche U19 0.78 (no league); GD Peniche Youth 0.70 (no league),1.0,51.0,13.0
 9722,Pevidém,8401.0,pevidem-sc,Pevidém SC,1.0,ok,Pevidém SC 1.00 (no league); Pevidém SC Youth17 0.90 (no league); Pevidém SC Youth15 0.90 (no league),1.0,30.0,13.0
-78747,Portimonense II,67731.0,portimonense-sc-u23,Portimonense SAD U23,1.0,rejected,Portimonense SAD U23 1.00 (Liga Next Gen U23); Portimonense SAD 0.00 (Liga Portugal 2); Portimonense SC 0.00 (no league),0.0,23.0,12.0
+78747,Portimonense II,94930.0,portimonense-b-sc,Portimonense SC,1.0,manual,Portimonense SAD U23 1.00 (Liga Next Gen U23); Portimonense SAD 0.00 (Liga Portugal 2); Portimonense SC 0.00 (no league),0.85,20.0,3.0
 9730,Portosantense,7086.0,cd-portosantense,CD Portosantense,1.0,ok,CD Portosantense 1.00 (no league); CD Portosantense U19 0.87 (no league),0.733,15.0,17.0
 9902,Pêro Pinheiro,34233.0,ca-pero-pinheiro,CA Pêro Pinheiro,1.0,ok,CA Pêro Pinheiro 1.00 (no league); CA Pêro Pinheiro U17 0.87 (no league); CA Pêro Pinheiro Youth 19 0.74 (no league),1.0,25.0,16.0
 9795,Rabo Peixe,20804.0,cd-rabo-de-peixe,CD Rabo de Peixe,1.0,manual,CD Rabo de Peixe 1.00 (no league); CD Rabo de Peixe U19 0.83 (no league); CD Rabo de Peixe Youth 0.77 (no league),0.0,15.0,6.0
@@ -78,7 +78,7 @@ teamId,team,tm_team_id,tm_slug,tm_name,score,status,candidates,agree_share,agree
 9653,Ribeira Brava,6911.0,cd-ribeira-brava,CD Ribeira Brava,1.0,ok,CD Ribeira Brava 1.00 (no league); CD Ribeira Brava Youth 0.81 (no league); CD Ribeira Brava Sub-15 0.79 (no league),1.0,22.0,5.0
 9736,Ribeirão,6144.0,ribeirao-1968-fc,Ribeirão 1968 FC,0.9,manual,Ribeirão 1968 FC 0.90 (no league); Ribeirão FC U19 0.80 (no league); Ribeirão 1968 FC Youth 0.59 (no league),0.0,18.0,30.0
 9628,Salgueiros,2434.0,sc-salgueiros,SC Salgueiros,1.0,ok,SC Salgueiros 1.00 (Campeonato de Portugal - Série B); SC Salgueiros Y17 0.90 (no league); SC Salgueiros Y15 0.90 (no league),0.974,38.0,40.0
-78746,Samora Correira,,,,,not_found,,,,
+78746,Samora Correira,7537.0,gd-samora-correia,GD Samora Correia,,manual,,0.958,24.0,7.0
 9746,Sandinenses,8188.0,gdrc-os-sandinenses,GDRC Os Sandinenses,0.9,manual,GDRC Os Sandinenses 0.90 (no league); SC Dragões Sandinenses 0.90 (no league); GDRC Os Sandinenses Youth17 0.90 (no league),,,8.0
 9663,Sanjoanense,6023.0,ad-sanjoanense,AD Sanjoanense,1.0,ok,AD Sanjoanense 1.00 (Campeonato de Portugal - Série B); Sanjoanense AC 1.00 (no league); SC Sanjoanense 1.00 (no league),0.99,102.0,43.0
 9744,Sertanense,19561.0,sertanense-fc,Sertanense FC,1.0,ok,Sertanense FC 1.00 (Campeonato de Portugal - Série C); Sertanense FC Y19 0.90 (no league); Sertanense FC Y17 0.90 (no league),1.0,26.0,23.0

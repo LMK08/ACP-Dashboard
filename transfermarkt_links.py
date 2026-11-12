@@ -59,6 +59,7 @@ SQUADS = VAL / 'tm_squads.parquet'                       # who was in each club'
 CLUB_SEASONS = VAL / 'tm_player_club_seasons.parquet'    # appearances and minutes per player per club-season
 CLUB_SEASONS_DONE = VAL / 'tm_club_seasons_fetched.csv'
 PLAYER_LINKS = VAL / 'tm_player_links.csv'
+PLAYER_LINKS_MANUAL = VAL / 'tm_player_links_manual.csv'   # playerId, tm_player_id, why: 'review' links settled by hand
 OBV_PLAYERS = HERE / 'obv_match_player.parquet'
 PLAYER_DETAILS = HERE / 'player_details.pkl'
 TEAM_MATCH = HERE / 'models' / 'coaches' / 'coach_team_match.parquet'
@@ -493,7 +494,7 @@ def _name_words(*names):
     return {w for n in names for w in fold(n).replace('.', ' ').split() if len(w) > 1} - _STOP
 
 
-def link_players(players=None, squads=None):
+def link_players(players=None, squads=None, manual=None):
     """Our playerId → Transfermarkt player, inside the squad of the SAME club and season.
 
       ok      same date of birth as exactly ONE man in that squad (the names usually share a
@@ -549,8 +550,29 @@ def link_players(players=None, squads=None):
                         'how': ','.join(sorted(set(g.how))), 'status': 'ok' if sure else 'review'})
         rows.append(row)
     out = pd.DataFrame(rows)
+    out = apply_manual_player_links(out, v, manual)
     if players is None:
         out.to_csv(PLAYER_LINKS, index=False)
+    return out
+
+
+def apply_manual_player_links(out, votes, manual=None):
+    """A 'review' link becomes 'ok' when PLAYER_LINKS_MANUAL names, for that player, a profile
+    that one of his club-season squads proposed. It can only confirm a candidate the squads
+    gave, never add a profile from nowhere, and never touches a link that is already sure."""
+    if manual is None:
+        manual = pd.read_csv(PLAYER_LINKS_MANUAL) if PLAYER_LINKS_MANUAL.exists() else None
+    if manual is None or not len(manual) or not len(out) or not len(votes):
+        return out
+    out = out.copy()
+    for m in manual.itertuples():
+        row = out.index[(out.playerId == m.playerId) & (out.status == 'review')]
+        cand = votes[(votes.playerId == m.playerId) & (votes.tm_player_id == int(m.tm_player_id))]
+        if not len(row) or not len(cand):
+            continue
+        c = cand.iloc[0]
+        out.loc[row, ['tm_player_id', 'tm_name', 'tm_dob', 'tm_player_slug', 'votes', 'how', 'status']] = [
+            int(c.tm_player_id), c.tm_name, c.tm_dob, c.tm_player_slug, len(cand), 'manual: ' + str(m.why), 'ok']
     return out
 
 

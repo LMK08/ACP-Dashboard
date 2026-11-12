@@ -299,3 +299,28 @@ def test_squad_fetch_leaves_a_club_season_stored_under_another_team_id(monkeypat
     monkeypatch.setattr(tl, 'Client', NoRequests)
     tl.fetch_squads()
     assert pd.read_parquet(squads).teamId.tolist() == [1]
+
+
+def test_manual_player_link_only_confirms_a_candidate_from_the_squads():
+    import transfermarkt_links as tl
+    out = pd.DataFrame([
+        dict(playerId=1, tm_player_id=10, tm_name='A', tm_dob=None, tm_player_slug='a', votes=1, how='name_only', status='review'),
+        dict(playerId=2, tm_player_id=20, tm_name='B', tm_dob='1990-01-01', tm_player_slug='b', votes=1, how='dob+name', status='ok'),
+        dict(playerId=3, tm_player_id=30, tm_name='C', tm_dob=None, tm_player_slug='c', votes=1, how='name_only', status='review'),
+    ])
+    votes = pd.DataFrame([
+        dict(playerId=1, tm_player_id=10, tm_name='A', tm_dob=None, tm_player_slug='a'),
+        dict(playerId=1, tm_player_id=11, tm_name='A two', tm_dob='1999-09-09', tm_player_slug='a2'),
+        dict(playerId=2, tm_player_id=20, tm_name='B', tm_dob='1990-01-01', tm_player_slug='b'),
+        dict(playerId=3, tm_player_id=30, tm_name='C', tm_dob=None, tm_player_slug='c'),
+    ])
+    manual = pd.DataFrame([
+        dict(playerId=1, tm_player_id=11, why='second profile'),      # another candidate the squads gave
+        dict(playerId=2, tm_player_id=99, why='ignored'),             # already sure: untouched
+        dict(playerId=3, tm_player_id=77, why='ignored'),             # not a candidate: stays in review
+    ])
+    got = tl.apply_manual_player_links(out, votes, manual).set_index('playerId')
+    assert got.loc[1, ['tm_player_id', 'tm_name', 'status']].tolist() == [11, 'A two', 'ok']
+    assert got.loc[1, 'how'] == 'manual: second profile'
+    assert got.loc[2, ['tm_player_id', 'how', 'status']].tolist() == [20, 'dob+name', 'ok']
+    assert got.loc[3, ['tm_player_id', 'status']].tolist() == [30, 'review']
