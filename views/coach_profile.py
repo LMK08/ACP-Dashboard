@@ -261,13 +261,19 @@ def _tendencies(s, table, rel, league_name):
                "trait, 0 = noise). Only measures at 0.40 or better are shown.")
     st.caption("Attack flanks use the event provider's tag on each attack. These are read as how he sets his "
                "sides up, so only measures that repeat are shown. Tested and left out as noise: line-up "
-               "changes after a defeat, first-substitution minute and substitutions before 60'.")
+               "changes after a defeat.")
 
 
 def _in_game(s, rel, table, league_name):
     st.caption('A record of what happened in his matches. These numbers do not repeat from one half of a '
                "coach's matches to the other, so they describe; they do not predict.")
+    c = st.columns(2)
+    c[0].metric('First substitution', _fmt(s['first_sub_min'], "{:.0f}'"))
+    c[1].metric('Substitutions before 60\'', _fmt(s['subs_before_60_share'], '{:.0%}'))
+    st.caption(f"Substitution minutes are the recorded ones ({s['sub_matches']} matches with a line-up sheet).")
     _vs_league(table, s, [
+        ('first_sub_min', 'First substitution (minute)', lambda v: _fmt(v, '{:.0f}')),
+        ('subs_before_60_share', "Substitutions before 60'", lambda v: _fmt(v, '{:.0%}')),
         ('ppg_after_trailing', 'Points per match after trailing', _fmt),
         ('led_not_won_share', 'Leads not won', lambda v: _fmt(v, '{:.0%}')),
         ('late_xgd', "xG difference after 75', per match", _signed),

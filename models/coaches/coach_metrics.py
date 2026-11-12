@@ -41,6 +41,7 @@ STYLE_METRICS = {
     'forward_share':     ('Forward-pass share', 'more direct', '{:.1%}'),
     'cross_share':       ('Crosses per final-third pass', 'more crossing', '{:.1%}'),
     'counters':          ('Counter-attacks per match', 'more counters', '{:.2f}'),
+    'set_piece_share':   ('Set-piece share of xG', 'more reliant on set pieces', '{:.1%}'),
     'press_intensity':   ('Pressing (PPDA, lower = more)', 'more pressing', '{:.1f}'),
     'def_height':        ('Defensive-action height', 'defends higher up', '{:.1f}'),
     'high_recoveries':   ('Final-third recoveries per match', 'wins it high', '{:.1f}'),
@@ -480,9 +481,11 @@ NOISY_HIDDEN = {
     # DESCRIPTIVE numbers (a record of what happened: points - expected,
     # change since arrival, game states, late xGD, home-away, the player
     # tables) are shown whatever their agreement, and say that they describe.
-    'set_piece_share': 0.02, 'opp_adapt': 0.26, 'style_travel': 0.0,
+    'opp_adapt': 0.26, 'style_travel': 0.0,
     'changes_after_loss': 0.06, 'loss_reaction': -0.20,
-    'first_sub_min': 0.30, 'subs_before_60_share': 0.37,
+    # kept at Lucas's request although below the line: set-piece share of xG
+    # (0.02, in Style), first-substitution minute (0.30) and substitutions
+    # before 60' (0.37), both in the In-game record.
 }
 MIN_SHOWN_RELIABILITY = 0.40
 

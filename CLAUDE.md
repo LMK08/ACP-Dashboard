@@ -370,9 +370,10 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   measure read as a TRAIT (style, flexibility, tendencies: how he sets
   up, what he would do again) is shown only if a coach's odd and even
   matches agree at ≥ 0.40 on Liga 3 (`MIN_SHOWN_RELIABILITY`);
-  `NOISY_HIDDEN` lists what that removed (set-piece share, opponent
-  adaptation, style travel between clubs, reaction to defeat, first-sub
-  minute, subs before 60'). DESCRIPTIVE numbers — a record of what
+  `NOISY_HIDDEN` lists what that removed (opponent adaptation, style
+  travel between clubs, reaction to defeat). Lucas kept three below the
+  line: set-piece share of xG (Style), first-sub minute and subs before
+  60' (In-game record). DESCRIPTIVE numbers — a record of what
   happened (points − expected, change since arrival, the In-game record:
   game states raw and vs expected, points after trailing, leads not won,
   late xGD, home-away gap; the player-development case tables) — stay
