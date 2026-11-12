@@ -406,6 +406,17 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   the transfer record: `python scrape_transfermarkt.py --verified` reads
   every linked player not yet read or read >120 days ago (saves every 25,
   safe to stop and re-run, ~4 h for all).
+  FEES FROM TRANSFER RECORDS (2026-11-12): `valuations/build_tm_fees.py`
+  writes `valuations/tm_fees.csv` (paid permanent sales by the club he
+  last played for in our data, with data before the sale, mid-season or
+  within 120 days; never market values). `eur_intervals.read_fee_rows`
+  = hand file + that file, a hand row winning within 90 days; the
+  calibration AND build_projection's sale-date projections read it.
+  RESERVE SIDES ('<club> II') are out of the fee range: their sales
+  (5, median 11x the value) are excluded as `reserve_side` and their
+  players get no range (`team=` on range_support_reason and every UI
+  call). Any new sale re-opens the centre-drift decision (Lucas's
+  2026-10-30 acknowledgement is tied to the exact 14 sales).
   SCHEDULED: `.github/workflows/transfermarkt_refresh.yml` runs the whole
   chain (new clubs, every club's coaches, new squads, player links, every
   linked player's profile + transfers) at 01:00 US Eastern on 1 Jan, 1 Feb,

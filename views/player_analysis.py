@@ -424,9 +424,13 @@ def render():
                       if not _eng_scope.empty else pd.Series(dtype=float))
         _eng_mins_by_pid = ({int(p): float(m) for p, m in zip(_eng_scope['playerId'], _eng_vmins)
                              if pd.notna(p) and pd.notna(m)} if not _eng_scope.empty else {})
+        # his team in that engine row: reserve-side players get no fee range
+        _eng_team_by_pid = ({int(p): t for p, t in zip(_eng_scope['playerId'], _eng_scope['team'])
+                             if pd.notna(p)} if not _eng_scope.empty and 'team' in _eng_scope.columns else {})
     except Exception:
         logger.exception("engine minutes lookup failed — likely-fee ranges withheld")
         _eng_mins_by_pid = None   # no minutes -> no ranges at all (never a half-applied gate)
+        _eng_team_by_pid = {}
     show_cvi = st.sidebar.checkbox(
         "Show Projected value",
         value=False,
@@ -669,7 +673,8 @@ def render():
                 if _eng_mins_by_pid is None or str(pos).upper().startswith('GK'):
                     return s
                 mins = _eng_mins_by_pid.get(int(pid)) if pid is not None and pd.notna(pid) else None
-                lo, hi = projected_eur_interval(v, calib=_eurcal, w_evidence=w, mins=mins)
+                lo, hi = projected_eur_interval(v, calib=_eurcal, w_evidence=w, mins=mins,
+                                                team=_eng_team_by_pid.get(int(pid)) if pid is not None and pd.notna(pid) else None)
                 return s if lo is None else f"{s} ({format_eur_short(lo)}–{format_eur_short(hi)})"
             pv_display = [_pv_text(v, w, p, ps) for v, w, p, ps in zip(pv_vals, _ev_w, _pids, _poss)]
             _r_idx = display.columns.get_loc('Rating')
@@ -1037,7 +1042,8 @@ def render():
                        else pd.Series([''] * len(_sc_df), index=_sc_df.index))
             _sc_rng = [None if ps.upper().startswith('GK') else format_eur_range(*projected_eur_interval(
                            v, calib=_eurcal, w_evidence=w,
-                           mins=(_eng_mins_by_pid.get(int(p)) if p is not None and pd.notna(p) else None)))
+                           mins=(_eng_mins_by_pid.get(int(p)) if p is not None and pd.notna(p) else None),
+                           team=(_eng_team_by_pid.get(int(p)) if p is not None and pd.notna(p) else None)))
                        for v, w, p, ps in zip(_ev_vals, _ev_w, _sc_pids, _sc_pos)]
         _sc_hover = [
             f"<b>{r.playerName}</b> · {r.teamName}<br>"

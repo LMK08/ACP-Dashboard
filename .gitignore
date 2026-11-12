@@ -63,6 +63,7 @@ __pycache__/
 !valuations/tm_club_seasons_fetched.csv
 !valuations/tm_player_links.csv
 !valuations/tm_player_links_manual.csv
+!valuations/tm_fees.csv
 !valuations/tm_link_conflicts.csv
 !models/coaches/coach_names.csv
 

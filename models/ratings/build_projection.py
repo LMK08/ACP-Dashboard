@@ -700,7 +700,9 @@ _fees_path = _DASH / 'valuations' / 'reported_fees.csv'
 _sale_rows = []
 if _fees_path.exists():
     from league_config import PLAYER_ID_ALIASES as _ALIAS
-    _fees = pd.read_csv(_fees_path, comment='#')
+    # the hand-curated file plus the Transfermarkt sales (valuations/tm_fees.csv)
+    from models.value.eur_intervals import read_fee_rows as _read_fee_rows
+    _fees = _read_fee_rows()
     _md = _career.match_dates(_ms_c)
     _pm = _mm_c[_mm_c['minutes'] > 0].merge(_ms_c[['matchId', 'seasonId']], on='matchId')
     _last = _pm.assign(t=_pm['matchId'].astype(int).map(_md)).groupby(['playerId', 'seasonId'])['t'].max()

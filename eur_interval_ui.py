@@ -47,7 +47,7 @@ def headline_factor(calib=None):
     return _factor(calib or {}, (calib or {}).get('headline_level', '0.50'))
 
 
-def range_sentence(point, calib=None, gk=False, w_evidence=None, mins=None):
+def range_sentence(point, calib=None, gk=False, w_evidence=None, mins=None, team=None):
     """The line under a projected value: 'Likely fee if sold **€85k – €270k**
     · middle half of 14 real sales', or 'No likely-fee range — too few
     minutes' when the row sits outside the calibration's support. None for
@@ -56,10 +56,10 @@ def range_sentence(point, calib=None, gk=False, w_evidence=None, mins=None):
     calib = load_calibration() if calib is None else calib
     if gk or not calib or point is None or pd.isna(point):
         return None
-    reason = range_support_reason(point, calib, w_evidence=w_evidence, mins=mins)
+    reason = range_support_reason(point, calib, w_evidence=w_evidence, mins=mins, team=team)
     if reason:
         return f"No likely-fee range — {reason} (outside the fee calibration's support)."
-    lo, hi = projected_eur_interval(point, HEADLINE_LEVEL, calib, w_evidence=w_evidence, mins=mins)
+    lo, hi = projected_eur_interval(point, HEADLINE_LEVEL, calib, w_evidence=w_evidence, mins=mins, team=team)
     if lo is None:
         return None
     hk = calib.get('headline_level', '0.50')
@@ -102,11 +102,11 @@ def curve_text():
             "is already evidence-weighted.")
 
 
-def pdf_range_text(point, calib=None, w_evidence=None, mins=None):
+def pdf_range_text(point, calib=None, w_evidence=None, mins=None, team=None):
     """'85k-270k' for the one-pager 'Likely fee (EUR)' tile, or None. Short
     on purpose: the portrait A4 tile cell is ~24 mm wide at 11pt bold."""
     calib = load_calibration() if calib is None else calib
-    lo, hi = projected_eur_interval(point, HEADLINE_LEVEL, calib, w_evidence=w_evidence, mins=mins)
+    lo, hi = projected_eur_interval(point, HEADLINE_LEVEL, calib, w_evidence=w_evidence, mins=mins, team=team)
     if lo is None:
         return None
     return f"{format_eur_short(lo).replace('€', '')}-{format_eur_short(hi).replace('€', '')}"
@@ -218,6 +218,11 @@ def render_eur_calibration_section(calib=None, key='eurcal'):
         col.metric(f"Inside {_pct(k)} band",
                    f"{lv[k].get('k', 0)} of {n}" if shipped else "—",
                    help=_inside_help)
+    rs = calib.get('reserve_side') or {}
+    if rs.get('n'):
+        st.caption(f"Sales from reserve sides are kept out of this calibration and their players get no "
+                   f"range: {rs['n']} such sales went for {rs['min_ratio']:.0f} to {rs['max_ratio']:.0f} times "
+                   f"the model value (median {rs['median_ratio']:.0f}), a different scale from other clubs.")
     cd = calib.get('centre_drift') or {}
     if cd.get('flag') and cd.get('acknowledged'):
         st.info(cd.get('note'))

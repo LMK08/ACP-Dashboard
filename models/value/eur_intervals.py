@@ -78,6 +78,7 @@ CALIBRATION_PATH = HERE / 'eur_interval_calibration.json'
 ENGINE_PATH = DASH / 'models' / 'ratings' / 'player_engine.parquet'
 ENGINE_META_PATH = DASH / 'models' / 'ratings' / 'player_engine_meta.json'
 FEES_PATH = DASH / 'valuations' / 'reported_fees.csv'
+TM_FEES_PATH = DASH / 'valuations' / 'tm_fees.csv'      # valuations/build_tm_fees.py
 SALES_PATH = DASH / 'models' / 'ratings' / 'acp_projection_sales.parquet'   # build_projection
 POOLS_PATH = DASH / 'models' / 'ratings' / 'acp_projection_pools.parquet'   # build_projection
 
@@ -330,7 +331,37 @@ def loo_coverage(scores, level):
     return hits, len(s)
 
 
-def range_support_reason(point, calib=None, w_evidence=None, mins=None):
+RESERVE_REASON = 'reserve-side player (they sell on a different scale; too few such sales to calibrate)'
+
+
+def read_fee_rows(hand_path=None, tm_path=None):
+    """Every fee row the calibration and the sale-date projections use: the
+    hand-curated file, then the sales taken from Transfermarkt transfer
+    records (build_tm_fees.py; same columns). A hand row wins over a
+    Transfermarkt row for the same player within 90 days."""
+    hand = pd.read_csv(hand_path or FEES_PATH, comment='#')
+    tm_path = TM_FEES_PATH if tm_path is None else tm_path
+    if not Path(tm_path).exists():
+        return hand
+    tm = pd.read_csv(tm_path, comment='#')
+    if not len(tm):
+        return hand
+    # compare on the canonical id (a player can sit under two ids)
+    try:
+        from league_config import PLAYER_ID_ALIASES as _al
+    except Exception:
+        _al = {}
+    canon = lambda p: _al.get(int(p), int(p))
+    hd = [(canon(p), pd.to_datetime(d, errors='coerce')) for p, d in zip(hand['playerId'], hand['as_of_date'])
+          if pd.notna(p)]
+    td = pd.to_datetime(tm['as_of_date'], errors='coerce')
+    dup = [any(canon(p) == hp and pd.notna(d) and pd.notna(h) and abs((d - h).days) <= 90 for hp, h in hd)
+           for p, d in zip(tm['playerId'], td)]
+    tm = tm[[not x for x in dup]]
+    return pd.concat([hand, tm[[c for c in hand.columns if c in tm.columns]]], ignore_index=True)
+
+
+def range_support_reason(point, calib=None, w_evidence=None, mins=None, team=None):
     """None when the calibration supports a range for this row, else a
     short reason. The band is evidenced only inside the calibration set's
     own value / evidence-weight range (stored under 'support'); pass
@@ -341,6 +372,11 @@ def range_support_reason(point, calib=None, w_evidence=None, mins=None):
     sup = (calib or {}).get('support') or {}
     if point is None or pd.isna(point) or float(point) <= 0:
         return 'no value'
+    # reserve sides ('<club> II'): their sales run at a multiple of this value
+    # (5 sales, median 11x, 2026-11) and are kept out of the calibration, so
+    # the range does not describe them
+    if team is not None and _is_reserve(team):
+        return RESERVE_REASON
     floor = sup.get('min_value_eur')
     if floor and float(point) < float(floor):
         return f"value below {format_eur_short(floor)}"
@@ -354,7 +390,7 @@ def range_support_reason(point, calib=None, w_evidence=None, mins=None):
 
 
 def projected_eur_interval(point, level=HEADLINE_LEVEL, calib=None,
-                           w_evidence=None, mins=None):
+                           w_evidence=None, mins=None, team=None):
     """(lo, hi) around a displayed point value, or (None, None) when there
     is no calibration, the level did not ship, the point is unusable, or
     the row sits outside the calibration's support."""
@@ -362,7 +398,7 @@ def projected_eur_interval(point, level=HEADLINE_LEVEL, calib=None,
         calib = load_calibration()
     if not calib or point is None or pd.isna(point) or float(point) <= 0:
         return None, None
-    if range_support_reason(point, calib, w_evidence=w_evidence, mins=mins):
+    if range_support_reason(point, calib, w_evidence=w_evidence, mins=mins, team=team):
         return None, None
     lv = (calib.get('levels') or {}).get(_level_key(level))
     if not lv or not lv.get('shipped') or lv.get('q') is None:
@@ -607,9 +643,14 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None, ends=None, sales=None,
             # outside the dataset, so this is post-transfer performance, not
             # the value a buyer saw (Hélder Suker, Penafiel -> ACP, 2026-01).
             excl = 'post_transfer_row'
+        elif _is_reserve(eng_team) or _is_reserve(from_team):
+            # sold from a reserve side: a real sale, but on a different scale
+            # from this value (kept apart; counted under 'reserve_side')
+            excl = 'reserve_side'
         else:
             excl = None
         ratio = (float(fee) / value) if (excl is None) else None
+        reserve_ratio = (float(fee) / value) if excl == 'reserve_side' and value else None
         rows.append({
             'playerId': pid, 'player_name': f.get('player_name'), 'season_id': sid,
             'paired_season_id': paired_sid,
@@ -618,7 +659,7 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None, ends=None, sales=None,
             'transfer_type': ttype, 'synthetic_flag': None if pd.isna(flag) else int(flag),
             'as_of_date': f.get('as_of_date'),
             'fee_eur': None if pd.isna(fee) else float(fee),
-            'value_eur': value, 'ratio': ratio,
+            'value_eur': value, 'ratio': ratio, 'reserve_ratio': reserve_ratio,
             'seasons_ago': seasons_ago, 'age_at_sale': age_at_sale,
             'mins_played': mins, 'w_evidence': w_ev, 'evidence': ev,
             'from_team': from_team or None, 'to_team': to_team or None,
@@ -628,6 +669,19 @@ def pair_fees_to_engine(fees_df, engine_df, aliases=None, ends=None, sales=None,
             'included': excl is None, 'exclusion': excl,
         })
     return pd.DataFrame(rows)
+
+
+def _is_reserve(team):
+    from league_config import is_reserve_team
+    return bool(is_reserve_team(team))
+
+
+def _reserve_block(pairs):
+    """Sales from reserve sides, kept out of the calibration: how many and
+    how far above the value they went (for the panel's copy)."""
+    r = (pairs['reserve_ratio'].dropna() if 'reserve_ratio' in pairs.columns else pd.Series(dtype=float))
+    return {'n': int(len(r)), 'median_ratio': (float(r.median()) if len(r) else None),
+            'min_ratio': (float(r.min()) if len(r) else None), 'max_ratio': (float(r.max()) if len(r) else None)}
 
 
 def _value_band(v):
@@ -795,6 +849,7 @@ def build_calibration(pairs, engine_meta=None, previous=None, today=None):
         'levels': levels,
         'coverage_ok': all(lv['coverage_ok'] for lv in levels.values() if lv['shipped']),
         'bias': bias,
+        'reserve_side': _reserve_block(pairs),
         'strata': _strata(cal, loo_hits_by_level) if n else [],
         'sensitivity': sens,
         'prospective': prospective,
@@ -847,7 +902,7 @@ def _print_report(pairs, calib):
 def load_inputs():
     """(fees, engine, engine_meta, aliases) exactly as the build uses them —
     shared with the test that rebuilds the calibration in-process."""
-    fees = pd.read_csv(FEES_PATH, comment='#')
+    fees = read_fee_rows()
     # the playing-time factor, joined on the raw ids (pairing applies the aliases)
     eng = _availability.attach(pd.read_parquet(ENGINE_PATH))
     meta = {}

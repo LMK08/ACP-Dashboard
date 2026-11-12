@@ -84,6 +84,11 @@ jobs:
           fi
           echo "code=$?" >> "$GITHUB_OUTPUT"
 
+      # Paid sales from the transfer records, for the fee calibration. The
+      # engine rebuild picks the file up and re-fits the likely-fee range.
+      - name: Fee rows from the transfer records
+        run: python -u valuations/build_tm_fees.py
+
       - name: What changed
         run: git status --short valuations/ | head -30
 
@@ -99,7 +104,7 @@ jobs:
                   valuations/tm_player_club_seasons.parquet valuations/tm_club_seasons_fetched.csv \
                   valuations/tm_player_links.csv valuations/tm_match_log.csv \
                   valuations/tm_player_metadata.parquet valuations/tm_transfer_history.parquet \
-                  valuations/valuations.parquet
+                  valuations/valuations.parquet valuations/tm_fees.csv
           if [ -n "$(git diff --cached --name-only)" ]; then
             git commit -m "chore: scheduled Transfermarkt refresh"
             git pull --rebase --autostash origin main

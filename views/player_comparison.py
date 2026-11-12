@@ -467,7 +467,8 @@ def render():
                 # range as a CAPTION, never a metric delta (Streamlit draws an
                 # arrow for any delta text)
                 _rng = eur_interval_ui.range_sentence(
-                    ctx['value'], _eurcal, w_evidence=ctx['w_ev'], mins=ctx['eng_mins'])
+                    ctx['value'], _eurcal, w_evidence=ctx['w_ev'], mins=ctx['eng_mins'],
+                    team=ctx.get('team'))
                 if _rng:
                     st.caption(_rng)
             _sty = ctx['style']

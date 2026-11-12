@@ -595,7 +595,7 @@ def render():
             # non-negative delta text. Under the whole row (the cards keep
             # one height).
             _rng_line = eur_interval_ui.range_sentence(
-                _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
+                _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins, team=current_team)
             _cap = " · ".join(x for x in (
                 f"Value {_eng_value_label}" if _eng_value_label and _eng_proj_eur is not None else None,
                 _rng_line) if x)
@@ -1081,7 +1081,7 @@ def render():
                                           f"EUR {_op_val:,.0f}"))
                         if not str(current_pos).upper().startswith('GK'):
                             _op_rng = eur_interval_ui.pdf_range_text(
-                                _op_val, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins)
+                                _op_val, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins, team=current_team)
                             if _op_rng:
                                 _op_tiles.append(("Likely fee (EUR)", _op_rng))
                     if _op_e is not None:
@@ -2137,7 +2137,7 @@ def render():
         # pages.
         st.subheader("Transfer Value Detail")
         _vt_rng = (None if _is_gk else eur_interval_ui.range_sentence(
-            _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins))
+            _eng_proj_eur, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins, team=current_team))
         st.caption("Projected value is computed by the ACP engine (see bio card)."
                    + (f" {_vt_rng}" if _vt_rng else ""))
         # A toggle, not an expander: the panel holds a Plotly chart, which
