@@ -48,7 +48,7 @@ def league_table(signature, comp_id):
     return cm.coach_table(tm, comp_id)
 
 
-RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
+RELIABILITY_KEYS = list(cm.FLEX_KEYS) + ['xgd90_vs_exp_lead', 'xgd90_vs_exp_draw', 'xgd90_vs_exp_trail'] + ['u21_trust', 'u23_trust', 'u21_minutes_share', 'u23_minutes_share',
                                            'age_gap', 'first_sub_min', 'subs_before_60_share',
                                            'ppg_after_trailing', 'xgd90_trail', 'xgd90_lead', 'xi_changes',
                                            'set_piece_share']
@@ -234,10 +234,14 @@ def _in_game(s, rel):
     if not s['state_matches']:
         st.info('No matches with a clean goal timeline in this scope.')
         return
+    keys = ('lead', 'draw', 'trail')
     t = pd.DataFrame({
         'Game state': ['Leading', 'Level', 'Trailing'],
-        'Share of minutes': [_fmt(s[f'min_share_{k}'], '{:.0%}') for k in ('lead', 'draw', 'trail')],
-        'xG difference per 90': [_signed(s[f'xgd90_{k}']) for k in ('lead', 'draw', 'trail')],
+        'Share of minutes': [_fmt(s[f'min_share_{k}'], '{:.0%}') for k in keys],
+        'Expected share': [_fmt(s.get(f'exp_min_share_{k}'), '{:.0%}') for k in keys],
+        'xG difference per 90': [_signed(s[f'xgd90_{k}']) for k in keys],
+        'Expected': [_signed(s.get(f'exp_xgd90_{k}')) for k in keys],
+        'vs expected': [_signed(s.get(f'xgd90_vs_exp_{k}')) for k in keys],
     })
     left, right = st.columns([3, 2])
     left.dataframe(t, hide_index=True, use_container_width=True)
@@ -246,11 +250,22 @@ def _in_game(s, rel):
     right.metric('Leads not won', f"{s['led_not_won']} of {s['led_n']}")
     st.caption(f"Game state over {s['state_matches']} matches whose event goals match the final score "
                "(own goals are not shot events, so those matches are left out). Every side does better "
-               "on xG when trailing — compare coaches on the same row, not rows with each other.")
+               "on xG when trailing, so read 'vs expected', not the raw number.")
+    if s.get('state_exp_matches'):
+        st.caption(f"Expected = what a side of that strength, against those opponents and at those venues, "
+                   f"typically does in that game state: a straight-line fit on the pre-match rating gap and "
+                   f"home/away, fitted only on the league's earlier months. The two expected columns and "
+                   f"'vs expected' cover the {s['state_exp_matches']} of {s['state_matches']} matches that "
+                   "have an expectation; the two actual columns cover all of them, so they are not exactly "
+                   "like for like when those counts differ.")
+    else:
+        st.caption('No expected numbers yet: they need about 150 earlier matches with a clean goal timeline in the league.')
     st.caption("How stable these are as coach traits (odd vs even matches): first-substitution minute "
                f"{_stable(rel, 'first_sub_min')}, substitutions before 60' {_stable(rel, 'subs_before_60_share')}, "
                f"points after trailing {_stable(rel, 'ppg_after_trailing')}, xG difference when trailing "
-               f"{_stable(rel, 'xgd90_trail')}. Read the noisy ones as what happened, not as how he manages.")
+               f"{_stable(rel, 'xgd90_trail')}; xG difference vs expected when leading "
+               f"{_stable(rel, 'xgd90_vs_exp_lead')}, level {_stable(rel, 'xgd90_vs_exp_draw')}, trailing "
+               f"{_stable(rel, 'xgd90_vs_exp_trail')}. Read the noisy ones as what happened, not as how he manages.")
 
 
 def _squad(app, s, cp, coach_id):

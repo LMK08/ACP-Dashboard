@@ -192,3 +192,55 @@ def test_expected_for_age_uses_only_finished_spells():
     assert full.sort_values('first_date').expected.iloc[:cm.MIN_PEERS].isna().all()
     # a coach's own earlier players are never his players' peers
     assert cm.development_pairs(cp.assign(coachId=1)).expected.isna().all()
+
+
+def _state_league(n_rounds=140, seed=2):
+    tm = bc.add_ratings(_league(n_rounds=n_rounds, seed=seed))
+    rng = np.random.default_rng(seed)
+    n = len(tm)
+    cut = np.sort(rng.uniform(0, 90, (n, 2)), axis=1)
+    tm['min_lead'], tm['min_draw'], tm['min_trail'] = cut[:, 0], cut[:, 1] - cut[:, 0], 90 - cut[:, 1]
+    for s in bc.STATES:
+        tm[f'xgd_{s}'] = rng.normal(0, 0.3, n)
+    tm['state_ok'] = rng.uniform(size=n) > 0.1
+    return tm
+
+
+EXP = [f'exp_{k}_{s}' for k in ('min', 'xgd') for s in bc.STATES]
+
+
+def test_state_expected_has_no_look_ahead():
+    """A match's expected game-state numbers must not move when later months
+    are removed or their results changed."""
+    tm = _state_league()
+    full = bc.add_state_expected(tm).set_index(['matchId', 'teamId'])
+    assert full[EXP].notna().any().all(), 'the synthetic league never reached MIN_CONTEXT_ROWS'
+    cut = tm.date.sort_values().iloc[int(len(tm) * 0.8)]
+    early = bc.add_state_expected(tm[tm.date <= cut]).set_index(['matchId', 'teamId'])
+    pd.testing.assert_frame_equal(full.loc[early.index, EXP], early[EXP])
+    # a match's own result is not in its own expected minutes
+    bumped = tm.copy()
+    last = bumped.date.dt.to_period('M') == bumped.date.dt.to_period('M').max()
+    bumped.loc[last, 'min_lead'], bumped.loc[last, 'min_trail'] = bumped.loc[last, 'min_trail'], bumped.loc[last, 'min_lead']
+    again = bc.add_state_expected(bumped).set_index(['matchId', 'teamId'])
+    cols = [f'exp_min_{s}' for s in bc.STATES]
+    pd.testing.assert_frame_equal(full[cols], again[cols])
+    # expected minutes add up to the match; rows without a clean timeline get none
+    have = full[full.exp_min_lead.notna()]
+    assert np.allclose(have[cols].sum(axis=1), have[['min_lead', 'min_draw', 'min_trail']].sum(axis=1))
+    assert full.loc[~full.state_ok, EXP].isna().all().all()
+    first_month = full.date.dt.to_period('M') == full.date.dt.to_period('M').min()
+    assert full.loc[first_month, EXP].isna().all().all()
+
+
+@pytest.mark.skipif(not os.path.exists(BUILT), reason='coach tables not built')
+def test_state_vs_expected_arithmetic():
+    tm = pd.read_parquet(BUILT)
+    tm = tm[tm.coachId == tm[tm.coachId > 0].coachId.mode().iloc[0]].copy()
+    tm['state_ok'] = True
+    for s, m, x, em, ex in (('lead', 30.0, 0.3, 20.0, 0.1), ('draw', 45.0, 0.0, 50.0, 0.0), ('trail', 15.0, 0.2, 20.0, 0.3)):
+        tm[f'min_{s}'], tm[f'xgd_{s}'], tm[f'exp_min_{s}'], tm[f'exp_xgd_{s}'] = m, x, em, ex
+    s = cm.summarise(tm)
+    assert s['exp_min_share_lead'] == pytest.approx(20 / 90) and s['min_share_vs_exp_lead'] == pytest.approx(10 / 90)
+    assert s['exp_xgd90_lead'] == pytest.approx(0.1 * 90 / 30) and s['xgd90_vs_exp_lead'] == pytest.approx(0.2 * 90 / 30)
+    assert s['xgd90_vs_exp_trail'] == pytest.approx(-0.1 * 90 / 15)

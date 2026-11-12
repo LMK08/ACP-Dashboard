@@ -121,6 +121,19 @@ def summarise(rows):
         mins = st[f'min_{s}'].sum()
         out[f'min_share_{s}'] = _div(mins, st[['min_lead', 'min_draw', 'min_trail']].sum().sum())
         out[f'xgd90_{s}'] = _div(st[f'xgd_{s}'].sum() * 90, mins)
+    # against expected (build_coaches.add_state_expected): what a side of
+    # that strength, against those opponents, typically does in each state.
+    # Actual and expected are both taken over the matches that have one.
+    ex = st[st['exp_min_lead'].notna()] if 'exp_min_lead' in st.columns else st.iloc[0:0]
+    out['state_exp_matches'] = len(ex)
+    tot = ex[['min_lead', 'min_draw', 'min_trail']].sum().sum()
+    for s in ('lead', 'draw', 'trail'):
+        mins = ex[f'min_{s}'].sum() if len(ex) else 0.0
+        out[f'exp_min_share_{s}'] = _div(ex[f'exp_min_{s}'].sum(), tot) if len(ex) else np.nan
+        out[f'min_share_vs_exp_{s}'] = (_div(mins, tot) - out[f'exp_min_share_{s}']) if len(ex) else np.nan
+        out[f'exp_xgd90_{s}'] = _div(ex[f'exp_xgd_{s}'].sum() * 90, mins) if len(ex) else np.nan
+        out[f'xgd90_vs_exp_{s}'] = (_div((ex[f'xgd_{s}'] - ex[f'exp_xgd_{s}']).sum() * 90, mins)
+                                    if len(ex) else np.nan)
     trailed = st[st.ever_trailed.eq(True)]
     led = st[st.ever_led.eq(True)]
     out['trailed_n'] = len(trailed)

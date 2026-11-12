@@ -470,6 +470,56 @@ def add_context_adjusted(tm):
     return tm
 
 
+STATES = ('lead', 'draw', 'trail')
+
+
+def add_state_expected(tm):
+    """Expected game-state numbers for each match, given how strong the side
+    and its opponent were going in and who was at home:
+
+      exp_min_<state>   minutes a side of that strength typically spends in
+                        the state (the three add up to the match's minutes)
+      exp_xgd_<state>   xG difference it typically makes over the minutes the
+                        side actually spent in the state
+
+    Both come from a straight-line fit on rating gap and venue, fitted ONLY
+    on that competition's clean-timeline matches of earlier calendar months
+    (blank until MIN_CONTEXT_ROWS exist). The xG fit is per minute in the
+    state, weighted by those minutes. Every side does better on xG when
+    behind; this is what puts a number on 'better than usual when behind'."""
+    tm = tm.copy()
+    d = (tm.r_pre - tm.r_opp_pre).to_numpy(dtype=float)
+    home = np.where(tm.side == 'home', 1.0, 0.0)
+    month = tm.date.dt.to_period('M')
+    ok_row = tm.state_ok.eq(True).to_numpy() & ~np.isnan(d)
+    mins = {s: tm[f'min_{s}'].to_numpy(dtype=float) for s in STATES}
+    xgd = {s: tm[f'xgd_{s}'].to_numpy(dtype=float) for s in STATES}
+    total = sum(mins.values())
+    out = {f'exp_{k}_{s}': np.full(len(tm), np.nan) for k in ('min', 'xgd') for s in STATES}
+    X_all = np.column_stack([np.ones(len(tm)), np.nan_to_num(d), home])
+    for comp in tm.competitionId.unique():
+        in_comp = (tm.competitionId == comp).to_numpy()
+        for mth in sorted(month[in_comp].unique()):
+            prior = in_comp & (month < mth).to_numpy() & ok_row & (total > 0)
+            if prior.sum() < MIN_CONTEXT_ROWS:
+                continue
+            cur = in_comp & (month == mth).to_numpy() & ok_row
+            share = {}
+            for s in STATES:
+                beta, *_ = np.linalg.lstsq(X_all[prior], mins[s][prior] / total[prior], rcond=None)
+                share[s] = np.clip(X_all[cur] @ beta, 0.0, None)
+            norm = sum(share.values())
+            for s in STATES:
+                out[f'exp_min_{s}'][cur] = share[s] / norm * total[cur]
+                use = prior & (mins[s] > 0)
+                w = np.sqrt(mins[s][use])
+                beta, *_ = np.linalg.lstsq(X_all[use] * w[:, None], xgd[s][use] / mins[s][use] * w, rcond=None)
+                out[f'exp_xgd_{s}'][cur] = (X_all[cur] @ beta) * mins[s][cur]
+    for k, v in out.items():
+        tm[k] = v
+    return tm
+
+
 def add_spells(tm):
     """Number each coach's spells at a team (a spell ends when another coach
     takes a match) and stamp the team's level on arrival."""
@@ -632,6 +682,7 @@ def build_team_match(coach_match):
     tm['coachId'] = tm.coachId.fillna(0).astype('int64')
     tm = add_ratings(tm)
     tm = add_context_adjusted(tm)
+    tm = add_state_expected(tm)
     tm = add_spells(tm)
 
     # line-up changes vs the team's previous match (any coach — the first
