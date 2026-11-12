@@ -415,8 +415,12 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   RESERVE SIDES ('<club> II') are out of the fee range: their sales
   (5, median 11x the value) are excluded as `reserve_side` and their
   players get no range (`team=` on range_support_reason and every UI
-  call). Any new sale re-opens the centre-drift decision (Lucas's
-  2026-10-30 acknowledgement is tied to the exact 14 sales).
+  call). CENTRE DRIFT: Lucas kept the curve again 2026-11-12 (18 sales,
+  Liga 3 median 1.18x). The acknowledgement now holds while every
+  acknowledged sale is still in the set and the Liga 3 median stays
+  within 0.15 of 1.18 - added sales alone no longer re-open it. Where
+  the hand file and Transfermarkt disagree on a fee, the hand file wins
+  (Lucas 2026-11-12).
   SCHEDULED: `.github/workflows/transfermarkt_refresh.yml` runs the whole
   chain (new clubs, every club's coaches, new squads, player links, every
   linked player's profile + transfers) at 01:00 US Eastern on 1 Jan, 1 Feb,

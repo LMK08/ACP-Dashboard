@@ -351,11 +351,43 @@ def test_ui_helpers_respect_support_and_goalkeepers():
 
 
 def test_a_centre_drift_is_acknowledged_only_for_the_signed_off_sales():
-    """Lucas 2026-10-30 kept the curve for the 14 leak-free sales; any other
-    set of sales (a new fee) brings the retune warning back."""
+    """A set that does not hold the acknowledged sales brings the retune
+    warning back."""
     p = _pairs(SCORES_14)
     p['fee_eur'] = p['fee_eur'] * 3.0                       # an off-centre set
     p['ratio'] = p['fee_eur'] / p['value_eur']
     c = ei.build_calibration(p, engine_meta={'rating_version': 'x'}, today='2026-10-30')
     assert c['centre_drift']['flag'] and not c['centre_drift']['acknowledged']
     assert 'retune' in c['centre_drift']['note']
+
+
+def test_acknowledgement_survives_added_sales_until_the_centre_moves():
+    """Lucas 2026-11-12 kept the curve at a Liga 3 median of 1.18. Sales that
+    join without moving that centre keep the decision; a sale leaving the
+    set, or the median moving past the tolerance, re-opens it."""
+    import json
+    shipped = json.load(open(ei.CALIBRATION_PATH))
+    if not shipped['centre_drift']['flag']:
+        pytest.skip('no centre drift in the shipped calibration')
+    base = pd.DataFrame(shipped['calibration']).assign(included=True, exclusion=None)
+    for col in ('synthetic_flag', 'transfer_type', 'reserve_ratio'):
+        if col not in base:
+            base[col] = {'synthetic_flag': 0, 'transfer_type': 'permanent', 'reserve_ratio': None}[col]
+    acked = set(map(tuple, ei.CENTRE_DRIFT_ACK['sales']))
+    if not acked <= set(zip(base.playerId.astype(int), base.season_id.astype(int))):
+        pytest.skip('the shipped set no longer holds the acknowledged sales')
+
+    def drift(pairs):
+        return ei.build_calibration(pairs, engine_meta={}, today='2026-11-12')['centre_drift']
+    assert drift(base)['acknowledged']
+    med = base[base.league == 'L3'].ratio.median()
+    extra = base[base.league == 'L3'].iloc[[0]].assign(playerId=999001, ratio=med, fee_eur=lambda d: d.value_eur * med)
+    extra = extra.assign(log_error=np.log(med), score=abs(np.log(med)))
+    assert drift(pd.concat([base, extra], ignore_index=True))['acknowledged']          # joins, centre unmoved
+    assert not drift(base.iloc[1:])['acknowledged'] or not drift(base.iloc[1:])['flag']  # an acknowledged sale left
+    far = base.copy()
+    far.loc[far.league == 'L3', 'ratio'] *= 3.0
+    far['fee_eur'] = far.ratio * far.value_eur
+    far['log_error'] = np.log(far.ratio); far['score'] = far.log_error.abs()
+    d = drift(far)
+    assert d['flag'] and not d['acknowledged'] and 'retune' in d['note']

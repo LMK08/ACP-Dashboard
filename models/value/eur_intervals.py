@@ -94,21 +94,25 @@ ENGINE_CAMP_SEASON_IDS = {190230, 191779, 192925}
 # for this market — the whole curve is scaled down 20%.
 ENGINE_VALUE_TEMPER = 0.8
 
-# Centre drift ACKNOWLEDGED (Lucas 2026-10-30, option A: keep the curve, ship
-# the wider band). With every sale paired leak-free (as of its sale date) the
-# Liga 3 sales split in two: five sold at 0.4-1.2x the value, six at 3-6x —
-# mostly cheap players (EUR 13-55k) who still fetched EUR 60-250k, plus two
-# big-buyer premiums — so the L3 median lands between them (3.12) and the
-# 50% band is wider (x/÷3.12). Re-centring on that median was rejected (one
-# sale decides it); re-shaping (fee ~ 496 x value^0.51, LOO band x/÷2.16) is
-# on file in ACP_Official/leakage_audit_2026-10-29.md. The acknowledgement
-# holds for THIS calibration set only: a new sale, or a different set, brings
-# the warning back for a fresh decision.
+# Centre drift ACKNOWLEDGED (Lucas 2026-11-12: "Keep the curve"). History:
+# 2026-10-30, 14 hand-entered sales, Liga 3 median 3.12x the value: kept the
+# curve and shipped the wider band (re-shaping, fee ~ 496 x value^0.51, is on
+# file in ACP_Official/leakage_audit_2026-10-29.md). 2026-11-12: sales from
+# Transfermarkt transfer records joined and reserve-side sales left, 18
+# sales, Liga 3 median 1.18x - the formula runs a little low for players who
+# were actually sold, and the range absorbs it. Kept again.
+# The acknowledgement holds while every acknowledged sale is still in the set
+# and the Liga 3 median stays within CENTRE_DRIFT_TOLERANCE of the value
+# acknowledged: sales that join without moving the centre (the January sales
+# valued at the next rebuild, the scheduled Transfermarkt refreshes) do not
+# re-open it; a sale leaving the set, or the median moving, does.
+CENTRE_DRIFT_TOLERANCE = 0.15
 CENTRE_DRIFT_ACK = {
-    'date': '2026-10-30', 'decision': 'keep the curve (option A)',
-    'l3_median_ratio': 3.12,
-    'sales': [(445341, 191782), (489426, 190090), (575377, 191779), (650811, 190090),
-              (693095, 191779), (709015, 189147), (776749, 190090), (807307, 189147),
+    'date': '2026-11-12', 'decision': 'keep the curve',
+    'l3_median_ratio': 1.18,
+    'sales': [(445341, 191782), (489426, 190090), (575353, 189147), (575377, 191779),
+              (585736, 188221), (642088, 189147), (650811, 190090), (693095, 191779),
+              (709015, 189147), (715406, 189147), (778597, 191782), (807307, 189147),
               (846557, 190090), (852792, 189147), (873635, 191782), (915436, 191782),
               (1038698, 191779), (1039596, 191782)],
 }
@@ -814,16 +818,16 @@ def build_calibration(pairs, engine_meta=None, previous=None, today=None):
     drift = bool(l3_med is not None and abs(l3_med - 1.0) > 0.15)
     sales = (sorted((int(p), int(s)) for p, s in zip(cal['playerId'], cal['season_id']))
              if n else [])
-    ack = drift and sorted(map(tuple, CENTRE_DRIFT_ACK['sales'])) == sales
+    ack = bool(drift and set(map(tuple, CENTRE_DRIFT_ACK['sales'])) <= set(sales)
+               and abs(l3_med - CENTRE_DRIFT_ACK['l3_median_ratio']) <= CENTRE_DRIFT_TOLERANCE)
     centre_drift = {
         'L3_median_ratio': l3_med,
         'flag': drift,
         'acknowledged': ack,
-        'note': (f"Liga 3 sales sit at a median {l3_med:.2f}x the model value: five sold near "
-                 "it, six well above (mostly cheap players who still fetched EUR 60-250k, plus "
-                 "two big-buyer premiums). Kept as is by decision "
-                 f"({CENTRE_DRIFT_ACK['date']}, {CENTRE_DRIFT_ACK['decision']}): the range is "
-                 "wider rather than the curve re-centred on two split groups." if ack else
+        'note': (f"Liga 3 sales sit at a median {l3_med:.2f}x the model value: the formula runs a "
+                 "little low for players who were actually sold. Kept as is by decision "
+                 f"({CENTRE_DRIFT_ACK['date']}, {CENTRE_DRIFT_ACK['decision']}): the likely-fee range "
+                 "absorbs the gap rather than the curve being re-scaled on a small set of sales." if ack else
                  'L3 median fee/value has moved more than 0.15 from 1.0: the point-'
                  'value constants and the band no longer share a centre — retune the '
                  'curve (with sign-off) before trusting the range' if drift else 'centred'),
