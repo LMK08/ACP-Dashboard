@@ -391,11 +391,16 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   as Transfermarkt's count (90 per full match, cups included) — never
   mix it into our exact minutes. Transfermarkt's per-player career page
   is NOT readable (it loads from an internal service; do not call it).
-  The OLDER name-search links (`scrape_transfermarkt.py` →
-  `tm_match_log.csv`) put 179 players on a namesake's profile
-  (`tm_link_conflicts.csv`): ~30 % of the Transfermarkt rows in
-  valuations.parquet and 19 % of tm_transfer_history are the wrong
-  person's until that scraper is re-pointed at `tm_player_links.csv`.
+  `scrape_transfermarkt.py` (market values, profile, transfers) reads the
+  VERIFIED profile from `tm_player_links.csv` when a player has one; the
+  name search is only the fallback, and a name-search link whose profile
+  has another date of birth is refused (`dob_mismatch`). Its old
+  name-search links had 179 players on a namesake's profile
+  (`tm_link_conflicts.csv`); the rows read from those profiles were
+  removed 2026-11-12 (1,690 value, 1,448 transfer, 147 profile rows).
+  `python scrape_transfermarkt.py --relink` re-reads those players from
+  the verified profile; it calls Transfermarkt's internal data service,
+  so Lucas runs it himself (Claude must not).
   NO NOISY PREDICTIVE METRICS on the coach pages (Lucas 2026-11). A
   measure read as a TRAIT (style, flexibility, tendencies: how he sets
   up, what he would do again) is shown only if a coach's odd and even

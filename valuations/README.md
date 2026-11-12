@@ -23,9 +23,12 @@ authority, or use `source` as a categorical feature.
 
 ### `transfermarkt`
 Public market values from transfermarkt.com. Crowd-edited but widely
-cited. Scraper in `scrape_transfermarkt.py`. Matches Wyscout players
-by name + DOB (fuzzy) — match log written to
-`valuations/tm_match_log.csv` for audit.
+cited. Scraper in `scrape_transfermarkt.py`. Reads the player's verified profile
+(`tm_player_links.csv`: same date of birth as one man in the same
+club-season squad); falls back to a name search, refused when the
+profile's date of birth differs from ours. Log in
+`valuations/tm_match_log.csv`. `--relink` drops rows read from a wrong
+profile and re-reads those players.
 
 ### `reported_fee`
 Hand-curated table of actual reported transfer fees (when published

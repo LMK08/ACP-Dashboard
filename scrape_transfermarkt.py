@@ -59,6 +59,8 @@ VAL_DIR = HERE / 'valuations'
 VAL_DIR.mkdir(exist_ok=True)
 VALUATIONS_PATH = VAL_DIR / 'valuations.parquet'
 MATCH_LOG_PATH  = VAL_DIR / 'tm_match_log.csv'
+PLAYER_LINKS_PATH = VAL_DIR / 'tm_player_links.csv'      # transfermarkt_links.py
+LINK_CONFLICTS_PATH = VAL_DIR / 'tm_link_conflicts.csv'  # transfermarkt_links.py
 
 TM_BASE = 'https://www.transfermarkt.com'
 TM_SEARCH = TM_BASE + '/schnellsuche/ergebnis/schnellsuche'
@@ -712,6 +714,92 @@ def append_transfers(rows: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------
+# Verified links (transfermarkt_links.py) and wrong-profile clean-up
+# ---------------------------------------------------------------------
+def load_verified_links(path=None) -> dict:
+    """playerId -> TMMatch for the links transfermarkt_links.py verified: same
+    date of birth as exactly one man in the same club-season squad. These
+    replace the name search, which put players on a namesake's profile."""
+    path = Path(path) if path else PLAYER_LINKS_PATH
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    df = df[(df['status'] == 'ok') & df['tm_player_id'].notna()]
+    out = {}
+    for r in df.itertuples():
+        tm_id = int(r.tm_player_id)
+        slug = r.tm_player_slug if isinstance(r.tm_player_slug, str) and r.tm_player_slug else '-'
+        out[int(r.playerId)] = TMMatch(
+            tm_id=tm_id, tm_url=f"{TM_BASE}/{slug}/profil/spieler/{tm_id}",
+            name=r.tm_name if isinstance(r.tm_name, str) else '',
+            dob=r.tm_dob if isinstance(r.tm_dob, str) else None,
+            club=None, score=float('nan'), fields_used=['squad', 'dob'])
+    return out
+
+
+def _row_tm_ids(df: pd.DataFrame) -> pd.Series:
+    """Transfermarkt profile id each stored row was read from (valuations
+    keep it inside `notes`)."""
+    if 'tm_id' in df.columns:
+        return pd.to_numeric(df['tm_id'], errors='coerce')
+    return pd.to_numeric(df['notes'].astype(str).str.extract(r'tm_id=(\d+)')[0],
+                         errors='coerce')
+
+
+def wrong_profile_rows(df: pd.DataFrame, verified: dict, also=()) -> pd.Series:
+    """True for rows read from a profile that is not the player's verified
+    one, and for every row of the players in `also`."""
+    want = df['playerId'].map({pid: m.tm_id for pid, m in verified.items()})
+    have = _row_tm_ids(df)
+    # a row with no profile id is not known to be wrong: keep it
+    wrong = want.notna() & have.notna() & (have != want)
+    if 'source' in df.columns:
+        wrong &= df['source'] == 'transfermarkt'
+    return wrong | df['playerId'].isin(list(also))
+
+
+def purge_wrong_profiles(verified: dict, also=(), paths=None) -> dict:
+    """Drop, from the three scraped files, rows that belong to another man's
+    profile. Returns {file name: (rows dropped, players affected)}."""
+    paths = paths or (VALUATIONS_PATH, METADATA_PATH, TRANSFERS_PATH)
+    out = {}
+    for path in paths:
+        path = Path(path)
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        wrong = wrong_profile_rows(df, verified, also)
+        out[path.name] = (int(wrong.sum()), int(df.loc[wrong, 'playerId'].nunique()))
+        if wrong.any():
+            df[~wrong].to_parquet(path, index=False)
+    return out
+
+
+def players_to_relink(verified: dict) -> list:
+    """Players the name search had on a namesake's profile (listed in
+    tm_link_conflicts.csv) whose verified profile has not been read yet."""
+    if not LINK_CONFLICTS_PATH.exists():
+        return []
+    pids = pd.read_csv(LINK_CONFLICTS_PATH)['playerId'].astype(int)
+    have = {}
+    if METADATA_PATH.exists():
+        meta = pd.read_parquet(METADATA_PATH, columns=['playerId', 'tm_id'])
+        have = dict(zip(meta['playerId'].astype(int), _row_tm_ids(meta)))
+    return [p for p in pids if p in verified and have.get(p) != verified[p].tm_id]
+
+
+def write_match_log(audit: list) -> None:
+    """Players this run did not look at (recently read, or outside a
+    partial run) keep their log rows."""
+    new = pd.DataFrame(audit)
+    if MATCH_LOG_PATH.exists():
+        old = pd.read_csv(MATCH_LOG_PATH)
+        new = pd.concat([old[~old['playerId'].isin(new['playerId'])], new],
+                        ignore_index=True)
+    new.to_csv(MATCH_LOG_PATH, index=False)
+
+
+# ---------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------
 def load_existing_valuations() -> pd.DataFrame:
@@ -745,11 +833,16 @@ def append_rows(rows: list[dict]) -> None:
 # Orchestration
 # ---------------------------------------------------------------------
 def run(*, limit: int | None = None, player_id: int | None = None,
-        max_age_days: int = 14) -> None:
+        max_age_days: int = 14, only=None) -> None:
+    """`only`: playerIds to read now, whatever their last read date."""
     universe = load_player_universe()
     dob_map = load_player_dob_map()
+    verified = load_verified_links()
     if player_id:
         universe = universe[universe['playerId'] == player_id]
+    if only is not None:
+        only = {int(p) for p in only}
+        universe = universe[universe['playerId'].isin(only)]
     if limit:
         universe = universe.head(limit)
     LOG.info(f"Scraping TM for {len(universe):,} players")
@@ -785,7 +878,8 @@ def run(*, limit: int | None = None, player_id: int | None = None,
         pid = int(row['playerId'])
         # Skip if scraped recently
         last = newest.get(pid)
-        if pd.notna(last) and (today - last.date()).days < max_age_days:
+        if (only is None and pd.notna(last)
+                and (today - last.date()).days < max_age_days):
             continue
 
         # Compute expected age from DOB
@@ -812,8 +906,9 @@ def run(*, limit: int | None = None, player_id: int | None = None,
         else:
             expected_clubs = []
 
+        linked = verified.get(pid)
         try:
-            candidates = search_transfermarkt(
+            candidates = [linked] if linked else search_transfermarkt(
                 session, row['playerName'],
                 dob=dob_str,
                 expected_age=expected_age,
@@ -829,7 +924,7 @@ def run(*, limit: int | None = None, player_id: int | None = None,
             continue
 
         best = candidates[0]
-        if best.score < MIN_MATCH_SCORE:
+        if not linked and best.score < MIN_MATCH_SCORE:
             # Best candidate didn't clear our minimum confidence bar —
             # log for hand-review but don't pollute valuations.parquet.
             match_audit.append({
@@ -864,14 +959,39 @@ def run(*, limit: int | None = None, player_id: int | None = None,
                 season_summary = ''
         match_audit.append({
             'playerId': pid, 'name': row['playerName'],
-            'status': 'matched', 'tm_id': best.tm_id,
-            'tm_name': best.name, 'score': round(best.score, 1),
+            'status': 'verified' if linked else 'matched', 'tm_id': best.tm_id,
+            'tm_name': best.name,
+            'score': '' if linked else round(best.score, 1),
             'fields': ','.join(best.fields_used),
             'tm_url': best.tm_url,
             'expected_club': (expected_clubs[0] if expected_clubs else ''),
             'tm_club': best.club or '',
             'our_season_clubs': season_summary,
         })
+
+        # ---- Rich-metadata pull ----
+        # For every accepted match, fetch full player profile + transfer
+        # history. Stored separately from valuations.parquet but useful
+        # for v2 EUR regression features and post-match verification.
+        try:
+            profile = fetch_tm_player_profile(session, best.tm_url)
+            if profile:
+                profile['playerId'] = pid
+                profile['tm_id'] = best.tm_id
+                profile['tm_url'] = best.tm_url
+                profile['fetched_at'] = datetime.utcnow().isoformat(timespec='seconds')
+                fresh_metadata.append(profile)
+        except Exception as e:
+            profile = None
+            LOG.warning(f"Profile fetch failed for {pid}: {e}")
+        # A name-search link whose profile has another date of birth is a
+        # namesake: write nothing for it.
+        tm_dob = str((profile or {}).get('dob') or '')[:10]
+        if not linked and dob_str and tm_dob and tm_dob != dob_str[:10]:
+            match_audit[-1]['status'] = 'dob_mismatch'
+            if profile in fresh_metadata:
+                fresh_metadata.remove(profile)
+            continue
 
         history = fetch_market_value_history(session, best.tm_id)
         for h in history:
@@ -887,20 +1007,6 @@ def run(*, limit: int | None = None, player_id: int | None = None,
                                 if h.get('club_at_time') else f"tm_id={best.tm_id}"),
             })
 
-        # ---- Rich-metadata pull ----
-        # For every accepted match, fetch full player profile + transfer
-        # history. Stored separately from valuations.parquet but useful
-        # for v2 EUR regression features and post-match verification.
-        try:
-            profile = fetch_tm_player_profile(session, best.tm_url)
-            if profile:
-                profile['playerId'] = pid
-                profile['tm_id'] = best.tm_id
-                profile['tm_url'] = best.tm_url
-                profile['fetched_at'] = datetime.utcnow().isoformat(timespec='seconds')
-                fresh_metadata.append(profile)
-        except Exception as e:
-            LOG.warning(f"Profile fetch failed for {pid}: {e}")
         try:
             xfers = fetch_tm_transfer_history(session, best.tm_id)
             for x in xfers:
@@ -910,13 +1016,15 @@ def run(*, limit: int | None = None, player_id: int | None = None,
         except Exception as e:
             LOG.warning(f"Transfer-history fetch failed for {pid}: {e}")
 
+    # Metadata last: --relink takes a player's metadata row as proof that
+    # his values and transfers were written too.
     append_rows(fresh_rows)
-    append_metadata(fresh_metadata)
     append_transfers(fresh_transfers)
+    append_metadata(fresh_metadata)
     if match_audit:
-        pd.DataFrame(match_audit).to_csv(MATCH_LOG_PATH, index=False)
+        write_match_log(match_audit)
         LOG.info(f"Match audit written to {MATCH_LOG_PATH} "
-                  f"({sum(1 for r in match_audit if r['status']=='matched')} matched, "
+                  f"({sum(1 for r in match_audit if r['status'] in ('matched', 'verified'))} matched, "
                   f"{sum(1 for r in match_audit if r['status']=='low_confidence')} low-confidence, "
                   f"{sum(1 for r in match_audit if r['status']=='no_match')} no-match)")
 
@@ -926,6 +1034,10 @@ def main() -> int:
     ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--player-id', type=int, default=None)
     ap.add_argument('--max-age-days', type=int, default=14)
+    ap.add_argument('--relink', action='store_true',
+                    help='drop rows read from a profile that is not the verified one, '
+                         'then read the verified profile of the players in '
+                         'tm_link_conflicts.csv')
     ap.add_argument('--verbose', '-v', action='store_true')
     args = ap.parse_args()
     logging.basicConfig(
@@ -933,7 +1045,17 @@ def main() -> int:
         format='%(asctime)s  %(levelname)-7s  %(message)s',
         datefmt='%H:%M:%S',
     )
-    run(limit=args.limit, player_id=args.player_id, max_age_days=args.max_age_days)
+    only = None
+    if args.relink:
+        verified = load_verified_links()
+        for name, (rows, players) in purge_wrong_profiles(verified).items():
+            LOG.info(f"{name}: dropped {rows:,} rows of {players} players (wrong profile)")
+        only = players_to_relink(verified)
+        LOG.info(f"{len(only)} players to read from their verified profile")
+        if not only:
+            return 0
+    run(limit=args.limit, player_id=args.player_id,
+        max_age_days=args.max_age_days, only=only)
     return 0
 
 
