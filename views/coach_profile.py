@@ -124,25 +124,38 @@ def _vs_league(table, s, spec, league_name):
 
 
 def _overview(rows, s, league_row, league_name, coaches, table):
-    c = st.columns(4)
+    c = st.columns(3) + st.columns(3)
     c[0].metric('Points per match', _fmt(s['ppg']))
     c[1].metric('Expected points per match', _fmt(s['xpts_pg']),
                 help='From the shots of both sides: every shot is an independent chance worth its xG.')
-    c[2].metric('xG difference per match', _signed(s['xgd']))
-    c[3].metric('Team level', _pm(s['adj_xgd'], s['adj_xgd_ci']),
+    c[2].metric('Points − expected', _signed(s['pts_minus_xpts'], '{:+.1f}'),
+                help='Total over the matches with event data. Positive = results ran ahead of the chances.')
+    c[3].metric('xG difference per match', _signed(s['xgd']))
+    c[4].metric('Team level', _pm(s['adj_xgd'], s['adj_xgd_ci']),
                 help='xG difference per match after removing each opponent\'s pre-match rating and the '
                      'home edge: what the side would do against an average team of the league on '
                      'neutral ground. ± is a 95% interval on the mean.')
+    c[5].metric('Change since arrival', _pm(s['impact'], s['impact_ci']),
+                help='xG difference per match against what the team\'s level on the day he arrived '
+                     'predicted for the same fixtures.')
     _vs_league(table, s, [
         ('ppg', 'Points per match', _fmt),
         ('xpts_pg', 'Expected points per match', _fmt),
+        ('pts_minus_xpts_pg', 'Points − expected, per match', _signed),
         ('xgd', 'xG difference per match', _signed),
-        ('adj_xgd', 'Team level', _signed)], league_name)
+        ('adj_xgd', 'Team level', _signed),
+        ('impact', 'Change since arrival', _signed)], league_name)
     notes = [f"{s['event_matches']} of {s['matches']} matches have event data."]
     if league_row is not None and league_row.get('qualifies'):
         notes.append(f"Among {league_name} coaches with {cm.MIN_MATCHES}+ matches: team level "
                      f"{league_row['adj_xgd_pct']:.0f}th percentile, points per match "
                      f"{league_row['ppg_pct']:.0f}th.")
+    if s['impact_n']:
+        notes.append(f"Change since arrival covers {s['impact_n']} matches; it needs "
+                     f"{10}+ earlier rated matches of the team in the same competition.")
+    else:
+        notes.append('No change-since-arrival figure: the team had too few earlier matches in the data '
+                     'when he took over.')
     st.caption(' '.join(notes))
     st.caption('Read with care: the squad he was given, summer turnover and plain regression to the mean '
                'all sit inside these numbers. Team level describes the team under him; it is not a '
@@ -184,6 +197,7 @@ def _spell_table(sp):
         'Matches': sp.matches, 'W-D-L': [f'{w}-{d}-{l}' for w, d, l in zip(sp.wins, sp.draws, sp.losses)],
         'Pts/match': sp.ppg.round(2), 'xPts/match': sp.xpts_pg.round(2),
         'xGD/match': sp.xgd.round(2), 'Team level': sp.adj_xgd.round(2),
+        'Change since arrival': sp.impact.round(2),
     })
     st.dataframe(t, hide_index=True, use_container_width=True)
 
@@ -245,10 +259,51 @@ def _tendencies(s, table, rel, league_name):
                "there. Percentile = share of those coaches with a lower number: it says high or low, not good "
                "or bad. 'How stable' is the agreement between a coach's odd and even matches (1 = a fixed "
                "trait, 0 = noise). Only measures at 0.40 or better are shown.")
-    st.caption("Attack flanks use the event provider's tag on each attack. Measures tested and left out as "
-               "noise: xG difference after 75', the home ↔ away gap, line-up changes after a defeat, first "
-               "substitution minute, substitutions before 60', points after trailing, leads not won, and xG "
-               "difference by game state (raw and against expected).")
+    st.caption("Attack flanks use the event provider's tag on each attack. These are read as how he sets his "
+               "sides up, so only measures that repeat are shown. Tested and left out as noise: line-up "
+               "changes after a defeat, first-substitution minute and substitutions before 60'.")
+
+
+def _in_game(s, rel, table, league_name):
+    st.caption('A record of what happened in his matches. These numbers do not repeat from one half of a '
+               "coach's matches to the other, so they describe; they do not predict.")
+    _vs_league(table, s, [
+        ('ppg_after_trailing', 'Points per match after trailing', _fmt),
+        ('led_not_won_share', 'Leads not won', lambda v: _fmt(v, '{:.0%}')),
+        ('late_xgd', "xG difference after 75', per match", _signed),
+        ('home_minus_away', 'xG difference per match, home minus away', _signed),
+        ('xgd90_vs_exp_lead', 'xG difference vs expected, leading', _signed),
+        ('xgd90_vs_exp_draw', 'xG difference vs expected, level', _signed),
+        ('xgd90_vs_exp_trail', 'xG difference vs expected, trailing', _signed)], league_name)
+    if not s['state_matches']:
+        st.info('No matches with a clean goal timeline in this scope.')
+        return
+    keys = ('lead', 'draw', 'trail')
+    t = pd.DataFrame({
+        'Game state': ['Leading', 'Level', 'Trailing'],
+        'Share of minutes': [_fmt(s[f'min_share_{k}'], '{:.0%}') for k in keys],
+        'Expected share': [_fmt(s.get(f'exp_min_share_{k}'), '{:.0%}') for k in keys],
+        'xG difference per 90': [_signed(s[f'xgd90_{k}']) for k in keys],
+        'Expected': [_signed(s.get(f'exp_xgd90_{k}')) for k in keys],
+        'vs expected': [_signed(s.get(f'xgd90_vs_exp_{k}')) for k in keys],
+    })
+    left, right = st.columns([3, 2])
+    left.dataframe(t, hide_index=True, use_container_width=True)
+    right.metric('Points per match after trailing', _fmt(s['ppg_after_trailing']),
+                 help=f"{s['trailed_n']} matches in which the side was behind at some point.")
+    right.metric('Leads not won', f"{s['led_not_won']} of {s['led_n']}")
+    st.caption(f"Game state over {s['state_matches']} matches whose event goals match the final score "
+               "(own goals are not shot events, so those matches are left out). Every side does better "
+               "on xG when trailing, so read 'vs expected', not the raw number.")
+    if s.get('state_exp_matches'):
+        st.caption(f"Expected = what a side of that strength, against those opponents and at those venues, "
+                   f"typically does in that game state: a straight-line fit on the pre-match rating gap and "
+                   f"home/away, fitted only on the league's earlier months. The two expected columns and "
+                   f"'vs expected' cover the {s['state_exp_matches']} of {s['state_matches']} matches that "
+                   "have an expectation; the two actual columns cover all of them, so they are not exactly "
+                   "like for like when those counts differ.")
+    else:
+        st.caption('No expected numbers yet: they need about 150 earlier matches with a clean goal timeline in the league.')
 
 
 def _squad(app, s, cp, coach_id, table, league_name):
@@ -273,6 +328,21 @@ def _squad(app, s, cp, coach_id, table, league_name):
         except Exception:
             return f'#{int(pid)}'
 
+    dev, summ = cm.player_development(cp, coach_id)
+    st.markdown('**Players against their own earlier record**')
+    if not summ['n']:
+        st.caption(f'No player has {cm.MIN_PLAYER_MINUTES}+ minutes both under him and before him.')
+    else:
+        st.caption(f"{summ['improved']} of {summ['n']} players with {cm.MIN_PLAYER_MINUTES}+ minutes on each side "
+                   f"produced more on-ball value per 90 under him than in their earlier matches "
+                   f"(minutes-weighted change {summ['mean_change']:+.3f}). The earlier record is only matches "
+                   "played before their first game under him. Age, role and team strength are not removed.")
+        t = pd.DataFrame({'Player': dev.playerId.map(_name), 'Team': dev.team,
+                          'Minutes under him': dev.minutes.round(0).astype(int),
+                          'OBV/90 under him': dev.obv90.round(3), 'OBV/90 before': dev.prior_obv90.round(3),
+                          'Change': dev.change.round(3),
+                          'Minutes before': dev.prior_minutes.round(0).astype(int)})
+        st.dataframe(t, hide_index=True, use_container_width=True, height=min(38 * (len(t) + 1), 420))
     used = cp[cp.coachId == coach_id].sort_values('minutes', ascending=False).head(15)
     if not used.empty:
         st.markdown('**Most-used players**')
@@ -344,7 +414,7 @@ def _flexibility(s, league_row, table, rel, league_name):
                f"{_stable(rel, 'main_formation_share')}.")
 
 
-def _young(app, rows, s, league_row, rel, cp, coach_id, league_name, table):
+def _young(app, rows, s, league_row, rel, cp, pairs, coach_id, league_name, table):
     cut = st.radio('Young means', [21, 23], format_func=lambda c: f'Under {c}', horizontal=True,
                    key='coach_profile_age_cut')
     k = f'u{cut}'
@@ -412,6 +482,49 @@ def _young(app, rows, s, league_row, rel, cp, coach_id, league_name, table):
                    "is in the squad share above, not in this table. Share of minutes and matches started are "
                    "of the coach's matches between the player's first and last appearance under him.")
 
+    st.markdown('**Do they get better under him?**')
+    dev, summ = cm.youth_development(pairs, coach_id, cut)
+    if not summ['n']:
+        st.caption(f'No under-{cut} player has {cm.MIN_PLAYER_MINUTES}+ minutes both before him and under him.')
+    else:
+        line = (f"{summ['improved']} of {summ['n']} produced more on-ball value per 90 under him than in their "
+                f"earlier matches (minutes-weighted change {summ['mean_change']:+.3f}).")
+        if summ['n_expected']:
+            line += (f" Against what other players of their age band did under other coaches before: "
+                     f"{summ['beat_expected']} of {summ['n_expected']} beat it "
+                     f"(average {summ['mean_vs_expected']:+.3f}).")
+        st.caption(line)
+        t = pd.DataFrame({'Player': dev.playerId.map(_name), 'Team': dev.team,
+                          'Age at first match': dev.age_first.round(1),
+                          'Minutes under him': dev.minutes.round(0).astype(int),
+                          'OBV/90 before': dev.prior_obv90.round(3), 'OBV/90 under him': dev.obv90.round(3),
+                          'Change': dev.change.round(3), 'Expected for age': dev.expected.round(3),
+                          'Against expected': dev.vs_expected.round(3)})
+        st.dataframe(t, hide_index=True, use_container_width=True)
+    # halves are split over ALL his minutes under this coach, so the table
+    # always uses the coach's whole record for the players in this scope
+    prog = cm.youth_progress(cp, coach_id, cut)
+    if not prog.empty:
+        prog = prog[prog.playerId.isin(set(mine.playerId))]
+    if not prog.empty:
+        st.caption(f"While playing for him — first half against second half of each player's minutes under him "
+                   f"({cm.MIN_PROGRESS_MINUTES}+ minutes, all his clubs under this coach together): "
+                   f"{int((prog.progress > 0).sum())} of {len(prog)} did more "
+                   "in the second half. Across the league the average change is about zero at every age.")
+        t = pd.DataFrame({'Player': prog.playerId.map(_name), 'Team': prog.team,
+                          'Age at first match': prog.age_first.round(1),
+                          'Minutes under him': prog.minutes.round(0).astype(int),
+                          'OBV/90 first half': prog.first_half.round(3),
+                          'OBV/90 second half': prog.second_half.round(3),
+                          'Change': prog.progress.round(3)})
+        st.dataframe(t, hide_index=True, use_container_width=True)
+    st.warning("Treat this as a list of cases, not a rating of the coach. Across the league the typical coach "
+               f"has two under-23 players with enough minutes on both sides, and when coaches' players "
+               "(all ages) are split at random into two halves, the two halves barely agree (correlation "
+               "0.13 over 57 coaches, 2026-11; 0.22 for the first-half / second-half view). On-ball value "
+               "also moves with role and team strength. "
+               "'Before' is only matches played before his first game under this coach; 'expected for age' "
+               "uses only other coaches' spells that had already ended.")
 
 
 # ──────────────────────────────── page ────────────────────────────────
@@ -495,7 +608,7 @@ def render():
 
     lr = table[table.coachId == coach_id]
     league_row = lr.iloc[0].to_dict() if len(lr) else None
-    sections = ['Overview', 'Style', 'Flexibility', 'Tendencies', 'Young players', 'Squad & players', 'Matches']
+    sections = ['Overview', 'Style', 'Flexibility', 'Tendencies', 'In-game', 'Young players', 'Squad & players', 'Matches']
     active = st.radio('Coach section', sections, horizontal=True, label_visibility='collapsed',
                       key='coach_profile_section')
     if active == 'Overview':
@@ -508,8 +621,11 @@ def render():
         _flexibility(s, league_row, table, league_reliability(sig, comp_id), league_name)
     elif active == 'Tendencies':
         _tendencies(s, table, league_reliability(sig, comp_id), league_name)
+    elif active == 'In-game':
+        _in_game(s, league_reliability(sig, comp_id), table, league_name)
     elif active == 'Young players':
-        _young(app, rows, s, league_row, league_reliability(sig, comp_id), cp, coach_id, league_name, table)
+        _young(app, rows, s, league_row, league_reliability(sig, comp_id), cp,
+               league_development_pairs(sig), coach_id, league_name, table)
     elif active == 'Squad & players':
         _squad(app, s, cp, coach_id, table, league_name)
     else:

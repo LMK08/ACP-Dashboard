@@ -436,7 +436,7 @@ def test_coach_profile_sections(app):
 
     names = list([r for r in app.radio if r.label == 'Coach section'][0].options)
     seen = {name: show(name) for name in names}
-    assert {'Team level', 'Points per match', 'Expected points per match'} <= seen['Overview']
+    assert {'Team level', 'Change since arrival', 'Points − expected'} <= seen['Overview']
     assert 'Settled ↔ fluid' in seen['Flexibility']
     assert 'Trust ratio' in seen['Young players']
     show('Flexibility')

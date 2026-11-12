@@ -459,9 +459,9 @@ def coach_table(tm, competition_id=None, min_matches=MIN_MATCHES):
 # Tested and left out (2026-11): rotation on short rest (Liga 3 has almost no
 # matches within 4 days of the last one - 2 coaches had enough) and a
 # 'late-game lift' (late xGD per 90 minus the rest; 0.21 / -0.04 odd/even).
-# SHOWN measures only. A measure is shown when a coach's odd and even matches
-# agree at 0.40 or better on Liga 3 (Lucas 2026-11: no noisy metrics on the
-# pages). NOISY_HIDDEN lists what that rule removed, with the number.
+# Tendencies are PREDICTIVE (read as how he sets his sides up), so one is
+# shown only when a coach's odd and even matches agree at 0.40 or better on
+# Liga 3 (Lucas 2026-11). NOISY_HIDDEN lists what that rule removed.
 TENDENCIES = {
     # key: (label, what it counts, format)
     'subs_used':          ('Substitutions per match', 'changes made', '{:.1f}'),
@@ -475,14 +475,14 @@ TENDENCIES = {
 
 
 NOISY_HIDDEN = {
-    # key: odd/even agreement on Liga 3 when it was hidden (2026-11)
-    'pts_minus_xpts': 0.10, 'impact': 0.34, 'set_piece_share': 0.02, 'opp_adapt': 0.26,
-    'late_xgd': 0.37, 'home_minus_away': 0.02, 'changes_after_loss': 0.06, 'loss_reaction': -0.20,
-    'first_sub_min': 0.30, 'subs_before_60_share': 0.37, 'ppg_after_trailing': 0.31,
-    'led_not_won_share': 0.05, 'xgd90_lead': 0.17, 'xgd90_draw': 0.28, 'xgd90_trail': 0.00,
-    'xgd90_vs_exp_lead': 0.08, 'xgd90_vs_exp_draw': 0.20, 'xgd90_vs_exp_trail': -0.42,
-    'min_share_lead': 0.00, 'min_share_draw': -0.11, 'min_share_trail': -0.21,
-    'player_development': 0.13, 'youth_progress': 0.22,
+    # PREDICTIVE measures (read as a trait: how he sets up, what he would do
+    # again) hidden as noise - key: odd/even agreement on Liga 3 (2026-11).
+    # DESCRIPTIVE numbers (a record of what happened: points - expected,
+    # change since arrival, game states, late xGD, home-away, the player
+    # tables) are shown whatever their agreement, and say that they describe.
+    'set_piece_share': 0.02, 'opp_adapt': 0.26, 'style_travel': 0.0,
+    'changes_after_loss': 0.06, 'loss_reaction': -0.20,
+    'first_sub_min': 0.30, 'subs_before_60_share': 0.37,
 }
 MIN_SHOWN_RELIABILITY = 0.40
 
