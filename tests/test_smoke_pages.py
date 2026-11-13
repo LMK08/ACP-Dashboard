@@ -72,6 +72,12 @@ def app(request):
 #     that thread's arena -> malloc_trim(0) returns it to the system
 # and each test prints what the process holds, so the next failure (or the
 # next added test) can be judged from the log instead of guessed at.
+#
+# First read-out from the runner (run 43516986474, 2026-11-13): 16 GB machine,
+# 4.3 GB after booting the app, and 14.3 GB at the end of ONE walk of the
+# Opposition Report's six sections — released again by the next test's
+# clean-up. So memory is also released after every page change and section
+# change (_open_page / _open_section), not only between tests.
 ON_CI = os.environ.get('CI') == 'true'
 HEAVY_ON_CI = pytest.mark.skipif(
     ON_CI, reason="many heavy page runs in one process: the hosted runner cannot hold it "
@@ -98,9 +104,8 @@ def _say(request, text):
         reporter.write_line(text)
 
 
-@pytest.fixture(autouse=True)
-def _free_memory_after_each_test(request):
-    yield
+def _release_memory():
+    """Hand back what the last page run left behind (see the note above)."""
     import gc
     gc.collect()
     try:
@@ -108,6 +113,12 @@ def _free_memory_after_each_test(request):
         ctypes.CDLL('libc.so.6').malloc_trim(0)
     except OSError:          # not glibc (macOS)
         pass
+
+
+@pytest.fixture(autouse=True)
+def _free_memory_after_each_test(request):
+    yield
+    _release_memory()
     _say(request, f"[mem] {_rss_mb():>6} MB after {request.node.name}")
 
 
@@ -125,6 +136,7 @@ def _open_page(at, page):
     _nav_radio(at, page).set_value(page).run()
     at.run()  # some pages rerun once on first visit (nav / session seeding)
     assert _nav_radio(at, page).value == page
+    _release_memory()
 
 
 def _newest_season_label(at):
@@ -283,6 +295,7 @@ def _open_section(app, page, name):
     element handle goes stale after a run."""
     [r for r in app.radio if r.label == TEAM_PAGE_SECTION_RADIO[page]][0].set_value(name)
     app.run()
+    _release_memory()
 
 
 @pytest.mark.parametrize('page', ['Team Analysis', 'Opposition Report'])
