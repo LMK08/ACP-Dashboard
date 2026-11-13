@@ -500,3 +500,22 @@ def test_tempo_possession_length_and_fixed_eleven():
     assert cm.core_xi_share(two) == pytest.approx((86 / 88 * 8 + 1.0 * 8) / 16)
     for k in ('tempo', 'poss_length', 'core_xi_share'):
         assert k in cm.TENDENCIES
+
+
+def test_coach_comparison_rows_use_the_profile_numbers():
+    """Both coaches' numbers, the league median and each percentile come from
+    league_comparison, the same function the Coach Profile uses."""
+    from models.coaches import coach_metrics as cm
+    from views import coach_comparison as cc
+    table = pd.DataFrame({'qualifies': [True] * 6 + [False], 'ppg': [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 9.0]})
+    sa, sb = {'ppg': 1.9}, {'ppg': 1.1}
+    df, n = cc.comparison_rows(table, sa, sb, [('ppg', 'Points per match', lambda v: f'{v:.2f}')], ['A', 'B'])
+    assert n == 6                                              # the non-qualifying coach is not in the pool
+    r = df.iloc[0]
+    assert (r['A'], r['B'], r['League median']) == ('1.90', '1.10', '1.50')
+    want = cm.league_comparison(table, sa, ['ppg'])[0]['pct']
+    assert r['A percentile'] == want and r['A percentile'] > r['B percentile']
+    assert r['B percentile'] == pytest.approx(100 / 6)
+    # a measure the league table does not carry: numbers shown, no median or percentile
+    df2, _ = cc.comparison_rows(table, {'x': 1.0}, {'x': 2.0}, [('x', 'X', lambda v: '–' if pd.isna(v) else f'{v:.0f}')], ['A', 'B'])
+    assert df2.iloc[0]['A'] == '1' and pd.isna(df2.iloc[0]['A percentile'])

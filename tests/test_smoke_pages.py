@@ -467,3 +467,73 @@ def test_profile_coached_by_section(app):
         print(t.to_string())
     section.set_value('Player Radar')
     app.run()
+
+
+@pytest.mark.skipif(not os.path.exists(COACH_TABLES), reason='coach tables not built')
+def test_coach_comparison_sections(app):
+    """Coach Comparison opens on the club's own coach against another coach,
+    and every section renders clean with both coaches in its tables."""
+    _open_page(app, 'Coach Comparison')
+    assert not _problems(app), _problems(app)
+    a = [s for s in app.selectbox if s.label == 'Coach A'][0]
+    b = [s for s in app.selectbox if s.label == 'Coach B'][0]
+    assert 'Atlético CP' in a.format_func(a.value)
+    assert a.value != b.value
+
+    names = list([r for r in app.radio if r.label == 'Comparison section'][0].options)
+    for name in names:
+        [r for r in app.radio if r.label == 'Comparison section'][0].set_value(name)
+        app.run()
+        assert not _problems(app), (name, _problems(app))
+        tables = [d.value for d in app.dataframe if 'League median' in list(d.value.columns)]
+        assert tables, name
+        for t in tables:
+            pct = [c for c in t.columns if c.endswith('percentile')]
+            assert len(pct) == 2, (name, list(t.columns))
+            assert t[pct].stack().dropna().between(0, 100).all()
+
+    # another Coach B, preset the way the Coach Profile's 'Compare' button presets Coach A:
+    # the page follows the seed and still renders clean
+    import pandas as pd
+    a = [s for s in app.selectbox if s.label == 'Coach A'][0]
+    b = [s for s in app.selectbox if s.label == 'Coach B'][0]
+    tm = pd.read_parquet(COACH_TABLES, columns=['coachId', 'competitionId', 'team'])
+    comp = tm.loc[tm.coachId == a.value, 'competitionId'].mode().iloc[0]
+    pool = tm[(tm.competitionId == comp) & (tm.coachId > 0) & ~tm.coachId.isin([a.value, b.value])]
+    other = int(pool.coachId.value_counts().index[0])
+    app.session_state['coach_compare_seed_b'] = other
+    app.run()
+    assert not _problems(app), _problems(app)
+    assert [s for s in app.selectbox if s.label == 'Coach B'][0].value == other
+    assert [s for s in app.selectbox if s.label == 'Coach A'][0].value == a.value
+
+
+@pytest.mark.skipif(not os.path.exists(COACH_TABLES), reason='coach tables not built')
+def test_coach_comparison_same_coach_and_other_league(app):
+    """Picking one coach twice is said, not silently swapped; a coach sent
+    from his profile in the other league is followed there as Coach A."""
+    import pandas as pd
+    _open_page(app, 'Coach Comparison')
+    a = [s for s in app.selectbox if s.label == 'Coach A'][0]
+    a_id = a.value
+    app.session_state['coach_comparison_b'] = a_id            # the user picks Coach A again as Coach B
+    app.run()
+    assert not _problems(app), _problems(app)
+    assert [s for s in app.selectbox if s.label == 'Coach B'][0].value == a_id
+    assert any('two different coaches' in i.value for i in app.info)
+
+    tm = pd.read_parquet(COACH_TABLES, columns=['coachId', 'competitionId'])
+    here = int(tm.loc[tm.coachId == a_id, 'competitionId'].mode().iloc[0])
+    only_there = tm[tm.coachId > 0].groupby('coachId').competitionId.agg(lambda c: set(c))
+    other = [int(c) for c, comps in only_there.items() if here not in comps]
+    if not other:
+        pytest.skip('no coach with matches only in the other league')
+    counts = tm[tm.coachId.isin(other)].coachId.value_counts()
+    seed = int(counts.index[0])
+    app.session_state['coach_compare_seed_a'] = seed
+    app.run()
+    assert not _problems(app), _problems(app)
+    assert [s for s in app.selectbox if s.label == 'Coach A'][0].value == seed
+    assert any('no matches in the league selected' in i.value for i in app.info)
+    b = [s for s in app.selectbox if s.label == 'Coach B'][0]
+    assert b.value != seed

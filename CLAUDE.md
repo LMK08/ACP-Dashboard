@@ -518,6 +518,15 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   by the 11 most-used starters per club-season with 8+ sheets, 0.82).
   Tested the same day and NOT built (Lucas: too noisy): substitutions by
   the score and style leading vs trailing (-0.23 … 0.17).
+  COACH COMPARISON (`views/coach_comparison.py`, 2026-11-13, Opposition
+  group): two coaches of ONE league, each on his whole record there,
+  through the profile's own `summarise` / `league_comparison` /
+  `coach_table` — add a measure to the profile and to the matching spec
+  list there (RESULTS, SETUP, IN_GAME, SQUAD; style and tendencies read
+  `STYLE_METRICS` / `TENDENCIES` directly). Coach B opens on the closest
+  style; the Coach Profile's 'Compare with another coach' button seeds
+  Coach A (`coach_compare_seed_a`) and the page follows him to his league.
+  It is never a ranking: it says when the team-level intervals overlap.
   Coach RATING: feasibility tested 2026-11 and NOT built — after removing
   squad quality (starters' prior OBV/90, r 0.66 with team-season xGD) a
   coach's residual does not agree between odd and even matches of one

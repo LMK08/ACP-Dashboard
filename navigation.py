@@ -19,7 +19,7 @@ HOME = 'Home'
 
 NAV_GROUPS = (
     ('Club', ('Home', 'Team Analysis', 'Match Analysis', 'League Analysis')),
-    ('Opposition', ('Opposition Report', 'Match Predictor', 'Coach Profile')),
+    ('Opposition', ('Opposition Report', 'Match Predictor', 'Coach Profile', 'Coach Comparison')),
     ('Players', ('Player Profile', 'Player Comparison', 'Player Analysis')),
     ('Recruitment', ('Shadow Team',)),
 )

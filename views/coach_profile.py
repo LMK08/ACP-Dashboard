@@ -619,6 +619,9 @@ def render():
             ' The event data does not name this coach; the name is the manager Transfermarkt lists at his '
             'clubs on the dates of his matches.')
         st.caption(f'[Transfermarkt profile](https://www.transfermarkt.com/-/profil/trainer/{int(tm_id)}).' + note)
+    if st.button('Compare with another coach', key='coach_profile_compare'):
+        # the comparison page seeds Coach B with the closest style
+        navigation.go_to('Coach Comparison', coach_compare_seed_a=int(coach_id))
 
     lr = table[table.coachId == coach_id]
     league_row = lr.iloc[0].to_dict() if len(lr) else None
