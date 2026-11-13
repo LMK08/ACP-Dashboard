@@ -12,6 +12,7 @@ suite can run on a code-only checkout.
 
 Run:  python -m pytest tests/test_smoke_pages.py -v      (about 2 minutes)
 """
+import html
 import os
 import re
 import sys
@@ -416,6 +417,79 @@ def test_promotion_odds_cite_the_scoreline_model(app):
 
 
 COACH_TABLES = os.path.join(DASHBOARD_DIR, 'models', 'coaches', 'coach_team_match.parquet')
+
+
+def test_match_analysis_scoreboard_and_sections(app):
+    """Match Analysis opens on a scoreboard (names, score, xG) and draws ONE
+    section at a time; every section renders clean, the shot maps are the
+    Shots section's two Plotly charts, and the report PDF builds from a
+    section other than the first (it renders its own figures and reads
+    tables prepared above the section branches)."""
+    _open_page(app, 'Match Analysis')
+    assert not _problems(app), _problems(app)
+    match = [s for s in app.selectbox if s.label == 'Match'][0].value
+    board = [str(m.value) for m in app.markdown if 'class="acp-sb"' in str(m.value)]
+    assert board, 'scoreboard missing'
+    board = board[0].split('</style>')[-1]           # the markup, not the stylesheet
+    assert 'Match Report' in board
+    names = re.findall(r'class="acp-sb-name">([^<]+)<', board)
+    assert len(names) == 2 and all(html.unescape(n) in match for n in names), (names, match)
+    score = re.search(r'class="acp-sb-score">(\d+)&nbsp;–&nbsp;(\d+)<', board)
+    assert score and f"({score.group(1)}-{score.group(2)})" in match, (board[-400:], match)
+    assert len(re.findall(r'class="acp-sb-xg (?:home|away)">\d+\.\d\d<', board)) == 2
+
+    sections = list([r for r in app.radio if r.label == 'Match section'][0].options)
+    assert sections[0] == 'Summary' and [r for r in app.radio if r.label == 'Match section'][0].value == 'Summary'
+    charts = {}
+    for name in sections:
+        # re-find the radio every time: an element handle goes stale after a run
+        [r for r in app.radio if r.label == 'Match section'][0].set_value(name)
+        app.run()
+        assert not _problems(app), (name, _problems(app))
+        assert [s for s in app.selectbox if s.label == 'Match'][0].value == match, name
+        assert any(b.label == 'Build match report PDF' for b in app.button), name
+        charts[name] = len(app.get('plotly_chart'))
+    assert charts['Shots'] == 2, charts
+    assert charts['Summary'] == 0 and charts['Tactics'] == 0, charts
+
+    [r for r in app.radio if r.label == 'Match section'][0].set_value('Players')
+    app.run()
+    [b for b in app.button if b.label == 'Build match report PDF'][0].click()
+    app.run()
+    assert not _problems(app), _problems(app)
+    pdfs = [app.session_state[k] for k in app.session_state.filtered_state
+            if str(k).startswith('match_report_pdf_')]
+    assert pdfs and bytes(pdfs[0][:5]) == b'%PDF-', 'no match report PDF built from the Players section'
+
+
+def test_match_deep_link_survives_a_section_click(app):
+    """A match opened by a deep link (Home's button, a click on a shot) stays
+    selected when a section is clicked: the picker is keyed and seeded, so
+    popping nav_match_id does not turn it into a new widget."""
+    _open_page(app, 'Match Analysis')
+    box = [s for s in app.selectbox if s.label == 'Match'][0]
+    other = [o for o in box.options if o != box.value][-1]      # an old match, not the default
+    mid = _match_id_of(app, other)
+    _open_page(app, 'Home')
+    app.session_state['nav_match_id'] = mid
+    _open_page(app, 'Match Analysis')
+    assert [s for s in app.selectbox if s.label == 'Match'][0].value == other
+    [r for r in app.radio if r.label == 'Match section'][0].set_value('Team stats')
+    app.run()
+    assert not _problems(app), _problems(app)
+    assert [s for s in app.selectbox if s.label == 'Match'][0].value == other
+
+
+def _match_id_of(app, display_name):
+    """matchId of a Match Analysis option ('GW n: Home vs Away (h-a) - yyyy-mm-dd')."""
+    import pandas as pd
+    m = re.match(r'(?:\[\w+\] )?GW (\S+): (.+) vs (.+) \((\S+)\) - (\d{4}-\d{2}-\d{2})$', display_name)
+    assert m, display_name
+    ms = pd.read_parquet(os.path.join(DASHBOARD_DIR, 'matches_summary.parquet'))
+    hit = ms[(ms['homeTeamName'] == m.group(2)) & (ms['awayTeamName'] == m.group(3))
+             & (pd.to_datetime(ms['dateutc']).dt.strftime('%Y-%m-%d') == m.group(5))]
+    assert len(hit) == 1, (display_name, len(hit))
+    return int(hit['matchId'].iloc[0])
 
 
 @pytest.mark.skipif(not os.path.exists(COACH_TABLES), reason='coach tables not built')

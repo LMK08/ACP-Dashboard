@@ -5,6 +5,8 @@ pattern opposition_report.py uses), so importing this module never imports
 app.py. The binding block at the top of render() IS the page's dependency
 list: everything it reads from app.py, nothing else.
 """
+import re
+
 import pandas as pd
 import streamlit as st
 import sys
@@ -12,6 +14,90 @@ import sys
 
 def _app():
     return sys.modules['__main__']
+
+
+MATCH_SECTIONS = ("Summary", "Team stats", "Shots", "Players", "Tactics")
+
+
+# The scoreboard's layout. Classes, not inline styles, because the phone
+# layout needs a media query: under 640 px each side stacks its crest above
+# its name (side by side, a 375 px screen left the names about 40 px and
+# they broke letter by letter).
+_SCOREBOARD_CSS = """<style>
+.acp-sb { background:#fff; border:1px solid #EBE7E1; border-radius:8px; padding:0.9rem 1.25rem 1rem;
+          margin:0.3rem 0 0.9rem; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+.acp-sb-detail, .acp-sb-xg-label { font-size:0.72rem; letter-spacing:0.12em; text-transform:uppercase;
+          color:#5c5650; font-weight:600; text-align:center; }
+.acp-sb-detail { margin-bottom:0.7rem; }
+.acp-sb-row { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center;
+          column-gap:1.4rem; }
+.acp-sb-row + .acp-sb-row { margin-top:0.55rem; }
+.acp-sb-side { display:flex; align-items:center; gap:0.8rem; min-width:0; }
+.acp-sb-side.home { justify-content:flex-end; text-align:right; }
+.acp-sb-side.away { justify-content:flex-start; text-align:left; }
+.acp-sb-side img { width:52px; height:52px; object-fit:contain; flex:none; }
+.acp-sb-name { font-size:1.3rem; font-weight:700; color:#1a1a1a; line-height:1.2; min-width:0;
+          overflow-wrap:break-word; }
+.acp-sb-score { font-size:2.5rem; font-weight:700; line-height:1; color:#1a1a1a; white-space:nowrap;
+          font-variant-numeric:tabular-nums; }
+.acp-sb-xg { font-size:1rem; font-weight:600; color:#1a1a1a; font-variant-numeric:tabular-nums; }
+.acp-sb-xg.home { text-align:right; } .acp-sb-xg.away { text-align:left; }
+@media (max-width: 640px) {
+  .acp-sb { padding:0.8rem 0.7rem 0.9rem; }
+  .acp-sb-row { column-gap:0.6rem; align-items:start; }
+  .acp-sb-side.home { flex-direction:column-reverse; }
+  .acp-sb-side.away { flex-direction:column; }
+  .acp-sb-side.home, .acp-sb-side.away { justify-content:flex-start; text-align:center; gap:0.35rem; }
+  .acp-sb-side img { width:44px; height:44px; }
+  .acp-sb-name { font-size:0.95rem; }
+  .acp-sb-score { font-size:2rem; margin-top:0.55rem; }
+  .acp-sb-xg.home, .acp-sb-xg.away { text-align:center; }
+}
+</style>"""
+
+
+def _scoreboard_html(app, info, events, stage):
+    """The match header: crests, names, score, xG per side, and one line of
+    detail. xG is the sum of `shot.xg` in the match events — the figure the
+    shot maps' subtitles and Home's "Last match" card show. A fixture with
+    no score reads "vs"; a side with no crest file shows its name alone."""
+    import html
+    home, away = str(info.get('homeTeamName', '?')), str(info.get('awayTeamName', '?'))
+    _m = re.match(r'\s*(\d+)\s*-\s*(\d+)', str(info.get('score')))
+    score = f"{_m.group(1)}&nbsp;–&nbsp;{_m.group(2)}" if _m else "vs"
+    xg = {}
+    if events is not None and not events.empty and {'team.name', 'shot.xg'}.issubset(events.columns):
+        xg = events.groupby('team.name', observed=True)['shot.xg'].sum().to_dict()
+    date = pd.to_datetime(info.get('dateutc'), errors='coerce')
+    detail = " · ".join(x for x in (
+        "Match Report",
+        f"GW {info.get('gameweek')}" if pd.notna(info.get('gameweek')) else None,
+        date.strftime('%d %b %Y') if pd.notna(date) else None,
+        stage) if x)
+
+    def crest(team):
+        uri = app.crest_data_uri(team)
+        return f'<img src="{uri}" alt="">' if uri else ''
+
+    def name(team):
+        return f'<div class="acp-sb-name">{html.escape(team)}</div>'
+
+    def xg_cell(team, side):
+        value = f"{xg[team]:.2f}" if team in xg else "–"
+        return f'<div class="acp-sb-xg {side}">{value}</div>'
+
+    return (
+        _SCOREBOARD_CSS
+        + '<div class="acp-sb">'
+        f'<div class="acp-sb-detail">{html.escape(detail)}</div>'
+        '<div class="acp-sb-row">'
+        f'<div class="acp-sb-side home">{name(home)}{crest(home)}</div>'
+        f'<div class="acp-sb-score">{score}</div>'
+        f'<div class="acp-sb-side away">{crest(away)}{name(away)}</div>'
+        '</div>'
+        + (f'<div class="acp-sb-row">{xg_cell(home, "home")}'
+           f'<div class="acp-sb-xg-label">xG</div>{xg_cell(away, "away")}</div>' if xg else '')
+        + '</div>')
 
 
 def render():
@@ -100,18 +186,30 @@ def render():
     _default_match_idx = next(
         (i for i, (ev, ours) in enumerate(zip(_with_ev, _is_ours.tolist())) if ev and ours),
         next((i for i, ev in enumerate(_with_ev) if ev), 0))
-    # Deep link from Home ("Open match report"): open on that match.
-    _nav_mid = st.session_state.pop('nav_match_id', None)
-    if _nav_mid is not None:
-        _ids = season_matches_df['matchId'].tolist()
-        if _nav_mid in _ids:
-            _default_match_idx = _ids.index(_nav_mid)
     # One title, then the match picker at the top of the page (it sat at the
     # foot of the sidebar, below the screen edge, until 2026-11). The option
     # text carries the score and the date.
     st.header("Match Analysis")
-    selected_match_display = st.selectbox(
-        "Match", season_matches_df['display_name'], index=_default_match_idx)
+    _match_options = season_matches_df['display_name'].tolist()
+    if not _match_options:
+        st.warning("No matches for this league and season yet.")
+        st.stop()
+    # The picker is KEYED and seeded through session state, never index=
+    # (widget-seeding rule). Un-keyed with index=, a match opened by a deep
+    # link (Home's "Open match report", a click on a shot or a rolling-xG
+    # point) was a different widget on the next run, once nav_match_id had
+    # been popped — so the first click on a section jumped back to the
+    # default match. The value is re-set every run: the option list follows
+    # the league and season.
+    _nav_mid = st.session_state.pop('nav_match_id', None)
+    if _nav_mid is not None:
+        _ids = season_matches_df['matchId'].tolist()
+        if _nav_mid in _ids:
+            st.session_state['match_analysis_match'] = _match_options[_ids.index(_nav_mid)]
+    _cur_match = st.session_state.get('match_analysis_match')
+    st.session_state['match_analysis_match'] = (
+        _cur_match if _cur_match in _match_options else _match_options[_default_match_idx])
+    selected_match_display = st.selectbox("Match", _match_options, key='match_analysis_match')
     matching_matches = season_matches_df[season_matches_df['display_name'] == selected_match_display]
     if matching_matches.empty:
         st.error("Selected match not found. Please refresh the page and try again.")
@@ -119,8 +217,9 @@ def render():
     selected_match_info = matching_matches.iloc[0]
     selected_match_id = selected_match_info['matchId']
 
-    # --- Stage of the selected match, as a note under the picker (it was a
-    # badge at the foot of the sidebar).
+    # --- Stage of the selected match (once a badge at the foot of the sidebar,
+    # now part of the scoreboard's detail line) ---
+    badge_text = None
     if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
         round_counts = season_matches_df.groupby('roundId').size()
         first_stage_round = round_counts.idxmax()
@@ -134,22 +233,37 @@ def render():
                           else "Maintenance Stage")
         else:
             badge_text = "Second Stage"
-        st.caption(badge_text)
-    # The match as a line of its own under the picker, one level below the
-    # page title (dropped in the 2026-11 UX pass, kept by Lucas the same day).
-    st.subheader(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
 
+    # --- Get the match events ONCE ---
+    match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
 
-
+    # --- Scoreboard (2026-11): the score used to appear only in the small
+    # print above the first shot map. It carries the "Match Report" line
+    # Lucas kept, the gameweek, date and stage.
+    st.markdown(_scoreboard_html(app, selected_match_info, match_events_df, badge_text),
+                unsafe_allow_html=True)
 
     match_data = all_match_data.get(selected_match_id)
     if match_data:
-        st.subheader("Shot Maps")
         import team_interactive as ti
         import context_bar
 
-        # --- Get the match events ONCE ---
-        match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
+        home_team = selected_match_info['homeTeamName']
+        away_team = selected_match_info['awayTeamName']
+        # Get lineup/substitution data for this match (if available)
+        match_lineup_data = match_lineups.get(selected_match_id, {}) if match_lineups else {}
+        home_lineup = match_lineup_data.get(home_team)
+        away_lineup = match_lineup_data.get(away_team)
+
+        # --- Sections (2026-11): ONE is drawn at a time; the page was 12 screens
+        # of everything. The PDF button sits beside the row and builds the
+        # same report from any section: it renders its own figures
+        # (_match_fig_or_none) and reads the tables prepared below, which are
+        # therefore built on every run whatever the section.
+        _sec_col, _pdf_col = st.columns([3, 1], vertical_alignment="center")
+        with _sec_col:
+            _section = st.radio("Match section", MATCH_SECTIONS, horizontal=True,
+                                key="match_section", label_visibility="collapsed")
 
         # Every pitch figure on this page goes through _show_match_png ->
         # _render_match_figure_png, which caches the PNG bytes on
@@ -243,23 +357,10 @@ def render():
                     ['On-Ball Value (engine)']
                     + [i for i in _gen.index if i != 'On-Ball Value (engine)'])
 
-        # Interactive, stacked at full width (the same drawing as the team and
-        # player maps; the static PNG stays for the match-report PDF).
-        for _side, _team in (('home', selected_match_info['homeTeamName']),
-                             ('away', selected_match_info['awayTeamName'])):
-            _ev = st.plotly_chart(ti.plotly_match_shot_map(match_events_df, selected_match_info, _team, height=context_bar.pitch_height()),
-                                  use_container_width=True, key=f'ma_shots_{_side}', on_select='rerun',
-                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
-            app.open_profile_from_selection(_ev, selected_season_id)
-
-        # --- NEW: Shot Details Tables ---
-        st.markdown("---") # Add a separator
-        st.subheader("Shot Details")
-
         def get_shot_table(df, team_name):
             """Helper function to create the shot detail table."""
             shots = df[
-                (df.get('team.name') == team_name) & 
+                (df.get('team.name') == team_name) &
                 (df.get('type.primary').isin(['shot', 'penalty']))
             ].copy()
 
@@ -284,165 +385,178 @@ def render():
 
             return shots_table.set_index('#')
 
-        col1_table, col2_table = st.columns(2)
-        with col1_table:
-            st.markdown(f"**{selected_match_info['homeTeamName']}**")
-            home_shots_table = get_shot_table(match_events_df, selected_match_info['homeTeamName'])
-            st.dataframe(home_shots_table, column_config=auto_column_config(home_shots_table))
+        # built on every run: the match report PDF prints them
+        home_shots_table = get_shot_table(match_events_df, home_team)
+        away_shots_table = get_shot_table(match_events_df, away_team)
 
-        with col2_table:
-            st.markdown(f"**{selected_match_info['awayTeamName']}**")
-            away_shots_table = get_shot_table(match_events_df, selected_match_info['awayTeamName'])
-            st.dataframe(away_shots_table, column_config=auto_column_config(away_shots_table))
-        # --- END NEW SECTION ---
+        if _section == "Shots":
+            st.subheader("Shot Maps")
+            # Interactive, stacked at full width (the same drawing as the team and
+            # player maps; the static PNG stays for the match-report PDF).
+            for _side, _team in (('home', home_team), ('away', away_team)):
+                _ev = st.plotly_chart(ti.plotly_match_shot_map(match_events_df, selected_match_info, _team, height=context_bar.pitch_height()),
+                                      use_container_width=True, key=f'ma_shots_{_side}', on_select='rerun',
+                                      selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+                app.open_profile_from_selection(_ev, selected_season_id)
 
-        # --- Momentum (engine OBV) ---
-        st.subheader("Momentum")
-        if _obv_match['minute'] is not None:
+            st.markdown("---") # Add a separator
+            st.subheader("Shot Details")
+            col1_table, col2_table = st.columns(2)
+            with col1_table:
+                st.markdown(f"**{home_team}**")
+                st.dataframe(home_shots_table, column_config=auto_column_config(home_shots_table))
+
+            with col2_table:
+                st.markdown(f"**{away_team}**")
+                st.dataframe(away_shots_table, column_config=auto_column_config(away_shots_table))
+
+        if _section == "Summary":
+            # the headline table first (goals, xG, shots, possession ...); the
+            # other seven categories are the "Team stats" section
+            _general = _disp_team_stats.get('General')
+            if isinstance(_general, pd.DataFrame):
+                st.subheader("Key numbers")
+                st.dataframe(_general, column_config=auto_column_config(_general))
+
+            # --- Momentum (engine OBV) ---
+            st.subheader("Momentum")
+            if _obv_match['minute'] is not None:
+                try:
+                    _show_match_png('obv_momentum')
+                except Exception as e:
+                    st.warning(f"Could not generate momentum chart: {e}")
+            else:
+                st.caption("Momentum uses the engine's on-ball values — this match "
+                           "appears after the next engine rebuild.")
+
+            # --- xG Flowchart ---
+            st.subheader("xG Flowchart")
+            if not match_events_df.empty:
+                try:
+                    _show_match_png('xg_flowchart')
+                except Exception as e:
+                    st.warning(f"Could not generate xG flowchart: {e}")
+            else:
+                st.info("No event data found for flowchart.")
+
+        if _section == "Team stats":
+            st.subheader("Team Stats")
+            if _disp_team_stats:
+                for stat_category, df in _disp_team_stats.items():
+                    st.markdown(f"**{stat_category}**")
+                    if isinstance(df, pd.DataFrame): st.dataframe(df, column_config=auto_column_config(df))
+                    else: st.warning(f"Data for '{stat_category}' is not a DataFrame.")
+            else: st.warning("Team stats data not found.")
+
+        if _section == "Players":
+            st.subheader("Player Stats")
+            if 'home' in _disp_player_stats and 'away' in _disp_player_stats:
+                st.markdown(f"**{selected_match_info['homeTeamName']}**")
+                if isinstance(_disp_player_stats['home'], pd.DataFrame): st.dataframe(_disp_player_stats['home'])
+                else: st.warning("Home player stats data not a DataFrame.")
+                st.markdown(f"**{selected_match_info['awayTeamName']}**")
+                if isinstance(_disp_player_stats['away'], pd.DataFrame): st.dataframe(_disp_player_stats['away'])
+                else: st.warning("Away player stats data not a DataFrame.")
+            else: st.warning("Player stats data not found.")
+
+        if _section == "Tactics":
+            # =============================================================
+            # Tactical Analysis (Wyscout-style pitch visualizations)
+            # =============================================================
+            st.subheader("Tactical Analysis")
+            # 1. Average Player Positions
+            st.markdown("**Average Player Positions**")
+            col_ap1, col_ap2 = st.columns(2)
+            with col_ap1:
+                try:
+                    _show_match_png('avg_positions', home_team, home_lineup)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_ap2:
+                try:
+                    _show_match_png('avg_positions', away_team, away_lineup)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 2. Average Positions by Substitution Phase
+            st.markdown(f"**{home_team} — Avg Positions by Phase**")
             try:
-                _show_match_png('obv_momentum')
-            except Exception as e:
-                st.warning(f"Could not generate momentum chart: {e}")
-        else:
-            st.caption("Momentum uses the engine's on-ball values — this match "
-                       "appears after the next engine rebuild.")
-
-        # --- xG Flowchart ---
-        st.subheader("xG Flowchart")
-        match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
-        if not match_events_df.empty:
-            try:
-                _show_match_png('xg_flowchart')
-            except Exception as e:
-                st.warning(f"Could not generate xG flowchart: {e}")
-        else:
-            st.info("No event data found for flowchart.")
-
-        st.subheader("Team Stats")
-        if _disp_team_stats:
-            for stat_category, df in _disp_team_stats.items():
-                st.markdown(f"**{stat_category}**")
-                if isinstance(df, pd.DataFrame): st.dataframe(df, column_config=auto_column_config(df))
-                else: st.warning(f"Data for '{stat_category}' is not a DataFrame.")
-        else: st.warning("Team stats data not found.")
-
-        st.subheader("Player Stats")
-        if 'home' in _disp_player_stats and 'away' in _disp_player_stats:
-            st.markdown(f"**{selected_match_info['homeTeamName']}**")
-            if isinstance(_disp_player_stats['home'], pd.DataFrame): st.dataframe(_disp_player_stats['home'])
-            else: st.warning("Home player stats data not a DataFrame.")
-            st.markdown(f"**{selected_match_info['awayTeamName']}**")
-            if isinstance(_disp_player_stats['away'], pd.DataFrame): st.dataframe(_disp_player_stats['away'])
-            else: st.warning("Away player stats data not a DataFrame.")
-        else: st.warning("Player stats data not found.")
-
-        # =============================================================
-        # Tactical Analysis (Wyscout-style pitch visualizations)
-        # =============================================================
-        st.subheader("Tactical Analysis")
-        home_team = selected_match_info['homeTeamName']
-        away_team = selected_match_info['awayTeamName']
-
-        # Get lineup/substitution data for this match (if available)
-        match_lineup_data = match_lineups.get(selected_match_id, {}) if match_lineups else {}
-        home_lineup = match_lineup_data.get(home_team)
-        away_lineup = match_lineup_data.get(away_team)
-
-        # 1. Average Player Positions
-        st.markdown("**Average Player Positions**")
-        col_ap1, col_ap2 = st.columns(2)
-        with col_ap1:
-            try:
-                _show_match_png('avg_positions', home_team, home_lineup)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-        with col_ap2:
-            try:
-                _show_match_png('avg_positions', away_team, away_lineup)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-
-        # 2. Average Positions by Substitution Phase
-        st.markdown(f"**{home_team} — Avg Positions by Phase**")
-        try:
-            _show_match_png('avg_positions_by_subs', home_team, home_lineup)
-        except Exception as e:
-            st.caption(f"Could not render: {e}")
-
-        st.markdown(f"**{away_team} — Avg Positions by Phase**")
-        try:
-            _show_match_png('avg_positions_by_subs', away_team, away_lineup)
-        except Exception as e:
-            st.caption(f"Could not render: {e}")
-
-        # 3. Passing Network
-        st.markdown("**Passing Network**")
-        col_pn1, col_pn2 = st.columns(2)
-        with col_pn1:
-            try:
-                _show_match_png('passing_network', home_team)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-        with col_pn2:
-            try:
-                _show_match_png('passing_network', away_team)
+                _show_match_png('avg_positions_by_subs', home_team, home_lineup)
             except Exception as e:
                 st.caption(f"Could not render: {e}")
 
-        # 4. Ball Recoveries & Losses
-        st.markdown("**Ball Recoveries & Losses**")
-        tac_team = st.selectbox(
-            "Select team for recovery/loss maps",
-            [home_team, away_team],
-            key="tac_recovery_team",
-        )
-        col_rl1, col_rl2 = st.columns(2)
-        with col_rl1:
+            st.markdown(f"**{away_team} — Avg Positions by Phase**")
             try:
-                # tac_team is the selectbox above — it IS the team component
-                # of the key, so the toggle needs nothing extra.
-                _show_match_png('recovery_map', tac_team)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-        with col_rl2:
-            try:
-                _show_match_png('loss_map', tac_team)
+                _show_match_png('avg_positions_by_subs', away_team, away_lineup)
             except Exception as e:
                 st.caption(f"Could not render: {e}")
 
-        # 5. Defensive Duels
-        st.markdown("**Defensive Duels**")
-        col_dd1, col_dd2 = st.columns(2)
-        with col_dd1:
-            try:
-                _show_match_png('defensive_duels', home_team)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-        with col_dd2:
-            try:
-                _show_match_png('defensive_duels', away_team)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
+            # 3. Passing Network
+            st.markdown("**Passing Network**")
+            col_pn1, col_pn2 = st.columns(2)
+            with col_pn1:
+                try:
+                    _show_match_png('passing_network', home_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_pn2:
+                try:
+                    _show_match_png('passing_network', away_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
 
-        # 6. Shot Assists + Dribbles in Final Third
-        st.markdown("**Shot Assists & Dribbles in Final Third**")
-        col_sa1, col_sa2 = st.columns(2)
-        with col_sa1:
-            try:
-                _show_match_png('shot_assists', home_team)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
-        with col_sa2:
-            try:
-                _show_match_png('shot_assists', away_team)
-            except Exception as e:
-                st.caption(f"Could not render: {e}")
+            # 4. Ball Recoveries & Losses
+            st.markdown("**Ball Recoveries & Losses**")
+            tac_team = st.selectbox(
+                "Select team for recovery/loss maps",
+                [home_team, away_team],
+                key="tac_recovery_team",
+            )
+            col_rl1, col_rl2 = st.columns(2)
+            with col_rl1:
+                try:
+                    # tac_team is the selectbox above — it IS the team component
+                    # of the key, so the toggle needs nothing extra.
+                    _show_match_png('recovery_map', tac_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_rl2:
+                try:
+                    _show_match_png('loss_map', tac_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 5. Defensive Duels
+            st.markdown("**Defensive Duels**")
+            col_dd1, col_dd2 = st.columns(2)
+            with col_dd1:
+                try:
+                    _show_match_png('defensive_duels', home_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_dd2:
+                try:
+                    _show_match_png('defensive_duels', away_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+
+            # 6. Shot Assists + Dribbles in Final Third
+            st.markdown("**Shot Assists & Dribbles in Final Third**")
+            col_sa1, col_sa2 = st.columns(2)
+            with col_sa1:
+                try:
+                    _show_match_png('shot_assists', home_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
+            with col_sa2:
+                try:
+                    _show_match_png('shot_assists', away_team)
+                except Exception as e:
+                    st.caption(f"Could not render: {e}")
 
         # =============================================================
         # Download Match Report (PDF)
         # =============================================================
-        st.divider()
-        st.subheader("Download Match Report")
         _pdf_key = f"match_report_pdf_{_mid}"
 
         def _match_fig_or_none(kind, team=None, lineup=None):
@@ -456,55 +570,57 @@ def render():
             except Exception:
                 return None
 
-        if st.button("Build match report PDF", key=f"build_{_pdf_key}"):
-            with st.spinner("Assembling match report..."):
-                from match_report_pdf import generate_match_report_pdf
-                _report_figures = {
-                    'obv_momentum': _match_fig_or_none('obv_momentum'),
-                    'shotmap_home': _match_fig_or_none('shotmap', home_team),
-                    'shotmap_away': _match_fig_or_none('shotmap', away_team),
-                    'xg_flowchart': (_match_fig_or_none('xg_flowchart')
-                                     if not match_events_df.empty else None),
-                    'avg_positions_home': _match_fig_or_none('avg_positions', home_team, home_lineup),
-                    'avg_positions_away': _match_fig_or_none('avg_positions', away_team, away_lineup),
-                    'avg_positions_by_subs_home': _match_fig_or_none('avg_positions_by_subs', home_team, home_lineup),
-                    'avg_positions_by_subs_away': _match_fig_or_none('avg_positions_by_subs', away_team, away_lineup),
-                    'passing_network_home': _match_fig_or_none('passing_network', home_team),
-                    'passing_network_away': _match_fig_or_none('passing_network', away_team),
-                    'defensive_duels_home': _match_fig_or_none('defensive_duels', home_team),
-                    'defensive_duels_away': _match_fig_or_none('defensive_duels', away_team),
-                    'shot_assists_home': _match_fig_or_none('shot_assists', home_team),
-                    'shot_assists_away': _match_fig_or_none('shot_assists', away_team),
-                    'recovery_map_home': _match_fig_or_none('recovery_map', home_team),
-                    'recovery_map_away': _match_fig_or_none('recovery_map', away_team),
-                    'loss_map_home': _match_fig_or_none('loss_map', home_team),
-                    'loss_map_away': _match_fig_or_none('loss_map', away_team),
-                }
-                try:
-                    st.session_state[_pdf_key] = generate_match_report_pdf(
-                        selected_match_info,
-                        _report_figures,
-                        team_stats=_disp_team_stats,
-                        player_stats=_disp_player_stats,
-                        shot_details={'home': home_shots_table,
-                                      'away': away_shots_table},
-                    )
-                except Exception as e:
-                    st.error(f"Could not build the match report PDF: {e}")
-                    logger.exception("match report PDF build failed")
+        with _pdf_col:
+            if st.button("Build match report PDF", key=f"build_{_pdf_key}", width="stretch"):
+                with st.spinner("Assembling match report..."):
+                    from match_report_pdf import generate_match_report_pdf
+                    _report_figures = {
+                        'obv_momentum': _match_fig_or_none('obv_momentum'),
+                        'shotmap_home': _match_fig_or_none('shotmap', home_team),
+                        'shotmap_away': _match_fig_or_none('shotmap', away_team),
+                        'xg_flowchart': (_match_fig_or_none('xg_flowchart')
+                                         if not match_events_df.empty else None),
+                        'avg_positions_home': _match_fig_or_none('avg_positions', home_team, home_lineup),
+                        'avg_positions_away': _match_fig_or_none('avg_positions', away_team, away_lineup),
+                        'avg_positions_by_subs_home': _match_fig_or_none('avg_positions_by_subs', home_team, home_lineup),
+                        'avg_positions_by_subs_away': _match_fig_or_none('avg_positions_by_subs', away_team, away_lineup),
+                        'passing_network_home': _match_fig_or_none('passing_network', home_team),
+                        'passing_network_away': _match_fig_or_none('passing_network', away_team),
+                        'defensive_duels_home': _match_fig_or_none('defensive_duels', home_team),
+                        'defensive_duels_away': _match_fig_or_none('defensive_duels', away_team),
+                        'shot_assists_home': _match_fig_or_none('shot_assists', home_team),
+                        'shot_assists_away': _match_fig_or_none('shot_assists', away_team),
+                        'recovery_map_home': _match_fig_or_none('recovery_map', home_team),
+                        'recovery_map_away': _match_fig_or_none('recovery_map', away_team),
+                        'loss_map_home': _match_fig_or_none('loss_map', home_team),
+                        'loss_map_away': _match_fig_or_none('loss_map', away_team),
+                    }
+                    try:
+                        st.session_state[_pdf_key] = generate_match_report_pdf(
+                            selected_match_info,
+                            _report_figures,
+                            team_stats=_disp_team_stats,
+                            player_stats=_disp_player_stats,
+                            shot_details={'home': home_shots_table,
+                                          'away': away_shots_table},
+                        )
+                    except Exception as e:
+                        st.error(f"Could not build the match report PDF: {e}")
+                        logger.exception("match report PDF build failed")
 
-        if st.session_state.get(_pdf_key):
-            _fname = (f"{selected_match_info['homeTeamName']}_v_"
-                      f"{selected_match_info['awayTeamName']}_"
-                      f"{selected_match_info.get('display_date', '')}"
-                      f"_match_report.pdf").replace(' ', '_').replace('/', '-')
-            st.download_button(
-                "Download match report (PDF)",
-                data=st.session_state[_pdf_key],
-                file_name=_fname,
-                mime="application/pdf",
-                key=f"dl_{_pdf_key}",
-            )
+            if st.session_state.get(_pdf_key):
+                _fname = (f"{selected_match_info['homeTeamName']}_v_"
+                          f"{selected_match_info['awayTeamName']}_"
+                          f"{selected_match_info.get('display_date', '')}"
+                          f"_match_report.pdf").replace(' ', '_').replace('/', '-')
+                st.download_button(
+                    "Download match report (PDF)",
+                    data=st.session_state[_pdf_key],
+                    file_name=_fname,
+                    mime="application/pdf",
+                    key=f"dl_{_pdf_key}",
+                    width="stretch",
+                )
 
     else:
          st.warning(f"No detailed match data found for Match ID {selected_match_id}.")

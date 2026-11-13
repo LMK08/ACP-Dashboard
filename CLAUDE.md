@@ -49,8 +49,8 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   there is no app-wide `<h1>`), then the page's OWN pickers in the main area
   (team / stage, match, player, Player A / Template / Player B, Shadow Team's
   formation / save / load, Player Analysis's view row + "Filters" panel,
-  open on arrival). Team Analysis and Match Analysis keep a "Team Report: X"
-  / "Match Report: A vs B" subheader under the picker.
+  open on arrival). Team Analysis keeps a "Team Report: X" subheader under
+  the picker; Match Analysis carries its "Match Report" line in the scoreboard.
   Never put a page's picker in the sidebar again: at 900 px the player picker
   sat 1,100 px down it. The sidebar holds, in order: club block, League /
   Season (`context_bar.render`), navigation, Chart size
@@ -75,6 +75,17 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   The player radar (style switch, default, axis names) was left exactly as
   it was: Lucas wants any radar change discussed first (2026-11-13) —
   visuals may be upgraded, content may not change.
+- Match Analysis (2026-11): a scoreboard under the picker
+  (`views/match_analysis._scoreboard_html`; crests through
+  `app.crest_data_uri`, xG = the sum of `shot.xg` in the match events, the
+  same figure as the shot maps' subtitles; it carries the "Match Report"
+  line), then ONE section drawn at a time (`MATCH_SECTIONS`, the radio
+  labelled 'Match section': Summary / Team stats / Shots / Players /
+  Tactics). The report button sits beside that row and must work from any
+  section: the PDF renders its own figures (`_match_fig_or_none`), and the
+  tables it prints (team / player stats, shot details) are prepared on every
+  run, above the section branches — keep new PDF inputs there, never inside
+  a section. A new block goes into a section, not below them.
 - `views/home.py` — the club's Home page (position, form, promotion odds
   from season_simulation.pkl, last match, next opponent, squad ACP Index,
   data freshness). Every card deep-links into the detail page.

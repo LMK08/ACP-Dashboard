@@ -9470,17 +9470,27 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
 # 5. STREAMLIT APP UI
 # ==============================================================================
 @st.cache_data(show_spinner=False)
-def _sidebar_brand():
-    """Crest and club name for the top of the sidebar (HTML). The crest is the
-    120 px PNG the scatter plots already ship (icons/, LFS)."""
+def crest_data_uri(team):
+    """`icons/<team>.png` (the 120 px crests the scatter plots ship, LFS) as a
+    data: URI for an <img>, or None when the club has no crest file. Used by
+    the sidebar's club block and the Match Analysis scoreboard."""
     import base64
-    _img = ''
     try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', f'{OUR_TEAM}.png'), 'rb') as _f:
-            _img = (f'<img src="data:image/png;base64,{base64.b64encode(_f.read()).decode()}" alt="" '
-                    'style="width:40px;height:40px;object-fit:contain;flex:none;">')
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', f'{team}.png'), 'rb') as _f:
+            _raw = _f.read()
     except OSError:
-        pass
+        return None
+    if not _raw.startswith(b'\x89PNG'):      # an un-smudged LFS pointer is text, not an image
+        return None
+    return 'data:image/png;base64,' + base64.b64encode(_raw).decode()
+
+
+@st.cache_data(show_spinner=False)
+def _sidebar_brand():
+    """Crest and club name for the top of the sidebar (HTML)."""
+    _uri = crest_data_uri(OUR_TEAM)
+    _img = (f'<img src="{_uri}" alt="" style="width:40px;height:40px;object-fit:contain;flex:none;">'
+            if _uri else '')
     return ('<div style="display:flex;align-items:center;gap:0.65rem;padding:0.1rem 0 0.9rem 0.15rem;">'
             f'{_img}<div style="line-height:1.15;">'
             f'<div style="color:#fff;font-size:1.08rem;font-weight:700;letter-spacing:-0.2px;">{OUR_TEAM}</div>'
