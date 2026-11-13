@@ -78,10 +78,12 @@ def app(request):
 # Opposition Report's six sections — released again by the next test's
 # clean-up. So memory is also released after every page change and section
 # change (_open_page / _open_section), not only between tests.
-ON_CI = os.environ.get('CI') == 'true'
-HEAVY_ON_CI = pytest.mark.skipif(
-    ON_CI, reason="many heavy page runs in one process: the hosted runner cannot hold it "
-                  "(2026-11-13); run locally before a push until the gate is split")
+#
+# Second read-out, after the Opposition Report stopped copying the league's
+# events on every run (run 43520667881): that walk ends at 7.0 GB and the
+# module peaks at 9.0 GB. The two tests that had been kept off the runner
+# (the PDF completeness test, the every-section walk on the fixtures-only
+# season) are back in the gate.
 
 
 def _rss_mb():
@@ -266,14 +268,15 @@ def test_keyed_selectors_are_stable_across_reruns(app, page, label):
 def test_page_head_carries_title_league_and_season(app):
     """Every page but Home opens on ONE head row: its name as the page's only
     header, with League (and Season where the page uses one) beside it in the
-    main area. The sidebar holds no picker, so the navigation above nothing
-    that changes height and never moves."""
+    main area. The sidebar holds no page picker, only the search box, so
+    nothing above the navigation changes height and it never moves."""
     import context_bar
     pages = PAGES + (['Coach Comparison'] if os.path.exists(COACH_TABLES) else [])
     for page in pages:
         _open_page(app, page)
         assert not _problems(app), (page, _problems(app))
-        assert not list(app.sidebar.selectbox), (page, [s.label for s in app.sidebar.selectbox])
+        # the sidebar's only selectbox is the search box (a fixed height on every page)
+        assert [s.label for s in app.sidebar.selectbox] == ['Search'], page
         headers = [str(h.value) for h in app.header]
         # the head row is the first thing in the main area, so its pickers are
         # the first selectboxes on the page (a section further down may have
@@ -332,7 +335,6 @@ def test_team_pages_share_one_section_row(app, page):
     _open_section(app, page, names[0])
 
 
-@HEAVY_ON_CI
 def test_opposition_pdf_is_complete_from_any_section(app, monkeypatch):
     """The Opposition Report draws one section at a time, but its PDF must
     carry every section's figures and texts whichever section is open: a
@@ -593,8 +595,7 @@ def test_empty_season_degrades_gracefully(app, page):
     # The team pages draw one section at a time: a section that is not open
     # does not run (Team Analysis) or builds no figure (Opposition Report),
     # so each has to be opened on the empty season too.
-    # (Locally only for now: eleven more heavy runs than the CI runner holds.)
-    if page in TEAM_PAGE_SECTION_RADIO and not ON_CI:
+    if page in TEAM_PAGE_SECTION_RADIO:
         names = list([r for r in app.radio if r.label == TEAM_PAGE_SECTION_RADIO[page]][0].options)
         for name in names:
             _open_section(app, page, name)
@@ -817,3 +818,80 @@ def test_coach_comparison_same_coach_and_other_league(app):
     assert any('no matches in the league selected' in i.value for i in app.info)
     b = [s for s in app.selectbox if s.label == 'Coach B'][0]
     assert b.value != seed
+
+
+def test_search_opens_the_page_on_the_pick(app):
+    """The sidebar search box: a pick opens the right page ON that player /
+    team / coach, in the league and season where the data is, and the box
+    empties itself. ONE test, three picks. It is the LAST test of the module:
+    it changes league, season and page, and nothing after it inherits that."""
+    import pickle
+
+    import pandas as pd
+
+    import search
+    with open(os.path.join(DASHBOARD_DIR, 'complete_player_minutes.pkl'), 'rb') as fh:
+        minutes = pickle.load(fh)
+    matches = pd.read_parquet(os.path.join(DASHBOARD_DIR, 'matches_summary.parquet'))
+    coach_tables = None
+    if os.path.exists(COACH_TABLES):
+        coach_tables = (pd.read_parquet(COACH_TABLES),
+                        pd.read_parquet(os.path.join(os.path.dirname(COACH_TABLES), 'coaches.parquet'))
+                        .set_index('coachId'))
+    index = search.build_index(minutes, matches, coach_tables)
+
+    def box():
+        return [s for s in app.sidebar.selectbox if s.label == 'Search'][0]
+
+    def pick(option):
+        box().set_value(option).run()
+        app.run()
+        assert not _problems(app), (option, _problems(app))
+        assert box().value is None, 'the search box should empty itself'
+        _release_memory()
+
+    def head(label):
+        found = [s for s in app.selectbox if s.label == label]
+        return found[0].value if found else None
+
+    _open_page(app, 'Home')
+    # (app.py repairs a few names in the minutes it loads, so the app's list is
+    # not this one entry for entry: every pick below is checked against the box)
+    shown = set(box().options)
+    assert len(shown) > 100 and {e['kind'] for e in index.values()} >= {'team', 'player'}
+
+    # a player whose newest season is in the OTHER league: the page follows him
+    # there. NOT the one with most minutes: the profile opens on that one in
+    # the Campeonato anyway, which would hide a broken hand-off.
+    campeonato = [e for e in index.values() if e['kind'] == 'player' and e['league'] == 'Campeonato'
+                  and e['label'] in shown]
+    player = campeonato[7]
+    pick(f"p:{player['player_id']}")
+    assert app.session_state.current_page == 'Player Profile'
+    assert head('League') == 'Campeonato'
+    assert head('Season') == player['label'].rsplit(', ', 1)[1]
+    assert player['label'].split(' — ')[0] in [s for s in app.selectbox if s.label == 'Player'][0].value
+
+    # a team: Team Analysis on that team, in its league and newest season
+    team = next(e for e in index.values() if e['kind'] == 'team' and e['league'] == 'Liga 3'
+                and e['season'] == '2026/27' and e['team'] != 'Atlético CP' and e['label'] in shown)
+    # a stage filter left on Team Analysis must not swallow the pick
+    app.session_state['team_analysis_stage_selector'] = 'Promotion'
+    pick(f"t:{team['team']}")
+    assert 'team_analysis_stage_selector' not in app.session_state
+    assert app.session_state.current_page == 'Team Analysis'
+    assert (head('League'), head('Season')) == ('Liga 3', '2026/27')
+    assert [s for s in app.selectbox if s.label == 'Team'][0].value == team['team']
+
+    # a coach: his profile, in his league, with no "showing another league" note
+    coaches = [e for e in index.values() if e['kind'] == 'coach' and e['league'] == 'Campeonato'
+               and e['label'] in shown]
+    if coaches:
+        coach = coaches[0]
+        pick(f"c:{coach['coach_id']}")
+        assert app.session_state.current_page == 'Coach Profile'
+        assert head('League') == 'Campeonato'
+        assert [s for s in app.selectbox if s.label == 'Coach'][0].value == coach['coach_id']
+        assert not [i for i in app.info if 'has no matches in the league' in str(i.value)]
+    [s for s in app.selectbox if s.label == 'League'][0].set_value('Liga 3').run()
+    _release_memory()

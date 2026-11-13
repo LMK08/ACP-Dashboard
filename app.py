@@ -85,6 +85,7 @@ import theme  # colours + figure conventions shared with every plotter
 import navigation
 import context_bar
 import page_sections
+import search
 import views.home
 import views.opposition
 import views.shadow_team
@@ -9545,9 +9546,13 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'player_profile_last_season' not in st.session_state:
         st.session_state.player_profile_last_season = None
 
-    # --- Sidebar: club name, then the navigation. Nothing sits between them, so the
-    # page list never moves (League / Season are in the page's head row, 2026-11). ---
+    # --- Sidebar: club name, the search box, then the navigation. Nothing between
+    # them changes height, so the page list never moves (League / Season are in
+    # the page's head row, 2026-11). ---
     st.sidebar.markdown(_sidebar_brand(), unsafe_allow_html=True)
+    # One search box for players, teams and coaches (search.py). A fixed
+    # height, on every page, so the navigation below it still never moves.
+    search.render()
 
     # Cross-page bridge: a view that selected a player asks for the profile,
     # optionally carrying the season it was looking at. The season goes into

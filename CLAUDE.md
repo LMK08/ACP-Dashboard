@@ -58,7 +58,8 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   open on arrival). Team Analysis keeps a "Team Report: X" subheader under
   the picker; Match Analysis carries its "Match Report" line in the scoreboard.
   Never put a page's picker in the sidebar again: at 900 px the player picker
-  sat 1,100 px down it. The sidebar holds, in order: club block, navigation
+  sat 1,100 px down it. The sidebar holds, in order: club block, search box (`search.py`, a fixed
+  height), navigation
   (nothing above it changes height, so the page list never moves; the
   current page is a highlighted row, `navigation.NAV_CSS`), Chart size
   (`context_bar.render_display`, only on `PAGES_WITH_PITCH_CHARTS`, default
@@ -78,6 +79,23 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   The player radar (style switch, default, axis names) was left exactly as
   it was: Lucas wants any radar change discussed first (2026-11-13) —
   visuals may be upgraded, content may not change.
+- `search.py` — the sidebar search box (2026-11): one selectbox above the
+  navigation, on every page, for players, teams and coaches. `build_index`
+  (pure pandas, `tests/test_search_index.py`) lists teams, then coaches,
+  then one entry per player in his newest season WITH minutes. LABELS MUST
+  BE UNIQUE (`_unique_labels`): Streamlit maps the picked label back to an
+  option, so of two entries sharing a label only the last could be opened
+  (nine such pairs in the 2026-11 data). The pick is
+  handled in the selectbox's `on_change` callback (it runs before the script
+  body, where widget keys and `context_bar.set_context` may still be
+  written): a player sets the same keys as the Similar Players bridge
+  (`selected_player_id`, `nav_to_profile`, `nav_season_id`, `nav_league`),
+  a team sets the context + `nav_team` and opens Team Analysis, a coach sets
+  his league + `coach_profile.SEED_KEY`; a team pick also clears Team
+  Analysis's stage filter (its team list is built after that filter). A new
+  kind of page that can be
+  opened "on" something gets an entry kind here. It adds no number and
+  renames nothing.
 - Match Analysis (2026-11): a scoreboard under the picker
   (`views/match_analysis._scoreboard_html`; crests through
   `app.crest_data_uri`, xG = the sum of `shot.xg` in the match events, the
@@ -763,10 +781,11 @@ Analysis (primary formation + roster) and in the Opposition Report's
   of heavy page runs, not one test's content. Every test now frees memory
   (gc + malloc_trim) and prints `[mem] … MB after <test>`: read those lines
   before adding a test that runs a team page several times, and keep such
-  tests to ONE walk. Two tests are marked `HEAVY_ON_CI` / `ON_CI` and run
-  locally only until the gate is split into two processes: the PDF
-  completeness test and the every-section walk on the fixtures-only season.
-  Run the full suite locally before every push (they run there).
+  tests to ONE walk. The cause turned out to be the Opposition Report
+  copying the league's events on every run (fixed 2026-11-13, see
+  views/opposition.py): the same walk then ended at 7.0 GB and the module
+  peaked at 9.0 GB of 16. A heavy page: look for per-run copies of the
+  events frame first. Run the full suite locally before every push.
 - Summary's three parts (takeaways, strengths & weaknesses, line-up) are
   drawn in that order through containers created at the top
   (`_takeaways_slot` / `_synopsis_slot` / `_lineup_slot`), although their
