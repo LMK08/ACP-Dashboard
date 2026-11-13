@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope='module')
-def app():
+def app(request):
     """One booted AppTest shared by every test in this module (boot loads
     ~4.7M events; doing it per test would take minutes)."""
     from streamlit.testing.v1 import AppTest
@@ -50,21 +50,65 @@ def app():
     try:
         at = AppTest.from_file('app.py', default_timeout=1200)
         at.run()
+        total = '?'
+        try:
+            with open('/proc/meminfo') as fh:
+                total = f"{int(fh.readline().split()[1]) // 1024} MB"
+        except OSError:
+            pass
+        _say(request, f"[mem] machine {total}; {_rss_mb()} MB after booting the app")
         yield at
     finally:
         os.chdir(cwd)
 
 
+# GitHub's hosted runner was shut down twice in the middle of this module on
+# 2026-11-13 ("The runner has received a shutdown signal", the repo's
+# out-of-memory pattern) after the team pages gained sections and this file
+# gained page runs. ONE booted app serves the whole module, so memory only
+# ever goes up unless it is handed back:
+#   * a page run leaves large frames in reference cycles -> gc.collect()
+#   * every page run is a new thread and glibc keeps what a thread freed in
+#     that thread's arena -> malloc_trim(0) returns it to the system
+# and each test prints what the process holds, so the next failure (or the
+# next added test) can be judged from the log instead of guessed at.
+ON_CI = os.environ.get('CI') == 'true'
+HEAVY_ON_CI = pytest.mark.skipif(
+    ON_CI, reason="many heavy page runs in one process: the hosted runner cannot hold it "
+                  "(2026-11-13); run locally before a push until the gate is split")
+
+
+def _rss_mb():
+    """Resident memory of this process in MB (Linux); the peak on macOS."""
+    try:
+        with open('/proc/self/status') as fh:
+            for line in fh:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    import resource
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak // (1024 * 1024) if sys.platform == 'darwin' else peak // 1024
+
+
+def _say(request, text):
+    reporter = request.config.pluginmanager.get_plugin('terminalreporter')
+    if reporter is not None:
+        reporter.write_line(text)
+
+
 @pytest.fixture(autouse=True)
-def _collect_garbage_after_each_test():
-    """One booted app serves the whole module, and a page run leaves large
-    frames behind in reference cycles until the collector's oldest generation
-    happens to run. Collect after every test, so the peak of this module on
-    the CI runner is one test's worth, not several (2026-11-13: the runner
-    was shut down mid-module after more page runs were added)."""
+def _free_memory_after_each_test(request):
     yield
     import gc
     gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except OSError:          # not glibc (macOS)
+        pass
+    _say(request, f"[mem] {_rss_mb():>6} MB after {request.node.name}")
 
 
 def _problems(at):
@@ -221,7 +265,13 @@ def _open_section(app, page, name):
 def test_team_pages_share_one_section_row(app, page):
     """Both team pages draw ONE section at a time and share the five team
     sections in the same order (parity rule); the Opposition Report puts its
-    own Summary in front and opens on it. Every section renders clean."""
+    own Summary in front and opens on it. Every section renders clean, and
+    the interactive visuals (parity rule again: shot maps, rolling xG,
+    passing network, season-report dot plots) sit in their sections as
+    Plotly charts — a closed section builds none.
+
+    ONE walk of the sections does all of it: each section is a full run of
+    a heavy page, and this module's memory on the CI runner is finite."""
     import page_sections
     _open_page(app, page)
     assert not _problems(app), _problems(app)
@@ -231,31 +281,21 @@ def test_team_pages_share_one_section_row(app, page):
     assert names == list(page_sections.OPP_SECTIONS if page == 'Opposition Report'
                          else page_sections.TEAM_SECTIONS)
     assert radio.value == names[0]
-    for name in names:
-        _open_section(app, page, name)
-        assert not _problems(app), (name, _problems(app))
-    _open_section(app, page, names[0])
-
-
-@pytest.mark.parametrize('page', ['Team Analysis', 'Opposition Report'])
-def test_team_visuals_are_interactive(app, page):
-    """Both team pages show the shot maps, rolling xG, passing network and
-    the season-report dot plots as Plotly charts (parity rule), on top of the
-    static PNGs that remain for the other visuals / the PDF. Each sits in
-    its section, and a closed section builds no chart."""
-    _open_page(app, page)
-    charts = {}
-    for name in ('Overview', 'Form & shots', 'Tactics', 'Set pieces'):
+    charts = {names[0]: len(app.get('plotly_chart'))}
+    for name in names[1:]:
         _open_section(app, page, name)
         assert not _problems(app), (name, _problems(app))
         charts[name] = len(app.get('plotly_chart'))
     assert charts['Overview'] >= 1, charts          # the season-report dot plots
     assert charts['Form & shots'] >= 2, charts      # shots for / against (+ rolling xG when it has data)
     assert charts['Tactics'] >= 1, charts           # the passing network
-    assert charts['Set pieces'] == 0, charts
-    _open_section(app, page, 'Summary' if page == 'Opposition Report' else 'Overview')
+    assert charts['Set pieces'] == 0 and charts['Players'] == 0, charts
+    if page == 'Opposition Report':
+        assert charts['Summary'] == 0, charts
+    _open_section(app, page, names[0])
 
 
+@HEAVY_ON_CI
 def test_opposition_pdf_is_complete_from_any_section(app, monkeypatch):
     """The Opposition Report draws one section at a time, but its PDF must
     carry every section's figures and texts whichever section is open: a
@@ -299,7 +339,8 @@ def test_opposition_pdf_is_complete_from_any_section(app, monkeypatch):
     # every section open once: each figure is then drawn in one build and
     # queued in the five others
     for name in page_sections.OPP_SECTIONS:
-        _open_section(app, 'Opposition Report', name)
+        # the section change and the click travel in ONE run
+        [r for r in app.radio if r.label == 'Report section'][0].set_value(name)
         [b for b in app.button if b.label == 'Generate PDF Report'][0].click()
         app.run()
         assert not _problems(app), (name, _problems(app))
@@ -515,7 +556,8 @@ def test_empty_season_degrades_gracefully(app, page):
     # The team pages draw one section at a time: a section that is not open
     # does not run (Team Analysis) or builds no figure (Opposition Report),
     # so each has to be opened on the empty season too.
-    if page in TEAM_PAGE_SECTION_RADIO:
+    # (Locally only for now: eleven more heavy runs than the CI runner holds.)
+    if page in TEAM_PAGE_SECTION_RADIO and not ON_CI:
         names = list([r for r in app.radio if r.label == TEAM_PAGE_SECTION_RADIO[page]][0].options)
         for name in names:
             _open_section(app, page, name)
