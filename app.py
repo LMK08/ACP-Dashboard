@@ -556,7 +556,8 @@ pre code { background: transparent !important; padding: 0 !important; }
 # ...and the hidden container the closed sections of a page write into
 # (page_sections.Sections.block)
 st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}\n{theme.metric_note_css()}\n"
-            f"{page_sections.SINK_CSS}</style>", unsafe_allow_html=True)
+            f"{page_sections.SINK_CSS}\n{context_bar.HEAD_CSS}\n{navigation.NAV_CSS}</style>",
+            unsafe_allow_html=True)
 
 # ==============================================================================
 # 1B. SEASON CONSTANTS
@@ -2841,7 +2842,7 @@ def get_season_team_stats(season_team_stats, season_id, comp_ids=None):
 # Club-first defaults and cross-page selector persistence
 # ------------------------------------------------------------------------------
 OUR_TEAM = 'Atlético CP'
-# League / season are chosen ONCE in the sidebar context bar (context_bar.py);
+# League / season are chosen ONCE, in the page's head row (context_bar.py);
 # every page resolves its scope from these two session keys.
 GLOBAL_LEAGUE_KEY = 'ctx_league'          # = context_bar.LEAGUE_KEY (the bar's widget key)
 GLOBAL_SEASON_KEY = 'ctx_season_memory'   # = context_bar.SEASON_MEMORY (last chosen season label)
@@ -2959,8 +2960,8 @@ def _predictor_default_labels(all_season_options, season_ids_desc, matches_df):
 
 def league_selector(section_key):
     """Competition ids for the league in the global context bar (context_bar.py).
-    `section_key` is kept for the call sites; the bar is drawn once in the
-    sidebar by app.py and every page reads the same choice."""
+    `section_key` is kept for the call sites; the pair is drawn once per run,
+    in the page's head row, by app.py and every page reads the same choice."""
     return context_bar.current_comp_ids()
 
 
@@ -9544,9 +9545,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'player_profile_last_season' not in st.session_state:
         st.session_state.player_profile_last_season = None
 
-    # --- Sidebar: club name, context bar (filled once the page is known), then navigation ---
+    # --- Sidebar: club name, then the navigation. Nothing sits between them, so the
+    # page list never moves (League / Season are in the page's head row, 2026-11). ---
     st.sidebar.markdown(_sidebar_brand(), unsafe_allow_html=True)
-    _context_slot = st.sidebar.container()
 
     # Cross-page bridge: a view that selected a player asks for the profile,
     # optionally carrying the season it was looking at. The season goes into
@@ -9668,13 +9669,15 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     # Grouped navigation (Club / Opposition / Coaches / Players / Recruitment); the
     # single source of truth is st.session_state.current_page — see navigation.py.
     analysis_type = navigation.render_sidebar_nav()
-    with _context_slot:
-        context_bar.render(analysis_type)
     # Chart size sits under the navigation, on the pages that draw pitch
     # charts (it used to sit between League and Season on every page).
     with st.sidebar:
         context_bar.render_display(analysis_type)
     navigation.scroll_to_top_on_page_change(analysis_type)
+    # The page's head row: its title, with League and Season beside it. Drawn
+    # here, before the view, so the view reads this run's choice; the views
+    # draw no title of their own (Home excepted, which has no context).
+    context_bar.render_page_head(analysis_type)
 
     # Data freshness — the DATE stays visible on every page (lesson from the
     # April→June staleness: nobody could see the data was 2 months old). The

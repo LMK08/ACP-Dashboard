@@ -116,9 +116,8 @@ def render():
     # (The season carried by a cross-page bridge is applied in app.py's prelude,
     #  before the context bar draws its widget — a widget key cannot be set after.)
 
-    # One title, then the player picker, at the top of the page.
-    st.header("Player Profile")
-
+    # (The title is drawn by context_bar.render_page_head; the player picker is the
+    # first thing the page itself draws.)
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("player_profile")
     selected_season_id = season_selector("player_profile", include_all_seasons=True, comp_ids=selected_comp_ids)

@@ -76,8 +76,6 @@ def render():
     player_stats_with_scores_df = app.player_stats_with_scores_df
 
 
-    st.header("Player Analysis")
-
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("player_analysis")
     selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
@@ -493,7 +491,7 @@ def render():
             _age_map = (filtered_df.set_index('playerId')['_age'].to_dict()
                          if '_age' in filtered_df.columns else {})
             # Map player → competitionId. selected_comp_ids is the
-            # league filter active in the sidebar; when one league
+            # league chosen in the page's head row; when one league
             # is selected, every visible player belongs to it.
             # Otherwise fall back to competition_for_season.
             if selected_comp_ids and len(selected_comp_ids) == 1:

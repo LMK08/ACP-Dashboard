@@ -186,10 +186,9 @@ def render():
     _default_match_idx = next(
         (i for i, (ev, ours) in enumerate(zip(_with_ev, _is_ours.tolist())) if ev and ours),
         next((i for i, ev in enumerate(_with_ev) if ev), 0))
-    # One title, then the match picker at the top of the page (it sat at the
+    # The match picker, first thing under the page head (it sat at the
     # foot of the sidebar, below the screen edge, until 2026-11). The option
     # text carries the score and the date.
-    st.header("Match Analysis")
     _match_options = season_matches_df['display_name'].tolist()
     if not _match_options:
         st.warning("No matches for this league and season yet.")

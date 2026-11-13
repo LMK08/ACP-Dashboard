@@ -40,8 +40,6 @@ def render():
     player_stats_with_scores_df = app.player_stats_with_scores_df
 
 
-    st.header("Shadow Team")
-
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("shadow_team")
     selected_season_id = season_selector("shadow_team", include_all_seasons=True, comp_ids=selected_comp_ids)
@@ -115,7 +113,7 @@ def render():
             st.warning(
                 "Queued but not in this league/season (or slot not in this formation): "
                 + ", ".join(f"{i['playerName']} → {i['slot']}" for i in _still)
-                + ". Switch the league or season in the sidebar to add them.")
+                + ". Switch the league or season at the top of the page to add them.")
 
     team_name_input = _ctl_name.text_input("Team Name", value="My Shadow Team", key="shadow_team_name_input")
 

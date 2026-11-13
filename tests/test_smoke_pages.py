@@ -128,7 +128,7 @@ def _open_page(at, page):
 
 
 def _newest_season_label(at):
-    boxes = [s for s in at.sidebar.selectbox if s.label == 'Season']
+    boxes = [s for s in at.selectbox if s.label == 'Season']
     assert boxes, "no Season selector on this page"
     labels = [o for o in boxes[0].options if o != 'All Seasons']
     return boxes[0], labels[0]
@@ -184,30 +184,30 @@ def test_context_persists_across_pages(app):
     app.run()
     for page in ('League Analysis', 'Match Predictor', 'Home', 'Player Profile', 'Team Analysis'):
         _open_page(app, page)
-        boxes = [s for s in app.sidebar.selectbox if s.label == 'Season']
+        boxes = [s for s in app.selectbox if s.label == 'Season']
         if boxes:
             assert boxes[0].value == chosen, f"{page}: season reset to {boxes[0].value}"
     # "All Seasons" stays selected everywhere (stable widget options); a page
     # that can't show it resolves to one season and says so, without erroring.
     _open_page(app, 'Player Profile')
-    [s for s in app.sidebar.selectbox if s.label == 'Season'][0].set_value('All Seasons')
+    [s for s in app.selectbox if s.label == 'Season'][0].set_value('All Seasons')
     app.run()
     _open_page(app, 'Team Analysis')
-    assert [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value == 'All Seasons'
-    assert any('one season at a time' in str(c.value) for c in app.sidebar.caption)
+    assert [s for s in app.selectbox if s.label == 'Season'][0].value == 'All Seasons'
+    assert any('one season at a time' in str(c.value) for c in app.caption)
     assert any('Team Analysis' in str(h.value) for h in app.header)
     assert not _problems(app), _problems(app)
     # Switching league swaps to that league's own season key: a valid season
     # is selected, the page renders, and switching back restores the choice.
-    league_box = [s for s in app.sidebar.selectbox if s.label == 'League'][0]
+    league_box = [s for s in app.selectbox if s.label == 'League'][0]
     league_box.set_value('Campeonato')
     app.run()
-    season_camp = [s for s in app.sidebar.selectbox if s.label == 'Season'][0]
+    season_camp = [s for s in app.selectbox if s.label == 'Season'][0]
     assert season_camp.value in season_camp.options
     assert not _problems(app), _problems(app)
-    [s for s in app.sidebar.selectbox if s.label == 'League'][0].set_value('Liga 3')
+    [s for s in app.selectbox if s.label == 'League'][0].set_value('Liga 3')
     app.run()
-    assert [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value == 'All Seasons'
+    assert [s for s in app.selectbox if s.label == 'Season'][0].value == 'All Seasons'
 
 
 def test_player_profile_bridge_carries_season(app):
@@ -233,7 +233,7 @@ def test_player_profile_bridge_carries_season(app):
     app.run()
     assert not _problems(app), _problems(app)
     assert _nav_radio(app, 'Player Profile').value == 'Player Profile'
-    season = [s for s in app.sidebar.selectbox if s.label == 'Season'][0]
+    season = [s for s in app.selectbox if s.label == 'Season'][0]
     assert season.value == '2025/26'
 
 
@@ -249,6 +249,30 @@ def test_keyed_selectors_are_stable_across_reruns(app, page, label):
     app.run()
     again = [s for s in app.selectbox if s.label == label][0]
     assert again.value == first, f"{page}: {label} moved from {first!r} to {again.value!r} on a rerun"
+
+
+def test_page_head_carries_title_league_and_season(app):
+    """Every page but Home opens on ONE head row: its name as the page's only
+    header, with League (and Season where the page uses one) beside it in the
+    main area. The sidebar holds no picker, so the navigation above nothing
+    that changes height and never moves."""
+    import context_bar
+    pages = PAGES + (['Coach Comparison'] if os.path.exists(COACH_TABLES) else [])
+    for page in pages:
+        _open_page(app, page)
+        assert not _problems(app), (page, _problems(app))
+        assert not list(app.sidebar.selectbox), (page, [s.label for s in app.sidebar.selectbox])
+        headers = [str(h.value) for h in app.header]
+        # the head row is the first thing in the main area, so its pickers are
+        # the first selectboxes on the page (a section further down may have
+        # a 'League' picker of its own, e.g. Similar Players)
+        first = [s.label for s in app.selectbox][:2]
+        if page in context_bar.PAGES_WITHOUT_CONTEXT:
+            assert 'League' not in first and 'Season' not in first and page not in headers, (page, headers)
+            continue
+        assert headers == [page], (page, headers)
+        assert first[:1] == ['League'], (page, first)
+        assert (first[1:2] == ['Season']) == (page not in context_bar.PAGES_WITHOUT_SEASON), (page, first)
 
 
 TEAM_PAGE_SECTION_RADIO = {'Team Analysis': 'Team section', 'Opposition Report': 'Report section'}
@@ -469,7 +493,7 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     # player in the cache of the season the page is showing (the landing
     # season differs between the local and the canonical data)
     import league_config
-    season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
+    season_label = [s for s in app.selectbox if s.label == 'Season'][0].value
     sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
                 if v == season_label), None)
     cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_{STATS_VER}_{sid}.parquet')
@@ -504,7 +528,7 @@ def test_shadow_queue_adds_in_scope_players_and_keeps_others(app):
     import pyarrow.parquet as pq
     import league_config
     _open_page(app, 'Shadow Team')
-    season_label = [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value
+    season_label = [s for s in app.selectbox if s.label == 'Season'][0].value
     sid = next((int(k) for k, v in league_config.COMPETITIONS[43324]['seasons'].items()
                 if v == season_label), None)
     cache = os.path.join(DASHBOARD_DIR, 'stats_cache', f'player_percentiles_{STATS_VER}_{sid}.parquet')

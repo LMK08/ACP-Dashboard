@@ -148,7 +148,6 @@ def render():
 
 
     # --- League & Season Selector ---
-    st.header("Player Comparison")
     selected_comp_ids = league_selector("player_comparison")
     selected_season_id = season_selector("player_comparison", include_all_seasons=True, comp_ids=selected_comp_ids)
     active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)

@@ -220,7 +220,6 @@ def _squad(table, sa, sb, names, league_name):
 def render():
     app = _app()
     COMPETITIONS = app.COMPETITIONS
-    st.header('Coach Comparison')
     sig = cp_view.tables_signature()
     data = cp_view.load_tables(sig)
     if data is None:
@@ -242,7 +241,7 @@ def render():
     if follow and follow[1] == comp_id and follow[0] in COMPETITIONS:
         comp_id = follow[0]
         st.info(f"Showing {COMPETITIONS[comp_id]['name']}: the coach you came from has no matches in the "
-                "league selected in the sidebar.")
+                "league selected at the top of the page.")
     else:
         st.session_state.pop('coach_comparison_follow', None)
     league_name = COMPETITIONS[comp_id]['name']

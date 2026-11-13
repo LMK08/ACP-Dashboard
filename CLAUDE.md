@@ -28,8 +28,10 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   keep it honest when you add a helper. Views never import app.py. The
   directory is deliberately NOT called `pages/` (Streamlit would treat that
   as an auto-discovered multipage app).
-- `context_bar.py` — the League / Season choice, drawn ONCE at the top of the
-  sidebar and read by every page through `league_selector()` /
+- `context_bar.py` — the League / Season choice, drawn ONCE per run in the
+  page's head row in the main area, beside the title
+  (`render_page_head`, called by app.py before the view; it sat at the top
+  of the sidebar until 2026-11), and read by every page through `league_selector()` /
   `season_selector()` (signatures unchanged; they no longer draw widgets).
   "All Seasons" is always offered (stable widget options — Streamlit resets a
   keyed widget whose options change); pages that can't use it resolve it to
@@ -44,16 +46,21 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   opponent selectbox key) — never set radio keys by hand. Add a page by
   appending to `NAV_GROUPS` and the `views.<page>.render()` chain in app.py;
   the smoke test finds the right radio by page name.
-- Page frame (RULE, 2026-11 UX pass). Every page opens with ONE
-  `st.header(<page name>)` (the club name is in the sidebar, `app._sidebar_brand`;
-  there is no app-wide `<h1>`), then the page's OWN pickers in the main area
+- Page frame (RULE, 2026-11 UX pass). Every page opens with ONE head row,
+  drawn by `context_bar.render_page_head`: the page's name as `st.header` on
+  the left, League and Season on the right (labels collapsed; only League on
+  `PAGES_WITHOUT_SEASON`). A view NEVER draws its own title — Home excepted,
+  which has no context and writes its own heading. (The club name is in the
+  sidebar, `app._sidebar_brand`; there is no app-wide `<h1>`.) Then come the
+  page's OWN pickers in the main area
   (team / stage, match, player, Player A / Template / Player B, Shadow Team's
   formation / save / load, Player Analysis's view row + "Filters" panel,
   open on arrival). Team Analysis keeps a "Team Report: X" subheader under
   the picker; Match Analysis carries its "Match Report" line in the scoreboard.
   Never put a page's picker in the sidebar again: at 900 px the player picker
-  sat 1,100 px down it. The sidebar holds, in order: club block, League /
-  Season (`context_bar.render`), navigation, Chart size
+  sat 1,100 px down it. The sidebar holds, in order: club block, navigation
+  (nothing above it changes height, so the page list never moves; the
+  current page is a highlighted row, `navigation.NAV_CSS`), Chart size
   (`context_bar.render_display`, only on `PAGES_WITH_PITCH_CHARTS`, default
   Large — Standard was tried and Lucas kept Large), the data date and the
   "About the data" panel

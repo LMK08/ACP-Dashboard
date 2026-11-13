@@ -36,6 +36,24 @@ def _key(group):
     return f'nav_group_{group}'
 
 
+# The current page is a highlighted ROW (2026-11). The page names are radio
+# buttons, and the only cue for where you are used to be the radio's small
+# dot; the circles are hidden and the checked label carries the highlight.
+# Scoped to the navigation's own radios by their keys (nav_group_<Group>).
+NAV_CSS = """
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] { width: 100% !important; }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] [data-testid="stRadio"] { padding: 0; width: 100%; }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] [role="radiogroup"] { gap: 2px; width: 100%; }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"] {
+    width: 100%; margin: 0; padding: 0.24rem 0.6rem; border-radius: 6px; cursor: pointer; }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"] > div:first-child { display: none; }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:hover { background: rgba(255,255,255,0.07); }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:has(input:checked) { background: rgba(255,255,255,0.15); }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:has(input:checked) p { color: #fff !important; font-weight: 600; }
+[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:has(input:focus-visible) { outline: 2px solid rgba(255,255,255,0.6); outline-offset: 1px; }
+"""
+
+
 def _on_change(group):
     chosen = st.session_state.get(_key(group))
     if chosen:

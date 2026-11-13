@@ -721,8 +721,6 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     """
     app = _get_app()
 
-    st.header("Opposition Report")
-
     # --- Season selector ---
     # comp_ids scopes the season list to the selected league, and it is what
     # makes this page work for Campeonato at all. Without it season_selector

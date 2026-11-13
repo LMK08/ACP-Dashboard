@@ -59,9 +59,8 @@ def render():
     selected_season_id = season_selector("team_analysis", comp_ids=selected_comp_ids)
     active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
     season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown") if isinstance(selected_season_id, int) else "Unknown"
-    # One title, then the page's own pickers at the top of the page (they
+    # The page's own pickers, first thing under the page head (they
     # sat at the foot of the sidebar, below the screen edge, until 2026-11).
-    st.header("Team Analysis")
     _pick_team_col, _pick_stage_col = st.columns([2, 1])
     # Stage selector (Regular / Promotion / Maintenance / Promotion playoff)
     with _pick_stage_col:

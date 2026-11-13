@@ -541,7 +541,6 @@ def render():
     COMPETITIONS = app.COMPETITIONS
     league_selector = app.league_selector
 
-    st.header('Coach Profile')
     sig = tables_signature()
     data = load_tables(sig)
     if data is None:
@@ -564,7 +563,7 @@ def render():
     if follow and follow[1] == comp_id and follow[0] in COMPETITIONS:
         comp_id = follow[0]
         st.info(f"Showing {COMPETITIONS[comp_id]['name']}: this coach has no matches in the league "
-                "selected in the sidebar.")
+                "selected at the top of the page.")
     else:
         st.session_state.pop('coach_profile_follow', None)
     league_name = COMPETITIONS[comp_id]['name']
