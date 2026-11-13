@@ -28,7 +28,14 @@ def render():
 
     selected_comp_ids = league_selector("opposition_report")
     from opposition_report import render_opposition_report
-    opp_events = filter_by_league(raw_events_df, selected_comp_ids)
+    # The league's events, all seasons: the SHARED cached frame the other
+    # pages read (get_filtered_events, scope (None, comps) — the "All Seasons"
+    # scope of the player pages), not a copy of our own. Until 2026-11 this
+    # line was filter_by_league(raw_events_df, comps): a fresh 1.9 GB copy of
+    # Liga 3 on EVERY run of the page, and the report then cut a second copy
+    # (the season, up to 0.9 GB) from it. Same rows, same order (checked on
+    # the data for every league and season); the report only reads the frame.
+    opp_events = app.get_filtered_events(raw_events_df, None, selected_comp_ids)
     opp_matches = filter_by_league(matches_summary_df, selected_comp_ids)
     # Build season map for selected leagues
     opp_season_map = {}

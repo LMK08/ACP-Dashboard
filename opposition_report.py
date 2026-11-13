@@ -734,7 +734,14 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     selected_season_id = app.season_selector("opposition_report", comp_ids=comp_ids)
 
     # --- Season data ---
-    season_events_df = app.get_season_events(raw_events_df, selected_season_id)
+    # The season's events come from the shared cached frame every page uses
+    # (app.get_filtered_events, keyed on (season, league) — the same entry
+    # Team Analysis reads), not from a per-run copy. raw_events_df here is
+    # already the league's frame, so the rows are those of the old
+    # get_season_events(raw_events_df, season). READ-ONLY: never assign into
+    # season_events_df or raw_events_df in this file; .copy() first (every
+    # helper below already does).
+    season_events_df = app.get_filtered_events(raw_events_df, selected_season_id, comp_ids)
     season_matches_df = app.get_season_matches(matches_summary_df, selected_season_id)
     season_player_minutes = app.get_season_player_minutes(
         player_minutes_data, selected_season_id
