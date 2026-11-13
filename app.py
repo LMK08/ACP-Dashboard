@@ -9588,7 +9588,7 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
         except Exception as _pe:
             logger.warning(f"[prewarm] could not start: {_pe}")
 
-    # Grouped navigation (Club / Opposition / Players / Recruitment); the
+    # Grouped navigation (Club / Opposition / Coaches / Players / Recruitment); the
     # single source of truth is st.session_state.current_page — see navigation.py.
     analysis_type = navigation.render_sidebar_nav()
     with _context_slot:

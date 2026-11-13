@@ -37,7 +37,7 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   from a view or bridge call `context_bar.set_context(league, season)` BEFORE
   the bar's widgets exist in that run (Home, app.py prelude, or right before
   `st.rerun()`), then `navigation.go_to(page)`.
-- `navigation.py` — grouped sidebar navigation (Club / Opposition / Players /
+- `navigation.py` — grouped sidebar navigation (Club / Opposition / Coaches / Players /
   Recruitment). ONE piece of state, `st.session_state.current_page`; each
   group is a radio mirroring it. To send a user somewhere from a view use
   `navigation.go_to(page, **preset_keys)` (e.g. a season selector key or the
@@ -394,7 +394,7 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   and seeded before they draw), Shadow Team → profile with
   `profile_active_tab='Similar Players'` (settable from another page only).
   Tests: `tests/test_similar_players.py`.
-- `models/coaches/` — Coach Profile (`views/coach_profile.py`, Opposition
+- `models/coaches/` — Coach Profile (`views/coach_profile.py`, Coaches
   group) and the Player Profile's 'Coached by' section
   (`coach_profile.render_coached_by`). `build_coaches.py` (scheduled
   refresh, incremental, `continue-on-error`) writes four committed
@@ -518,7 +518,7 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   by the 11 most-used starters per club-season with 8+ sheets, 0.82).
   Tested the same day and NOT built (Lucas: too noisy): substitutions by
   the score and style leading vs trailing (-0.23 … 0.17).
-  COACH COMPARISON (`views/coach_comparison.py`, 2026-11-13, Opposition
+  COACH COMPARISON (`views/coach_comparison.py`, 2026-11-13, Coaches
   group): two coaches of ONE league, each on his whole record there,
   through the profile's own `summarise` / `league_comparison` /
   `coach_table` — add a measure to the profile and to the matching spec
