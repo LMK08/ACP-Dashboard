@@ -140,8 +140,16 @@ def fmt_val(metric, value):
 st.set_page_config(
     page_title="Atlético CP Analytics",
     layout="wide",
-    initial_sidebar_state="expanded"
+    # "auto": open on a laptop, closed on a phone (it used to open over ~70%
+    # of a phone screen on first load).
+    initial_sidebar_state="auto"
 )
+
+# What a cached loader shows while it runs. Streamlit's default is the
+# function's own name ("Running load_data()."), which is the first thing a
+# new visitor read. Every @st.cache_* in this file passes show_spinner=LOADING
+# (or False where the caller draws its own sentence).
+LOADING = "Loading…"
 
 # ==============================================================================
 # DARK THEME CSS INJECTION
@@ -166,7 +174,10 @@ st.markdown("""
     --shadow-xs: 0 1px 3px rgba(0,0,0,0.04);
     --shadow-sm: 0 2px 6px rgba(0,0,0,0.06);
     --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* Streamlit's bundled face. 'Inter' was named here until 2026-11 but never
+       loaded: text fields fell back to the system font, the rest stayed
+       Source Sans. One family everywhere; no third-party font request. */
+    --font: "Source Sans", "Source Sans Pro", "Source Sans 3", -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 /* === BASE === */
@@ -194,12 +205,16 @@ footer, footer::before { display: none !important; }
     border-color: rgba(255,255,255,0.12) !important;
     color: #fff !important;
 }
-[data-testid="stSidebar"] button {
+[data-testid="stSidebar"] :is([data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-secondaryFormSubmit"], [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stPopoverButton"]) {
     background: rgba(255,255,255,0.12) !important;
     color: #fff !important;
     border: 1px solid rgba(255,255,255,0.15) !important;
 }
-[data-testid="stSidebar"] button:hover {
+[data-testid="stSidebar"] :is([data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-secondaryFormSubmit"], [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stPopoverButton"]):hover {
     background: rgba(255,255,255,0.2) !important;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] {
@@ -214,8 +229,10 @@ footer, footer::before { display: none !important; }
 [data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
     background: rgba(255,255,255,0.06) !important;
 }
-[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {
-    color: rgba(255,255,255,0.5) !important;
+[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] * {
+    color: rgba(255,255,255,0.62) !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label {
     color: rgba(255,255,255,0.85) !important;
@@ -251,6 +268,14 @@ h1 { font-size: 2.2rem; font-weight: 700; }
 h2 { font-size: 1.55rem; border-bottom: 1.5px solid var(--ink); padding-bottom: 0.4rem; margin-bottom: 1rem; }
 h3 { font-size: 1.15rem; }
 p { color: var(--ink-2); line-height: 1.65; }
+/* Notes under charts and cards. Streamlit draws a caption at 60% strength; on
+   the cream page that measured about 2.7:1 (2026-11), and these notes carry
+   the warnings the pages depend on. Full strength in the secondary ink is
+   about 6.6:1. */
+[data-testid="stCaptionContainer"] { opacity: 1 !important; }
+[data-testid="stMain"] [data-testid="stCaptionContainer"],
+[data-testid="stMain"] [data-testid="stCaptionContainer"] p,
+[data-testid="stMain"] [data-testid="stCaptionContainer"] li { color: var(--ink-2) !important; }
 
 [data-testid="stMarkdownContainer"] h1,
 [data-testid="stMarkdownContainer"] h2,
@@ -336,7 +361,14 @@ p { color: var(--ink-2); line-height: 1.65; }
 [data-testid="stDataFrame"] tbody td { color: var(--ink) !important; padding: 0.7rem !important; text-align: center !important; }
 
 /* === BUTTONS === */
-button {
+/* Real buttons only (st.button, download, form submit, popover). Until 2026-11
+   this rule was a bare `button {}`: it also painted the control that reopens
+   a closed sidebar (a blank black box), every table's small tool buttons
+   (four black blocks over the note above the table), number steppers and
+   the header menu. Add a new button kind here by its data-testid. */
+:is([data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-secondaryFormSubmit"], [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stPopoverButton"]) {
     background: var(--ink) !important;
     color: #fff !important;
     border: none !important;
@@ -346,15 +378,23 @@ button {
     cursor: pointer !important;
     transition: opacity 0.2s, box-shadow 0.2s !important;
 }
-button:hover { opacity: 0.85 !important; box-shadow: var(--shadow-sm) !important; }
-button:active { opacity: 1 !important; }
+:is([data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-secondaryFormSubmit"], [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stPopoverButton"]):hover { opacity: 0.85 !important; box-shadow: var(--shadow-sm) !important; }
+:is([data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-secondaryFormSubmit"], [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stPopoverButton"]):active { opacity: 1 !important; }
 
 [data-testid="stDownloadButton"] button { background: var(--ink) !important; }
 /* A button's label is a <p> in a markdown container, and the cream-page ink
    rules (p, stMarkdownContainer) beat the white the button sets: every
    button label was grey on near-black (~2.4:1). Tabs keep their own colours. */
-[data-testid^="stBaseButton"] p,
-[data-testid^="stBaseButton"] [data-testid="stMarkdownContainer"],
+[data-testid="stBaseButton-secondary"] p, [data-testid="stBaseButton-primary"] p,
+[data-testid="stBaseButton-secondaryFormSubmit"] p, [data-testid="stBaseButton-primaryFormSubmit"] p,
+[data-testid="stBaseButton-secondary"] [data-testid="stMarkdownContainer"],
+[data-testid="stBaseButton-primary"] [data-testid="stMarkdownContainer"],
+[data-testid="stBaseButton-secondaryFormSubmit"] [data-testid="stMarkdownContainer"],
+[data-testid="stBaseButton-primaryFormSubmit"] [data-testid="stMarkdownContainer"],
 [data-testid="stPopoverButton"] p,
 [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"] { color: inherit !important; }
 
@@ -512,7 +552,8 @@ pre code { background: transparent !important; padding: 0 !important; }
 """, unsafe_allow_html=True)
 # metric rows keyed theme.metric_fit_key: value font capped so the row's
 # longest word fits its card whole
-st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}</style>", unsafe_allow_html=True)
+st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}\n{theme.metric_note_css()}</style>",
+            unsafe_allow_html=True)
 
 # ==============================================================================
 # 1B. SEASON CONSTANTS
@@ -613,7 +654,7 @@ def _parquet_safe(df):
 # ==============================================================================
 # 2. DATA LOADING (with Caching)
 # ==============================================================================
-@st.cache_resource(ttl=86400)  # cache_resource avoids serializing large DataFrames
+@st.cache_resource(ttl=86400, show_spinner=False)  # cache_resource avoids serializing large DataFrames
 def load_data():
     """Load all pre-processed data files."""
     required_files = [
@@ -996,7 +1037,7 @@ def _resolve_pid(pid):
     return PLAYER_ID_ALIASES.get(ipid, ipid)
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_obv_viz_data():
     """Engine OBV/phases aggregates (exported by GPA engine rebuild).
 
@@ -1019,7 +1060,7 @@ def load_obv_viz_data():
     return out
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_player_details():
     """Loads the player details (foot, height, etc.) from the pkl file."""
     try:
@@ -1094,7 +1135,7 @@ GPA_PER90_DISPLAY: dict[str, str] = {
 }
 GPA_PER90_COLS = [GPA_PER90_DISPLAY.get(c, f"{c}_per_90") for c in GPA_VALUE_CATEGORIES]
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_gpa_values():
     """Load per-(playerId, seasonId) GPA action-value categories.
 
@@ -1225,7 +1266,7 @@ def _season_id_list(active):
     return [int(active)]
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_box_passes():
     """Per-event passes into the attacking box with GPA pass values
     (models/creation/box_entry_passes.parquet). Empty DF if missing."""
@@ -1247,7 +1288,7 @@ def load_box_passes():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_defr_values():
     """Load per-(playerId, seasonId) DefR metrics. Returns empty DF if the
     file is missing so the rest of the app is unaffected."""
@@ -1426,7 +1467,7 @@ def _add_defr_percentiles(df):
 # Both return a scalar multiplier (applied uniformly across all metrics for
 # the Opta source; per-metric for the empirical source).
 # ============================================================================
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_player_engine():
     """Unified ACP engine export (models/ratings/build_player_engine.py):
     one row per rated player-season with rating + abs, axis percentiles,
@@ -1521,7 +1562,7 @@ def load_player_engine():
 # Both are DISPLAY-ONLY and never touch the rating/projection. GKs are excluded
 # upstream (no role assignment), so keepers simply get nothing here.
 # ============================================================================
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_tendencies():
     """tendencies_season.parquet -> one row per (playerId, seasonId, role) with
     t_<key> raw values, p_<key> within-role percentiles, thin_sample flag.
@@ -1544,7 +1585,7 @@ def load_tendencies():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_styles():
     """style_assignments_season.parquet -> style + style_fit + top-2 mix per
     (playerId, seasonId). Empty DF if missing."""
@@ -1566,7 +1607,7 @@ def load_styles():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def get_career_engine_role_map():
     """playerId -> observed engine role, by Lucas's 2026-06-24 rule: the
     minutes-weighted argmax over per-season role SHARES across the player's
@@ -1677,7 +1718,7 @@ def get_scoped_style(player_id, season_ids):
             'role': r.get('role'), 'thin_sample': bool(r.get('thin_sample', False))}
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_minutes_share_table():
     """models/value/availability.parquet — every player-season with exact
     API minutes (engine rows and display-only ones: GKs, sub-floor players),
@@ -2323,7 +2364,7 @@ def merge_engine_values_into_stats(player_stats_df, season_ids=None, comp_ids=No
     return df
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_opta_ratings():
     """Load opta_ratings.parquet. Returns empty DF if missing."""
     path = os.path.join(os.path.dirname(__file__), 'opta_ratings.parquet')
@@ -2363,7 +2404,7 @@ def _opta_norm_key(s):
     return _re.sub(r'[^a-z0-9]+', '', str(s).lower().strip())
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def build_opta_team_strength_map() -> dict:
     """Return a dict: {normalized_name OR raw_name → currentRating}.
     Cached; the caller wraps it in a lookup function via
@@ -2425,7 +2466,7 @@ def opta_translation_multiplier(source_comp_id: int, target_comp_id: int) -> flo
     return tgt / src
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def compute_empirical_translation_factors(
     _raw_events_df, _player_minutes_data,
     source_comp_id: int, target_comp_id: int,
@@ -3003,7 +3044,7 @@ _STAGE_ORDER = {
 }
 
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def compute_stage_map(matches_summary_df, comp_id, season_id):
     """For a single (competition, season), return {roundId: stage_label}.
 
@@ -3078,14 +3119,16 @@ def get_available_stages(matches_summary_df, comp_ids, season_ids):
 
 
 def stage_selector(section_key, matches_summary_df, comp_ids, season_ids):
-    """Sidebar stage selector. Returns the selected stage label, or
-    STAGE_ALL when there's only one stage available (selector hidden)."""
+    """Stage selector, drawn in the CALLER's container (the page's picker
+    row; it sat at the foot of the sidebar until 2026-11). Returns the
+    selected stage label, or STAGE_ALL when there's only one stage
+    available (selector hidden)."""
     stages = get_available_stages(matches_summary_df, comp_ids, season_ids)
     if len(stages) <= 1:
         return STAGE_ALL
     options = [STAGE_ALL] + stages
-    return st.sidebar.selectbox(
-        "Stage:",
+    return st.selectbox(
+        "Stage",
         options,
         index=0,
         key=f"{section_key}_stage_selector",
@@ -3137,7 +3180,7 @@ def _calculate_age(birth_date):
         logger.warning(f"Failed to parse birth date '{birth_date}': {e}")
         return "N/A"
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_match_player_minutes():
     """Exact per-match minutes from the Wyscout API (match_minutes.py cache),
     PLAYER_ID_ALIASES resolved. Columns: matchId, seasonId, competitionId,
@@ -3150,7 +3193,7 @@ def load_match_player_minutes():
     return resolve_aliases(mm) if len(mm) else mm
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_excluded_match_ids():
     """Matches left out of per-90 stats: no API minutes inside a per-match
     season (see match_minutes.excluded_match_ids)."""
@@ -3201,7 +3244,7 @@ def get_player_minutes_by_position(events_df, player_id, _player_match_log_df=No
     return _player_minutes_by_position(_scope_match_ids(events_df), player_id)
 
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def _player_minutes_by_position(match_ids, player_id):
     if not match_ids:
         return pd.DataFrame(columns=['Position', 'Minutes', 'Percentage'])
@@ -3220,13 +3263,13 @@ def get_all_players_minutes_by_position(events_df):
     return _all_players_minutes_by_position(_scope_match_ids(events_df))
 
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def _all_players_minutes_by_position(match_ids):
     if not match_ids:
         return pd.DataFrame(columns=['playerId', 'Position', 'Minutes'])
     return _api_position_minutes(match_ids)
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, season_id=None,
                            player_id=None):
     """
@@ -3307,7 +3350,7 @@ def get_player_match_stats(player_name, _all_match_data, _matches_summary_df, se
 
     return match_log_df
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def _next_shot_id_by_match(events_df):
     """Series aligned to events_df.index: the id of the next shot in the same
     match (a backfill of 'shot_event_id'). Safe on an EMPTY frame — there the
@@ -3496,7 +3539,7 @@ def calculate_player_profile_stats(_raw_events_df, _player_minutes_df):
     return combined_df.fillna(0)
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600, show_spinner=LOADING)
 def _compute_peer_density_stack(events_hash, _events_df, position_codes,
                                 _player_minutes_df=None,
                                 include_recoveries=True):
@@ -3555,7 +3598,7 @@ def _compute_peer_density_stack(events_hash, _events_df, position_codes,
     return stack
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def load_history_player_minutes():
     """Load historical player minutes from previous seasons."""
     if not os.path.exists('history_player_minutes.pkl'):
@@ -4288,7 +4331,7 @@ def calculate_and_merge_list(base_df, events_df, stat_name, tag_to_find, primary
         bool_condition=condition   # <-- Pass the condition as a bool_condition
     )
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 
 def add_custom_dribble_success(events_df):
     """
@@ -4376,7 +4419,7 @@ def add_custom_dribble_success(events_df):
     
     return df
 
-@st.cache_data(ttl=86400)  # 24h — the old 1h expiry forced an hourly cold
+@st.cache_data(ttl=86400, show_spinner=LOADING)  # 24h — the old 1h expiry forced an hourly cold
 # recompute from the 2.3M-row events frame; harmless now (32GB RAM,
 # matplotlib leak fixed, ~8 small per-season frames cached at most).
 def calculate_all_player_stats(_raw_events_df, _player_minutes_df, season_id=None, cache_version=STATS_CACHE_VERSION, cache_scope=None):
@@ -5314,7 +5357,7 @@ def calculate_career_player_stats(_current_events, _hist_events, _all_time_minut
     print("--- FINISHED: Career Stats Calculation ---")
     return career_stats
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def _engine_build_stamp():
     """'<built_at> <rating_version> avail:<hash>' of the deployed engine (or
     '' when there is none) — part of the percentiles-cache fingerprint. The
@@ -6604,7 +6647,7 @@ def plot_comparison_radar(ax, player_a_data, player_b_data, metrics, position_te
              fontsize=10, color='black', transform=fig.transFigure)
 
 # --- Radar Stats Calculation ---
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def load_team_advanced_stats():
     """Load Wyscout team advanced stats from parquet if available."""
     try:
@@ -6615,7 +6658,7 @@ def load_team_advanced_stats():
     except FileNotFoundError:
         return None
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season_id=None,
                                        force_events=False):
     """Calculates aggregated stats and percentiles for Offensive, Distribution, and Defensive radars.
@@ -7118,7 +7161,7 @@ def create_player_shotmap(player_shots_df, player_name):
     return fig
 
 # --- NEW FUNCTION: Calculate Team Strength ---
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def calculate_team_strength(season_events_df, matches_summary_df, season_id=None):
     """Calculates Attacking and Defending Strength metrics for all teams."""
     if season_id is not None:
@@ -7190,7 +7233,7 @@ def calculate_team_strength(season_events_df, matches_summary_df, season_id=None
 
 
 # --- NEW FUNCTION: Rolling Per-Match Team Strength (No Data Leakage) ---
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def calculate_rolling_team_strength(season_events_df, matches_summary_df, season_id=None):
     """Per-match rolling team strength with no data leakage.
     Returns DataFrame: matchId, team, matchDate, match_number,
@@ -7282,7 +7325,7 @@ def calculate_rolling_team_strength(season_events_df, matches_summary_df, season
 SOS_CACHE_VERSION = 'v2'  # v2 (2026-09): factors credit tough schedules; v1 had them inverted
 
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def calculate_sos_adjusted_strength(rolling_strength_df, team_strength_df, season_id=None):
     """SOS-adjust team strength ratings (cached wrapper over models.strength.sos).
     Returns DataFrame (index=team): raw_att, raw_def, avg_opp_att, avg_opp_def,
@@ -7316,7 +7359,7 @@ def calculate_sos_adjusted_strength(rolling_strength_df, team_strength_df, seaso
 
 
 # --- NEW FUNCTION: Build Season Cumulative Stats ---
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
     """Build end-of-season cumulative stats for all teams in a season.
     Returns: {team_name: {matches, wins, draws, losses, points, goals_for, goals_against,
@@ -7766,7 +7809,7 @@ def plot_xg_flowchart(match_events_df, match_info):
     plt.tight_layout()
     return fig
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def calculate_xg_history_data(_raw_events_df, _matches_summary_df, scope_key=None):
     """
     Aggregates xG For and Against for every team for every match.
@@ -7939,7 +7982,7 @@ def plot_match_xg_history(all_matches_df, selected_team, rolling_window=5):
     plt.tight_layout()
     return fig
 
-@st.cache_data
+@st.cache_data(show_spinner=LOADING)
 def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_id=None):
     """
     Aggregates all per-match team stats from all_match_data into a
@@ -8038,7 +8081,7 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
             pass
     return result
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=LOADING)
 def calculate_set_piece_metrics(_events_df, season_id=None, stage=None):
     """Calculate set piece xG and goals metrics for all teams.
 
@@ -9426,10 +9469,31 @@ def render_season_report_section(team_events_df, team_matches_df, team_name,
 # ==============================================================================
 # 5. STREAMLIT APP UI
 # ==============================================================================
-st.markdown('<h1 style="text-align: center; color: #1a1a1a; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 0;">Atlético CP Analytics</h1>', unsafe_allow_html=True)
+@st.cache_data(show_spinner=False)
+def _sidebar_brand():
+    """Crest and club name for the top of the sidebar (HTML). The crest is the
+    120 px PNG the scatter plots already ship (icons/, LFS)."""
+    import base64
+    _img = ''
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', f'{OUR_TEAM}.png'), 'rb') as _f:
+            _img = (f'<img src="data:image/png;base64,{base64.b64encode(_f.read()).decode()}" alt="" '
+                    'style="width:40px;height:40px;object-fit:contain;flex:none;">')
+    except OSError:
+        pass
+    return ('<div style="display:flex;align-items:center;gap:0.65rem;padding:0.1rem 0 0.9rem 0.15rem;">'
+            f'{_img}<div style="line-height:1.15;">'
+            f'<div style="color:#fff;font-size:1.08rem;font-weight:700;letter-spacing:-0.2px;">{OUR_TEAM}</div>'
+            '<div style="font-size:0.68rem;letter-spacing:0.14em;text-transform:uppercase;font-weight:600;">Analytics</div>'
+            '</div></div>')
+
+
+# The club name used to head every page here as an <h1> (about 100 px before
+# any content, on all 12 pages). It lives in the sidebar now (_sidebar_brand);
+# each page opens on its own title.
 
 # --- Load Data ---
-with st.spinner("Loading match data..."):
+with st.spinner("Loading match data. The first visit after an update can take 10 to 20 seconds."):
     raw_events_df, matches_summary_df, all_match_data, season_team_stats, player_minutes_data, match_lineups = load_data()
     # Which seasons actually have events — drives the default season selection.
     SEASON_MATCHES_WITH_EVENTS = _season_match_counts(raw_events_df)
@@ -9467,9 +9531,9 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     if 'player_profile_last_season' not in st.session_state:
         st.session_state.player_profile_last_season = None
 
-    # --- Sidebar: context bar (filled once the page is known), then navigation ---
+    # --- Sidebar: club name, context bar (filled once the page is known), then navigation ---
+    st.sidebar.markdown(_sidebar_brand(), unsafe_allow_html=True)
     _context_slot = st.sidebar.container()
-    st.sidebar.markdown('<div style="text-align: center; padding: 1rem 0 0.5rem 0;"><h2 style="color: #ffffff; font-size: 1.3rem; font-weight: 600; margin: 0;">Navigation</h2></div>', unsafe_allow_html=True)
 
     # Cross-page bridge: a view that selected a player asks for the profile,
     # optionally carrying the season it was looking at. The season goes into
@@ -9593,16 +9657,30 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
     analysis_type = navigation.render_sidebar_nav()
     with _context_slot:
         context_bar.render(analysis_type)
+    # Chart size sits under the navigation, on the pages that draw pitch
+    # charts (it used to sit between League and Season on every page).
+    with st.sidebar:
+        context_bar.render_display(analysis_type)
     navigation.scroll_to_top_on_page_change(analysis_type)
 
-    # Engine freshness stamp — visible on every page (lesson from the
-    # April→June staleness: nobody could see the data was 2 months old)
+    # Data freshness — the DATE stays visible on every page (lesson from the
+    # April→June staleness: nobody could see the data was 2 months old). The
+    # version numbers sit one click away, under "About the data".
+    # about_data_panel: ONE place for version lines. A view can add its own
+    # with `with app.about_data_panel: st.caption(...)`; a caveat a number
+    # depends on stays beside that number instead.
+    _about_date_slot = st.sidebar.empty()
+    about_data_panel = st.sidebar.expander("About the data")
     try:
         _, _eng_meta_sb = load_player_engine()
         if _eng_meta_sb:
-            st.sidebar.caption(
-                f"⚙️ Engine {_eng_meta_sb.get('rating_version', '?')} · "
-                f"data through {_eng_meta_sb.get('data_through', '?')}")
+            _about_date_slot.caption(f"Ratings use matches through {_eng_meta_sb.get('data_through', '?')}")
+            about_data_panel.caption(
+                f"Rating model {_eng_meta_sb.get('rating_version', '?')}"
+                + (f" · projection {_eng_meta_sb['projection_version']}"
+                   if _eng_meta_sb.get('projection_version') else '')
+                + ". Match events and minutes come from Wyscout. The ratings, "
+                  "projections and values are the club's own models.")
     except Exception:
         pass
 

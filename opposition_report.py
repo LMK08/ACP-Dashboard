@@ -805,6 +805,21 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     st.divider()
 
+    # Answer first (2026-11): the takeaways with the PDF button, the strengths
+    # and weaknesses and the likely line-up are DRAWN at the top of the page.
+    # Until then they started 14,800 / 5,500 / about 2,500 px down a 15,400 px
+    # page. Their code still RUNS where it always did, further down: the
+    # takeaways read key_players, set_piece_df and form_results from the
+    # sections in between, and the PDF is assembled from the figures those
+    # sections draw. So each of the three writes into a container created
+    # here, and no number or PDF input changes. The note is cleared when the
+    # takeaways land (the last thing the page computes).
+    _summary_loading = st.empty()
+    _summary_loading.caption("Loading the summary: key takeaways, strengths and weaknesses, likely line-up…")
+    _takeaways_slot = st.container()
+    _synopsis_slot = st.container()
+    _lineup_slot = st.container()
+
     # Collections for PDF
     pdf_figures = {}   # key -> PNG bytes
     pdf_texts = {}
@@ -1045,65 +1060,67 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # ===================================================================
     # Step 4: Projected Lineup & Formation
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Projected Lineup")
+    # drawn at the top of the page (see _lineup_slot above)
+    with _lineup_slot:
+        st.subheader(f"{selected_opponent} — Projected Lineup")
 
-    formation, starting_xi = _get_projected_starting_xi(
-        season_events_df, season_matches_df, selected_opponent,
-        selected_season_id,
-    )
-    xi_names = set()  # will be populated with exactly 11 names below
+        formation, starting_xi = _get_projected_starting_xi(
+            season_events_df, season_matches_df, selected_opponent,
+            selected_season_id,
+        )
+        xi_names = set()  # will be populated with exactly 11 names below
 
-    if starting_xi:
-        # Map to exactly 11 formation slots (dedup + constrain)
-        from pitch_visualizations import FORMATION_COORDS
-        _fkey = formation if formation in FORMATION_COORDS else '4-4-2'
-        _fslots = FORMATION_COORDS[_fkey]['positions']
-        _mapped_xi = app.map_players_to_formation(starting_xi, _fslots)
-        xi_names = {v['name'] for v in _mapped_xi.values()
-                    if 'name' in v and v.get('id') is not None}
+        if starting_xi:
+            # Map to exactly 11 formation slots (dedup + constrain)
+            from pitch_visualizations import FORMATION_COORDS
+            _fkey = formation if formation in FORMATION_COORDS else '4-4-2'
+            _fslots = FORMATION_COORDS[_fkey]['positions']
+            _mapped_xi = app.map_players_to_formation(starting_xi, _fslots)
+            xi_names = {v['name'] for v in _mapped_xi.values()
+                        if 'name' in v and v.get('id') is not None}
 
-        col_form, col_subs = st.columns([2, 1])
+            col_form, col_subs = st.columns([2, 1])
 
-        with col_form:
-            # xi_key pins the 11 players and their slots into the key, in the
-            # dict order create_formation_graphic draws them.
-            _xi_key = tuple(
-                (str(_pos), str(_info.get('name')), _info.get('id'))
-                for _pos, _info in starting_xi.items()
-            )
-            _show_opp_png('formation', pdf_key='formation',
-                          extra=(formation, _xi_key), payload=starting_xi)
-
-            st.caption("Formation and slots are our own read of where the starters touched the ball in the "
-                       "last three matches (most recent counts most): the shape with the ball, so a side "
-                       "with a full-back who plays high reads as three at the back.")
-
-        with col_subs:
-            st.markdown("**Projected Substitutes**")
-            if season_player_minutes is not None and not season_player_minutes.empty:
-                subs_df = _get_projected_subs(
-                    season_events_df, season_player_minutes,
-                    selected_opponent, xi_names, selected_season_id,
+            with col_form:
+                # xi_key pins the 11 players and their slots into the key, in the
+                # dict order create_formation_graphic draws them.
+                _xi_key = tuple(
+                    (str(_pos), str(_info.get('name')), _info.get('id'))
+                    for _pos, _info in starting_xi.items()
                 )
-                if not subs_df.empty:
-                    rename_map = {
-                        'playerName': 'Player', 'primaryPosition': 'Position',
-                        'totalMinutes': 'Minutes', 'Appearances': 'Apps',
-                    }
-                    rm = {k: v for k, v in rename_map.items() if k in subs_df.columns}
-                    st.dataframe(
-                        subs_df.rename(columns=rm),
-                        width="stretch", hide_index=True,
-                    )
-                    pdf_texts['subs'] = subs_df.rename(columns=rm)
-                else:
-                    st.caption("No substitute data available.")
-            else:
-                st.caption("Player minutes data not available.")
-    else:
-        st.warning(f"No lineup data available for {selected_opponent}.")
+                _show_opp_png('formation', pdf_key='formation',
+                              extra=(formation, _xi_key), payload=starting_xi)
 
-    st.divider()
+                st.caption("Formation and slots are our own read of where the starters touched the ball in the "
+                           "last three matches (most recent counts most): the shape with the ball, so a side "
+                           "with a full-back who plays high reads as three at the back.")
+
+            with col_subs:
+                st.markdown("**Projected Substitutes**")
+                if season_player_minutes is not None and not season_player_minutes.empty:
+                    subs_df = _get_projected_subs(
+                        season_events_df, season_player_minutes,
+                        selected_opponent, xi_names, selected_season_id,
+                    )
+                    if not subs_df.empty:
+                        rename_map = {
+                            'playerName': 'Player', 'primaryPosition': 'Position',
+                            'totalMinutes': 'Minutes', 'Appearances': 'Apps',
+                        }
+                        rm = {k: v for k, v in rename_map.items() if k in subs_df.columns}
+                        st.dataframe(
+                            subs_df.rename(columns=rm),
+                            width="stretch", hide_index=True,
+                        )
+                        pdf_texts['subs'] = subs_df.rename(columns=rm)
+                    else:
+                        st.caption("No substitute data available.")
+                else:
+                    st.caption("Player minutes data not available.")
+        else:
+            st.warning(f"No lineup data available for {selected_opponent}.")
+
+        st.divider()
 
     # ===================================================================
     # Step 5: Key Players Deep Dive
@@ -1269,47 +1286,49 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # ===================================================================
     # Step 6: Strengths & Weaknesses Synopsis
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Strengths & Weaknesses")
+    # drawn at the top of the page (see _synopsis_slot above)
+    with _synopsis_slot:
+        st.subheader(f"{selected_opponent} — Strengths & Weaknesses")
 
-    if selected_opponent in stats_df_pct.index:
-        strengths, weaknesses, profiles = _generate_team_synopsis(
-            stats_df_pct, selected_opponent,
-        )
+        if selected_opponent in stats_df_pct.index:
+            strengths, weaknesses, profiles = _generate_team_synopsis(
+                stats_df_pct, selected_opponent,
+            )
 
-        if profiles:
-            st.markdown(f"**Tactical Profile:** {', '.join(profiles)}")
+            if profiles:
+                st.markdown(f"**Tactical Profile:** {', '.join(profiles)}")
 
-        col_s, col_w = st.columns(2)
+            col_s, col_w = st.columns(2)
 
-        with col_s:
-            st.markdown("**Strengths** (65th+ percentile)")
-            if strengths:
-                for met, val in strengths:
-                    tier = "Elite" if val >= 80 else "Above Average"
-                    st.markdown(
-                        f"- :green[{met}] — {val:.0f}th pct ({tier})"
-                    )
-            else:
-                st.caption("No standout strengths identified.")
+            with col_s:
+                st.markdown("**Strengths** (65th+ percentile)")
+                if strengths:
+                    for met, val in strengths:
+                        tier = "Elite" if val >= 80 else "Above Average"
+                        st.markdown(
+                            f"- :green[{met}] — {val:.0f}th pct ({tier})"
+                        )
+                else:
+                    st.caption("No standout strengths identified.")
 
-        with col_w:
-            st.markdown("**Weaknesses** (35th- percentile)")
-            if weaknesses:
-                for met, val in weaknesses:
-                    tier = "Poor" if val <= 20 else "Below Average"
-                    st.markdown(
-                        f"- :red[{met}] — {val:.0f}th pct ({tier})"
-                    )
-            else:
-                st.caption("No clear weaknesses identified.")
+            with col_w:
+                st.markdown("**Weaknesses** (35th- percentile)")
+                if weaknesses:
+                    for met, val in weaknesses:
+                        tier = "Poor" if val <= 20 else "Below Average"
+                        st.markdown(
+                            f"- :red[{met}] — {val:.0f}th pct ({tier})"
+                        )
+                else:
+                    st.caption("No clear weaknesses identified.")
 
-        pdf_texts['strengths'] = strengths
-        pdf_texts['weaknesses'] = weaknesses
-        pdf_texts['profiles'] = profiles
-    else:
-        st.warning("No percentile data available for synopsis.")
+            pdf_texts['strengths'] = strengths
+            pdf_texts['weaknesses'] = weaknesses
+            pdf_texts['profiles'] = profiles
+        else:
+            st.warning("No percentile data available for synopsis.")
 
-    st.divider()
+        st.divider()
 
     # ===================================================================
     # Step 7: Set Piece Analysis
@@ -1566,56 +1585,58 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # ===================================================================
     # Step 9: Key Takeaways
     # ===================================================================
-    st.subheader("Key Takeaways")
+    # drawn first on the page, with the PDF button (see _takeaways_slot above)
+    with _takeaways_slot:
+        st.subheader("Key Takeaways")
 
-    takeaways = _generate_key_takeaways(
-        selected_opponent, strengths, weaknesses, profiles,
-        form_results, key_players, set_piece_df if not set_piece_df.empty else None,
-        stats_df_pct,
-    )
+        takeaways = _generate_key_takeaways(
+            selected_opponent, strengths, weaknesses, profiles,
+            form_results, key_players, set_piece_df if not set_piece_df.empty else None,
+            stats_df_pct,
+        )
 
-    for t in takeaways:
-        st.markdown(f"- {t}")
+        for t in takeaways:
+            st.markdown(f"- {t}")
 
-    pdf_texts['takeaways'] = takeaways
+        pdf_texts['takeaways'] = takeaways
 
-    st.divider()
+        # ===================================================================
+        # Step 10: PDF Download
+        # ===================================================================
+        gw = fixture_info['gameweek'] if fixture_info else '?'
+        m_date = (
+            fixture_info['date'].strftime('%d %b %Y')
+            if fixture_info and pd.notna(fixture_info.get('date'))
+            else datetime.date.today().strftime('%d %b %Y')
+        )
 
-    # ===================================================================
-    # Step 10: PDF Download
-    # ===================================================================
-    gw = fixture_info['gameweek'] if fixture_info else '?'
-    m_date = (
-        fixture_info['date'].strftime('%d %b %Y')
-        if fixture_info and pd.notna(fixture_info.get('date'))
-        else datetime.date.today().strftime('%d %b %Y')
-    )
+        if st.button("Generate PDF Report", type="primary"):
+            try:
+                from generate_pdf import generate_opposition_report_pdf
 
-    if st.button("Generate PDF Report", type="primary"):
-        try:
-            from generate_pdf import generate_opposition_report_pdf
+                with st.spinner("Generating PDF..."):
+                    _build_pdf_only_figures()
+                    pdf_bytes = generate_opposition_report_pdf(
+                        opponent_name=selected_opponent,
+                        match_date=m_date,
+                        gameweek=gw,
+                        figures=pdf_figures,
+                        texts=pdf_texts,
+                    )
 
-            with st.spinner("Generating PDF..."):
-                _build_pdf_only_figures()
-                pdf_bytes = generate_opposition_report_pdf(
-                    opponent_name=selected_opponent,
-                    match_date=m_date,
-                    gameweek=gw,
-                    figures=pdf_figures,
-                    texts=pdf_texts,
+                fname = (
+                    f"Opposition_Report_"
+                    f"{selected_opponent.replace(' ', '_')}_GW{gw}.pdf"
                 )
-
-            fname = (
-                f"Opposition_Report_"
-                f"{selected_opponent.replace(' ', '_')}_GW{gw}.pdf"
-            )
-            st.download_button(
-                label="Download PDF Report",
-                data=pdf_bytes,
-                file_name=fname,
-                mime="application/pdf",
-            )
-        except ImportError:
-            st.warning("PDF generation not available (fpdf2 not installed).")
-        except Exception as e:
-            st.error(f"PDF generation failed: {e}")
+                st.download_button(
+                    label="Download PDF Report",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                )
+            except ImportError:
+                st.warning("PDF generation not available (fpdf2 not installed).")
+            except Exception as e:
+                st.error(f"PDF generation failed: {e}")
+        st.divider()
+    _summary_loading.empty()

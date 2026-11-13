@@ -44,6 +44,37 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   opponent selectbox key) — never set radio keys by hand. Add a page by
   appending to `NAV_GROUPS` and the `views.<page>.render()` chain in app.py;
   the smoke test finds the right radio by page name.
+- Page frame (RULE, 2026-11 UX pass). Every page opens with ONE
+  `st.header(<page name>)` (the club name is in the sidebar, `app._sidebar_brand`;
+  there is no app-wide `<h1>`), then the page's OWN pickers in the main area
+  (team / stage, match, player, Player A / Template / Player B, Shadow Team's
+  formation / save / load, Player Analysis's view row + "Filters" panel,
+  open on arrival). Team Analysis and Match Analysis keep a "Team Report: X"
+  / "Match Report: A vs B" subheader under the picker.
+  Never put a page's picker in the sidebar again: at 900 px the player picker
+  sat 1,100 px down it. The sidebar holds, in order: club block, League /
+  Season (`context_bar.render`), navigation, Chart size
+  (`context_bar.render_display`, only on `PAGES_WITH_PITCH_CHARTS`, default
+  Large — Standard was tried and Lucas kept Large), the data date and the
+  "About the data" panel
+  (`app.about_data_panel`: version lines go there; a caveat a number depends
+  on stays beside that number). The Opposition Report DRAWS its takeaways +
+  PDF button, strengths & weaknesses and line-up first through containers
+  created at the top (`_takeaways_slot` / `_synopsis_slot` / `_lineup_slot`)
+  while their code still RUNS in the old order — the takeaways read
+  key_players / set_piece_df / form_results and the PDF needs every figure
+  drawn. CSS (app.py): the black button style names real buttons by
+  data-testid (a bare `button {}` blanked the sidebar-reopen control and the
+  table toolbars) — add a new button kind there; captions are full strength;
+  the accent is `primaryColor` in `.streamlit/config.toml` (light tint under
+  `[theme.sidebar]`). A `st.metric` delta used as a TEXT NOTE sits in a
+  container whose key is listed in `theme.METRIC_NOTE_KEY_FRAGMENTS` (the
+  arrow is hidden there only; real changes keep it). Every `@st.cache_*` in
+  app.py passes `show_spinner=LOADING` (or False): the default prints the
+  function's name to the visitor.
+  The player radar (style switch, default, axis names) was left exactly as
+  it was: Lucas wants any radar change discussed first (2026-11-13) —
+  visuals may be upgraded, content may not change.
 - `views/home.py` — the club's Home page (position, form, promotion odds
   from season_simulation.pkl, last match, next opponent, squad ACP Index,
   data freshness). Every card deep-links into the detail page.

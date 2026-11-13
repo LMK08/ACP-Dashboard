@@ -138,6 +138,22 @@ def metric_fit_css():
         for t in METRIC_FIT_TENTHS)
 
 
+# Rows of cards whose st.metric "delta" slot holds a TEXT NOTE, not a change
+# ("83% fit", "26/27 · Atlético CP", "9 played · goal difference +11";
+# always delta_color="off"). Streamlit draws an up-arrow in front of any
+# non-negative delta text, which means nothing there. Each entry is a
+# fragment of the row's container key (a key's class is 'st-key-<key>').
+# Real changes keep their arrow (the Match Predictor's backtest cards).
+METRIC_NOTE_KEY_FRAGMENTS = ('_profile_head', '_cmp_style_', 'home_tiles')
+
+
+def metric_note_css():
+    """Hides the arrow in the note rows listed in METRIC_NOTE_KEY_FRAGMENTS."""
+    return ", ".join(
+        f'[class*="st-key-"][class*="{frag}"] [data-testid="stMetricDelta"] svg'
+        for frag in METRIC_NOTE_KEY_FRAGMENTS) + " { display: none !important; }"
+
+
 def profile_head_css():
     """The profile header's grey delta lines wrap instead of cutting off
     ('26/27 · Atlético CP'); the row's container key ends '_profile_head'."""

@@ -76,6 +76,8 @@ def render():
     player_stats_with_scores_df = app.player_stats_with_scores_df
 
 
+    st.header("Player Analysis")
+
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("player_analysis")
     selected_season_id = season_selector("player_analysis", include_all_seasons=True, comp_ids=selected_comp_ids)
@@ -101,8 +103,11 @@ def render():
         st.warning("No players found with sufficient minutes for analysis.")
         st.stop()
 
-    # --- 2. Sidebar Controls ---
-    st.sidebar.subheader("Analysis Options")
+    # --- 2. Controls, at the top of the page (2026-11). Until then the view
+    # switch and about a dozen filters ran down the sidebar from 1,050 px to
+    # 2,600 px on a 900 px screen. Now: the view as a row, the pickers that
+    # DEFINE a view (role, metric, scatter axes) right under it, and the
+    # filters that narrow the player pool in one "Filters" panel.
 
     # Template / mode selector — Overview is the default landing page
     _TEMPLATE_GROUPS = {
@@ -117,13 +122,32 @@ def render():
     _ordered_templates = []
     for _grp_templates in _TEMPLATE_GROUPS.values():
         _ordered_templates.extend([t for t in _grp_templates if t in POSITION_GROUPS])
-    _selector_options = ["Overview"] + _ordered_templates + ["Individual Metric", "Peer Scatter"]
-    _selected_view = st.sidebar.selectbox(
-        "View:",
-        _selector_options,
-        index=0,
-        key="player_analysis_view"
-    )
+    _VIEW_BY_ROLE = "By role"
+    _view_modes = {"Overview": "Overview", _VIEW_BY_ROLE: None,
+                   "Single metric": "Individual Metric", "Scatter": "Peer Scatter"}
+    _view_mode = st.radio("View", list(_view_modes), horizontal=True,
+                          key="player_analysis_mode", label_visibility="collapsed")
+    # the view's own pickers land here, above the Filters panel, although the
+    # code that draws them runs further down
+    _view_controls = st.container()
+    if _view_mode == _VIEW_BY_ROLE:
+        _group_of = {t: g for g, ts in _TEMPLATE_GROUPS.items() for t in ts}
+        # Opens on an outfield role, not the first of the list (a goalkeeper
+        # template). Seeded through session state before the widget exists
+        # (widget-seeding rule), never index=.
+        if st.session_state.get("player_analysis_template") not in _ordered_templates:
+            st.session_state["player_analysis_template"] = (
+                "Box-to-Box" if "Box-to-Box" in _ordered_templates else _ordered_templates[0])
+        # _selected_view stays what the rest of the page reads: a template
+        # name, or "Overview" / "Individual Metric" / "Peer Scatter"
+        _selected_view = _view_controls.columns([2, 3])[0].selectbox(
+            "Role", _ordered_templates, key="player_analysis_template",
+            format_func=lambda t: f"{_group_of.get(t, '')} · {t}".lstrip(' ·'),
+            help="Ranks the players of this role's positions on the role's template.")
+    else:
+        _selected_view = _view_modes[_view_mode]
+    _filters_panel = st.expander("Filters", expanded=True)   # open on arrival (Lucas, 2026-11-13)
+    _filter_col_a, _filter_col_b, _filter_col_c = _filters_panel.columns(3)
 
     # Minimum minutes filter. Floor lowered 500->90 (Lucas 2026-06): the
     # ACP engine now rates players down to 90 min (scored against the
@@ -131,8 +155,8 @@ def render():
     # players are penalised by the shrink rather than excluded. Default 90
     # surfaces them; the shrinkage keeps them off the top of the boards.
     max_minutes = int(player_stats_with_scores_df['totalMinutes'].max())
-    min_minutes_filter = st.sidebar.slider(
-        "Minimum Minutes Played:",
+    min_minutes_filter = _filter_col_a.slider(
+        "Minimum minutes played",
         min_value=90,
         max_value=max(max_minutes, 500),
         value=90,
@@ -143,8 +167,8 @@ def render():
     )
 
     # Number of players to display
-    num_players = st.sidebar.slider(
-        "Number of Players to Display:",
+    num_players = _filter_col_b.slider(
+        "Number of players to show",
         min_value=5,
         max_value=50,
         value=20,
@@ -153,7 +177,6 @@ def render():
     )
 
     # --- Bulk Radar Export ---
-    st.sidebar.markdown("---")
     # Per-radar PNG files in a render directory — each completed
     # radar is independently committed to disk, so a kill mid-render
     # leaves a directory of valid PNGs the user can still download
@@ -275,8 +298,8 @@ def render():
         if not _numeric_ages.empty:
             min_age_available = int(_numeric_ages.min())
             max_age_available = int(_numeric_ages.max()) + 1
-            age_range = st.sidebar.slider(
-                "Age Range:",
+            age_range = _filter_col_c.slider(
+                "Age range",
                 min_value=min_age_available,
                 max_value=max_age_available,
                 value=(min_age_available, max_age_available),
@@ -331,8 +354,8 @@ def render():
     _roles_present = [r for r in _ANALYSIS_ROLE_ORDER
                       if r in set(_obs_role_map.values())]
     if _roles_present:
-        _sel_obs_role = st.sidebar.selectbox(
-            "Observed role:", ['All roles'] + _roles_present, index=0,
+        _sel_obs_role = _filter_col_a.selectbox(
+            "Observed role", ['All roles'] + _roles_present, index=0,
             key="analysis_obs_role_filter",
             help="The engine's data-derived role (where his events happen "
                  "match by match) — not the lineup position.")
@@ -346,8 +369,8 @@ def render():
     _styles_present = sorted({s for s in _an_style_map.values()
                               if isinstance(s, str)})
     if _styles_present:
-        _sel_an_style = st.sidebar.selectbox(
-            "Style:", ['All styles'] + _styles_present, index=0,
+        _sel_an_style = _filter_col_b.selectbox(
+            "Style", ['All styles'] + _styles_present, index=0,
             key="analysis_style_filter",
             help="Tendency-derived archetype (descriptive, never in the "
                  "rating). Conventional = no pronounced lean.")
@@ -368,7 +391,7 @@ def render():
         all_pos_minutes = get_all_players_minutes_by_position(analysis_events_df)
         if not all_pos_minutes.empty:
             available_positions = sorted(all_pos_minutes['Position'].unique().tolist())
-            analysis_selected_positions = st.sidebar.multiselect(
+            analysis_selected_positions = _filter_col_a.multiselect(
                 "Position(s):",
                 available_positions,
                 default=available_positions[:1],
@@ -388,7 +411,6 @@ def render():
     # in Overview + per-template views. They are intentionally NOT
     # offered on Individual Metric (per user — they only make sense
     # for overall profile ratings, not per-metric leaderboards).
-    st.sidebar.markdown("---")
     # Same-age-peers + cross-tier toggles REMOVED (Lucas 2026-06-12):
     # the engine's age curve handles age context in the projection,
     # and the abs columns handle cross-league translation. Flags stay
@@ -436,7 +458,7 @@ def render():
         logger.exception("engine minutes lookup failed — likely-fee ranges withheld")
         _eng_mins_by_pid = None   # no minutes -> no ranges at all (never a half-applied gate)
         _eng_team_by_pid = {}
-    show_cvi = st.sidebar.checkbox(
+    show_cvi = _filter_col_c.checkbox(
         "Show Projected value",
         value=False,
         key="player_analysis_show_cvi",
@@ -444,7 +466,7 @@ def render():
     )
     sort_by_cvi = False
     if show_cvi:
-        sort_by_cvi = st.sidebar.checkbox(
+        sort_by_cvi = _filter_col_c.checkbox(
             "Sort by Projected value",
             value=False,
             key="player_analysis_sort_by_cvi",
@@ -544,9 +566,9 @@ def render():
             except Exception:
                 pass
             _diag = "\n".join(_dtype_lines)
-            st.sidebar.warning(f"CVI compute failed: "
-                                f"{type(_cvi_exc).__name__}: {_cvi_exc}")
-            # Full traceback + dtype diagnostic to BOTH sidebar
+            st.warning(f"CVI compute failed: "
+                       f"{type(_cvi_exc).__name__}: {_cvi_exc}")
+            # Full traceback + dtype diagnostic to BOTH the page
             # (always visible) and server-side stdout. Don't gate
             # on an expander — Streamlit's expander_state can hide
             # the message on some deploys.
@@ -555,7 +577,7 @@ def render():
                             f"{_diag}")
             print(f"[CVI ERROR] {type(_cvi_exc).__name__}: {_cvi_exc}\n"
                    f"{_full_diag}")
-            st.sidebar.code(_full_diag, language='python')
+            st.code(_full_diag, language='python')
             show_cvi = False
             sort_by_cvi = False
 
@@ -998,9 +1020,11 @@ def render():
                 [c for c in filtered_df.columns if c.endswith('_Score')]),
         }
 
-        def _sc_metric_picker(axis_label, default_cat, default_metric):
-            cat = st.sidebar.selectbox(
-                f"{axis_label} category:", list(_sc_categories.keys()),
+        _sc_cols = _view_controls.columns(5)
+
+        def _sc_metric_picker(axis_label, default_cat, default_metric, cat_col, metric_col):
+            cat = cat_col.selectbox(
+                f"{axis_label} category", list(_sc_categories.keys()),
                 index=list(_sc_categories.keys()).index(default_cat),
                 key=f"peer_scatter_cat_{axis_label}")
             opts = [m for m in _sc_categories[cat]
@@ -1009,17 +1033,17 @@ def render():
                 return None
             idx = opts.index(default_metric) if default_metric in opts else 0
             _key = f"peer_scatter_metric_{axis_label}"
-            return st.sidebar.selectbox(
-                f"{axis_label} metric:", opts, index=idx, key=_key,
+            return metric_col.selectbox(
+                f"{axis_label} metric", opts, index=idx, key=_key,
                 help=engine_metric_select_help(_key, opts, idx))
 
-        _sc_x = _sc_metric_picker("X", "Defensive", "Interceptions")
-        _sc_y = _sc_metric_picker("Y", "Output", "npxG")
+        _sc_x = _sc_metric_picker("X", "Defensive", "Interceptions", _sc_cols[0], _sc_cols[1])
+        _sc_y = _sc_metric_picker("Y", "Output", "npxG", _sc_cols[2], _sc_cols[3])
 
         _sc_positions = sorted(
             filtered_df['primaryPosition'].dropna().unique().tolist())
-        _sc_pos_filter = st.sidebar.multiselect(
-            "Filter by Position (optional):", _sc_positions, default=[],
+        _sc_pos_filter = _sc_cols[4].multiselect(
+            "Positions (optional)", _sc_positions, default=[],
             key="peer_scatter_positions")
 
         if _sc_x is None or _sc_y is None:
@@ -1119,7 +1143,7 @@ def render():
             _sc_notes.append(f"lower is better for: {', '.join(_inv)}")
         _sc_notes.append("dotted lines = peer medians")
         _sc_notes.append(f"{len(_sc_df)} players shown "
-                         "(sidebar minutes/age filters apply)")
+                         "(the minutes and age filters apply)")
         st.caption(" · ".join(_sc_notes))
 
     elif _selected_view == "Individual Metric":
@@ -1148,8 +1172,9 @@ def render():
                 [c for c in filtered_df.columns if c.endswith('_Score')]),
         }
 
-        selected_category = st.sidebar.selectbox(
-            "Metric Category:",
+        _metric_cols = _view_controls.columns(3)
+        selected_category = _metric_cols[0].selectbox(
+            "Metric category",
             list(metric_categories.keys()),
             key="player_analysis_metric_category"
         )
@@ -1160,8 +1185,8 @@ def render():
             st.warning(f"No metrics available for {selected_category} category.")
             st.stop()
 
-        selected_metric = st.sidebar.selectbox(
-            "Select Metric:",
+        selected_metric = _metric_cols[1].selectbox(
+            "Metric",
             available_metrics,
             key="player_analysis_metric_v2",
             help=engine_metric_select_help("player_analysis_metric_v2",
@@ -1169,8 +1194,8 @@ def render():
         )
 
         all_positions = sorted(filtered_df['primaryPosition'].dropna().unique().tolist())
-        position_filter = st.sidebar.multiselect(
-            "Filter by Position (optional):",
+        position_filter = _metric_cols[2].multiselect(
+            "Positions (optional)",
             all_positions,
             default=[],
             key="player_analysis_position_filter"
@@ -1685,7 +1710,8 @@ def render():
     # Always keep the expander open on the Player Analysis page so the
     # Cached ZIPs section, debug info, and any errors are unmissable.
     _bulk_expander_open = True
-    with st.sidebar.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
+    st.divider()
+    with st.expander("📥 Bulk Export Radars", expanded=_bulk_expander_open):
         _bulk_groups_default = list(_TEMPLATE_GROUPS.keys())
         _bulk_groups = st.multiselect(
             "Position groups:",

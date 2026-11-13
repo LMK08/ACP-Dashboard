@@ -148,6 +148,7 @@ def render():
 
 
     # --- League & Season Selector ---
+    st.header("Player Comparison")
     selected_comp_ids = league_selector("player_comparison")
     selected_season_id = season_selector("player_comparison", include_all_seasons=True, comp_ids=selected_comp_ids)
     active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
@@ -169,8 +170,10 @@ def render():
         st.warning("No players found with sufficient minutes for comparison.")
         st.stop()
 
-    # --- 2. Player Selectors (NEW LOGIC) ---
-    st.sidebar.subheader("Comparison Options")
+    # --- 2. Player Selectors: one row at the top of the page, in reading
+    # order (Player A, the template both are ranked on, Player B). Until
+    # 2026-11 the three sat at the foot of the sidebar. ---
+    _pick_a_col, _pick_tpl_col, _pick_b_col = st.columns([3, 2, 3])
 
     # --- Step A: Select Player A (from all players) ---
     # FIX: Include 'playerId' in the columns so we can use it for lookup
@@ -193,8 +196,8 @@ def render():
         if not _m.empty:
             st.session_state['player_comparison_a'] = _m['display_name'].iloc[0]
         else:
-            st.sidebar.warning("The player sent here is not in this league/season scope — "
-                               "showing the default comparison instead.")
+            st.warning("The player sent here is not in this league/season scope — "
+                       "showing the default comparison instead.")
             _seed_b = None
     # Each selector's value is re-set EVERY run, kept or not: in 1.50 a
     # keyed selectbox whose options changed is a new widget and falls back
@@ -204,8 +207,8 @@ def render():
     _a_val = st.session_state.get('player_comparison_a')
     st.session_state['player_comparison_a'] = _a_val if _a_val in _a_options else (
         _a_options[_default_a_idx] if _a_options else None)
-    selected_player_a_display = st.sidebar.selectbox(
-        "Select Player A:",
+    selected_player_a_display = _pick_a_col.selectbox(
+        "Player A",
         _a_options,
         key='player_comparison_a',
     )
@@ -274,8 +277,8 @@ def render():
                     st.session_state[_tpl_key] = _t
                     break
     st.session_state[_tpl_key] = st.session_state[_tpl_key]   # re-set every run (above)
-    selected_template = st.sidebar.selectbox(
-        "Select Comparison Template:",
+    selected_template = _pick_tpl_col.selectbox(
+        "Template",
         all_templates,
         key=_tpl_key,
         help="The templates for the positions Player A played in this scope: " + (
@@ -308,8 +311,8 @@ def render():
         if not _mb.empty:
             st.session_state['player_comparison_b'] = _mb['display_name'].iloc[0]
         else:
-            st.sidebar.warning("The second player sent here is not in this scope or position "
-                               "group — showing the default Player B instead.")
+            st.warning("The second player sent here is not in this scope or position "
+                       "group — showing the default Player B instead.")
     # (B is moved off A too: a player against himself compares nothing)
     _b_val = st.session_state.get('player_comparison_b')
     st.session_state['player_comparison_b'] = (
@@ -317,15 +320,16 @@ def render():
         else _b_val)      # re-set every run (see Player A)
 
     # --- Step D: Select Player B (from filtered list) ---
-    selected_player_b_display = st.sidebar.selectbox(
-        "Select Player B (Same Position Group):",
+    selected_player_b_display = _pick_b_col.selectbox(
+        "Player B",
         _b_options,
         key='player_comparison_b',
+        help="Players of the template's positions.",
     )
 
     if not _b_options:
         st.warning(f"No players in the {selected_template} positions for this league/season — "
-                   "pick another template in the sidebar.")
+                   "pick another template above.")
         st.stop()
 
     # FIX: Lookup by ID instead of Name
@@ -420,8 +424,7 @@ def render():
     ctx_b = _context(player_b_data, theme.COMPARE_B, 'b')
     players = (ctx_a, ctx_b)
     if ctx_a['pid'] == ctx_b['pid']:
-        st.info("Player A and Player B are the same player — pick another Player B "
-                "in the sidebar.")
+        st.info("Player A and Player B are the same player — pick another Player B above.")
 
     # --- 4. Header: the profile's player information, side by side ---
     st.subheader(f"Comparing: {selected_player_a_name} vs. {selected_player_b_name}")
@@ -522,11 +525,11 @@ def render():
             _head_rows[col] = {
                 'ACP Rating': '—', 'Projection': '—',
                 'Career (as-of)': '—', 'Evidence': '—',
-                **({'GK Rating (legacy)': f"{_gk[1]:.0f} ({_gk[0]})"
+                **({'Goalkeeper rating': f"{_gk[1]:.0f} ({_gk[0]})"
                     + (f" · provisional, < {_floor}′" if _gk[2] else "")} if _gk else {})}
             _comp_rows[col] = {lbl: np.nan for lbl, _c, _h in _ENGINE_COMPONENTS}
             _notes.append(f"**{ctx['name']}** — " + (
-                "goalkeeper: the engine does not rate keepers (legacy GK rating shown)."
+                "goalkeeper: the ACP Index covers outfield players only (goalkeeper rating shown)."
                 if ctx['is_gk'] else
                 "not rated by the engine for this scope (below the 90-minute floor, or "
                 "no role assignment yet)."))
@@ -589,12 +592,10 @@ def render():
             st.markdown(engine_metric_help_md([h for _l, _c, h in _ENGINE_COMPONENTS]))
     for _note in _notes:
         st.caption(_note)
+    # (model versions and the data date: sidebar, "About the data")
     st.caption(
-        f"Engine {_eng_meta.get('rating_version', '?')} · "
-        f"projection {_eng_meta.get('projection_version', '?')} · "
-        f"data through {_eng_meta.get('data_through', '?')} · "
-        f"ratings within league × season × role cohort (each player in his own); "
-        f"set piece shown separately (not in the rating)")
+        "Each player is rated against players of his own role in his own league "
+        "and season. Set pieces are shown separately and are not part of the rating.")
 
     # --- Career & projection: the profile's outlook fan, both players on one
     # chart (same data step, pitch_interactive.projection_series) ---

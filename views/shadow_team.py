@@ -40,6 +40,8 @@ def render():
     player_stats_with_scores_df = app.player_stats_with_scores_df
 
 
+    st.header("Shadow Team")
+
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("shadow_team")
     selected_season_id = season_selector("shadow_team", include_all_seasons=True, comp_ids=selected_comp_ids)
@@ -74,15 +76,17 @@ def render():
     for idx, row in player_list_df.iterrows():
         display_key_to_idx[row['display_key']] = idx
 
-    # --- Sidebar Controls ---
-    st.sidebar.subheader("Formation")
+    # --- Controls: one row at the top of the page (formation, save, load).
+    # Until 2026-11 they sat at the foot of the sidebar, below the screen edge.
+    _ctl_form, _ctl_name, _ctl_save, _ctl_load, _ctl_load_btn = st.columns(
+        [3, 3, 2, 3, 2], vertical_alignment="bottom")
     # Load Team asks for a formation from BELOW this widget; a widget key
     # cannot be written after the widget exists in a run, so it queues the
     # value and we apply it here, before the selectbox draws.
     _pending_formation = st.session_state.pop('shadow_pending_formation', None)
     if _pending_formation in FORMATION_COORDS:
         st.session_state['shadow_formation'] = _pending_formation
-    formation_key = st.sidebar.selectbox("Select Formation", list(FORMATION_COORDS.keys()), key="shadow_formation")
+    formation_key = _ctl_form.selectbox("Formation", list(FORMATION_COORDS.keys()), key="shadow_formation")
     formation_data = FORMATION_COORDS[formation_key]
 
     # Players queued from the Similar Players section ('Add to Shadow Team').
@@ -105,19 +109,17 @@ def render():
             if _dk not in _cur:
                 _cur.append(_dk)
                 st.session_state[_k] = _cur
-            st.sidebar.success(f"Added {_item['playerName']} to {_item['slot']}")
+            st.success(f"Added {_item['playerName']} to {_item['slot']}")
         st.session_state['shadow_pending_adds'] = _still
         if _still:
-            st.sidebar.warning(
+            st.warning(
                 "Queued but not in this league/season (or slot not in this formation): "
                 + ", ".join(f"{i['playerName']} → {i['slot']}" for i in _still)
-                + ". Switch the context bar to their season to add them.")
+                + ". Switch the league or season in the sidebar to add them.")
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Save / Load")
-    team_name_input = st.sidebar.text_input("Team Name", value="My Shadow Team", key="shadow_team_name_input")
+    team_name_input = _ctl_name.text_input("Team Name", value="My Shadow Team", key="shadow_team_name_input")
 
-    if st.sidebar.button("Save Team", key="shadow_save_btn"):
+    if _ctl_save.button("Save Team", key="shadow_save_btn", width="stretch"):
         players = {}
         tags = {}
         for slot in formation_data['positions']:
@@ -138,12 +140,12 @@ def render():
             'players': players,
             'tags': tags,
         }
-        st.sidebar.success(f"Saved '{team_name_input}'!")
+        st.success(f"Saved '{team_name_input}'.")
 
     saved_names = list(st.session_state.shadow_teams.keys())
     if saved_names:
-        load_name = st.sidebar.selectbox("Load Saved Team", saved_names, key="shadow_load_select")
-        if st.sidebar.button("Load Team", key="shadow_load_btn"):
+        load_name = _ctl_load.selectbox("Saved teams", saved_names, key="shadow_load_select")
+        if _ctl_load_btn.button("Load Team", key="shadow_load_btn", width="stretch"):
             saved = st.session_state.shadow_teams[load_name]
             st.session_state['shadow_pending_formation'] = saved['formation']
             for slot, player_list in saved['players'].items():
@@ -154,17 +156,19 @@ def render():
                     st.session_state[f"shadow_label_{slot}_{p_name}"] = tag_info.get('label', '')
             st.rerun()
 
-    # --- Tag Legend (sidebar) ---
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Tag Legend")
-    for tag_name, tag_color in SHADOW_TAG_CATEGORIES.items():
-        st.sidebar.markdown(
-            f'<span style="display:inline-block;width:12px;height:12px;'
+    # --- Tag legend: one line under the controls (it was a sidebar list) ---
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:0.3rem 1.1rem;font-size:0.88rem;'
+        'color:#5c5650;margin:0.1rem 0 0.6rem 0;"><span style="font-weight:600;">Tags</span>'
+        + ''.join(
+            f'<span><span style="display:inline-block;width:11px;height:11px;'
             f'background-color:{tag_color};border-radius:50%;margin-right:6px;'
             f'vertical-align:middle;"></span>'
-            f'<span style="vertical-align:middle;">{tag_name}</span>',
-            unsafe_allow_html=True
-        )
+            f'<span style="vertical-align:middle;">{tag_name}</span></span>'
+            for tag_name, tag_color in SHADOW_TAG_CATEGORIES.items())
+        + '</div>',
+        unsafe_allow_html=True
+    )
 
     # --- Main Content: Two Columns ---
     left_col, right_col = st.columns([3, 2])

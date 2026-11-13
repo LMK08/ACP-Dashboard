@@ -57,13 +57,18 @@ def render():
     selected_season_id = season_selector("team_analysis", comp_ids=selected_comp_ids)
     active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
     season_label = SEASON_ID_MAP.get(selected_season_id, "Unknown") if isinstance(selected_season_id, int) else "Unknown"
+    # One title, then the page's own pickers at the top of the page (they
+    # sat at the foot of the sidebar, below the screen edge, until 2026-11).
+    st.header("Team Analysis")
+    _pick_team_col, _pick_stage_col = st.columns([2, 1])
     # Stage selector (Regular / Promotion / Maintenance / Promotion playoff)
-    selected_stage = stage_selector(
-        "team_analysis",
-        matches_summary_df,
-        selected_comp_ids,
-        active_season_ids,
-    )
+    with _pick_stage_col:
+        selected_stage = stage_selector(
+            "team_analysis",
+            matches_summary_df,
+            selected_comp_ids,
+            active_season_ids,
+        )
     team_events_df = get_filtered_events(raw_events_df, active_season_ids, selected_comp_ids)
     team_matches_df = filter_by_league(get_season_matches(matches_summary_df, active_season_ids), selected_comp_ids)
     # Apply stage filter — narrows the working set to the chosen stage's matches.
@@ -85,10 +90,13 @@ def render():
         st.session_state['team_select_tab'] = _nav_team
     if st.session_state.get('team_select_tab') not in all_teams_t:
         st.session_state['team_select_tab'] = OUR_TEAM if OUR_TEAM in all_teams_t else all_teams_t[0]
-    selected_team_t = st.sidebar.selectbox("Select a Team", all_teams_t,
-                                           key="team_select_tab")
+    with _pick_team_col:
+        selected_team_t = st.selectbox("Team", all_teams_t, key="team_select_tab")
+    # The team (and stage) as a line of its own under the picker, one level
+    # below the page title (dropped in the 2026-11 UX pass, kept by Lucas the
+    # same day).
     _stage_suffix = "" if selected_stage in (STAGE_ALL, None) else f" — {selected_stage}"
-    st.header(f"Team Report: {selected_team_t}{_stage_suffix}")
+    st.subheader(f"Team Report: {selected_team_t}{_stage_suffix}")
     if selected_stage not in (STAGE_ALL, None):
         _n_team_matches = team_matches_df[
             (team_matches_df['homeTeamName'] == selected_team_t)

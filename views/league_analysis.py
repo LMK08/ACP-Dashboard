@@ -41,6 +41,7 @@ def render():
 
 
     # --- League & Season Selector ---
+    st.header("League Analysis")
     selected_comp_ids = league_selector("league_analysis")
     selected_season_id = season_selector("league_analysis", comp_ids=selected_comp_ids)
     active_season_ids = get_season_ids_for_selection(selected_season_id, selected_comp_ids)
@@ -152,15 +153,16 @@ def render():
     }
 
     if has_groups:
-        col_table_a, col_table_b = st.columns(2)
-        with col_table_a:
-            st.markdown("**Group A**")
-            table_a = calculate_league_table(league_matches_df, GROUP_A_TEAMS)
-            st.dataframe(table_a, width="stretch", hide_index=True, column_config=league_table_config)
-        with col_table_b:
-            st.markdown("**Group B**")
-            table_b = calculate_league_table(league_matches_df, GROUP_B_TEAMS)
-            st.dataframe(table_b, width="stretch", hide_index=True, column_config=league_table_config)
+        # One table under the other, our club's group first. Side by side,
+        # each had half the page and was cut off after the "W" column at
+        # laptop width (ten columns need about 880 px).
+        _our = getattr(app, 'OUR_TEAM', None)
+        _groups = [("Group A", GROUP_A_TEAMS), ("Group B", GROUP_B_TEAMS)]
+        _groups.sort(key=lambda g: _our not in g[1])
+        for _group_name, _group_teams in _groups:
+            st.markdown(f"**{_group_name}**")
+            st.dataframe(calculate_league_table(league_matches_df, _group_teams),
+                         width="stretch", hide_index=True, column_config=league_table_config)
     else:
         st.markdown("**All Teams**")
         table_all = calculate_league_table(league_matches_df, all_season_teams)

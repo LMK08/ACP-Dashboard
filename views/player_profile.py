@@ -116,6 +116,9 @@ def render():
     # (The season carried by a cross-page bridge is applied in app.py's prelude,
     #  before the context bar draws its widget — a widget key cannot be set after.)
 
+    # One title, then the player picker, at the top of the page.
+    st.header("Player Profile")
+
     # --- League & Season Selector ---
     selected_comp_ids = league_selector("player_profile")
     selected_season_id = season_selector("player_profile", include_all_seasons=True, comp_ids=selected_comp_ids)
@@ -146,8 +149,8 @@ def render():
                    "Try selecting a previous season, or check back after the next data refresh.")
         st.stop()
 
-    # --- 2. Player Selector ---
-    st.sidebar.subheader("Player Analysis Options")
+    # --- 2. Player Selector (top of the page; until 2026-11 it was the last
+    # control in the sidebar, 1,100 px down a 900 px screen) ---
 
     # FIX: Include 'playerId' in the list dataframe so we can grab it later
     # (Added 'playerId' to the list of columns below)
@@ -192,10 +195,11 @@ def render():
                 if not _our_rows.empty:
                     st.session_state['player_profile_selector'] = _our_rows['display_name'].iloc[0]
 
-    selected_player_display = st.sidebar.selectbox(
-        "Select Player:",
+    selected_player_display = st.selectbox(
+        "Player",
         player_list_df['display_name'],
-        key="player_profile_selector"
+        key="player_profile_selector",
+        help="Type a name to search. Most minutes first.",
     )
 
     try:
@@ -322,7 +326,8 @@ def render():
         except Exception:
             pass # Fallback to original values if lookup fails
 
-    st.header(f"{player_per_90_stats.get('playerName', 'N/A')}")
+    # the page title is "Player Profile"; the name is the section under it
+    st.subheader(f"{player_per_90_stats.get('playerName', 'N/A')}")
 
     # ---- Compute Transfer Value primitives ONCE per page load ----
     # Used twice: (a) compact projected / true / Δ metrics in the
@@ -670,7 +675,7 @@ def render():
         _erows, _escope, _e_sids = _card['erows'], _card['escope'], _card['e_sids']
         _career_view, _eng_stale = _card['career_view'], _card['stale']
         _is_gk_card = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
-        st.subheader("Goalkeeper Rating (legacy system)" if _is_gk_card
+        st.subheader("Goalkeeper Rating" if _is_gk_card
                       else "ACP Index")
         if _escope.empty:
             if _is_gk_card:
@@ -685,23 +690,26 @@ def render():
                     _gk_best = max(_gk_scored, key=lambda x: x[1])
                     _gkc = st.columns(3)
                     _gkc[0].metric(
-                        "GK Rating (legacy)", f"{_gk_best[1]:.0f}",
-                        help="Best-fit goalkeeper template score — the "
-                             "bespoke weighted-percentile system (the prior "
-                             "rating engine), retained for keepers since the "
-                             "outfield ACP engine does not cover them.")
+                        "Goalkeeper rating", f"{_gk_best[1]:.0f}",
+                        help="His score on the goalkeeper template that fits "
+                             "him best (0-100, weighted percentiles among "
+                             "goalkeepers). Goalkeepers are rated this way "
+                             "because the ACP Index covers outfield players "
+                             "only.")
                     _gkc[1].metric("Best-fit template", _gk_best[0])
                     _gkc[2].metric(
                         "Projected value",
                         "—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}",
-                        help="Legacy CVI→EUR value.")
+                        help="From the goalkeeper value model. The engine "
+                             "that values outfield players does not cover "
+                             "goalkeepers.")
                     st.caption("Template scores — " + " · ".join(
                         f"**{_t}** {_s:.0f}" for _t, _s in _gk_scored)
                         + "  ·  full goalkeeping metrics in the Player "
                           "Radar and Stats tabs below.")
                 else:
-                    st.info("Goalkeeper — insufficient minutes for the "
-                            "legacy GK rating in this scope.")
+                    st.info("Goalkeeper: not enough minutes for a "
+                            "goalkeeper rating in this scope.")
             else:
                 st.info("Not rated by the engine for this scope "
                         "(below the 90-minute floor, or no "
@@ -889,12 +897,11 @@ def render():
                         "a dot for the native rating).")
             except Exception:
                 logger.exception("Projection fan chart failed")
+            # (model versions and the data date: sidebar, "About the data")
             st.caption(
-                f"Engine {_eng_meta.get('rating_version', '?')} · "
-                f"projection {_eng_meta.get('projection_version', '?')} · "
-                f"data through {_eng_meta.get('data_through', '?')} · "
-                f"percentiles within league × season × role cohort; "
-                f"set piece shown separately (not in the rating)")
+                "Rated against players of the same role in the same league and "
+                "season. Set pieces are shown separately and are not part of "
+                "the rating.")
     except Exception:
         logger.exception("Engine card failed")
     st.divider()

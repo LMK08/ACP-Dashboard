@@ -72,8 +72,8 @@ def help_text(calib=None, gk=False):
     calib = load_calibration() if calib is None else calib
     base = curve_text()
     if gk:
-        return ("Goalkeeper — legacy CVI→EUR value (the outfield ACP engine does "
-                "not rate keepers). No likely-fee range: the keeper value is a "
+        return ("Goalkeeper: from the goalkeeper value model (the ACP engine covers "
+                "outfield players only). No likely-fee range: the goalkeeper value is a "
                 "different estimator and there are no goalkeeper sales on record.")
     f50, f80 = _factor(calib, '0.50'), _factor(calib, '0.80')
     if not f50:

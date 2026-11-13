@@ -107,10 +107,10 @@ def test_default_season_has_event_data(app):
 
 def test_club_first_defaults(app):
     _open_page(app, 'Team Analysis')
-    team = [s for s in app.sidebar.selectbox if s.label == 'Select a Team'][0]
+    team = [s for s in app.selectbox if s.label == 'Team'][0]
     assert team.value == 'Atlético CP'
     _open_page(app, 'Player Profile')
-    player = [s for s in app.sidebar.selectbox if s.label == 'Select Player:'][0]
+    player = [s for s in app.selectbox if s.label == 'Player'][0]
     assert 'Atlético CP' in player.value
 
 
@@ -138,7 +138,7 @@ def test_context_persists_across_pages(app):
     _open_page(app, 'Team Analysis')
     assert [s for s in app.sidebar.selectbox if s.label == 'Season'][0].value == 'All Seasons'
     assert any('one season at a time' in str(c.value) for c in app.sidebar.caption)
-    assert any('Team Report' in str(h.value) for h in app.header)
+    assert any('Team Analysis' in str(h.value) for h in app.header)
     assert not _problems(app), _problems(app)
     # Switching league swaps to that league's own season key: a valid season
     # is selected, the page renders, and switching back restores the choice.
@@ -160,10 +160,10 @@ def test_player_profile_bridge_carries_season(app):
     widget (writing a widget key after instantiation raises)."""
     import league_config
     _open_page(app, 'Team Analysis')
-    player = [s for s in app.sidebar.selectbox if s.label == 'Select Player:']
+    player = [s for s in app.selectbox if s.label == 'Player']
     # pick any rated player id from the profile page's own list
     _open_page(app, 'Player Profile')
-    options = [s for s in app.sidebar.selectbox if s.label == 'Select Player:'][0].options
+    options = [s for s in app.selectbox if s.label == 'Player'][0].options
     assert options
     # drive the bridge exactly as views do
     labels = league_config.all_season_id_map()
@@ -180,7 +180,7 @@ def test_player_profile_bridge_carries_season(app):
     assert season.value == '2025/26'
 
 
-@pytest.mark.parametrize('page,label', [('Team Analysis', 'Select a Team'), ('Opposition Report', 'Opponent')])
+@pytest.mark.parametrize('page,label', [('Team Analysis', 'Team'), ('Opposition Report', 'Opponent')])
 def test_keyed_selectors_are_stable_across_reruns(app, page, label):
     """A keyed selectbox whose parameters differ between runs is a NEW widget
     to Streamlit 1.41 and snaps back to its first option. The team and
@@ -229,7 +229,7 @@ def test_projected_value_ranges_render_in_player_analysis(app):
     range path only runs here: some cells carry a range, some (outside the
     calibration's support) do not, and the page stays clean."""
     _open_page(app, 'Player Analysis')
-    cb = [c for c in app.sidebar.checkbox if c.label == 'Show Projected value'][0]
+    cb = [c for c in app.checkbox if c.label == 'Show Projected value'][0]
     cb.set_value(True)
     app.run()
     cells = [str(v) for d in app.dataframe for col in d.value.columns
@@ -301,10 +301,10 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     the similar-players bridge can seed Player A before the widgets draw."""
     import pyarrow.parquet as pq
     _open_page(app, 'Player Comparison')
-    box_a = [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0]
+    box_a = [s for s in app.selectbox if s.label == 'Player A'][0]
     first = box_a.value
     app.run()
-    assert [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0].value == first
+    assert [s for s in app.selectbox if s.label == 'Player A'][0].value == first
     # seed A with a real player of the page's scope: the third-most-used
     # player in the cache of the season the page is showing (the landing
     # season differs between the local and the canonical data)
@@ -320,7 +320,7 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
     seed = t.iloc[2]
     app.session_state['compare_seed_a'] = int(seed['playerId'])
     app.run()
-    box_a = [s for s in app.sidebar.selectbox if s.label == 'Select Player A:'][0]
+    box_a = [s for s in app.selectbox if s.label == 'Player A'][0]
     assert str(box_a.value).startswith(str(seed['playerName'])), (box_a.value, seed['playerName'])
     assert not _problems(app), _problems(app)
     # the template dropdown offers the templates of the positions A played:
@@ -330,7 +330,7 @@ def test_comparison_selectors_are_keyed_and_seedable(app):
         groups = yaml.safe_load(f)['position_groups']
     pos = pq.read_table(cache, columns=['playerId', 'primaryPosition']).to_pandas()
     pos_a = pos.loc[pos['playerId'] == int(seed['playerId']), 'primaryPosition'].iloc[0]
-    tpl = [s for s in app.sidebar.selectbox if s.label == 'Select Comparison Template:'][0]
+    tpl = [s for s in app.selectbox if s.label == 'Template'][0]
     if any(pos_a in v for v in groups.values()):
         own = {g for g, v in groups.items() if pos_a in v}
         assert own <= set(tpl.options), (pos_a, tpl.options)
@@ -364,20 +364,20 @@ def test_shadow_queue_adds_in_scope_players_and_keeps_others(app):
     assert not _problems(app), _problems(app)
     ms = [m for m in app.multiselect if m.key == f'shadow_players_{slot}'][0]
     assert any(str(top['playerName']) in v for v in ms.value), (ms.value, top['playerName'])
-    assert any('Nobody' in str(w.value) for w in app.sidebar.warning)
+    assert any('Nobody' in str(w.value) for w in app.warning)
     assert [i['playerId'] for i in app.session_state['shadow_pending_adds']] == [1]
     app.session_state['shadow_pending_adds'] = []
     app.session_state[f'shadow_players_{slot}'] = []
     app.run()
     # Load Team queues its formation (a widget key cannot be written after
     # the widget draws): saving then loading must not raise
-    name = [t for t in app.sidebar.text_input if 'name' in t.label.lower()]
+    name = [t for t in app.text_input if 'name' in t.label.lower()]
     if name:
         name[0].set_value('smoke-team').run()
-        save = [b for b in app.sidebar.button if 'Save' in b.label]
+        save = [b for b in app.button if 'Save' in b.label]
         if save:
             save[0].click().run()
-            load = [b for b in app.sidebar.button if b.label == 'Load Team']
+            load = [b for b in app.button if b.label == 'Load Team']
             if load:
                 load[0].click().run()
                 app.run()

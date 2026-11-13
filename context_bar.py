@@ -43,12 +43,18 @@ SIZE_KEY = 'ctx_chart_size'
 SIZE_MEMORY = 'ctx_chart_size_memory'
 SIZE_OPTIONS = ('Standard', 'Large', 'Huge')
 PITCH_HEIGHTS = {'Standard': 760, 'Large': 1000, 'Huge': 1300}
+# Large (1,000 px) is taller than a 900 px laptop screen; Standard (760 px)
+# fits one. Standard was tried as the default on 2026-11-13 and Lucas kept
+# Large. The choice is remembered for the session.
 SIZE_DEFAULT = 'Large'
 LEAGUE_OPTIONS = ('Liga 3', 'Campeonato')
 
 PAGES_WITHOUT_CONTEXT = {'Home'}
 PAGES_WITHOUT_SEASON = {'Match Predictor', 'Coach Profile'}
 PAGES_WITH_ALL_SEASONS = {'Player Profile', 'Player Comparison', 'Player Analysis', 'Shadow Team'}
+# The pages whose pitch charts read pitch_height(): the Chart size control is
+# drawn only there (add a page here when it gains a pitch chart).
+PAGES_WITH_PITCH_CHARTS = {'Team Analysis', 'Opposition Report', 'Match Analysis', 'Player Profile'}
 
 _HEADER = (
     '<div style="font-size:0.68rem;letter-spacing:0.14em;text-transform:uppercase;'
@@ -148,15 +154,6 @@ def render(current_page):
     league = st.selectbox('League', LEAGUE_OPTIONS, key=LEAGUE_KEY)
     st.session_state[LEAGUE_MEMORY] = league
 
-    if st.session_state.get(SIZE_KEY) not in SIZE_OPTIONS:
-        st.session_state.pop(SIZE_KEY, None)
-    if SIZE_KEY not in st.session_state:
-        remembered = st.session_state.get(SIZE_MEMORY)
-        st.session_state[SIZE_KEY] = remembered if remembered in SIZE_OPTIONS else SIZE_DEFAULT
-    st.select_slider('Chart size', SIZE_OPTIONS, key=SIZE_KEY,
-                     help='Height of the pitch charts. Pick Huge on a wide monitor.')
-    st.session_state[SIZE_MEMORY] = st.session_state[SIZE_KEY]
-
     if current_page in PAGES_WITHOUT_SEASON:
         return
     available, options = season_choices(comp_ids_for(league), True)
@@ -175,3 +172,24 @@ def render(current_page):
     if chosen == ALL_SEASONS and current_page not in PAGES_WITH_ALL_SEASONS:
         st.caption(f"This page shows one season at a time — showing "
                    f"{app._default_season_label(available, options)}.")
+
+
+_DISPLAY_HEADER = _HEADER.replace('Context', 'Display').replace('margin:0.4rem', 'margin:0.9rem')
+
+
+def render_display(current_page):
+    """The Chart size control, drawn by app.py UNDER the navigation and only
+    on the pages with pitch charts. It has nothing to do with league or
+    season, and sat between the two until 2026-11. The choice is kept in
+    SIZE_MEMORY, so it survives the pages that do not draw the control."""
+    if current_page not in PAGES_WITH_PITCH_CHARTS:
+        return
+    st.markdown(_DISPLAY_HEADER, unsafe_allow_html=True)
+    if st.session_state.get(SIZE_KEY) not in SIZE_OPTIONS:
+        st.session_state.pop(SIZE_KEY, None)
+    if SIZE_KEY not in st.session_state:
+        remembered = st.session_state.get(SIZE_MEMORY)
+        st.session_state[SIZE_KEY] = remembered if remembered in SIZE_OPTIONS else SIZE_DEFAULT
+    st.select_slider('Chart size', SIZE_OPTIONS, key=SIZE_KEY,
+                     help='Height of the pitch charts. Pick Large or Huge on a wide monitor.')
+    st.session_state[SIZE_MEMORY] = st.session_state[SIZE_KEY]

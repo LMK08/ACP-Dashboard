@@ -34,6 +34,7 @@ def render():
     matches_summary_df = app.matches_summary_df
     raw_events_df = app.raw_events_df
 
+    st.header("Match Predictor")
     selected_comp_ids = league_selector("match_predictor")
     st.markdown("Every forecast on this page comes from one model, the Dixon-Coles "
                 "scoreline model: the team strength ratings, the promotion and "

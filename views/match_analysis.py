@@ -106,8 +106,12 @@ def render():
         _ids = season_matches_df['matchId'].tolist()
         if _nav_mid in _ids:
             _default_match_idx = _ids.index(_nav_mid)
-    selected_match_display = st.sidebar.selectbox(
-        "Select a Match", season_matches_df['display_name'], index=_default_match_idx)
+    # One title, then the match picker at the top of the page (it sat at the
+    # foot of the sidebar, below the screen edge, until 2026-11). The option
+    # text carries the score and the date.
+    st.header("Match Analysis")
+    selected_match_display = st.selectbox(
+        "Match", season_matches_df['display_name'], index=_default_match_idx)
     matching_matches = season_matches_df[season_matches_df['display_name'] == selected_match_display]
     if matching_matches.empty:
         st.error("Selected match not found. Please refresh the page and try again.")
@@ -115,7 +119,8 @@ def render():
     selected_match_info = matching_matches.iloc[0]
     selected_match_id = selected_match_info['matchId']
 
-    # --- Display stage badge for the selected match ---
+    # --- Stage of the selected match, as a note under the picker (it was a
+    # badge at the foot of the sidebar).
     if 'roundId' in season_matches_df.columns and len(season_matches_df) > 0:
         round_counts = season_matches_df.groupby('roundId').size()
         first_stage_round = round_counts.idxmax()
@@ -124,35 +129,16 @@ def render():
         current_round_id = selected_match_info.get('roundId')
         if current_round_id == first_stage_round:
             badge_text = "Regular Season"
-            badge_bg = "rgba(255,255,255,0.08)"
-            badge_fg = "rgba(255,255,255,0.45)"
-            badge_border = "rgba(255,255,255,0.12)"
+        elif len(second_stage_rounds) > 0:
+            badge_text = ("Promotion League" if current_round_id == second_stage_rounds.idxmin()
+                          else "Maintenance Stage")
         else:
-            if len(second_stage_rounds) > 0:
-                min_round = second_stage_rounds.idxmin()
-                is_promotion = current_round_id == min_round
-                if is_promotion:
-                    badge_text = "Promotion League"
-                    badge_bg = "rgba(255,255,255,0.12)"
-                    badge_fg = "#fff"
-                    badge_border = "rgba(255,255,255,0.2)"
-                else:
-                    badge_text = "Maintenance Stage"
-                    badge_bg = "rgba(255,255,255,0.08)"
-                    badge_fg = "#fff"
-                    badge_border = "rgba(255,255,255,0.25)"
-            else:
-                badge_text = "Second Stage"
-                badge_bg = "rgba(255,255,255,0.08)"
-                badge_fg = "rgba(255,255,255,0.45)"
-                badge_border = "rgba(255,255,255,0.12)"
+            badge_text = "Second Stage"
+        st.caption(badge_text)
+    # The match as a line of its own under the picker, one level below the
+    # page title (dropped in the 2026-11 UX pass, kept by Lucas the same day).
+    st.subheader(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
 
-        st.sidebar.markdown(
-            f'<div style="background:{badge_bg}; color:{badge_fg}; border:1px solid {badge_border}; padding:7px 12px; border-radius:6px; text-align:center; font-weight:600; font-size:0.8rem; margin-top:8px; letter-spacing:0.3px;">{badge_text}</div>',
-            unsafe_allow_html=True
-        )
-
-    st.header(f"Match Report: {selected_match_info['homeTeamName']} vs {selected_match_info['awayTeamName']}")
 
 
 

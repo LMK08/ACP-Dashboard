@@ -8,3 +8,13 @@ base = "light"
 backgroundColor = "#F8F5F0"            # theme.PAGE_BG
 secondaryBackgroundColor = "#F0ECE4"   # theme.PAGE_BG_WARM
 textColor = "#1a1a1a"                  # theme.PAGE_INK
+# Accent for Streamlit's own controls (radio dots, sliders, toggles, the bars
+# in table "progress" columns). Unset, it was Streamlit's default red, so a
+# good rating of 70 was drawn as a red bar and the selected page had a red
+# dot (2026-11). theme.FOCUS, the green of "our team".
+primaryColor = "#1a472a"
+
+# The sidebar is near-black (#1a1a1a, app.py CSS): the page's dark green is
+# invisible there, so its controls take a light tint of the same green.
+[theme.sidebar]
+primaryColor = "#8fd0a5"

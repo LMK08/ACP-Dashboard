@@ -93,22 +93,18 @@ def render():
     # Header + freshness
     # ------------------------------------------------------------------
     st.header(f"{OUR_TEAM} — {league_name} {season_label}")
-    _, engine_meta = load_player_engine()
+    # Freshness, in two plain dates under the title (the line used to list
+    # five data and model dates). The simulation and its Dixon-Coles fit are
+    # cited under the tiles, next to the promotion number they explain; the
+    # engine's version and date are in the sidebar ("About the data").
     fresh_bits = []
     if not ours.empty:
-        fresh_bits.append(f"fixtures through {_fmt_date(ours['_date'].max())}")
+        fresh_bits.append(f"Fixtures through {_fmt_date(ours['_date'].max())}")
     if event_match_ids:
         ev_dates = pd.to_datetime(fixtures[fixtures['matchId'].isin(event_match_ids)]['dateutc'], errors='coerce')
-        fresh_bits.append(f"event data through {_fmt_date(ev_dates.max())}")
+        fresh_bits.append(f"match data through {_fmt_date(ev_dates.max())}")
     else:
-        fresh_bits.append("no event data for this season yet")
-    if engine_meta:
-        fresh_bits.append(f"engine {engine_meta.get('rating_version', '?')} through {engine_meta.get('data_through', '?')}")
-    if sim:
-        _mm = sim.get('model') or {}
-        fresh_bits.append(f"simulation {str(sim.get('timestamp', ''))[:10]}"
-                          + (f" (Dixon-Coles fit through {_mm.get('asof', '?')})"
-                             if str(_mm.get('name', '')).startswith('dixon_coles') else ''))
+        fresh_bits.append("no match data for this season yet")
     st.caption(" · ".join(fresh_bits))
 
     # ------------------------------------------------------------------
@@ -136,11 +132,29 @@ def render():
                                f"{_mm.get('asof', '?')} — the same model as the Match Predictor's "
                                f"scoreline forecast and strength ratings")
 
-    t1, t2, t3, t4 = st.columns(4)
+    # keyed: theme.metric_note_css hides the arrow in the Points card's note
+    with st.container(key="home_tiles"):
+        t1, t2, t3, t4 = st.columns(4)
     t1.metric("League position", pos_txt, help="Current standing in our série")
-    t2.metric("Points", f"{pts}", f"{len(results)} played · GD {gd:+d}", delta_color="off")
+    t2.metric("Points", f"{pts}", f"{len(results)} played · goal difference {gd:+d}", delta_color="off")
     t3.metric("Form (last 5)", form, help="Oldest to newest")
     t4.metric("Promotion", promo_txt, help=promo_help)
+    # Under the whole row (the cards keep one height): what the promotion
+    # number rests on. Both pages that show these odds cite the fit
+    # (tests/test_smoke_pages.py::test_promotion_odds_cite_the_scoreline_model).
+    if sim:
+        _mm = sim.get('model') or {}
+        _fit_txt = (f" (Dixon-Coles fit through {_mm.get('asof', '?')})"
+                    if str(_mm.get('name', '')).startswith('dixon_coles') else '')
+        _sim_date = str(sim.get('timestamp', ''))[:10]
+        if sim_group is not None and promo_txt != "—":
+            st.caption(
+                f"Promotion: the share of {sim.get('n_simulations', 0):,} simulated runs of the "
+                f"remaining fixtures in which we go up, run {_sim_date}{_fit_txt}.")
+        else:
+            # a simulation file exists but holds no number for us this season
+            st.caption(f"Season simulation run {_sim_date}{_fit_txt}; it has no promotion "
+                       "number for this season yet.")
 
     # ------------------------------------------------------------------
     # Last match + next opponent
