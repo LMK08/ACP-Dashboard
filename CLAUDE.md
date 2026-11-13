@@ -58,12 +58,8 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   Large — Standard was tried and Lucas kept Large), the data date and the
   "About the data" panel
   (`app.about_data_panel`: version lines go there; a caveat a number depends
-  on stays beside that number). The Opposition Report DRAWS its takeaways +
-  PDF button, strengths & weaknesses and line-up first through containers
-  created at the top (`_takeaways_slot` / `_synopsis_slot` / `_lineup_slot`)
-  while their code still RUNS in the old order — the takeaways read
-  key_players / set_piece_df / form_results and the PDF needs every figure
-  drawn. CSS (app.py): the black button style names real buttons by
+  on stays beside that number). The two team pages draw ONE section at a
+  time — see "Team pages: sections" under the parity rule. CSS (app.py): the black button style names real buttons by
   data-testid (a bare `button {}` blanked the sidebar-reopen control and the
   table toolbars) — add a new button kind there; captions are full strength;
   the accent is `primaryColor` in `.streamlit/config.toml` (light tint under
@@ -722,6 +718,40 @@ when it's a team-level visual). Shared visuals as of 2026-09:
 Intentionally page-specific: Team Analysis — squad roster, stage filter,
 corner summary table; Opposition Report — projected XI/subs, key players,
 strengths/weaknesses synopsis, set-piece table + scatters, takeaways, PDF.
+
+### Team pages: sections (2026-11)
+
+Both pages draw ONE section at a time (`page_sections.py`): Team Analysis
+shows `TEAM_SECTIONS` (Overview / Players / Set pieces / Form & shots /
+Tactics), the Opposition Report `OPP_SECTIONS` = its own "Summary" in front
+of the same five. The sections ARE the pages' old blocks, in their old order
+(Overview = the four radars, unchanged, + season report + on-ball value &
+phases). A shared visual goes into the SAME section on both pages, with one
+standing exception: the formation graphic is under "Players" on Team
+Analysis (primary formation + roster) and in the Opposition Report's
+"Summary" (projected line-up: page-specific, and answer-first there).
+
+- Team Analysis: `if sections.is_open(name):` — a closed block does not run,
+  so anything a later block needs (starting XI, OBV frames, team id) is
+  computed above the blocks.
+- Opposition Report: `with sections.block(name):` — every block still RUNS,
+  in the old order, because the takeaways read key_players / set_piece_df /
+  form_results and the PDF needs every block's tables and figures. A closed
+  block writes into a hidden container (`page_sections.SINK_KEY`, CSS in
+  app.py). Inside it `sections.drawing` is False: `_show_opp_png` then
+  QUEUES the figure (`_pdf_only`) instead of building it, and every
+  `st.plotly_chart` (and the season report) sits under `if
+  sections.drawing:`. "Generate PDF Report" sits beside the section row and
+  builds whatever the run queued. RULE: a new figure goes through
+  `_show_opp_png` / `_pdf_png` with a `pdf_key` if the PDF prints it; a new
+  Plotly chart or keyed widget is guarded by `sections.drawing`; never put
+  PDF inputs under `if sections.is_open(...)` on this page.
+  `tests/test_smoke_pages.py::test_opposition_pdf_is_complete_from_any_section`
+  compares the PDF's figure and text keys across three sections.
+- Summary's three parts (takeaways, strengths & weaknesses, line-up) are
+  drawn in that order through containers created at the top
+  (`_takeaways_slot` / `_synopsis_slot` / `_lineup_slot`), although their
+  code runs later.
 
 Both pages share the actual plotters (app.py / pitch_visualizations / obv_viz),
 so drawing-code changes propagate; what drifts is call-site config (metric

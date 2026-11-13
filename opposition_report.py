@@ -16,6 +16,7 @@ import sys
 import io
 import pitch_visualizations as pv
 import context_bar
+import page_sections
 import team_interactive as ti
 import theme
 
@@ -805,20 +806,31 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     st.divider()
 
-    # Answer first (2026-11): the takeaways with the PDF button, the strengths
-    # and weaknesses and the likely line-up are DRAWN at the top of the page.
-    # Until then they started 14,800 / 5,500 / about 2,500 px down a 15,400 px
-    # page. Their code still RUNS where it always did, further down: the
-    # takeaways read key_players, set_piece_df and form_results from the
-    # sections in between, and the PDF is assembled from the figures those
-    # sections draw. So each of the three writes into a container created
-    # here, and no number or PDF input changes. The note is cleared when the
-    # takeaways land (the last thing the page computes).
-    _summary_loading = st.empty()
-    _summary_loading.caption("Loading the summary: key takeaways, strengths and weaknesses, likely line-up…")
-    _takeaways_slot = st.container()
-    _synopsis_slot = st.container()
-    _lineup_slot = st.container()
+    # ONE section is drawn at a time (2026-11; the page was 17 screens of every
+    # visual). The row is page_sections.OPP_SECTIONS: "Summary" (page-specific)
+    # then the five sections Team Analysis has too (parity rule). Every block
+    # below still RUNS, in its old order, inside `sections.block(<name>)`:
+    # the takeaways read key_players, set_piece_df and form_results from the
+    # blocks in between, and the PDF needs every block's tables and figures.
+    # A closed block writes into a hidden container; there _show_opp_png
+    # queues its figure for the PDF instead of building it, and the Plotly
+    # charts are skipped (`sections.drawing`). No number or PDF input changes.
+    sections = page_sections.Sections(page_sections.OPP_SECTIONS, key="opposition_report_section",
+                                      label="Report section", side=True)
+    _pdf_col = sections.side       # the PDF button: on the page whatever the section
+
+    # Summary = answer first: the takeaways, the strengths and weaknesses and
+    # the likely line-up, in that order. Their code runs further down (see
+    # above), so each writes into a container created here. The note is
+    # cleared when the takeaways land (the last thing the page computes).
+    with sections.body:
+        _summary_loading = st.empty()
+        if sections.is_open('Summary'):
+            _summary_loading.caption(
+                "Loading the summary: key takeaways, strengths and weaknesses, likely line-up…")
+        _takeaways_slot = st.container()
+        _synopsis_slot = st.container()
+        _lineup_slot = st.container()
 
     # Collections for PDF
     pdf_figures = {}   # key -> PNG bytes
@@ -840,11 +852,22 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     _fig_comp_key = tuple(sorted(int(c) for c in (comp_ids or [])))
     _fig_day_key = datetime.date.today().isoformat()
 
+    # (kind, pdf_key, extra, payload, team) — figures this run did not build:
+    # the matplotlib twins of the Plotly charts (_pdf_png) and every figure of
+    # a closed section (_show_opp_png). The PDF button builds them, with the
+    # very arguments the screen would have used.
+    _pdf_only = []
+
     def _show_opp_png(kind, pdf_key=None, extra=(), payload=None,
                       team=None, _team_set=False):
+        _team = team if _team_set else selected_opponent
+        if not sections.drawing:
+            # closed section: nothing to show; the PDF builds it on demand
+            if pdf_key:
+                _pdf_only.append((kind, pdf_key, extra, payload, _team))
+            return
         _png = _render_opp_figure_png(
-            kind, _fig_season_key, _fig_comp_key,
-            team if _team_set else selected_opponent,
+            kind, _fig_season_key, _fig_comp_key, _team,
             extra, _fig_day_key, app.FIGURE_CACHE_VERSION,
             season_events_df, season_matches_df, payload)
         if not _png:
@@ -853,19 +876,17 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         if pdf_key:
             pdf_figures[pdf_key] = _png
 
-    _pdf_only = []   # (kind, pdf_key, payload) — built by the PDF button
-
     def _pdf_png(kind, pdf_key, payload=None):
         """Queue the matplotlib PNG the PDF needs for a figure the screen
         shows as Plotly; it is built (and cached) only when the PDF is."""
-        _pdf_only.append((kind, pdf_key, payload))
+        _pdf_only.append((kind, pdf_key, (), payload, selected_opponent))
 
     def _build_pdf_only_figures():
-        for _kind, _key, _payload in _pdf_only:
+        for _kind, _key, _extra, _payload, _team in _pdf_only:
             try:
                 _png = _render_opp_figure_png(
-                    _kind, _fig_season_key, _fig_comp_key, selected_opponent,
-                    (), _fig_day_key, app.FIGURE_CACHE_VERSION,
+                    _kind, _fig_season_key, _fig_comp_key, _team,
+                    _extra, _fig_day_key, app.FIGURE_CACHE_VERSION,
                     season_events_df, season_matches_df, _payload)
             except Exception as e:
                 # one figure the PDF can't draw is left out, as before
@@ -901,167 +922,170 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # ===================================================================
     # Step 3: Team Overview — Three Radar Charts
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Team Overview")
+    # section "Overview": the four radars, the season report, on-ball value & phases
+    with sections.block('Overview'):
+        st.subheader(f"{selected_opponent} — Team Overview")
 
-    stats_df_raw, stats_df_pct = app.calculate_all_team_radars_stats(
-        season_events_df, season_matches_df, season_id=selected_season_id,
-    )
-
-    # Compute set piece radar data
-    sp_df_raw = None
-    sp_df_pct = None
-    try:
-        sp_df_raw = app.calculate_set_piece_metrics(season_events_df, season_id=selected_season_id)
-        if sp_df_raw is not None and not sp_df_raw.empty:
-            sp_df_pct = sp_df_raw.copy()
-            for col in sp_df_pct.columns:
-                sp_df_pct[col] = sp_df_pct[col].rank(pct=True) * 100
-    except Exception:
-        pass
-
-    if selected_opponent in stats_df_pct.index:
-        team_raw = stats_df_raw.loc[selected_opponent]
-        team_pct = stats_df_pct.loc[selected_opponent]
-
-        # Row 1: Offensive + Distribution
-        col1, col2 = st.columns(2)
-
-        # Offensive — title/colour match Team Analysis exactly (parity rule:
-        # these four radars are the same visual on both pages).
-        off_m = [m for m in OFFENSIVE_METRICS if m in team_pct.index]
-        if off_m:
-            with col1:
-                _show_opp_radar('radar_offensive', "Offensive Radar", off_m,
-                                [team_raw[m] for m in off_m],
-                                [team_pct[m] for m in off_m], theme.RADAR_OFFENSIVE)
-
-        # Distribution — Ball Possession formatted as % like Team Analysis
-        dist_m = [m for m in DISTRIBUTION_METRICS if m in team_pct.index]
-        if dist_m:
-            with col2:
-                raw_dist_values = [team_raw[m] for m in dist_m]
-                try:
-                    _poss_idx = dist_m.index('Ball Possession')
-                    raw_dist_values[_poss_idx] = f"{raw_dist_values[_poss_idx]:.0f}%"
-                except ValueError:
-                    pass
-                _show_opp_radar('radar_distribution', "Distribution Radar", dist_m,
-                                raw_dist_values,
-                                [team_pct[m] for m in dist_m], theme.RADAR_DISTRIBUTION)
-
-        # Row 2: Defensive + Set Piece
-        col3, col4 = st.columns(2)
-
-        # Defensive — duel win %s formatted like Team Analysis
-        def_m = [m for m in DEFENSIVE_METRICS_TEAM if m in team_pct.index]
-        if def_m:
-            with col3:
-                raw_def_values = [team_raw[m] for m in def_m]
-                for _pct_name in ['Aerial Duel Win %', 'Defensive Duel Win %']:
-                    try:
-                        _idx = def_m.index(_pct_name)
-                        raw_def_values[_idx] = f"{raw_def_values[_idx]:.0f}%"
-                    except ValueError:
-                        pass
-                _show_opp_radar('radar_defensive', "Defensive Radar", def_m,
-                                raw_def_values,
-                                [team_pct[m] for m in def_m], theme.RADAR_DEFENSIVE)
-
-        # Set Piece
-        if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
-            sp_team_raw = sp_df_raw.loc[selected_opponent]
-            sp_team_pct = sp_df_pct.loc[selected_opponent]
-            sp_m = [m for m in SET_PIECE_METRICS_RADAR if m in sp_team_raw.index]
-            if sp_m:
-                raw_sp_values = [sp_team_raw[m] for m in sp_m]
-                for _pct_name in ['Short Corner %', 'Long Throw %', 'First Contact %']:
-                    try:
-                        _idx = sp_m.index(_pct_name)
-                        raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
-                    except ValueError:
-                        pass
-                with col4:
-                    _show_opp_radar('radar_set_piece', "Set Piece Radar", sp_m,
-                                    raw_sp_values,
-                                    [sp_team_pct[m] for m in sp_m], theme.RADAR_SET_PIECE)
-    else:
-        st.warning(f"No radar data available for {selected_opponent}.")
-
-    st.divider()
-
-    # ===================================================================
-    # Step 3b: Season Report (parity with Team Analysis)
-    # ===================================================================
-    with st.expander("📊 Season Report — performance across 7 dimensions",
-                     expanded=False):
-        st.caption(
-            "Each row shows every team in the current league as a green dot, "
-            f"with **{selected_opponent}** highlighted as a white hexagon. "
-            "Values are the team's raw per-match / per-90 numbers."
-        )
-        # Same cache-key format as Team Analysis (stage 'all'), so the same
-        # league+season selection shares one computed entry across both pages.
-        _sr_cache_key = app.season_report_cache_key(comp_ids, selected_season_id)
-        app.render_season_report_section(
-            season_events_df, season_matches_df, selected_opponent,
-            season_ids=selected_season_id,
-            stage=None,
-            cache_key=_sr_cache_key,
-            on_team_select=_open_team,
+        stats_df_raw, stats_df_pct = app.calculate_all_team_radars_stats(
+            season_events_df, season_matches_df, season_id=selected_season_id,
         )
 
-    # ===================================================================
-    # Step 3c: On-Ball Value & Phases (parity with Team Analysis)
-    # ===================================================================
-    st.subheader(f"{selected_opponent} — On-Ball Value & Phases")
-    _obv_all = app.load_obv_viz_data()
-    _opp_obv_id = None
-    _prof_full = _obv_all.get('phase_profile')
-    if _prof_full is not None:
-        _tid_rows = _prof_full.loc[
-            _prof_full['teamName'] == selected_opponent, 'teamId'].dropna()
-        if len(_tid_rows):
-            _opp_obv_id = int(_tid_rows.iloc[0])
-    _prof = _prof_full
-    if _prof is not None:
-        _prof = _prof[(_prof['seasonId'] == selected_season_id)
-                      & (_prof['competitionId'].isin(_fig_comp_key))]
-    _tseason = _obv_all.get('team_season')
-    if _tseason is not None:
-        _tseason = _tseason[(_tseason['seasonId'] == selected_season_id)
-                            & (_tseason['competitionId'].isin(_fig_comp_key))]
+        # Compute set piece radar data
+        sp_df_raw = None
+        sp_df_pct = None
+        try:
+            sp_df_raw = app.calculate_set_piece_metrics(season_events_df, season_id=selected_season_id)
+            if sp_df_raw is not None and not sp_df_raw.empty:
+                sp_df_pct = sp_df_raw.copy()
+                for col in sp_df_pct.columns:
+                    sp_df_pct[col] = sp_df_pct[col].rank(pct=True) * 100
+        except Exception:
+            pass
 
-    if _tseason is not None and not _tseason.empty and _opp_obv_id is not None:
-        _show_opp_png('obv_categories', pdf_key='obv_categories',
-                      payload={'team_season': _tseason,
-                               'team_id': _opp_obv_id})
-    else:
-        st.caption("Team OBV for this season appears after the next engine rebuild.")
+        if selected_opponent in stats_df_pct.index:
+            team_raw = stats_df_raw.loc[selected_opponent]
+            team_pct = stats_df_pct.loc[selected_opponent]
 
-    if _prof is not None and not _prof.empty:
-        _show_opp_png('phase_profile', pdf_key='phase_profile',
-                      payload={'profile': _prof})
-        with st.expander("How phases are defined (v1)"):
-            st.markdown(
-                "- **Buildup / Progression / Finishing** — organized-possession "
-                "segments by pitch third; success = advancing a third "
-                "(finishing: shot or box entry)\n"
-                "- **Fast break** — Wyscout counterattack possessions; "
-                "success = shot or box entry\n"
-                "- **Set piece** — corner / free-kick / penalty possessions; "
-                "success = shot or box entry\n"
-                "- Uncontrolled possessions (≤2 events, no shot) are excluded.\n"
-                "- **OBV per phase** — engine action values summed over the phase.")
-    else:
-        st.caption("Phase profile for this season appears after the next engine rebuild.")
+            # Row 1: Offensive + Distribution
+            col1, col2 = st.columns(2)
 
-    st.divider()
+            # Offensive — title/colour match Team Analysis exactly (parity rule:
+            # these four radars are the same visual on both pages).
+            off_m = [m for m in OFFENSIVE_METRICS if m in team_pct.index]
+            if off_m:
+                with col1:
+                    _show_opp_radar('radar_offensive', "Offensive Radar", off_m,
+                                    [team_raw[m] for m in off_m],
+                                    [team_pct[m] for m in off_m], theme.RADAR_OFFENSIVE)
+
+            # Distribution — Ball Possession formatted as % like Team Analysis
+            dist_m = [m for m in DISTRIBUTION_METRICS if m in team_pct.index]
+            if dist_m:
+                with col2:
+                    raw_dist_values = [team_raw[m] for m in dist_m]
+                    try:
+                        _poss_idx = dist_m.index('Ball Possession')
+                        raw_dist_values[_poss_idx] = f"{raw_dist_values[_poss_idx]:.0f}%"
+                    except ValueError:
+                        pass
+                    _show_opp_radar('radar_distribution', "Distribution Radar", dist_m,
+                                    raw_dist_values,
+                                    [team_pct[m] for m in dist_m], theme.RADAR_DISTRIBUTION)
+
+            # Row 2: Defensive + Set Piece
+            col3, col4 = st.columns(2)
+
+            # Defensive — duel win %s formatted like Team Analysis
+            def_m = [m for m in DEFENSIVE_METRICS_TEAM if m in team_pct.index]
+            if def_m:
+                with col3:
+                    raw_def_values = [team_raw[m] for m in def_m]
+                    for _pct_name in ['Aerial Duel Win %', 'Defensive Duel Win %']:
+                        try:
+                            _idx = def_m.index(_pct_name)
+                            raw_def_values[_idx] = f"{raw_def_values[_idx]:.0f}%"
+                        except ValueError:
+                            pass
+                    _show_opp_radar('radar_defensive', "Defensive Radar", def_m,
+                                    raw_def_values,
+                                    [team_pct[m] for m in def_m], theme.RADAR_DEFENSIVE)
+
+            # Set Piece
+            if sp_df_raw is not None and not sp_df_raw.empty and selected_opponent in sp_df_raw.index:
+                sp_team_raw = sp_df_raw.loc[selected_opponent]
+                sp_team_pct = sp_df_pct.loc[selected_opponent]
+                sp_m = [m for m in SET_PIECE_METRICS_RADAR if m in sp_team_raw.index]
+                if sp_m:
+                    raw_sp_values = [sp_team_raw[m] for m in sp_m]
+                    for _pct_name in ['Short Corner %', 'Long Throw %', 'First Contact %']:
+                        try:
+                            _idx = sp_m.index(_pct_name)
+                            raw_sp_values[_idx] = f"{raw_sp_values[_idx]:.0f}%"
+                        except ValueError:
+                            pass
+                    with col4:
+                        _show_opp_radar('radar_set_piece', "Set Piece Radar", sp_m,
+                                        raw_sp_values,
+                                        [sp_team_pct[m] for m in sp_m], theme.RADAR_SET_PIECE)
+        else:
+            st.warning(f"No radar data available for {selected_opponent}.")
+
+        st.divider()
+
+        # ===================================================================
+        # Step 3b: Season Report (parity with Team Analysis)
+        # ===================================================================
+        if sections.drawing:
+            with st.expander("📊 Season Report — performance across 7 dimensions",
+                             expanded=False):
+                st.caption(
+                    "Each row shows every team in the current league as a green dot, "
+                    f"with **{selected_opponent}** highlighted as a white hexagon. "
+                    "Values are the team's raw per-match / per-90 numbers."
+                )
+                # Same cache-key format as Team Analysis (stage 'all'), so the same
+                # league+season selection shares one computed entry across both pages.
+                _sr_cache_key = app.season_report_cache_key(comp_ids, selected_season_id)
+                app.render_season_report_section(
+                    season_events_df, season_matches_df, selected_opponent,
+                    season_ids=selected_season_id,
+                    stage=None,
+                    cache_key=_sr_cache_key,
+                    on_team_select=_open_team,
+                )
+
+        # ===================================================================
+        # Step 3c: On-Ball Value & Phases (parity with Team Analysis)
+        # ===================================================================
+        st.subheader(f"{selected_opponent} — On-Ball Value & Phases")
+        _obv_all = app.load_obv_viz_data()
+        _opp_obv_id = None
+        _prof_full = _obv_all.get('phase_profile')
+        if _prof_full is not None:
+            _tid_rows = _prof_full.loc[
+                _prof_full['teamName'] == selected_opponent, 'teamId'].dropna()
+            if len(_tid_rows):
+                _opp_obv_id = int(_tid_rows.iloc[0])
+        _prof = _prof_full
+        if _prof is not None:
+            _prof = _prof[(_prof['seasonId'] == selected_season_id)
+                          & (_prof['competitionId'].isin(_fig_comp_key))]
+        _tseason = _obv_all.get('team_season')
+        if _tseason is not None:
+            _tseason = _tseason[(_tseason['seasonId'] == selected_season_id)
+                                & (_tseason['competitionId'].isin(_fig_comp_key))]
+
+        if _tseason is not None and not _tseason.empty and _opp_obv_id is not None:
+            _show_opp_png('obv_categories', pdf_key='obv_categories',
+                          payload={'team_season': _tseason,
+                                   'team_id': _opp_obv_id})
+        else:
+            st.caption("Team OBV for this season appears after the next engine rebuild.")
+
+        if _prof is not None and not _prof.empty:
+            _show_opp_png('phase_profile', pdf_key='phase_profile',
+                          payload={'profile': _prof})
+            with st.expander("How phases are defined (v1)"):
+                st.markdown(
+                    "- **Buildup / Progression / Finishing** — organized-possession "
+                    "segments by pitch third; success = advancing a third "
+                    "(finishing: shot or box entry)\n"
+                    "- **Fast break** — Wyscout counterattack possessions; "
+                    "success = shot or box entry\n"
+                    "- **Set piece** — corner / free-kick / penalty possessions; "
+                    "success = shot or box entry\n"
+                    "- Uncontrolled possessions (≤2 events, no shot) are excluded.\n"
+                    "- **OBV per phase** — engine action values summed over the phase.")
+        else:
+            st.caption("Phase profile for this season appears after the next engine rebuild.")
+
+        st.divider()
 
     # ===================================================================
     # Step 4: Projected Lineup & Formation
     # ===================================================================
-    # drawn at the top of the page (see _lineup_slot above)
-    with _lineup_slot:
+    # section "Summary", third (see _lineup_slot above)
+    with sections.block('Summary', into=_lineup_slot):
         st.subheader(f"{selected_opponent} — Projected Lineup")
 
         formation, starting_xi = _get_projected_starting_xi(
@@ -1125,169 +1149,171 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # ===================================================================
     # Step 5: Key Players Deep Dive
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Key Players")
+    # section "Players": the key players
+    with sections.block('Players'):
+        st.subheader(f"{selected_opponent} — Key Players")
 
-    if season_player_minutes is not None and not season_player_minutes.empty:
-        player_stats_df = app.calculate_all_player_stats(
-            season_events_df, season_player_minutes,
-            season_id=selected_season_id,
-        )
-
-        if not player_stats_df.empty:
-            player_percentiles_df = app.calculate_player_percentiles_and_scores(
-                player_stats_df, app.POSITION_GROUPS, app.WEIGHTS,
-                app.INVERT_METRICS, min_minutes=90,
+        if season_player_minutes is not None and not season_player_minutes.empty:
+            player_stats_df = app.calculate_all_player_stats(
+                season_events_df, season_player_minutes,
                 season_id=selected_season_id,
             )
 
-            key_players = _identify_key_players(
-                player_stats_df, player_percentiles_df,
-                selected_opponent, n=5,
-            )
+            if not player_stats_df.empty:
+                player_percentiles_df = app.calculate_player_percentiles_and_scores(
+                    player_stats_df, app.POSITION_GROUPS, app.WEIGHTS,
+                    app.INVERT_METRICS, min_minutes=90,
+                    season_id=selected_season_id,
+                )
 
-            if key_players:
-                for i, kp in enumerate(key_players):
-                    with st.expander(
-                        f"**{i+1}. {kp['name']}** — {kp['position']} | "
-                        f"{kp['minutes']:.0f} mins",
-                        expanded=(i == 0),
-                    ):
-                        player_pos = kp['position']
-                        eligible_groups = [
-                            g for g, positions in app.POSITION_GROUPS.items()
-                            if player_pos in positions
-                        ]
+                key_players = _identify_key_players(
+                    player_stats_df, player_percentiles_df,
+                    selected_opponent, n=5,
+                )
 
-                        if (kp['percentiles_row'] is not None
-                                and not kp['percentiles_row'].empty
-                                and eligible_groups):
-                            player_data = kp['percentiles_row']
-
-                            # Find best role
-                            best_group = eligible_groups[0]
-                            scores = {}
-                            for g in eligible_groups:
-                                sc = g + '_Score'
-                                if sc in player_data.columns:
-                                    scores[g] = player_data[sc].values[0]
-                            if scores:
-                                best_group = max(scores, key=scores.get)
-
-                            metrics = list(
-                                app.WEIGHTS.get(best_group, {}).keys()
-                            )
-                            metrics = [
-                                m for m in metrics if m in player_data.columns
+                if key_players:
+                    for i, kp in enumerate(key_players):
+                        with st.expander(
+                            f"**{i+1}. {kp['name']}** — {kp['position']} | "
+                            f"{kp['minutes']:.0f} mins",
+                            expanded=(i == 0),
+                        ):
+                            player_pos = kp['position']
+                            eligible_groups = [
+                                g for g, positions in app.POSITION_GROUPS.items()
+                                if player_pos in positions
                             ]
 
-                            if metrics:
-                                col_r, col_a = st.columns([2, 1])
+                            if (kp['percentiles_row'] is not None
+                                    and not kp['percentiles_row'].empty
+                                    and eligible_groups):
+                                player_data = kp['percentiles_row']
 
-                                with col_r:
-                                    try:
-                                        pos_grp = app.POSITION_GROUPS.get(
-                                            best_group, [player_pos]
+                                # Find best role
+                                best_group = eligible_groups[0]
+                                scores = {}
+                                for g in eligible_groups:
+                                    sc = g + '_Score'
+                                    if sc in player_data.columns:
+                                        scores[g] = player_data[sc].values[0]
+                                if scores:
+                                    best_group = max(scores, key=scores.get)
+
+                                metrics = list(
+                                    app.WEIGHTS.get(best_group, {}).keys()
+                                )
+                                metrics = [
+                                    m for m in metrics if m in player_data.columns
+                                ]
+
+                                if metrics:
+                                    col_r, col_a = st.columns([2, 1])
+
+                                    with col_r:
+                                        try:
+                                            pos_grp = app.POSITION_GROUPS.get(
+                                                best_group, [player_pos]
+                                            )
+                                            all_pos = player_percentiles_df[
+                                                player_percentiles_df[
+                                                    'primaryPosition'
+                                                ].isin(pos_grp)
+                                            ]
+                                            _show_opp_png(
+                                                'player_radar',
+                                                pdf_key=f'player_{i}',
+                                                extra=(kp['player_id'], player_pos,
+                                                       tuple(metrics),
+                                                       tuple(eligible_groups)),
+                                                payload=(player_data, all_pos,
+                                                         player_percentiles_df),
+                                            )
+                                        except Exception as e:
+                                            st.caption(
+                                                f"Could not render radar: {e}"
+                                            )
+
+                                    with col_a:
+                                        st.markdown(f"**Best Role:** {best_group}")
+
+                                        s, w = _get_player_strengths_weaknesses(
+                                            player_data, metrics,
                                         )
-                                        all_pos = player_percentiles_df[
-                                            player_percentiles_df[
-                                                'primaryPosition'
-                                            ].isin(pos_grp)
+                                        # Store for PDF
+                                        kp['strengths_lines'] = [
+                                            f"{m}: {p:.0f}th pct ({r:.2f} p90)"
+                                            if r is not None else f"{m}: {p:.0f}th pct"
+                                            for m, p, r in s[:5]
                                         ]
-                                        _show_opp_png(
-                                            'player_radar',
-                                            pdf_key=f'player_{i}',
-                                            extra=(kp['player_id'], player_pos,
-                                                   tuple(metrics),
-                                                   tuple(eligible_groups)),
-                                            payload=(player_data, all_pos,
-                                                     player_percentiles_df),
-                                        )
-                                    except Exception as e:
-                                        st.caption(
-                                            f"Could not render radar: {e}"
-                                        )
+                                        kp['weaknesses_lines'] = [
+                                            f"{m}: {p:.0f}th pct ({r:.2f} p90)"
+                                            if r is not None else f"{m}: {p:.0f}th pct"
+                                            for m, p, r in w[:5]
+                                        ]
+                                        if s:
+                                            st.markdown("**Strengths:**")
+                                            for met, pct, raw in s[:5]:
+                                                rs = (f" ({raw:.2f} p90)"
+                                                      if raw is not None else "")
+                                                st.markdown(
+                                                    f"- :green[{met}] — "
+                                                    f"{pct:.0f}th pct{rs}"
+                                                )
+                                        if w:
+                                            st.markdown("**Weaknesses:**")
+                                            for met, pct, raw in w[:5]:
+                                                rs = (f" ({raw:.2f} p90)"
+                                                      if raw is not None else "")
+                                                st.markdown(
+                                                    f"- :red[{met}] — "
+                                                    f"{pct:.0f}th pct{rs}"
+                                                )
 
-                                with col_a:
-                                    st.markdown(f"**Best Role:** {best_group}")
-
-                                    s, w = _get_player_strengths_weaknesses(
-                                        player_data, metrics,
+                                        st.markdown("**Key Stats (per 90):**")
+                                        stat_names = [
+                                            'Goals', 'npxG', 'Assists',
+                                            'xAOP', 'Passes', 'Interceptions',
+                                        ]
+                                        rows = []
+                                        for sn in stat_names:
+                                            if sn in player_data.columns:
+                                                v = player_data[sn].values[0]
+                                                rows.append({
+                                                    'Metric': sn,
+                                                    'Value': f"{v:.2f}",
+                                                })
+                                        if rows:
+                                            st.dataframe(
+                                                pd.DataFrame(rows),
+                                                hide_index=True,
+                                                width="stretch",
+                                            )
+                                else:
+                                    st.caption(
+                                        "No metrics available for this "
+                                        "player's position."
                                     )
-                                    # Store for PDF
-                                    kp['strengths_lines'] = [
-                                        f"{m}: {p:.0f}th pct ({r:.2f} p90)"
-                                        if r is not None else f"{m}: {p:.0f}th pct"
-                                        for m, p, r in s[:5]
-                                    ]
-                                    kp['weaknesses_lines'] = [
-                                        f"{m}: {p:.0f}th pct ({r:.2f} p90)"
-                                        if r is not None else f"{m}: {p:.0f}th pct"
-                                        for m, p, r in w[:5]
-                                    ]
-                                    if s:
-                                        st.markdown("**Strengths:**")
-                                        for met, pct, raw in s[:5]:
-                                            rs = (f" ({raw:.2f} p90)"
-                                                  if raw is not None else "")
-                                            st.markdown(
-                                                f"- :green[{met}] — "
-                                                f"{pct:.0f}th pct{rs}"
-                                            )
-                                    if w:
-                                        st.markdown("**Weaknesses:**")
-                                        for met, pct, raw in w[:5]:
-                                            rs = (f" ({raw:.2f} p90)"
-                                                  if raw is not None else "")
-                                            st.markdown(
-                                                f"- :red[{met}] — "
-                                                f"{pct:.0f}th pct{rs}"
-                                            )
-
-                                    st.markdown("**Key Stats (per 90):**")
-                                    stat_names = [
-                                        'Goals', 'npxG', 'Assists',
-                                        'xAOP', 'Passes', 'Interceptions',
-                                    ]
-                                    rows = []
-                                    for sn in stat_names:
-                                        if sn in player_data.columns:
-                                            v = player_data[sn].values[0]
-                                            rows.append({
-                                                'Metric': sn,
-                                                'Value': f"{v:.2f}",
-                                            })
-                                    if rows:
-                                        st.dataframe(
-                                            pd.DataFrame(rows),
-                                            hide_index=True,
-                                            width="stretch",
-                                        )
                             else:
                                 st.caption(
-                                    "No metrics available for this "
-                                    "player's position."
+                                    "Percentile data not available "
+                                    "for this player."
                                 )
-                        else:
-                            st.caption(
-                                "Percentile data not available "
-                                "for this player."
-                            )
 
-                pdf_texts['key_players'] = key_players
+                    pdf_texts['key_players'] = key_players
+                else:
+                    st.info("Not enough data to identify key players.")
             else:
-                st.info("Not enough data to identify key players.")
+                st.warning("Player stats could not be calculated.")
         else:
-            st.warning("Player stats could not be calculated.")
-    else:
-        st.warning("Player minutes data not available for this season.")
+            st.warning("Player minutes data not available for this season.")
 
-    st.divider()
+        st.divider()
 
     # ===================================================================
     # Step 6: Strengths & Weaknesses Synopsis
     # ===================================================================
-    # drawn at the top of the page (see _synopsis_slot above)
-    with _synopsis_slot:
+    # section "Summary", second (see _synopsis_slot above)
+    with sections.block('Summary', into=_synopsis_slot):
         st.subheader(f"{selected_opponent} — Strengths & Weaknesses")
 
         if selected_opponent in stats_df_pct.index:
@@ -1333,260 +1359,270 @@ def render_opposition_report(raw_events_df, matches_summary_df,
     # ===================================================================
     # Step 7: Set Piece Analysis
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Set Piece Analysis")
+    # section "Set pieces"
+    with sections.block('Set pieces'):
+        st.subheader(f"{selected_opponent} — Set Piece Analysis")
 
-    try:
-        set_piece_df = app.calculate_set_piece_metrics(
-            season_events_df, season_id=selected_season_id,
-        )
-    except Exception:
-        set_piece_df = pd.DataFrame()
+        try:
+            set_piece_df = app.calculate_set_piece_metrics(
+                season_events_df, season_id=selected_season_id,
+            )
+        except Exception:
+            set_piece_df = pd.DataFrame()
 
-    if not set_piece_df.empty and selected_opponent in set_piece_df.index:
-        sp = set_piece_df.loc[selected_opponent]
+        if not set_piece_df.empty and selected_opponent in set_piece_df.index:
+            sp = set_piece_df.loc[selected_opponent]
 
-        sp_data = {
-            'Category': [
-                'Corners', 'Free Kicks (Att 3rd)',
-                'Throw-ins (Att 3rd)', 'Total Set Pieces',
-            ],
-            'xG For': [
-                sp.get('xG from Corners', 0),
-                sp.get('xG from Free Kicks', 0),
-                sp.get('xG from Att Throw-ins', 0),
-                sp.get('xG from Set Pieces', 0),
-            ],
-            'Goals For': [
-                int(sp.get('Goals from Corners', 0)),
-                int(sp.get('Goals from Free Kicks', 0)),
-                int(sp.get('Goals from Att Throw-ins', 0)),
-                int(sp.get('Goals from Set Pieces', 0)),
-            ],
-            'xG Conceded': [
-                sp.get('xG Conceded Corners', 0),
-                sp.get('xG Conceded Free Kicks', 0),
-                sp.get('xG Conceded Att Throw-ins', 0),
-                sp.get('xG Conceded Set Pieces', 0),
-            ],
-            'Goals Conceded': [
-                int(sp.get('Goals Conceded Corners', 0)),
-                int(sp.get('Goals Conceded Free Kicks', 0)),
-                int(sp.get('Goals Conceded Att Throw-ins', 0)),
-                int(sp.get('Goals Conceded Set Pieces', 0)),
-            ],
-        }
-        sp_table = pd.DataFrame(sp_data)
-        for c in ['xG For', 'xG Conceded']:
-            sp_table[c] = sp_table[c].round(2)
-        st.dataframe(sp_table, width="stretch", hide_index=True)
-        pdf_texts['set_piece_table'] = sp_table
+            sp_data = {
+                'Category': [
+                    'Corners', 'Free Kicks (Att 3rd)',
+                    'Throw-ins (Att 3rd)', 'Total Set Pieces',
+                ],
+                'xG For': [
+                    sp.get('xG from Corners', 0),
+                    sp.get('xG from Free Kicks', 0),
+                    sp.get('xG from Att Throw-ins', 0),
+                    sp.get('xG from Set Pieces', 0),
+                ],
+                'Goals For': [
+                    int(sp.get('Goals from Corners', 0)),
+                    int(sp.get('Goals from Free Kicks', 0)),
+                    int(sp.get('Goals from Att Throw-ins', 0)),
+                    int(sp.get('Goals from Set Pieces', 0)),
+                ],
+                'xG Conceded': [
+                    sp.get('xG Conceded Corners', 0),
+                    sp.get('xG Conceded Free Kicks', 0),
+                    sp.get('xG Conceded Att Throw-ins', 0),
+                    sp.get('xG Conceded Set Pieces', 0),
+                ],
+                'Goals Conceded': [
+                    int(sp.get('Goals Conceded Corners', 0)),
+                    int(sp.get('Goals Conceded Free Kicks', 0)),
+                    int(sp.get('Goals Conceded Att Throw-ins', 0)),
+                    int(sp.get('Goals Conceded Set Pieces', 0)),
+                ],
+            }
+            sp_table = pd.DataFrame(sp_data)
+            for c in ['xG For', 'xG Conceded']:
+                sp_table[c] = sp_table[c].round(2)
+            st.dataframe(sp_table, width="stretch", hide_index=True)
+            pdf_texts['set_piece_table'] = sp_table
 
-        col_l, col_r = st.columns(2)
-        with col_l:
-            try:
-                _show_opp_png('corner_analysis', pdf_key='corner_left',
-                              extra=('left',))
-            except Exception as e:
-                st.caption(f"Could not render left corner analysis: {e}")
+            col_l, col_r = st.columns(2)
+            with col_l:
+                try:
+                    _show_opp_png('corner_analysis', pdf_key='corner_left',
+                                  extra=('left',))
+                except Exception as e:
+                    st.caption(f"Could not render left corner analysis: {e}")
 
-        with col_r:
-            try:
-                _show_opp_png('corner_analysis', pdf_key='corner_right',
-                              extra=('right',))
-            except Exception as e:
-                st.caption(f"Could not render right corner analysis: {e}")
+            with col_r:
+                try:
+                    _show_opp_png('corner_analysis', pdf_key='corner_right',
+                                  extra=('right',))
+                except Exception as e:
+                    st.caption(f"Could not render right corner analysis: {e}")
 
-        # Set piece scatter plots (league context)
-        st.markdown("**Set Piece Efficiency vs League**")
+            # Set piece scatter plots (league context)
+            st.markdown("**Set Piece Efficiency vs League**")
 
-        scatter_pairs = [
-            ('xG per Corner', 'Goals per Corner',
-             'Corner Attacking Efficiency'),
-            ('xG Conceded per Corner', 'Goals Conceded per Corner',
-             'Corner Defensive Vulnerability'),
-            ('xG from Att Throw-ins', 'Goals from Att Throw-ins',
-             'Attacking 3rd Throw-in Efficiency'),
-            ('Long Throws', 'xG from Att Throw-ins',
-             'Long Throws vs Throw-in xG'),
-        ]
+            scatter_pairs = [
+                ('xG per Corner', 'Goals per Corner',
+                 'Corner Attacking Efficiency'),
+                ('xG Conceded per Corner', 'Goals Conceded per Corner',
+                 'Corner Defensive Vulnerability'),
+                ('xG from Att Throw-ins', 'Goals from Att Throw-ins',
+                 'Attacking 3rd Throw-in Efficiency'),
+                ('Long Throws', 'xG from Att Throw-ins',
+                 'Long Throws vs Throw-in xG'),
+            ]
 
-        for pair_idx in range(0, len(scatter_pairs), 2):
-            cols = st.columns(2)
-            for ci, col in enumerate(cols):
-                si = pair_idx + ci
-                if si >= len(scatter_pairs):
-                    break
-                x_met, y_met, scatter_title = scatter_pairs[si]
-                with col:
-                    try:
-                        # team=None: this scatter plots the whole league and
-                        # highlights nobody, so the opponent is not one of its
-                        # inputs — keying on it would just duplicate the entry
-                        # per opponent. The numbers ride in the key instead.
-                        _show_opp_png(
-                            'sp_scatter', pdf_key=f'sp_scatter_{si}',
-                            extra=(x_met, y_met, scatter_title,
-                                   app._plot_values_key(set_piece_df,
-                                                        (x_met, y_met))),
-                            payload=set_piece_df, team=None, _team_set=True)
-                    except Exception as e:
-                        st.caption(f"Could not render {scatter_title}: {e}")
+            for pair_idx in range(0, len(scatter_pairs), 2):
+                cols = st.columns(2)
+                for ci, col in enumerate(cols):
+                    si = pair_idx + ci
+                    if si >= len(scatter_pairs):
+                        break
+                    x_met, y_met, scatter_title = scatter_pairs[si]
+                    with col:
+                        try:
+                            # team=None: this scatter plots the whole league and
+                            # highlights nobody, so the opponent is not one of its
+                            # inputs — keying on it would just duplicate the entry
+                            # per opponent. The numbers ride in the key instead.
+                            _show_opp_png(
+                                'sp_scatter', pdf_key=f'sp_scatter_{si}',
+                                extra=(x_met, y_met, scatter_title,
+                                       app._plot_values_key(set_piece_df,
+                                                            (x_met, y_met))),
+                                payload=set_piece_df, team=None, _team_set=True)
+                        except Exception as e:
+                            st.caption(f"Could not render {scatter_title}: {e}")
 
-    else:
-        st.info("No set piece data available.")
+        else:
+            st.info("No set piece data available.")
 
-    st.divider()
+        st.divider()
 
     # ===================================================================
     # Step 8: Season Form & Shot Maps
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Season Form & Shot Maps")
+    # section "Form & shots"
+    with sections.block('Form & shots'):
+        st.subheader(f"{selected_opponent} — Season Form & Shot Maps")
 
-    form_results = _get_team_recent_form(
-        season_matches_df, selected_opponent, selected_season_id, n=5,
-    )
-
-    if form_results:
-        form_str = ' '.join(
-            f":{'green' if r['result'] == 'W' else 'red' if r['result'] == 'L' else 'orange'}[{r['result']}]"
-            for r in form_results
+        form_results = _get_team_recent_form(
+            season_matches_df, selected_opponent, selected_season_id, n=5,
         )
-        st.markdown(f"**Last {len(form_results)} results:** {form_str}")
 
-        ft = pd.DataFrame(form_results)[
-            ['date', 'opponent', 'score', 'result', 'home_away']
-        ]
-        ft.columns = ['Date', 'Opponent', 'Score', 'Result', 'H/A']
-        ft['Date'] = pd.to_datetime(ft['Date']).dt.strftime('%d %b %Y')
-        st.dataframe(ft, width="stretch", hide_index=True)
-        pdf_texts['form_results'] = form_results
+        if form_results:
+            form_str = ' '.join(
+                f":{'green' if r['result'] == 'W' else 'red' if r['result'] == 'L' else 'orange'}[{r['result']}]"
+                for r in form_results
+            )
+            st.markdown(f"**Last {len(form_results)} results:** {form_str}")
 
-    # xG history
-    try:
-        # Both frames are underscore-prefixed inside, so scope_key is the only
-        # thing that makes this cache follow the scope — without it the first
-        # league to render wins and every later one is served ITS xG history.
-        #
-        # The key is the LEAGUE only, not the (season, comp, stage) triple
-        # Team Analysis passes: what arrives here is filter_by_league(...) with
-        # no season or stage filter (see app.py's opp_events/opp_matches), so
-        # this frame spans every season of the selected league. Keying it by
-        # season would split one frame across N identical entries and imply a
-        # season-sensitivity the data does not have.
-        xg_hist = app.calculate_xg_history_data(
-            raw_events_df, matches_summary_df,
-            scope_key=('opposition_all_seasons', _fig_comp_key),
-        )
-        if not xg_hist.empty:
-            _pdf_png('xg_history', 'xg_history', payload=xg_hist)
-            _ev = st.plotly_chart(ti.plotly_rolling_xg(xg_hist, selected_opponent, matches_summary_df),
-                                  use_container_width=True, key='opp_rolling_xg', on_select='rerun',
-                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
-            app.open_match_from_selection(_ev)
-    except Exception as e:
-        st.caption(f"Could not render xG history: {e}")
+            ft = pd.DataFrame(form_results)[
+                ['date', 'opponent', 'score', 'result', 'home_away']
+            ]
+            ft.columns = ['Date', 'Opponent', 'Score', 'Result', 'H/A']
+            ft['Date'] = pd.to_datetime(ft['Date']).dt.strftime('%d %b %Y')
+            st.dataframe(ft, width="stretch", hide_index=True)
+            pdf_texts['form_results'] = form_results
 
-    # Shot maps
-    # Full width, stacked (parity with Team Analysis): the half-pitch locks its
-    # aspect, so in a half-width column it rendered a few hundred px tall.
-    if True:
-        st.markdown("**Shots For**")
+        # xG history
         try:
-            _pdf_png('season_shotmap_for', 'shotmap_for')
-            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'for', height=context_bar.pitch_height()),
-                                  use_container_width=True, key='opp_shots_for', on_select='rerun',
-                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
-            app.open_match_from_selection(_ev)
+            # Both frames are underscore-prefixed inside, so scope_key is the only
+            # thing that makes this cache follow the scope — without it the first
+            # league to render wins and every later one is served ITS xG history.
+            #
+            # The key is the LEAGUE only, not the (season, comp, stage) triple
+            # Team Analysis passes: what arrives here is filter_by_league(...) with
+            # no season or stage filter (see app.py's opp_events/opp_matches), so
+            # this frame spans every season of the selected league. Keying it by
+            # season would split one frame across N identical entries and imply a
+            # season-sensitivity the data does not have.
+            xg_hist = app.calculate_xg_history_data(
+                raw_events_df, matches_summary_df,
+                scope_key=('opposition_all_seasons', _fig_comp_key),
+            )
+            if not xg_hist.empty:
+                _pdf_png('xg_history', 'xg_history', payload=xg_hist)
+                if sections.drawing:
+                    _ev = st.plotly_chart(ti.plotly_rolling_xg(xg_hist, selected_opponent, matches_summary_df),
+                                          use_container_width=True, key='opp_rolling_xg', on_select='rerun',
+                                          selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+                    app.open_match_from_selection(_ev)
         except Exception as e:
-            st.caption(f"Could not render shot map: {e}")
+            st.caption(f"Could not render xG history: {e}")
 
-    if True:
-        st.markdown("**Shots Conceded**")
-        try:
-            _pdf_png('season_shotmap_against', 'shotmap_against')
-            _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'against', height=context_bar.pitch_height()),
-                                  use_container_width=True, key='opp_shots_against', on_select='rerun',
-                                  selection_mode='points', config=app._PLOTLY_CFG, theme=None)
-            app.open_match_from_selection(_ev)
-        except Exception as e:
-            st.caption(f"Could not render shots against map: {e}")
+        # Shot maps
+        # Full width, stacked (parity with Team Analysis): the half-pitch locks its
+        # aspect, so in a half-width column it rendered a few hundred px tall.
+        if True:
+            st.markdown("**Shots For**")
+            try:
+                _pdf_png('season_shotmap_for', 'shotmap_for')
+                if sections.drawing:
+                    _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'for', height=context_bar.pitch_height()),
+                                          use_container_width=True, key='opp_shots_for', on_select='rerun',
+                                          selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+                    app.open_match_from_selection(_ev)
+            except Exception as e:
+                st.caption(f"Could not render shot map: {e}")
 
-    st.divider()
+        if True:
+            st.markdown("**Shots Conceded**")
+            try:
+                _pdf_png('season_shotmap_against', 'shotmap_against')
+                if sections.drawing:
+                    _ev = st.plotly_chart(ti.plotly_season_shot_map(season_events_df, season_matches_df, selected_opponent, 'against', height=context_bar.pitch_height()),
+                                          use_container_width=True, key='opp_shots_against', on_select='rerun',
+                                          selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+                    app.open_match_from_selection(_ev)
+            except Exception as e:
+                st.caption(f"Could not render shots against map: {e}")
+
+        st.divider()
 
     # ===================================================================
     # Step 8b: Tactical Zone Analysis (Wyscout-style)
     # ===================================================================
-    st.subheader(f"{selected_opponent} — Tactical Zone Analysis")
+    # section "Tactics"
+    with sections.block('Tactics'):
+        st.subheader(f"{selected_opponent} — Tactical Zone Analysis")
 
-    # Average Player Positions (season) — restricted to projected XI (exactly 11)
-    st.markdown("**Average Player Positions (Season)**")
-    try:
-        _show_opp_png('avg_positions', pdf_key='avg_positions',
-                      extra=(tuple(sorted(xi_names)) if xi_names else None,))
-    except Exception as e:
-        st.caption(f"Could not render average positions: {e}")
-
-    # Defensive Structure
-    st.markdown("**Defensive Structure**")
-    try:
-        _show_opp_png('defensive_structure', pdf_key='defensive_structure')
-    except Exception as e:
-        st.caption(f"Could not render defensive structure: {e}")
-
-    # Recovery / Loss zone heatmaps side by side
-    col_rz, col_lz = st.columns(2)
-    with col_rz:
-        st.markdown("**Recovery Zones vs League**")
+        # Average Player Positions (season) — restricted to projected XI (exactly 11)
+        st.markdown("**Average Player Positions (Season)**")
         try:
-            _show_opp_png('zone_heatmap', pdf_key='zone_recovery',
-                          extra=('recovery',))
+            _show_opp_png('avg_positions', pdf_key='avg_positions',
+                          extra=(tuple(sorted(xi_names)) if xi_names else None,))
         except Exception as e:
-            st.caption(f"Could not render: {e}")
+            st.caption(f"Could not render average positions: {e}")
 
-    with col_lz:
-        st.markdown("**Loss Zones vs League**")
+        # Defensive Structure
+        st.markdown("**Defensive Structure**")
         try:
-            _show_opp_png('zone_heatmap', pdf_key='zone_loss',
-                          extra=('loss',))
+            _show_opp_png('defensive_structure', pdf_key='defensive_structure')
         except Exception as e:
-            st.caption(f"Could not render: {e}")
+            st.caption(f"Could not render defensive structure: {e}")
 
-    # Passing Network (Season) — parity with Team Analysis
-    st.markdown("**Passing Network (Season)**")
-    try:
-        _np_payload = None
-        _np_pairs = _obv_all.get('pairs')
-        if _np_pairs is not None and _opp_obv_id is not None:
-            _np_pairs = _np_pairs[
-                (_np_pairs['seasonId'] == selected_season_id)
-                & (_np_pairs['competitionId'].isin(_fig_comp_key))
-                & (_np_pairs['teamId'] == _opp_obv_id)]
-            if not _np_pairs.empty:
-                _np_payload = {'pairs': _np_pairs}
-        _pdf_png('passing_network', 'passing_network', payload=_np_payload)
-        _net = app.cached_passing_network(_fig_season_key, _fig_comp_key, '', selected_opponent,
-                                          app.FIGURE_CACHE_VERSION, season_events_df,
-                                          _np_payload['pairs'] if _np_payload else None)
-        _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_opponent, height=context_bar.pitch_height()), use_container_width=True,
-                              key='opp_passnet', on_select='rerun', selection_mode='points', config=app._PLOTLY_CFG, theme=None)
-        app.open_profile_from_selection(_ev, selected_season_id)
-    except Exception as e:
-        st.caption(f"Could not render passing network: {e}")
+        # Recovery / Loss zone heatmaps side by side
+        col_rz, col_lz = st.columns(2)
+        with col_rz:
+            st.markdown("**Recovery Zones vs League**")
+            try:
+                _show_opp_png('zone_heatmap', pdf_key='zone_recovery',
+                              extra=('recovery',))
+            except Exception as e:
+                st.caption(f"Could not render: {e}")
 
-    # Shot Assists + Dribbles in Final Third
-    st.markdown("**Shot Assists & Dribbles in Final Third**")
-    try:
-        _show_opp_png('shot_assists', pdf_key='shot_assists_dribbles')
-    except Exception as e:
-        st.caption(f"Could not render shot assists & dribbles: {e}")
+        with col_lz:
+            st.markdown("**Loss Zones vs League**")
+            try:
+                _show_opp_png('zone_heatmap', pdf_key='zone_loss',
+                              extra=('loss',))
+            except Exception as e:
+                st.caption(f"Could not render: {e}")
 
-    st.divider()
+        # Passing Network (Season) — parity with Team Analysis
+        st.markdown("**Passing Network (Season)**")
+        try:
+            _np_payload = None
+            _np_pairs = _obv_all.get('pairs')
+            if _np_pairs is not None and _opp_obv_id is not None:
+                _np_pairs = _np_pairs[
+                    (_np_pairs['seasonId'] == selected_season_id)
+                    & (_np_pairs['competitionId'].isin(_fig_comp_key))
+                    & (_np_pairs['teamId'] == _opp_obv_id)]
+                if not _np_pairs.empty:
+                    _np_payload = {'pairs': _np_pairs}
+            _pdf_png('passing_network', 'passing_network', payload=_np_payload)
+            if sections.drawing:
+                _net = app.cached_passing_network(_fig_season_key, _fig_comp_key, '', selected_opponent,
+                                                  app.FIGURE_CACHE_VERSION, season_events_df,
+                                                  _np_payload['pairs'] if _np_payload else None)
+                _ev = st.plotly_chart(ti.plotly_passing_network(_net, selected_opponent, height=context_bar.pitch_height()), use_container_width=True,
+                                      key='opp_passnet', on_select='rerun', selection_mode='points', config=app._PLOTLY_CFG, theme=None)
+                app.open_profile_from_selection(_ev, selected_season_id)
+        except Exception as e:
+            st.caption(f"Could not render passing network: {e}")
+
+        # Shot Assists + Dribbles in Final Third
+        st.markdown("**Shot Assists & Dribbles in Final Third**")
+        try:
+            _show_opp_png('shot_assists', pdf_key='shot_assists_dribbles')
+        except Exception as e:
+            st.caption(f"Could not render shot assists & dribbles: {e}")
+
+        st.divider()
 
     # ===================================================================
     # Step 9: Key Takeaways
     # ===================================================================
-    # drawn first on the page, with the PDF button (see _takeaways_slot above)
-    with _takeaways_slot:
+    # section "Summary", first (see _takeaways_slot above)
+    with sections.block('Summary', into=_takeaways_slot):
         st.subheader("Key Takeaways")
 
         takeaways = _generate_key_takeaways(
@@ -1600,6 +1636,11 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
         pdf_texts['takeaways'] = takeaways
 
+        st.divider()
+
+    # The PDF button sits beside the section row, so the report can be built
+    # from any section. It builds every figure this run did not (_pdf_only).
+    with _pdf_col:
         # ===================================================================
         # Step 10: PDF Download
         # ===================================================================
@@ -1610,7 +1651,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             else datetime.date.today().strftime('%d %b %Y')
         )
 
-        if st.button("Generate PDF Report", type="primary"):
+        if st.button("Generate PDF Report", type="primary", width="stretch"):
             try:
                 from generate_pdf import generate_opposition_report_pdf
 
@@ -1633,10 +1674,10 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                     data=pdf_bytes,
                     file_name=fname,
                     mime="application/pdf",
+                    width="stretch",
                 )
             except ImportError:
                 st.warning("PDF generation not available (fpdf2 not installed).")
             except Exception as e:
                 st.error(f"PDF generation failed: {e}")
-        st.divider()
     _summary_loading.empty()

@@ -195,15 +195,96 @@ def test_keyed_selectors_are_stable_across_reruns(app, page, label):
     assert again.value == first, f"{page}: {label} moved from {first!r} to {again.value!r} on a rerun"
 
 
+TEAM_PAGE_SECTION_RADIO = {'Team Analysis': 'Team section', 'Opposition Report': 'Report section'}
+
+
+def _open_section(app, page, name):
+    """Open a section of a team page. Re-finds the radio every time: an
+    element handle goes stale after a run."""
+    [r for r in app.radio if r.label == TEAM_PAGE_SECTION_RADIO[page]][0].set_value(name)
+    app.run()
+
+
+@pytest.mark.parametrize('page', ['Team Analysis', 'Opposition Report'])
+def test_team_pages_share_one_section_row(app, page):
+    """Both team pages draw ONE section at a time and share the five team
+    sections in the same order (parity rule); the Opposition Report puts its
+    own Summary in front and opens on it. Every section renders clean."""
+    import page_sections
+    _open_page(app, page)
+    assert not _problems(app), _problems(app)
+    radio = [r for r in app.radio if r.label == TEAM_PAGE_SECTION_RADIO[page]][0]
+    names = list(radio.options)
+    assert names[-5:] == list(page_sections.TEAM_SECTIONS), names
+    assert names == list(page_sections.OPP_SECTIONS if page == 'Opposition Report'
+                         else page_sections.TEAM_SECTIONS)
+    assert radio.value == names[0]
+    for name in names:
+        _open_section(app, page, name)
+        assert not _problems(app), (name, _problems(app))
+    _open_section(app, page, names[0])
+
+
 @pytest.mark.parametrize('page', ['Team Analysis', 'Opposition Report'])
 def test_team_visuals_are_interactive(app, page):
     """Both team pages show the shot maps, rolling xG, passing network and
     the season-report dot plots as Plotly charts (parity rule), on top of the
-    static PNGs that remain for the other visuals / the PDF."""
+    static PNGs that remain for the other visuals / the PDF. Each sits in
+    its section, and a closed section builds no chart."""
     _open_page(app, page)
-    charts = app.get('plotly_chart')
-    assert len(charts) >= 4, f"{page}: only {len(charts)} plotly charts"
-    assert not _problems(app), _problems(app)
+    charts = {}
+    for name in ('Overview', 'Form & shots', 'Tactics', 'Set pieces'):
+        _open_section(app, page, name)
+        assert not _problems(app), (name, _problems(app))
+        charts[name] = len(app.get('plotly_chart'))
+    assert charts['Overview'] >= 1, charts          # the season-report dot plots
+    assert charts['Form & shots'] >= 2, charts      # shots for / against (+ rolling xG when it has data)
+    assert charts['Tactics'] >= 1, charts           # the passing network
+    assert charts['Set pieces'] == 0, charts
+    _open_section(app, page, 'Summary' if page == 'Opposition Report' else 'Overview')
+
+
+def test_opposition_pdf_is_complete_from_any_section(app, monkeypatch):
+    """The Opposition Report draws one section at a time, but its PDF must
+    carry every section's figures and texts whichever section is open: a
+    closed section's figures are queued and built by the button."""
+    import hashlib
+
+    import generate_pdf
+    import page_sections
+    seen = []
+    real = generate_pdf.generate_opposition_report_pdf
+
+    def spy(**kwargs):
+        # every image by its bytes: a figure queued with other arguments than
+        # the screen would have used is a different picture under the same key
+        seen.append(({k: hashlib.md5(v).hexdigest() for k, v in kwargs['figures'].items()},
+                     set(kwargs['texts'])))
+        # the real file once (the whole path), a stub after that (time)
+        return real(**kwargs) if len(seen) == 1 else b'%PDF-stub'
+
+    monkeypatch.setattr(generate_pdf, 'generate_opposition_report_pdf', spy)
+    _open_page(app, 'Opposition Report')
+    # every section open once: each figure is then drawn in one build and
+    # queued in the five others
+    for name in page_sections.OPP_SECTIONS:
+        _open_section(app, 'Opposition Report', name)
+        [b for b in app.button if b.label == 'Generate PDF Report'][0].click()
+        app.run()
+        assert not _problems(app), (name, _problems(app))
+    assert len(seen) == len(page_sections.OPP_SECTIONS), len(seen)
+    figures, texts = seen[0]
+    for name, (other_figures, other_texts) in zip(page_sections.OPP_SECTIONS[1:], seen[1:]):
+        assert set(other_figures) == set(figures), (name, set(figures) ^ set(other_figures))
+        differ = sorted(k for k in figures if figures[k] != other_figures[k])
+        assert not differ, (name, differ)
+        assert other_texts == texts, (name, texts ^ other_texts)
+    assert {'radar_offensive', 'radar_distribution', 'radar_defensive', 'formation',
+            'shotmap_for', 'shotmap_against', 'passing_network', 'avg_positions',
+            'defensive_structure', 'zone_recovery', 'zone_loss',
+            'shot_assists_dribbles'} <= set(figures), sorted(figures)
+    assert {'takeaways', 'strengths', 'weaknesses', 'key_players'} <= texts, sorted(texts)
+    _open_section(app, 'Opposition Report', 'Summary')
 
 
 def test_chart_size_control_scales_every_pitch_chart(app):
@@ -216,13 +297,17 @@ def test_chart_size_control_scales_every_pitch_chart(app):
     sliders[0].set_value('Huge')
     app.run()
     heights = []
-    for ch in app.get('plotly_chart'):
-        spec = json.loads(ch.spec) if isinstance(ch.spec, str) else ch.spec
-        h = (spec.get('layout') or {}).get('height')
-        if h in (760, 1000, 1300):
-            heights.append(h)
-    assert heights and all(h == 1300 for h in heights), heights
-    assert not _problems(app), _problems(app)
+    # the pitch charts live in two sections: the shot maps and the passing network
+    for section in ('Form & shots', 'Tactics'):
+        _open_section(app, 'Team Analysis', section)
+        assert not _problems(app), (section, _problems(app))
+        for ch in app.get('plotly_chart'):
+            spec = json.loads(ch.spec) if isinstance(ch.spec, str) else ch.spec
+            h = (spec.get('layout') or {}).get('height')
+            if h in (760, 1000, 1300):
+                heights.append(h)
+    assert len(heights) >= 3 and all(h == 1300 for h in heights), heights
+    _open_section(app, 'Team Analysis', 'Overview')
 
 
 def test_projected_value_ranges_render_in_player_analysis(app):
@@ -394,6 +479,15 @@ def test_empty_season_degrades_gracefully(app, page):
     season_box.set_value(newest)
     app.run()
     assert not _problems(app), _problems(app)
+    # The team pages draw one section at a time: a section that is not open
+    # does not run (Team Analysis) or builds no figure (Opposition Report),
+    # so each has to be opened on the empty season too.
+    if page in TEAM_PAGE_SECTION_RADIO:
+        names = list([r for r in app.radio if r.label == TEAM_PAGE_SECTION_RADIO[page]][0].options)
+        for name in names:
+            _open_section(app, page, name)
+            assert not _problems(app), (name, _problems(app))
+        _open_section(app, page, names[0])
 
 
 def test_promotion_odds_cite_the_scoreline_model(app):

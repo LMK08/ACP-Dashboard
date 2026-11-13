@@ -84,6 +84,7 @@ import obv_viz
 import theme  # colours + figure conventions shared with every plotter
 import navigation
 import context_bar
+import page_sections
 import views.home
 import views.opposition
 import views.shadow_team
@@ -552,8 +553,10 @@ pre code { background: transparent !important; padding: 0 !important; }
 """, unsafe_allow_html=True)
 # metric rows keyed theme.metric_fit_key: value font capped so the row's
 # longest word fits its card whole
-st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}\n{theme.metric_note_css()}</style>",
-            unsafe_allow_html=True)
+# ...and the hidden container the closed sections of a page write into
+# (page_sections.Sections.block)
+st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}\n{theme.metric_note_css()}\n"
+            f"{page_sections.SINK_CSS}</style>", unsafe_allow_html=True)
 
 # ==============================================================================
 # 1B. SEASON CONSTANTS
