@@ -54,9 +54,9 @@ IN_GAME = [
     ('xgd90_vs_exp_trail', 'xG difference vs expected, trailing', _signed)]
 SQUAD = [
     ('xi_changes', 'Line-up changes per match', _one),
-    ('core_xi_share', 'Fixed eleven (starts taken by his 11 most-used starters)', _pct1),
+    ('core_xi_share', 'Fixed eleven', _pct1),
     ('u21_share', 'Under-21 share of minutes', _pct1),
-    ('u21_trust', 'Under-21 trust ratio (minutes share ÷ squad-place share)', _fmt),
+    ('u21_trust', 'Under-21 trust ratio', _fmt),
     ('u23_trust', 'Under-23 trust ratio', _fmt)]
 
 
@@ -211,7 +211,8 @@ def _squad(table, sa, sb, names, league_name):
         col.metric(f'{name}: players used', str(s['players_used']))
     n = _table(table, sa, sb, SQUAD, names, league_name)
     st.caption(_pool_note(n, league_name) + ' Players used is not compared: it grows with the number of '
-               'matches. Minutes shares and the trust ratios need exact minutes, which exist for Liga 3 only. '
+               'matches. Fixed eleven is the share of all starts taken by his 11 most-used starters. Minutes '
+               'shares and the trust ratios need exact minutes, which exist for Liga 3 only. '
                'A trust ratio above 1 means young players got more of the minutes than of the matchday-squad '
                'places.')
 
