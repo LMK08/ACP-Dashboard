@@ -747,7 +747,11 @@ Analysis (primary formation + roster) and in the Opposition Report's
   Plotly chart or keyed widget is guarded by `sections.drawing`; never put
   PDF inputs under `if sections.is_open(...)` on this page.
   `tests/test_smoke_pages.py::test_opposition_pdf_is_complete_from_any_section`
-  compares the PDF's figure and text keys across three sections.
+  compares the PDF's figures and texts across all six sections, with a
+  stand-in renderer. LESSON (2026-11-13): never build the report's real
+  figures all in one AppTest run — the PDF button renders about 26 in one
+  run (+5 GB at the peak) and GitHub's runner was shut down mid-test, which
+  blocked a deploy ("The runner has received a shutdown signal").
 - Summary's three parts (takeaways, strengths & weaknesses, line-up) are
   drawn in that order through containers created at the top
   (`_takeaways_slot` / `_synopsis_slot` / `_lineup_slot`), although their

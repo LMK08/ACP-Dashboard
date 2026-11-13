@@ -55,6 +55,18 @@ def app():
         os.chdir(cwd)
 
 
+@pytest.fixture(autouse=True)
+def _collect_garbage_after_each_test():
+    """One booted app serves the whole module, and a page run leaves large
+    frames behind in reference cycles until the collector's oldest generation
+    happens to run. Collect after every test, so the peak of this module on
+    the CI runner is one test's worth, not several (2026-11-13: the runner
+    was shut down mid-module after more page runs were added)."""
+    yield
+    import gc
+    gc.collect()
+
+
 def _problems(at):
     return ([f"exception: {str(e.value)[:300]}" for e in at.exception]
             + [f"st.error: {str(e.value)[:200]}" for e in at.error])
@@ -247,22 +259,41 @@ def test_team_visuals_are_interactive(app, page):
 def test_opposition_pdf_is_complete_from_any_section(app, monkeypatch):
     """The Opposition Report draws one section at a time, but its PDF must
     carry every section's figures and texts whichever section is open: a
-    closed section's figures are queued and built by the button."""
+    closed section's figures are queued and built by the button, with the
+    very arguments the screen would have drawn them with.
+
+    No real figure is built here. The renderer is replaced by a stand-in
+    that returns a 2x2 PNG coloured by a digest of the KEY the real one
+    caches on, so "same picture" means "same arguments". The first version
+    of this test built the real figures: the PDF button renders about 26 of
+    them in ONE run, which added some 5 GB at the peak, and GitHub's runner
+    was shut down in the middle of it (2026-11-13, the deploy of cc74c0b).
+    The real figures are still drawn, section by section, by the tests above.
+    """
     import hashlib
+    import io
+
+    from PIL import Image
 
     import generate_pdf
+    import opposition_report
     import page_sections
+
+    def stand_in_png(kind, season_key, comp_key, team_name, extra, day_key,
+                     fig_ver, _events_df, _matches_df, _payload):
+        key = repr((kind, season_key, comp_key, team_name, extra, day_key, fig_ver))
+        buf = io.BytesIO()
+        Image.new('RGB', (2, 2), tuple(hashlib.md5(key.encode()).digest()[:3])).save(buf, format='PNG')
+        return buf.getvalue()
+
     seen = []
-    real = generate_pdf.generate_opposition_report_pdf
 
     def spy(**kwargs):
-        # every image by its bytes: a figure queued with other arguments than
-        # the screen would have used is a different picture under the same key
         seen.append(({k: hashlib.md5(v).hexdigest() for k, v in kwargs['figures'].items()},
                      set(kwargs['texts'])))
-        # the real file once (the whole path), a stub after that (time)
-        return real(**kwargs) if len(seen) == 1 else b'%PDF-stub'
+        return b'%PDF-stub'      # the generator itself: tests/test_pdf_layout.py
 
+    monkeypatch.setattr(opposition_report, '_render_opp_figure_png', stand_in_png)
     monkeypatch.setattr(generate_pdf, 'generate_opposition_report_pdf', spy)
     _open_page(app, 'Opposition Report')
     # every section open once: each figure is then drawn in one build and
@@ -283,6 +314,8 @@ def test_opposition_pdf_is_complete_from_any_section(app, monkeypatch):
             'shotmap_for', 'shotmap_against', 'passing_network', 'avg_positions',
             'defensive_structure', 'zone_recovery', 'zone_loss',
             'shot_assists_dribbles'} <= set(figures), sorted(figures)
+    # distinct figures really are distinct pictures (the stand-in is not constant)
+    assert len(set(figures.values())) == len(figures), sorted(figures)
     assert {'takeaways', 'strengths', 'weaknesses', 'key_players'} <= texts, sorted(texts)
     _open_section(app, 'Opposition Report', 'Summary')
 
