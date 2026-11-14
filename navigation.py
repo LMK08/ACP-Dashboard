@@ -23,6 +23,7 @@ NAV_GROUPS = (
     ('Coaches', ('Coach Profile', 'Coach Comparison')),
     ('Players', ('Player Profile', 'Player Comparison', 'Player Analysis')),
     ('Recruitment', ('Shadow Team',)),
+    ('Reference', ('Glossary',)),
 )
 ALL_PAGES = tuple(page for _, pages in NAV_GROUPS for page in pages)
 

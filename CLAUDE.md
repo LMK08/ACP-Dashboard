@@ -122,6 +122,31 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   selected season", the band) and are the first cards of the section the
   page opens on. `page_sections.COMPACT_ROW_KEYS` keeps the nine options on
   one line at 1440 px.
+- `glossary.py` + `views/glossary.py` — ONE glossary for the numbers the
+  dashboard shows (2026-11). RULES (Lucas, 2026-11-13): a metric's NAME is
+  never changed anywhere (labels, table headers, radar axes); it is
+  explained instead, on the "Glossary" page (Reference group) and in one
+  expander at the foot of every page that shows metrics
+  (`glossary.render_page_footer`, called once by app.py after the view;
+  `PAGE_GROUPS` says which groups a page lists). An entry is keyed by the
+  name exactly as shown and says only what the code or the data source
+  makes certain, in one sentence. A metric whose meaning could not be read
+  from the code goes into `glossary.PENDING` with what is known, is shown
+  NOWHERE, and waits for Lucas to define it: never invent a definition.
+  Direction: a player metric's "Scored as" is read from config.yaml
+  (`scored_as`: inverted -> lower, weighted by a role template -> higher,
+  else "—"); a team metric's is typed only where the code states it (the
+  radar's inverted list, SEASON_REPORT_DIMENSIONS' flags, a column help).
+  The ACP Index rows are `app.ENGINE_METRIC_HELP` and the coach rows are
+  `coach_metrics.STYLE_METRICS` / `TENDENCIES`: those texts stay in their
+  one place. Adding a metric to config.yaml or to a team radar fails
+  `tests/test_glossary.py` until it is defined or listed as pending. The
+  same name can mean different things on different pages (three rules for
+  "progressive passes": player pages, match report, season report), so an
+  entry belongs to a GROUP; say which rule in the sentence.
+  A view that ends in `st.stop()` (its empty and error states) gets no
+  footer: the call runs after the page chain. A direction is typed only
+  where the code says it; "obviously higher is better" is not enough.
 - Match Analysis (2026-11): a scoreboard under the picker
   (`views/match_analysis._scoreboard_html`; crests through
   `app.crest_data_uri`, xG = the sum of `shot.xg` in the match events, the

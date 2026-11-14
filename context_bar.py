@@ -53,6 +53,8 @@ LEAGUE_OPTIONS = ('Liga 3', 'Campeonato')
 
 PAGES_WITHOUT_CONTEXT = {'Home'}
 PAGES_WITHOUT_SEASON = {'Match Predictor', 'Coach Profile'}
+# A page that is about no league: the head row is its title alone.
+PAGES_TITLE_ONLY = {'Glossary'}
 PAGES_WITH_ALL_SEASONS = {'Player Profile', 'Player Comparison', 'Player Analysis', 'Shadow Team'}
 # The pages whose pitch charts read pitch_height(): the Chart size control is
 # drawn only there (add a page here when it gains a pitch chart).
@@ -168,6 +170,10 @@ def render_page_head(current_page):
     season_selector() and never draws a title of its own.
     """
     if current_page in PAGES_WITHOUT_CONTEXT:
+        return
+    if current_page in PAGES_TITLE_ONLY:
+        with st.container(key=HEAD_KEY):
+            st.header(current_page)
         return
     app = _app()
     with_season = current_page not in PAGES_WITHOUT_SEASON

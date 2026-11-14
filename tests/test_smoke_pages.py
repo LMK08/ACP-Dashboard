@@ -28,7 +28,7 @@ REQUIRED_DATA = ['raw_events.parquet', 'matches_summary.parquet',
 
 PAGES = ['Home', 'Match Analysis', 'Team Analysis', 'League Analysis', 'Player Profile',
          'Player Comparison', 'Player Analysis', 'Match Predictor', 'Shadow Team',
-         'Opposition Report', 'Coach Profile']
+         'Opposition Report', 'Coach Profile', 'Glossary']
 # Pages that read the player-stats engine and used to raise KeyError
 # 'next_shot_id' on a season with fixtures but no events.
 EMPTY_SEASON_PAGES = ['Player Profile', 'Player Comparison', 'Player Analysis',
@@ -181,6 +181,39 @@ def test_page_renders_on_defaults(app, page):
     assert not _problems(app), _problems(app)
 
 
+def test_glossary_page_and_the_explainer_at_the_foot_of_a_page(app):
+    """Metric names are never changed; they are explained on the Glossary
+    page and in ONE expander at the foot of every page that shows metrics
+    (not on Home, not on the Glossary itself). The page searches every area,
+    and a metric that is still waiting for its definition is shown nowhere."""
+    import glossary
+
+    def tables():
+        return ' '.join(str(m.value) for m in app.markdown if str(m.value).startswith('| Metric |'))
+
+    _open_page(app, 'Glossary')
+    assert not _problems(app), _problems(app)
+    assert not [e for e in app.expander if e.label == glossary.FOOTER_LABEL]
+    area = [r for r in app.radio if r.label == 'Area'][0]
+    assert list(area.options) == list(glossary.AREAS)
+    assert '**Deep Completions**' in tables() and '**ACP Rating**' in tables()     # Players, with the engine texts
+    [t for t in app.text_input if t.label == 'Find a metric'][0].set_value('PPDA').run()
+    found = tables()
+    assert found.count('**PPDA**') == 2 and 'Passes allowed per def. action' in found   # radar, season report, match
+    assert '**Deep Completions**' not in found
+    [t for t in app.text_input if t.label == 'Find a metric'][0].set_value('Handling Value').run()
+    assert not tables() and any('no agreed definition' in str(i.value) for i in app.info)
+    [t for t in app.text_input if t.label == 'Find a metric'][0].set_value('').run()
+
+    # the foot of a page: its own groups only
+    _open_page(app, 'Match Predictor')
+    foot = [e for e in app.expander if e.label == glossary.FOOTER_LABEL]
+    assert len(foot) == 1
+    assert '**Scores ×**' in tables() and '**Deep Completions**' not in tables()
+    _open_page(app, 'Home')
+    assert not [e for e in app.expander if e.label == glossary.FOOTER_LABEL]
+
+
 def test_default_season_has_event_data(app):
     """The default season must be one the events file actually covers, not
     merely the newest label in the fixture list. Checked against the parquet
@@ -307,6 +340,9 @@ def test_page_head_carries_title_league_and_season(app):
         first = [s.label for s in app.selectbox][:2]
         if page in context_bar.PAGES_WITHOUT_CONTEXT:
             assert 'League' not in first and 'Season' not in first and page not in headers, (page, headers)
+            continue
+        if page in context_bar.PAGES_TITLE_ONLY:
+            assert 'League' not in first and 'Season' not in first and headers == [page], (page, headers)
             continue
         assert headers == [page], (page, headers)
         assert first[:1] == ['League'], (page, first)

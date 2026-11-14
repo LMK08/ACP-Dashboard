@@ -84,6 +84,7 @@ import obv_viz
 import theme  # colours + figure conventions shared with every plotter
 import navigation
 import context_bar
+import glossary
 import page_sections
 import search
 import views.home
@@ -98,6 +99,7 @@ import views.team_analysis
 import views.match_analysis
 import views.coach_profile
 import views.coach_comparison
+import views.glossary
 
 
 # ------------------------------------------------------------------------------
@@ -9757,6 +9759,17 @@ if raw_events_df is not None and matches_summary_df is not None and player_minut
 
     elif analysis_type == 'Coach Comparison':
         views.coach_comparison.render()
+
+    elif analysis_type == glossary.PAGE_NAME:
+        views.glossary.render()
+
+    # The explainer at the foot of the page (2026-11): the metrics THIS page
+    # shows, by their names as shown, behind one expander. Metric names are
+    # never changed (Lucas); they are explained here and on the Glossary page.
+    try:
+        glossary.render_page_footer(analysis_type, ENGINE_METRIC_HELP)
+    except Exception:
+        logger.exception("glossary footer failed")
 
 
 
