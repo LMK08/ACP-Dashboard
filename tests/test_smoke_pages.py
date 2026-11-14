@@ -481,15 +481,15 @@ def test_profile_value_section_and_calibration_panel(app):
     assert any('Projected value is computed by the ACP engine' in str(c.value) for c in app.caption)
     # The range line exists only for an outfielder WITH an engine value; the
     # default player differs between the local and the canonical (CI) data.
-    position = next((str(m.value) for m in app.metric if m.label == 'Position'), '')
+    keeper = any(str(s.value) == 'Goalkeeper Rating' for s in app.subheader)
     value = next((str(m.value) for m in app.metric if m.label == 'Projected value'), '')
-    if value.startswith('€') and not position.upper().startswith('GK'):
+    if value.startswith('€') and not keeper:
         assert any(('Likely fee' in str(c.value)) or ('No likely-fee range' in str(c.value))
                    for c in app.caption), 'outfielder with a value but no range line'
     assert not _problems(app), _problems(app)
     toggles[0].set_value(False)
     app.run()
-    section.set_value('Player Radar')
+    section.set_value('ACP Index')
     app.run()
 
 
@@ -514,8 +514,59 @@ def test_profile_similar_players_section(app):
         assert t['Similarity'].between(0, 100).all()
         assert (t['Similar because'].astype(str) != '').all()
         assert any('How similarity is measured' in str(e.label) for e in app.expander)
-    section.set_value('Player Radar')
+    section.set_value('ACP Index')
     app.run()
+
+
+PROFILE_SECTIONS = ['ACP Index', 'Player Radar', 'Stats', 'Value', 'Shots & Creation',
+                    'Match Log', 'Similar Players', 'Coached by', 'Career']
+BIO_CARD_LABELS = {'Team', 'Position', 'Nationality', 'Age', 'Foot', 'Height', 'Weight', 'Birthplace'}
+
+
+def test_profile_header_is_short_and_sections_open_on_acp_index(app):
+    """Player Profile (2026-11): a short header (the name with the report
+    button beside it, ONE line of facts where eight bio cards stood, the
+    value row), then the section row with "ACP Index" first and "Player
+    Radar" second. Every section renders clean and keeps the report button.
+    The ACP Index block still RUNS when another section is open (the report
+    and later sections read what it computes) but draws no tendencies panel
+    there. ONE walk of the nine sections."""
+    def section(name):
+        [r for r in app.radio if r.label == 'Profile section'][0].set_value(name)
+        app.run()
+        _release_memory()
+
+    _open_page(app, 'Player Profile')
+    assert list([r for r in app.radio if r.label == 'Profile section'][0].options) == PROFILE_SECTIONS
+    player = str([s for s in app.selectbox if s.label == 'Player'][0].value)     # 'Name (Club, N min)'
+    for name in PROFILE_SECTIONS:
+        section(name)
+        assert not _problems(app), (name, _problems(app))
+        assert [r for r in app.radio if r.label == 'Profile section'][0].value == name
+        # the header: the value and the report button, on every section
+        labels = {m.label for m in app.metric}
+        assert 'Projected value' in labels, name
+        assert not any(str(s.value) == 'Player Information' for s in app.subheader), name
+        assert len([b for b in app.button if b.key == 'onepager_build']) == 1, name
+        if name == 'ACP Index':
+            # ...no bio cards (checked here: the Value section has a
+            # 'Birthplace' card of its own for a player born abroad)...
+            assert not labels & BIO_CARD_LABELS, labels & BIO_CARD_LABELS
+            # ...and ONE line of facts. It opens with his club in bold; a
+            # club name Markdown had to escape is found by the facts instead.
+            team = player.rsplit(' (', 1)[-1].split(',')[0]
+            facts = [str(m.value) for m in app.markdown
+                     if str(m.value).startswith(f'**{team}**')
+                     or (' · ' in str(m.value) and any(
+                         k in str(m.value) for k in (' years', ' cm', ' kg', 'Nationality: ', 'Born: ')))]
+            assert len(facts) == 1, facts
+            assert 'N/A' not in facts[0] and 'nan' not in facts[0], facts
+        # the ACP Index block ran (its title is in the tree on every section)...
+        assert any(str(s.value) in ('ACP Index', 'Goalkeeper Rating') for s in app.subheader), name
+        if name != 'ACP Index':
+            # ...but a closed one builds no tendencies panel
+            assert not any('Tendencies' in str(e.label) for e in app.expander), name
+    section('ACP Index')
 
 
 def test_comparison_selectors_are_keyed_and_seedable(app):
@@ -769,7 +820,7 @@ def test_profile_coached_by_section(app):
         assert (t['Minutes'] > 0).all() and t['Share of minutes'].dropna().between(0, 1).all() \
             and t['Matches started'].dropna().between(0, 1).all()
         print(t.to_string())
-    section.set_value('Player Radar')
+    section.set_value('ACP Index')
     app.run()
 
 

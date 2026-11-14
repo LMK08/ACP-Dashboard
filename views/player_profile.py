@@ -13,16 +13,67 @@ import numpy as np
 import pandas as pd
 import pitch_visualizations as pv
 import plotly.graph_objects as go
+import re
 import streamlit as st
 import sys
 
 import context_bar
 import eur_interval_ui
+import page_sections
 import theme
 
 
 def _app():
     return sys.modules['__main__']
+
+
+def _md_literal(text):
+    """`text` as literal Markdown: a club called 'A*B' must not open a bold run."""
+    return re.sub(r'([\\`*_\[\]$~])', r'\\\1', str(text).strip())
+
+
+def facts_line(team=None, position=None, age=None, foot=None, height=None, weight=None,
+               nationality=None, birthplace=None):
+    """The profile header's ONE line of facts, as Markdown:
+    '**Club** · LCB · 33 years · Left foot · 184 cm · 78 kg · Nationality: Portugal · Born: Brazil'.
+
+    A fact we do not have is left out, never printed as 'N/A', '0 cm' or
+    'nan': None, NaN / NA, an empty string, 'N/A', 'Unknown' and a zero or
+    non-numeric age, height or weight all count as "not known". Returns ''
+    when nothing is known."""
+    def text(value):
+        try:
+            if value is None or pd.isna(value):
+                return None
+        except (TypeError, ValueError):     # not a scalar
+            return None
+        shown = str(value).strip()
+        return (None if shown in ('', 'N/A', 'Unknown', '0', '0.0', 'nan', 'None', '<NA>')
+                else _md_literal(shown))
+
+    def number(value, completed=False):
+        try:
+            n = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(n) or n <= 0:
+            return None
+        return int(n) if completed else int(round(n))     # an age counts completed years
+
+    team, position, foot = text(team), text(position), text(foot)
+    nationality, birthplace = text(nationality), text(birthplace)
+    age, height, weight = number(age, completed=True), number(height), number(weight)
+    parts = [
+        f"**{team}**" if team else None,
+        position,
+        f"{age} years" if age else None,
+        f"{foot} foot" if foot else None,
+        f"{height} cm" if height else None,
+        f"{weight} kg" if weight else None,
+        f"Nationality: {nationality}" if nationality else None,
+        f"Born: {birthplace}" if birthplace else None,
+    ]
+    return " · ".join(part for part in parts if part)
 
 
 def render():
@@ -325,8 +376,12 @@ def render():
         except Exception:
             pass # Fallback to original values if lookup fails
 
-    # the page title is "Player Profile"; the name is the section under it
-    st.subheader(f"{player_per_90_stats.get('playerName', 'N/A')}")
+    # the page title is "Player Profile"; the name is the section under it.
+    # The report button sits beside the name, on every section; its slot is
+    # filled further down, once the ACP Index block has computed what the
+    # report prints.
+    _name_col, _pdf_slot = st.columns([3, 1], vertical_alignment="center")
+    _name_col.subheader(f"{player_per_90_stats.get('playerName', 'N/A')}")
 
     # ---- Compute Transfer Value primitives ONCE per page load ----
     # Used twice: (a) compact projected / true / Δ metrics in the
@@ -501,7 +556,6 @@ def render():
             st.image("https://t3.ftcdn.net/jpg/05/16/27/58/360_F_516275801_f3Fsp17x6HQK0xQgDQEELoGau0sJzEf4.jpg", width=150)
 
     with col2_bio:
-        st.subheader("Player Information")
         age = _calculate_age(player_bio.get('birthDate'))
         age_display = f"{int(age)}" if isinstance(age, (int, float)) and age == age else "N/A"
         foot_value = player_bio.get('foot')
@@ -523,23 +577,14 @@ def render():
                 _team_card, _team_note = _pc.team_now(current_team, _last, _cur)
         except Exception as _e:
             print(f"Warning: Transfermarkt current club not applied: {_e}")
-        _bio_cards = [("Team", _team_card),
-                      ("Position", current_pos),
-                      ("Nationality", player_bio.get('passportArea', 'N/A')),
-                      ("Age", age_display),
-                      ("Foot", foot_display),
-                      ("Height", f"{player_bio.get('height', 0)} cm"),
-                      ("Weight", f"{player_bio.get('weight', 0)} kg"),
-                      ("Birthplace", player_bio.get('birthArea', 'N/A'))]
-        # Rows keyed theme.metric_fit_key: the values scale so the longest
-        # word fits its card whole ('Atlétic…' / 'Wide Defen…' before). The
-        # two bio rows share one size.
-        _bio_values = [v for _, v in _bio_cards]
-        for _r, _row_cards in enumerate((_bio_cards[:4], _bio_cards[4:])):
-            with st.container(key=theme.metric_fit_key(f"profile_bio{_r}", *_bio_values)):
-                _row = st.columns(4)
-            for _c, (_lbl, _v) in zip(_row, _row_cards):
-                _c.metric(_lbl, _v)
+        # ONE line of facts (2026-11). Until then these were eight equal
+        # cards: birthplace as prominent as anything on the page.
+        _facts = facts_line(team=_team_card, position=current_pos, age=age_display, foot=foot_display,
+                            height=player_bio.get('height'), weight=player_bio.get('weight'),
+                            nationality=player_bio.get('passportArea'),
+                            birthplace=player_bio.get('birthArea'))
+        if _facts:
+            st.markdown(_facts)
         if _team_note:
             st.caption(_team_note)
 
@@ -660,515 +705,537 @@ def render():
                        "(marked \"~\").",
             )
 
-    st.divider()
+    # --- Sections (2026-11): the row sits right under the header and the page
+    # opens on "ACP Index" — the block that used to stand between the header
+    # and the section row, unchanged (rating cards, components, the ACP Index
+    # radar card, tendencies, projection chart). "Player Radar" is the next
+    # section, exactly as it was. Lucas chose this order (2026-11-13): it is
+    # the old reading order, only shorter. The ACP Index block still RUNS on
+    # every section (the report PDF and later sections read what it computes);
+    # when another section is open it writes to the hidden container and its
+    # tendencies panel and projection chart are not built. Its radar card IS
+    # still built there (a cached PNG; see the note at that call).
+    # The report button is in the header, beside the name.
+    _profile_sections = ["ACP Index", "Player Radar", "Stats", "Value", "Shots & Creation",
+                         "Match Log", "Similar Players", "Coached by", "Career"]
+    sections = page_sections.Sections(_profile_sections, key="profile_active_tab",
+                                      label="Profile section")
+    _active_tab = sections.current
 
-    with st.expander("ℹ️ How these ratings work"):
-        st.markdown(RATINGS_EXPLAINER_MD)
+    with sections.block("ACP Index"):
+        with st.expander("ℹ️ How these ratings work"):
+            st.markdown(RATINGS_EXPLAINER_MD)
 
-    # --- ACP Engine card: rating + projection + components ---------
-    try:
-        _eng_df, _eng_meta = load_player_engine()
-        # ONE row-pick rule for the card (models/ratings/card_scope.py) —
-        # the Player Comparison page reads the same one.
-        _card = engine_card_row(_eng_df, int(selected_player_id), active_season_ids)
-        _erows, _escope, _e_sids = _card['erows'], _card['escope'], _card['e_sids']
-        _career_view, _eng_stale = _card['career_view'], _card['stale']
-        _is_gk_card = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
-        st.subheader("Goalkeeper Rating" if _is_gk_card
-                      else "ACP Index")
-        if _escope.empty:
-            if _is_gk_card:
-                # Prior rating + value system, retained for keepers.
-                _gk_templates = ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK']
-                _gk_scored = []
-                for _t in _gk_templates:
-                    _s = player_per_90_stats.get(f'{_t}_Score')
-                    if _s is not None and pd.notna(_s):
-                        _gk_scored.append((_t, float(_s)))
-                if _gk_scored:
-                    _gk_best = max(_gk_scored, key=lambda x: x[1])
-                    _gkc = st.columns(3)
-                    _gkc[0].metric(
-                        "Goalkeeper rating", f"{_gk_best[1]:.0f}",
-                        help="His score on the goalkeeper template that fits "
-                             "him best (0-100, weighted percentiles among "
-                             "goalkeepers). Goalkeepers are rated this way "
-                             "because the ACP Index covers outfield players "
-                             "only.")
-                    _gkc[1].metric("Best-fit template", _gk_best[0])
-                    _gkc[2].metric(
-                        "Projected value",
-                        "—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}",
-                        help="From the goalkeeper value model. The engine "
-                             "that values outfield players does not cover "
-                             "goalkeepers.")
-                    st.caption("Template scores — " + " · ".join(
-                        f"**{_t}** {_s:.0f}" for _t, _s in _gk_scored)
-                        + "  ·  full goalkeeping metrics in the Player "
-                          "Radar and Stats tabs below.")
-                else:
-                    st.info("Goalkeeper: not enough minutes for a "
-                            "goalkeeper rating in this scope.")
-            else:
-                st.info("Not rated by the engine for this scope "
-                        "(below the 90-minute floor, or no "
-                        "role assignment yet).")
-        else:
-            # card_row: the scope's highest-minutes row (career view:
-            # minutes-weighted across every rated season), projection from
-            # the row that carries one
-            _e = _card['e']
-            if _career_view:
-                st.caption(f"📚 Career view — minutes-weighted across "
-                           f"{len(_escope)} rated seasons "
-                           f"({int(_e['mins_played'])} total minutes). Select a "
-                           f"single season for that season's rating.")
-            if _eng_stale:
-                st.caption(f"⏳ Not rated in the selected season — showing "
-                           f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
-            _ec1, _ec2, _ec3, _ec4 = st.columns(4)
-            _abs_note = (f"abs {_e['acp_rating_abs']:.0f}"
-                         if pd.notna(_e.get('acp_rating_abs'))
-                         and _e.get('league') == 'CAMP' else None)
-            _ec1.metric("ACP Rating", f"{_e['acp_rating']:.0f}", _abs_note,
-                        delta_color="off",
-                        help="Role-blended 5-axis rating, 50±17 scale, "
-                             "within-league. 'abs' = Liga-3-equivalent "
-                             "(descriptive league delta).")
-            if pd.notna(_e.get('projection')):
-                _proj_note = (f"abs {_e['projection_abs']:.0f}"
-                              if pd.notna(_e.get('projection_abs'))
-                              and _e.get('league') == 'CAMP' else None)
-                _band_txt = (f" ± {_e['band_sd']:.0f}"
-                             if pd.notna(_e.get('band_sd')) else "")
-                if bool(_e.get('projection_live', False)):
-                    # live 12-month forward projection (card_scope.card_row)
-                    _ec2.metric("Projection (next 12 months)",
-                                f"{_e['projection']:.0f}{_band_txt}",
-                                _proj_note, delta_color="off",
-                                help="Live: his expected level over the next 12 "
-                                     "months, the rest of this season included — "
-                                     "career form up to the latest match + "
-                                     "evidence pull + half a year of the role age "
-                                     "curve. Live once his club has played 6 "
-                                     "league matches. Band = the role's 1 SD of "
-                                     "past next-season forecast error "
-                                     "(conservative for 12 months). 'abs' applies "
-                                     "the stricter recruit league delta.")
-                else:
-                    _ec2.metric("Projection (next season)",
-                                f"{_e['projection']:.0f}{_band_txt}",
-                                _proj_note, delta_color="off",
-                                help="Career + evidence pull + role age curve. "
-                                     "Band = role-specific 1 SD of realized "
-                                     "error. 'abs' applies the stricter "
-                                     "recruit league delta.")
-            else:
-                _ec2.metric("Projection", "—",
-                            help="No projection (age unknown or below floor).")
-            _ec3.metric("Career (as-of)",
-                        f"{_e['career_asof']:.0f}" if pd.notna(_e.get('career_asof')) else "—",
-                        help="Recency-weighted career rating through this season.")
-            _ec4.metric("Evidence",
-                        f"{_e['w_evidence']:.0%}" if pd.notna(_e.get('w_evidence')) else "—",
-                        help="Career evidence weight w = eff_mins/(eff_mins+K). "
-                             "Low = projection leans on the pull terms.")
-
-            # badges
-            _badges = []
-            _shares = sorted(
-                [(c[3:], float(_e[c])) for c in _escope.columns
-                 if c.startswith('sh_') and pd.notna(_e[c]) and float(_e[c]) > 0.15],
-                key=lambda x: -x[1])
-            if _shares:
-                _badges.append(" · ".join(f"**{n}** {s:.0%}" for n, s in _shares[:3]))
-            if pd.notna(_e.get('seasons_ago')) and int(_e['seasons_ago']) >= 1:
-                _badges.append("🕐 last rated 24/25 — projection carries "
-                               "extra age step + wider band")
-            if float(_e['mins_played']) < 500:
-                _badges.append(f"⚠️ thin sample this league "
-                               f"({int(_e['mins_played'])}′ — admitted via "
-                               f"cross-competition season pooling)")
-            if len(_escope) > 1:
-                _others = _escope[_escope.index != _e.name]
-                for _, _o in _others.iterrows():
-                    _badges.append(f"also rated in {_o['league']} "
-                                   f"({int(_o['mins_played'])}′, rating "
-                                   f"{_o['acp_rating']:.0f})")
-            if _badges:
-                st.markdown("  \n".join(_badges))
-
-            # --- style chip: role + tendency-derived archetype ----------
-            # Descriptive only (never in the rating). Scope-aware: the
-            # style of the player's highest-minutes row in the selected
-            # scope. GKs / sub-300' players simply get no chip.
-            try:
-                _sty = get_scoped_style(int(selected_player_id), _e_sids)
-                _role_disp = _e.get('role')
-                if _sty and pd.notna(_sty.get('style')):
-                    _fit = _sty.get('style_fit')
-                    _fit_txt = (f" · {float(_fit):.0f}% fit"
-                                if _fit is not None and pd.notna(_fit) else "")
-                    _thin = " · thin sample" if _sty.get('thin_sample') else ""
-                    st.markdown(
-                        f"<span style='background:#eef2ff;color:#3730a3;"
-                        f"padding:3px 10px;border-radius:12px;font-size:0.9em;"
-                        f"font-weight:600'>{_role_disp} · "
-                        f"{_sty['style']}{_fit_txt}{_thin}</span>",
-                        unsafe_allow_html=True)
-            except Exception:
-                logger.exception("style chip failed")
-
-            # component bars
-            _comp_cols = st.columns(6)
-            for _i, (_lbl, _col, _hk) in enumerate([
-                    ("Offensive Value", 'off_pct', 'Offensive Value %'),
-                    ("Def Quality Grade", 'qual_pct', 'Def Quality Grade %'),
-                    ("RAPM", 'rapm_pct', 'Engine RAPM %'),
-                    ("Def Volume Grade", 'defr_pct', 'Def Volume Grade %'),
-                    ("Off Duel Grade", 'datt_pct', 'Off Duel Grade %'),
-                    ("Set piece", 'setpiece_pct', 'Engine Set Piece %')]):
-                _v = _e.get(_col)
-                with _comp_cols[_i]:
-                    if pd.notna(_v):
-                        st.progress(min(max(float(_v), 0.0), 1.0))
-                        st.caption(f"{_lbl} · {float(_v)*100:.0f}",
-                                   help=ENGINE_METRIC_HELP[_hk])
-                    else:
-                        st.caption(f"{_lbl} · —")
-            # --- ACP Index radar card: cached PNG render (see
-            # _render_acp_index_card_png). Building the matplotlib
-            # radar+KDE figure inline cost ~2-3 s on every rerun /
-            # profile section toggle; the PNG bytes are cached on
-            # (player, season scope, stats-cache ver, engine ver).
-            _card_png = _render_acp_index_card_png(
-                int(selected_player_id),
-                tuple(sorted(_e_sids)) if _e_sids else (),
-                STATS_CACHE_VERSION,
-                str(_eng_meta.get('rating_version', '')),
-                _career_view,
-                _eng_df, _e, _eng_meta)
-            if _card_png:
-                st.image(_card_png, width="stretch")
-
-            # --- Tendencies panel: futi-style bipolar sliders ----------
-            # The role's menu of attempt-composition leanings, each a
-            # within-role percentile (50 = role-typical). Descriptive, never
-            # a rating. Hidden entirely for players without tendencies.
-            try:
-                _has_tend = get_scoped_tendencies(
-                    int(selected_player_id), _e_sids) is not None
-                if _has_tend:
-                    with st.expander("🎚️ Tendencies — how he plays the role",
-                                     expanded=False):
-                        st.caption(
-                            "Each bar is a **within-role percentile** of "
-                            "what he attempts (50 = typical for the role) — "
-                            "style, not quality, and never part of the "
-                            "rating. The leaning side is coloured.")
-                        render_tendencies_panel(int(selected_player_id),
-                                                _e_sids)
-            except Exception:
-                logger.exception("tendencies panel failed")
-
-            # --- Projection outlook fan chart (prototype) ---
-            try:
-                from pitch_interactive import plotly_projection_fan
-                _fan = plotly_projection_fan(
-                    _erows, SEASON_ID_MAP, selected_player_name)
-                if _fan is not None:
-                    st.plotly_chart(_fan, use_container_width=True,
-                                    config={'displayModeBar': False})
-                    st.caption(
-                        "Career ratings by season (league and age on "
-                        "each tick) flowing into the projection — "
-                        "live (next 12 months, half a season past the "
-                        "current one) once his club has played 6 league "
-                        "matches, else next season's. Shaded fan = ±1 SD of the "
-                        "projection; a faded segment bridges seasons "
-                        "missing from our data; green band = typical "
-                        "peak ages for the role (literature-based "
-                        "curve used by the projection model); "
-                        "evidence % = how much data underwrites the "
-                        "starting point. Cross-league careers plot on "
-                        "the L3-equivalent scale (CAMP seasons "
-                        "discounted by the league conversion — hover "
-                        "a dot for the native rating).")
-            except Exception:
-                logger.exception("Projection fan chart failed")
-            # (model versions and the data date: sidebar, "About the data")
-            st.caption(
-                "Rated against players of the same role in the same league and "
-                "season. Set pieces are shown separately and are not part of "
-                "the rating.")
-    except Exception:
-        logger.exception("Engine card failed")
-    st.divider()
-
-    # --- Exportable one-pager PDF ----------------------------------
-    _op_cols = st.columns([1.4, 1.4, 3])
-    with _op_cols[0]:
-        _op_clicked = st.button("📄 Build player report PDF",
-                                 key="onepager_build")
-    if _op_clicked:
+        # --- ACP Engine card: rating + projection + components ---------
         try:
-            with st.spinner("Composing player report…"):
-                from player_onepager import build_player_onepager
-                from pitch_interactive import mpl_projection_fan
-                # The whole build runs under ONE MPL_LOCK: every figure is
-                # created here and rasterised inside build_player_onepager,
-                # so build + render + close must not be split (a figure
-                # freed by another session's plt.close('all') mid-render is
-                # a segfault — see mpl_safety). Each figure has its own
-                # try/except so one failure drops that panel, not the PDF.
-                _op_figs = []          # every fig we create, for cleanup
-                with MPL_LOCK:
-                    # --- resolve the player's stats row + best-fit role ---
-                    _op_row = None
-                    _op_role = None      # config template role (radar/stats)
-                    _op_elig = []
-                    _op_pop = player_stats_with_scores_df
-                    _op_matches = player_stats_with_scores_df[
-                        player_stats_with_scores_df['playerId']
-                        == int(selected_player_id)]
-                    if not _op_matches.empty:
-                        _op_row = _op_matches.iloc[0]
-                        _op_pos = _op_row.get('primaryPosition')
-                        _op_elig = [r for r in WEIGHTS
-                                    if _op_pos in POSITION_GROUPS.get(r, [])]
-                        if _op_elig:
-                            _op_role = max(_op_elig, key=lambda r: float(
-                                _op_row.get(f'{r}_Score', 0) or 0))
-                            _op_pop = player_stats_with_scores_df[
-                                player_stats_with_scores_df['primaryPosition']
-                                .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
-                            if len(_op_pop) < 5:
-                                _op_pop = player_stats_with_scores_df
-
-                    # --- engine row: reuse the header's `_e` when present
-                    # (it is sorted/scoped correctly); fall back defensively
-                    # for keepers, who have no engine row at all. ---
-                    _op_e = None
-                    _op_eng_role = None
-                    if not _erows.empty:
-                        _op_prow = _erows[_erows['projection'].notna()]
-                        if not _op_prow.empty:
-                            # match the header's chronological pick, NOT the
-                            # unsorted .iloc[-1] the old build used
-                            _op_e = _op_prow.sort_values('seasonId').iloc[-1]
-                        else:
-                            _op_e = _erows.sort_values('mins_played').iloc[-1]
-                        _op_eng_role = _canonical_engine_role(
-                            _op_e.get('role'))
-                    # attacker vs defender: engine role first (the split
-                    # Lucas asked for), then fall back to the config
-                    # template allowlist for players the engine does not
-                    # rate (keepers). Unknown -> defensive layout.
-                    _op_attacking = (
-                        _engine_role_is_attacking(_op_eng_role)
-                        if _op_eng_role is not None
-                        else (_op_role in _ATTACK_TEMPLATE_ROLES))
-
-                    # 1) template radar (raw mean ± 2σ mode)
-                    _op_fig_radar = None
-                    try:
-                        if _op_row is not None and _op_role:
-                            _op_metrics = [m for m in WEIGHTS[_op_role]
-                                           if m in _op_row.index
-                                           and m not in RADAR_HIDDEN_METRICS]
-                            if _op_metrics:
-                                _op_seasons = _season_id_list(active_season_ids)
-                                _op_season_lbl = (
-                                    SEASON_ID_MAP.get(_op_seasons[0], '')
-                                    if len(_op_seasons) == 1 else 'All Seasons')
-                                _op_fig_radar = create_radar_with_distributions(
-                                    pd.DataFrame([_op_row]), _op_metrics,
-                                    _op_pos, _op_elig, _op_pop,
-                                    full_df_for_ranking=player_stats_with_scores_df,
-                                    season_label=_op_season_lbl,
-                                    radar_mode='raw')
-                                _op_figs.append(_op_fig_radar)
-                    except Exception:
-                        logger.exception("one-pager radar failed")
-
-                    # 2) projection outlook (matplotlib twin of the fan)
-                    _op_fig_proj = None
-                    try:
-                        if not _erows.empty:
-                            _op_fig_proj = mpl_projection_fan(
-                                _erows, SEASON_ID_MAP, selected_player_name)
-                            if _op_fig_proj is not None:
-                                _op_figs.append(_op_fig_proj)
-                    except Exception:
-                        logger.exception("one-pager projection failed")
-
-                    # 3) position-conditional maps
-                    _op_fig_shots = _op_fig_passes = _op_fig_def = None
-                    if _op_attacking:
-                        try:   # shot map
-                            _op_shots = profile_events_df[
-                                (profile_events_df['player.name'] == selected_player_name)
-                                & (profile_events_df['type.primary'] == 'shot')].copy()
-                            if not _op_shots.empty:
-                                _op_shots = _op_shots.sort_values(
-                                    ['matchId', 'minute', 'second'])
-                                _op_shots.reset_index(drop=True, inplace=True)
-                                _op_shots['Shot Number'] = _op_shots.index + 1
-                                _op_fig_shots = create_player_shotmap(
-                                    _op_shots, selected_player_name)
-                                _op_figs.append(_op_fig_shots)
-                        except Exception:
-                            logger.exception("one-pager shotmap failed")
-                        try:   # box-pass creativity map
-                            _op_bp = load_box_passes()
-                            if not _op_bp.empty:
-                                _op_bp_seasons = _season_id_list(active_season_ids)
-                                _op_bp = _op_bp[
-                                    _op_bp['player.id'] == int(selected_player_id)]
-                                if _op_bp_seasons:
-                                    _op_bp = _op_bp[
-                                        _op_bp['seasonId'].isin(_op_bp_seasons)]
-                                if not _op_bp.empty:
-                                    _op_fig_passes = mpl_box_passes_map(
-                                        _op_bp, selected_player_name)
-                                    _op_figs.append(_op_fig_passes)
-                        except Exception:
-                            logger.exception("one-pager box passes failed")
+            _eng_df, _eng_meta = load_player_engine()
+            # ONE row-pick rule for the card (models/ratings/card_scope.py) —
+            # the Player Comparison page reads the same one.
+            _card = engine_card_row(_eng_df, int(selected_player_id), active_season_ids)
+            _erows, _escope, _e_sids = _card['erows'], _card['escope'], _card['e_sids']
+            _career_view, _eng_stale = _card['career_view'], _card['stale']
+            _is_gk_card = str(player_per_90_stats.get('primaryPosition', '')).upper().startswith('GK')
+            st.subheader("Goalkeeper Rating" if _is_gk_card
+                          else "ACP Index")
+            if _escope.empty:
+                if _is_gk_card:
+                    # Prior rating + value system, retained for keepers.
+                    _gk_templates = ['Shot Stopper', 'Cross Claimer', 'Ball-playing GK']
+                    _gk_scored = []
+                    for _t in _gk_templates:
+                        _s = player_per_90_stats.get(f'{_t}_Score')
+                        if _s is not None and pd.notna(_s):
+                            _gk_scored.append((_t, float(_s)))
+                    if _gk_scored:
+                        _gk_best = max(_gk_scored, key=lambda x: x[1])
+                        _gkc = st.columns(3)
+                        _gkc[0].metric(
+                            "Goalkeeper rating", f"{_gk_best[1]:.0f}",
+                            help="His score on the goalkeeper template that fits "
+                                 "him best (0-100, weighted percentiles among "
+                                 "goalkeepers). Goalkeepers are rated this way "
+                                 "because the ACP Index covers outfield players "
+                                 "only.")
+                        _gkc[1].metric("Best-fit template", _gk_best[0])
+                        _gkc[2].metric(
+                            "Projected value",
+                            "—" if _tv_projected_eur is None else f"€{_tv_projected_eur:,.0f}",
+                            help="From the goalkeeper value model. The engine "
+                                 "that values outfield players does not cover "
+                                 "goalkeepers.")
+                        st.caption("Template scores — " + " · ".join(
+                            f"**{_t}** {_s:.0f}" for _t, _s in _gk_scored)
+                            + "  ·  full goalkeeping metrics in the Player "
+                              "Radar and Stats tabs below.")
                     else:
-                        try:   # defensive action heatmap
-                            # Same peer-group resolution + cached density
-                            # stack the Shots & Creation tab uses, so the
-                            # PDF heatmap is normalised identically.
-                            _DEF_PEERS = {
-                                'GK': ['GK'],
-                                'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
-                                'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
-                                'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF',
-                                       'LCMF3', 'RCMF3'],
-                                'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW',
-                                            'LWF', 'RWF'],
-                                'ST': ['CF', 'SS'],
-                            }
-                            _op_pos_codes = [current_pos]
-                            for _gc in _DEF_PEERS.values():
-                                if current_pos in _gc:
-                                    _op_pos_codes = _gc
-                                    break
-                            _op_ev_hash = hashlib.md5(
-                                f"{len(profile_events_df)}_"
-                                f"{tuple(sorted(_op_pos_codes))}".encode()
-                            ).hexdigest()
-                            _op_stack = _compute_peer_density_stack(
-                                _op_ev_hash, profile_events_df,
-                                tuple(sorted(_op_pos_codes)),
-                                _player_minutes_df=profile_player_minutes_df,
-                                include_recoveries=True)
-                            _op_fig_def = pv.plot_defensive_action_heatmap(
-                                profile_events_df, player_id,
-                                selected_player_name,
-                                position_codes=_op_pos_codes,
-                                player_minutes_df=profile_player_minutes_df,
-                                peer_density_stack=_op_stack,
-                                include_recoveries=True)
-                            if _op_fig_def is not None:
-                                _op_figs.append(_op_fig_def)
-                        except Exception:
-                            logger.exception("one-pager def heatmap failed")
+                        st.info("Goalkeeper: not enough minutes for a "
+                                "goalkeeper rating in this scope.")
+                else:
+                    st.info("Not rated by the engine for this scope "
+                            "(below the 90-minute floor, or no "
+                            "role assignment yet).")
+            else:
+                # card_row: the scope's highest-minutes row (career view:
+                # minutes-weighted across every rated season), projection from
+                # the row that carries one
+                _e = _card['e']
+                if _career_view:
+                    st.caption(f"📚 Career view — minutes-weighted across "
+                               f"{len(_escope)} rated seasons "
+                               f"({int(_e['mins_played'])} total minutes). Select a "
+                               f"single season for that season's rating.")
+                if _eng_stale:
+                    st.caption(f"⏳ Not rated in the selected season — showing "
+                               f"last rated season ({SEASON_ID_MAP.get(int(_e['seasonId']), _e['seasonId'])}).")
+                _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+                _abs_note = (f"abs {_e['acp_rating_abs']:.0f}"
+                             if pd.notna(_e.get('acp_rating_abs'))
+                             and _e.get('league') == 'CAMP' else None)
+                _ec1.metric("ACP Rating", f"{_e['acp_rating']:.0f}", _abs_note,
+                            delta_color="off",
+                            help="Role-blended 5-axis rating, 50±17 scale, "
+                                 "within-league. 'abs' = Liga-3-equivalent "
+                                 "(descriptive league delta).")
+                if pd.notna(_e.get('projection')):
+                    _proj_note = (f"abs {_e['projection_abs']:.0f}"
+                                  if pd.notna(_e.get('projection_abs'))
+                                  and _e.get('league') == 'CAMP' else None)
+                    _band_txt = (f" ± {_e['band_sd']:.0f}"
+                                 if pd.notna(_e.get('band_sd')) else "")
+                    if bool(_e.get('projection_live', False)):
+                        # live 12-month forward projection (card_scope.card_row)
+                        _ec2.metric("Projection (next 12 months)",
+                                    f"{_e['projection']:.0f}{_band_txt}",
+                                    _proj_note, delta_color="off",
+                                    help="Live: his expected level over the next 12 "
+                                         "months, the rest of this season included — "
+                                         "career form up to the latest match + "
+                                         "evidence pull + half a year of the role age "
+                                         "curve. Live once his club has played 6 "
+                                         "league matches. Band = the role's 1 SD of "
+                                         "past next-season forecast error "
+                                         "(conservative for 12 months). 'abs' applies "
+                                         "the stricter recruit league delta.")
+                    else:
+                        _ec2.metric("Projection (next season)",
+                                    f"{_e['projection']:.0f}{_band_txt}",
+                                    _proj_note, delta_color="off",
+                                    help="Career + evidence pull + role age curve. "
+                                         "Band = role-specific 1 SD of realized "
+                                         "error. 'abs' applies the stricter "
+                                         "recruit league delta.")
+                else:
+                    _ec2.metric("Projection", "—",
+                                help="No projection (age unknown or below floor).")
+                _ec3.metric("Career (as-of)",
+                            f"{_e['career_asof']:.0f}" if pd.notna(_e.get('career_asof')) else "—",
+                            help="Recency-weighted career rating through this season.")
+                _ec4.metric("Evidence",
+                            f"{_e['w_evidence']:.0%}" if pd.notna(_e.get('w_evidence')) else "—",
+                            help="Career evidence weight w = eff_mins/(eff_mins+K). "
+                                 "Low = projection leans on the pull terms.")
 
-                    # 4) role-relevant stats (percentile-washed table)
-                    _op_role_stats = _role_key_stats(_op_row, _op_role) \
-                        if _op_role else []
+                # badges
+                _badges = []
+                _shares = sorted(
+                    [(c[3:], float(_e[c])) for c in _escope.columns
+                     if c.startswith('sh_') and pd.notna(_e[c]) and float(_e[c]) > 0.15],
+                    key=lambda x: -x[1])
+                if _shares:
+                    _badges.append(" · ".join(f"**{n}** {s:.0%}" for n, s in _shares[:3]))
+                if pd.notna(_e.get('seasons_ago')) and int(_e['seasons_ago']) >= 1:
+                    _badges.append("🕐 last rated 24/25 — projection carries "
+                                   "extra age step + wider band")
+                if float(_e['mins_played']) < 500:
+                    _badges.append(f"⚠️ thin sample this league "
+                                   f"({int(_e['mins_played'])}′ — admitted via "
+                                   f"cross-competition season pooling)")
+                if len(_escope) > 1:
+                    _others = _escope[_escope.index != _e.name]
+                    for _, _o in _others.iterrows():
+                        _badges.append(f"also rated in {_o['league']} "
+                                       f"({int(_o['mins_played'])}′, rating "
+                                       f"{_o['acp_rating']:.0f})")
+                if _badges:
+                    st.markdown("  \n".join(_badges))
 
-                    # 5) engine card PNG — reuse the header's cached render
-                    _op_card_png = None
-                    _op_card_aspect = 2.0    # figsize (20, 10)
-                    try:
-                        if _op_e is not None and not _erows.empty:
-                            _op_card_png = _render_acp_index_card_png(
-                                int(selected_player_id),
-                                tuple(sorted(_e_sids)) if _e_sids else (),
-                                STATS_CACHE_VERSION,
-                                str(_eng_meta.get('rating_version', '')),
-                                _career_view,
-                                _eng_df, _op_e, _eng_meta)
-                    except Exception:
-                        logger.exception("one-pager engine card failed")
+                # --- style chip: role + tendency-derived archetype ----------
+                # Descriptive only (never in the rating). Scope-aware: the
+                # style of the player's highest-minutes row in the selected
+                # scope. GKs / sub-300' players simply get no chip.
+                try:
+                    _sty = get_scoped_style(int(selected_player_id), _e_sids)
+                    _role_disp = _e.get('role')
+                    if _sty and pd.notna(_sty.get('style')):
+                        _fit = _sty.get('style_fit')
+                        _fit_txt = (f" · {float(_fit):.0f}% fit"
+                                    if _fit is not None and pd.notna(_fit) else "")
+                        _thin = " · thin sample" if _sty.get('thin_sample') else ""
+                        st.markdown(
+                            f"<span style='background:#eef2ff;color:#3730a3;"
+                            f"padding:3px 10px;border-radius:12px;font-size:0.9em;"
+                            f"font-weight:600'>{_role_disp} · "
+                            f"{_sty['style']}{_fit_txt}{_thin}</span>",
+                            unsafe_allow_html=True)
+                except Exception:
+                    logger.exception("style chip failed")
 
-                    # --- header tiles + bio strip ---
-                    _op_tiles = [("Team", current_team),
-                                 ("Position", current_pos),
-                                 ("Age", age_display),
-                                 ("Minutes", f"{total_minutes:,.0f}")]
-                    _op_val = (_tv_projected_eur if str(current_pos).upper().startswith('GK')
-                               else _eng_proj_eur)
-                    if _op_val is not None:
-                        _op_tiles.append(("Proj. value",
-                                          f"EUR {_op_val:,.0f}"))
-                        if not str(current_pos).upper().startswith('GK'):
-                            _op_rng = eur_interval_ui.pdf_range_text(
-                                _op_val, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins, team=current_team)
-                            if _op_rng:
-                                _op_tiles.append(("Likely fee (EUR)", _op_rng))
-                    if _op_e is not None:
-                        _op_tiles.append(
-                            ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
-                        if bool(_op_e.get('projection_now_live', False)):
-                            # the card's live 12-month projection
-                            _op_bn = _op_e.get('band_now')
-                            _op_tiles.append(
-                                ("Projection (12 mo)",
-                                 f"{float(_op_e['projection_now']):.0f}"
-                                 + (f" +/- {float(_op_bn):.0f}" if pd.notna(_op_bn) else "")))
-                        elif pd.notna(_op_e.get('projection')):
-                            _op_tiles.append(
-                                ("Projection",
-                                 f"{float(_op_e['projection']):.0f} "
-                                 f"+/- {float(_op_e.get('band_sd', 0) or 0):.0f}"))
-                    _op_bio = [
-                        ("Nationality", player_bio.get('passportArea')),
-                        ("Foot", str(player_bio.get('foot', '')).capitalize()),
-                        ("Height", f"{player_bio.get('height')} cm"
-                         if player_bio.get('height') else None),
-                        ("Weight", f"{player_bio.get('weight')} kg"
-                         if player_bio.get('weight') else None),
-                        ("Born", player_bio.get('birthArea')),
-                    ]
-                    _op_footer = (
-                        f"Engine {_eng_meta.get('rating_version', '?')} · "
-                        f"projection {_eng_meta.get('projection_version', '?')} · "
-                        f"data through {_eng_meta.get('data_through', '?')} · "
-                        f"generated {datetime.date.today().isoformat()}"
-                    ) if not _erows.empty else (
-                        f"Generated {datetime.date.today().isoformat()}")
+                # component bars
+                _comp_cols = st.columns(6)
+                for _i, (_lbl, _col, _hk) in enumerate([
+                        ("Offensive Value", 'off_pct', 'Offensive Value %'),
+                        ("Def Quality Grade", 'qual_pct', 'Def Quality Grade %'),
+                        ("RAPM", 'rapm_pct', 'Engine RAPM %'),
+                        ("Def Volume Grade", 'defr_pct', 'Def Volume Grade %'),
+                        ("Off Duel Grade", 'datt_pct', 'Off Duel Grade %'),
+                        ("Set piece", 'setpiece_pct', 'Engine Set Piece %')]):
+                    _v = _e.get(_col)
+                    with _comp_cols[_i]:
+                        if pd.notna(_v):
+                            st.progress(min(max(float(_v), 0.0), 1.0))
+                            st.caption(f"{_lbl} · {float(_v)*100:.0f}",
+                                       help=ENGINE_METRIC_HELP[_hk])
+                        else:
+                            st.caption(f"{_lbl} · —")
+                # --- ACP Index radar card: cached PNG render (see
+                # _render_acp_index_card_png). Building the matplotlib
+                # radar+KDE figure inline cost ~2-3 s on every rerun /
+                # profile section toggle; the PNG bytes are cached on
+                # (player, season scope, stats-cache ver, engine ver).
+                # BUILT ON EVERY SECTION, open or not (RULE): the cache key
+                # does not hold the row (`_e` is an underscore argument), and
+                # the report below asks for the same entry with ITS row (the
+                # latest projection row). Built here first, the entry is the
+                # on-screen card and the report reuses it, as it always did.
+                # Left to the report on a closed section, the entry would be
+                # the report row's card, and the screen would show that one
+                # for a day (another cohort on a past season; other title
+                # numbers on All Seasons). Only the image is not sent.
+                _card_png = _render_acp_index_card_png(
+                    int(selected_player_id),
+                    tuple(sorted(_e_sids)) if _e_sids else (),
+                    STATS_CACHE_VERSION,
+                    str(_eng_meta.get('rating_version', '')),
+                    _career_view,
+                    _eng_df, _e, _eng_meta)
+                if _card_png and sections.drawing:
+                    st.image(_card_png, width="stretch")
 
-                    _op_bytes = build_player_onepager(
-                        selected_player_name,
-                        f"{current_team} · {current_pos}",
-                        _op_tiles, _op_fig_radar, _op_fig_shots,
-                        _op_fig_passes, footer_note=_op_footer,
-                        bio=_op_bio, role_stats=_op_role_stats,
-                        role_label=_op_role or '',
-                        fig_projection=_op_fig_proj,
-                        fig_defensive=_op_fig_def,
-                        engine_card_png=_op_card_png,
-                        engine_card_aspect=_op_card_aspect)
-                    for _f in _op_figs:
-                        if _f is not None:
-                            plt.close(_f)
-                    st.session_state['onepager_pdf'] = (
-                        int(selected_player_id), _op_bytes)
+                # --- Tendencies panel: futi-style bipolar sliders ----------
+                # The role's menu of attempt-composition leanings, each a
+                # within-role percentile (50 = role-typical). Descriptive, never
+                # a rating. Hidden entirely for players without tendencies.
+                try:
+                    _has_tend = get_scoped_tendencies(
+                        int(selected_player_id), _e_sids) is not None
+                    if _has_tend and sections.drawing:
+                        with st.expander("🎚️ Tendencies — how he plays the role",
+                                         expanded=False):
+                            st.caption(
+                                "Each bar is a **within-role percentile** of "
+                                "what he attempts (50 = typical for the role) — "
+                                "style, not quality, and never part of the "
+                                "rating. The leaning side is coloured.")
+                            render_tendencies_panel(int(selected_player_id),
+                                                    _e_sids)
+                except Exception:
+                    logger.exception("tendencies panel failed")
+
+                # --- Projection outlook fan chart (prototype) ---
+                try:
+                    from pitch_interactive import plotly_projection_fan
+                    _fan = (plotly_projection_fan(
+                        _erows, SEASON_ID_MAP, selected_player_name) if sections.drawing else None)
+                    if _fan is not None:
+                        st.plotly_chart(_fan, use_container_width=True,
+                                        config={'displayModeBar': False})
+                        st.caption(
+                            "Career ratings by season (league and age on "
+                            "each tick) flowing into the projection — "
+                            "live (next 12 months, half a season past the "
+                            "current one) once his club has played 6 league "
+                            "matches, else next season's. Shaded fan = ±1 SD of the "
+                            "projection; a faded segment bridges seasons "
+                            "missing from our data; green band = typical "
+                            "peak ages for the role (literature-based "
+                            "curve used by the projection model); "
+                            "evidence % = how much data underwrites the "
+                            "starting point. Cross-league careers plot on "
+                            "the L3-equivalent scale (CAMP seasons "
+                            "discounted by the league conversion — hover "
+                            "a dot for the native rating).")
+                except Exception:
+                    logger.exception("Projection fan chart failed")
+                # (model versions and the data date: sidebar, "About the data")
+                st.caption(
+                    "Rated against players of the same role in the same league and "
+                    "season. Set pieces are shown separately and are not part of "
+                    "the rating.")
         except Exception:
-            logger.exception("one-pager build failed")
-            st.error("Could not build the one-pager for this player.")
-    _op_cached = st.session_state.get('onepager_pdf')
-    if _op_cached and _op_cached[0] == int(selected_player_id):
-        with _op_cols[1]:
+            logger.exception("Engine card failed")
+
+    # --- Exportable one-pager PDF: in the header, beside the name, on every
+    # section (it stood between the ACP Index block and the section row) ---
+    with _pdf_slot:
+        _op_clicked = st.button("📄 Build player report PDF",
+                                 key="onepager_build", width="stretch")
+        if _op_clicked:
+            try:
+                with st.spinner("Composing player report…"):
+                    from player_onepager import build_player_onepager
+                    from pitch_interactive import mpl_projection_fan
+                    # The whole build runs under ONE MPL_LOCK: every figure is
+                    # created here and rasterised inside build_player_onepager,
+                    # so build + render + close must not be split (a figure
+                    # freed by another session's plt.close('all') mid-render is
+                    # a segfault — see mpl_safety). Each figure has its own
+                    # try/except so one failure drops that panel, not the PDF.
+                    _op_figs = []          # every fig we create, for cleanup
+                    with MPL_LOCK:
+                        # --- resolve the player's stats row + best-fit role ---
+                        _op_row = None
+                        _op_role = None      # config template role (radar/stats)
+                        _op_elig = []
+                        _op_pop = player_stats_with_scores_df
+                        _op_matches = player_stats_with_scores_df[
+                            player_stats_with_scores_df['playerId']
+                            == int(selected_player_id)]
+                        if not _op_matches.empty:
+                            _op_row = _op_matches.iloc[0]
+                            _op_pos = _op_row.get('primaryPosition')
+                            _op_elig = [r for r in WEIGHTS
+                                        if _op_pos in POSITION_GROUPS.get(r, [])]
+                            if _op_elig:
+                                _op_role = max(_op_elig, key=lambda r: float(
+                                    _op_row.get(f'{r}_Score', 0) or 0))
+                                _op_pop = player_stats_with_scores_df[
+                                    player_stats_with_scores_df['primaryPosition']
+                                    .isin(POSITION_GROUPS.get(_op_role, [_op_pos]))]
+                                if len(_op_pop) < 5:
+                                    _op_pop = player_stats_with_scores_df
+
+                        # --- engine row: reuse the header's `_e` when present
+                        # (it is sorted/scoped correctly); fall back defensively
+                        # for keepers, who have no engine row at all. ---
+                        _op_e = None
+                        _op_eng_role = None
+                        if not _erows.empty:
+                            _op_prow = _erows[_erows['projection'].notna()]
+                            if not _op_prow.empty:
+                                # match the header's chronological pick, NOT the
+                                # unsorted .iloc[-1] the old build used
+                                _op_e = _op_prow.sort_values('seasonId').iloc[-1]
+                            else:
+                                _op_e = _erows.sort_values('mins_played').iloc[-1]
+                            _op_eng_role = _canonical_engine_role(
+                                _op_e.get('role'))
+                        # attacker vs defender: engine role first (the split
+                        # Lucas asked for), then fall back to the config
+                        # template allowlist for players the engine does not
+                        # rate (keepers). Unknown -> defensive layout.
+                        _op_attacking = (
+                            _engine_role_is_attacking(_op_eng_role)
+                            if _op_eng_role is not None
+                            else (_op_role in _ATTACK_TEMPLATE_ROLES))
+
+                        # 1) template radar (raw mean ± 2σ mode)
+                        _op_fig_radar = None
+                        try:
+                            if _op_row is not None and _op_role:
+                                _op_metrics = [m for m in WEIGHTS[_op_role]
+                                               if m in _op_row.index
+                                               and m not in RADAR_HIDDEN_METRICS]
+                                if _op_metrics:
+                                    _op_seasons = _season_id_list(active_season_ids)
+                                    _op_season_lbl = (
+                                        SEASON_ID_MAP.get(_op_seasons[0], '')
+                                        if len(_op_seasons) == 1 else 'All Seasons')
+                                    _op_fig_radar = create_radar_with_distributions(
+                                        pd.DataFrame([_op_row]), _op_metrics,
+                                        _op_pos, _op_elig, _op_pop,
+                                        full_df_for_ranking=player_stats_with_scores_df,
+                                        season_label=_op_season_lbl,
+                                        radar_mode='raw')
+                                    _op_figs.append(_op_fig_radar)
+                        except Exception:
+                            logger.exception("one-pager radar failed")
+
+                        # 2) projection outlook (matplotlib twin of the fan)
+                        _op_fig_proj = None
+                        try:
+                            if not _erows.empty:
+                                _op_fig_proj = mpl_projection_fan(
+                                    _erows, SEASON_ID_MAP, selected_player_name)
+                                if _op_fig_proj is not None:
+                                    _op_figs.append(_op_fig_proj)
+                        except Exception:
+                            logger.exception("one-pager projection failed")
+
+                        # 3) position-conditional maps
+                        _op_fig_shots = _op_fig_passes = _op_fig_def = None
+                        if _op_attacking:
+                            try:   # shot map
+                                _op_shots = profile_events_df[
+                                    (profile_events_df['player.name'] == selected_player_name)
+                                    & (profile_events_df['type.primary'] == 'shot')].copy()
+                                if not _op_shots.empty:
+                                    _op_shots = _op_shots.sort_values(
+                                        ['matchId', 'minute', 'second'])
+                                    _op_shots.reset_index(drop=True, inplace=True)
+                                    _op_shots['Shot Number'] = _op_shots.index + 1
+                                    _op_fig_shots = create_player_shotmap(
+                                        _op_shots, selected_player_name)
+                                    _op_figs.append(_op_fig_shots)
+                            except Exception:
+                                logger.exception("one-pager shotmap failed")
+                            try:   # box-pass creativity map
+                                _op_bp = load_box_passes()
+                                if not _op_bp.empty:
+                                    _op_bp_seasons = _season_id_list(active_season_ids)
+                                    _op_bp = _op_bp[
+                                        _op_bp['player.id'] == int(selected_player_id)]
+                                    if _op_bp_seasons:
+                                        _op_bp = _op_bp[
+                                            _op_bp['seasonId'].isin(_op_bp_seasons)]
+                                    if not _op_bp.empty:
+                                        _op_fig_passes = mpl_box_passes_map(
+                                            _op_bp, selected_player_name)
+                                        _op_figs.append(_op_fig_passes)
+                            except Exception:
+                                logger.exception("one-pager box passes failed")
+                        else:
+                            try:   # defensive action heatmap
+                                # Same peer-group resolution + cached density
+                                # stack the Shots & Creation tab uses, so the
+                                # PDF heatmap is normalised identically.
+                                _DEF_PEERS = {
+                                    'GK': ['GK'],
+                                    'CB': ['CB', 'LCB', 'RCB', 'LCB3', 'RCB3'],
+                                    'FB': ['LB', 'RB', 'LB5', 'RB5', 'LWB', 'RWB'],
+                                    'CM': ['DMF', 'LDMF', 'RDMF', 'LCMF', 'RCMF',
+                                           'LCMF3', 'RCMF3'],
+                                    'AM/Wing': ['AMF', 'LAMF', 'RAMF', 'LW', 'RW',
+                                                'LWF', 'RWF'],
+                                    'ST': ['CF', 'SS'],
+                                }
+                                _op_pos_codes = [current_pos]
+                                for _gc in _DEF_PEERS.values():
+                                    if current_pos in _gc:
+                                        _op_pos_codes = _gc
+                                        break
+                                _op_ev_hash = hashlib.md5(
+                                    f"{len(profile_events_df)}_"
+                                    f"{tuple(sorted(_op_pos_codes))}".encode()
+                                ).hexdigest()
+                                _op_stack = _compute_peer_density_stack(
+                                    _op_ev_hash, profile_events_df,
+                                    tuple(sorted(_op_pos_codes)),
+                                    _player_minutes_df=profile_player_minutes_df,
+                                    include_recoveries=True)
+                                _op_fig_def = pv.plot_defensive_action_heatmap(
+                                    profile_events_df, player_id,
+                                    selected_player_name,
+                                    position_codes=_op_pos_codes,
+                                    player_minutes_df=profile_player_minutes_df,
+                                    peer_density_stack=_op_stack,
+                                    include_recoveries=True)
+                                if _op_fig_def is not None:
+                                    _op_figs.append(_op_fig_def)
+                            except Exception:
+                                logger.exception("one-pager def heatmap failed")
+
+                        # 4) role-relevant stats (percentile-washed table)
+                        _op_role_stats = _role_key_stats(_op_row, _op_role) \
+                            if _op_role else []
+
+                        # 5) engine card PNG — reuse the header's cached render
+                        _op_card_png = None
+                        _op_card_aspect = 2.0    # figsize (20, 10)
+                        try:
+                            if _op_e is not None and not _erows.empty:
+                                _op_card_png = _render_acp_index_card_png(
+                                    int(selected_player_id),
+                                    tuple(sorted(_e_sids)) if _e_sids else (),
+                                    STATS_CACHE_VERSION,
+                                    str(_eng_meta.get('rating_version', '')),
+                                    _career_view,
+                                    _eng_df, _op_e, _eng_meta)
+                        except Exception:
+                            logger.exception("one-pager engine card failed")
+
+                        # --- header tiles + bio strip ---
+                        _op_tiles = [("Team", current_team),
+                                     ("Position", current_pos),
+                                     ("Age", age_display),
+                                     ("Minutes", f"{total_minutes:,.0f}")]
+                        _op_val = (_tv_projected_eur if str(current_pos).upper().startswith('GK')
+                                   else _eng_proj_eur)
+                        if _op_val is not None:
+                            _op_tiles.append(("Proj. value",
+                                              f"EUR {_op_val:,.0f}"))
+                            if not str(current_pos).upper().startswith('GK'):
+                                _op_rng = eur_interval_ui.pdf_range_text(
+                                    _op_val, _eurcal, w_evidence=_eng_w_ev, mins=_eng_mins, team=current_team)
+                                if _op_rng:
+                                    _op_tiles.append(("Likely fee (EUR)", _op_rng))
+                        if _op_e is not None:
+                            _op_tiles.append(
+                                ("ACP Rating", f"{float(_op_e['acp_rating']):.0f}"))
+                            if bool(_op_e.get('projection_now_live', False)):
+                                # the card's live 12-month projection
+                                _op_bn = _op_e.get('band_now')
+                                _op_tiles.append(
+                                    ("Projection (12 mo)",
+                                     f"{float(_op_e['projection_now']):.0f}"
+                                     + (f" +/- {float(_op_bn):.0f}" if pd.notna(_op_bn) else "")))
+                            elif pd.notna(_op_e.get('projection')):
+                                _op_tiles.append(
+                                    ("Projection",
+                                     f"{float(_op_e['projection']):.0f} "
+                                     f"+/- {float(_op_e.get('band_sd', 0) or 0):.0f}"))
+                        _op_bio = [
+                            ("Nationality", player_bio.get('passportArea')),
+                            ("Foot", str(player_bio.get('foot', '')).capitalize()),
+                            ("Height", f"{player_bio.get('height')} cm"
+                             if player_bio.get('height') else None),
+                            ("Weight", f"{player_bio.get('weight')} kg"
+                             if player_bio.get('weight') else None),
+                            ("Born", player_bio.get('birthArea')),
+                        ]
+                        _op_footer = (
+                            f"Engine {_eng_meta.get('rating_version', '?')} · "
+                            f"projection {_eng_meta.get('projection_version', '?')} · "
+                            f"data through {_eng_meta.get('data_through', '?')} · "
+                            f"generated {datetime.date.today().isoformat()}"
+                        ) if not _erows.empty else (
+                            f"Generated {datetime.date.today().isoformat()}")
+
+                        _op_bytes = build_player_onepager(
+                            selected_player_name,
+                            f"{current_team} · {current_pos}",
+                            _op_tiles, _op_fig_radar, _op_fig_shots,
+                            _op_fig_passes, footer_note=_op_footer,
+                            bio=_op_bio, role_stats=_op_role_stats,
+                            role_label=_op_role or '',
+                            fig_projection=_op_fig_proj,
+                            fig_defensive=_op_fig_def,
+                            engine_card_png=_op_card_png,
+                            engine_card_aspect=_op_card_aspect)
+                        for _f in _op_figs:
+                            if _f is not None:
+                                plt.close(_f)
+                        st.session_state['onepager_pdf'] = (
+                            int(selected_player_id), _op_bytes)
+            except Exception:
+                logger.exception("one-pager build failed")
+                st.error("Could not build the one-pager for this player.")
+        _op_cached = st.session_state.get('onepager_pdf')
+        if _op_cached and _op_cached[0] == int(selected_player_id):
             st.download_button(
                 "⬇️ Download player report",
                 data=_op_cached[1],
                 file_name=f"{selected_player_name.replace(' ', '_')}_report.pdf",
-                mime="application/pdf", key="onepager_dl")
-    st.divider()
+                mime="application/pdf", key="onepager_dl", width="stretch")
 
     # Hoisted so every lazy section can access it: the Stats section's
     # positional-peer population (radar_stats_df at ~10840) was previously
@@ -1179,12 +1246,6 @@ def render():
     # Position" filter for its own rendering.
     radar_stats_df = merge_defr_values_into_stats(
         player_stats_with_scores_df, active_season_ids, selected_comp_ids)
-
-    _profile_sections = ["Player Radar", "Stats", "Value", "Shots & Creation", "Match Log",
-                         "Similar Players", "Coached by", "Career"]
-    _active_tab = st.radio("Profile section", _profile_sections,
-                            horizontal=True, label_visibility="collapsed",
-                            key="profile_active_tab")
 
     if _active_tab == "Player Radar":
         # --- Transfer Value Detail moved to just above Career Trajectory ---

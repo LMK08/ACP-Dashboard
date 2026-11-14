@@ -557,7 +557,7 @@ pre code { background: transparent !important; padding: 0 !important; }
 # ...and the hidden container the closed sections of a page write into
 # (page_sections.Sections.block)
 st.markdown(f"<style>{theme.metric_fit_css()}\n{theme.profile_head_css()}\n{theme.metric_note_css()}\n"
-            f"{page_sections.SINK_CSS}\n{context_bar.HEAD_CSS}\n{navigation.NAV_CSS}</style>",
+            f"{page_sections.SINK_CSS}\n{page_sections.ROW_CSS}\n{context_bar.HEAD_CSS}\n{navigation.NAV_CSS}</style>",
             unsafe_allow_html=True)
 
 # ==============================================================================

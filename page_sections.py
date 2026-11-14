@@ -22,6 +22,10 @@ Two ways to honour the row, and each page uses the one it needs:
 
 The section radio is keyed and its options are a constant tuple, so the
 choice survives a change of team or opponent (widget-seeding rule).
+
+The Player Profile uses the same row (`block` for its "ACP Index" section,
+whose numbers the report PDF and later sections read; plain `if` for the
+rest).
 """
 import contextlib
 
@@ -34,6 +38,14 @@ OPP_SECTIONS = ("Summary",) + TEAM_SECTIONS
 # rule is injected once by app.py with the rest of the theme CSS.
 SINK_KEY = "closed_sections_sink"
 SINK_CSS = f'[class*="st-key-{SINK_KEY}"] {{ display: none !important; }}'
+
+# A long row keeps to one line on a laptop: the Player Profile's nine sections
+# need 1,000 px at Streamlit's 1 rem between options and the page gives 989 at
+# 1440 px, so "Career" stood alone on a second line. Listed rows sit closer.
+COMPACT_ROW_KEYS = ("profile_active_tab",)
+ROW_CSS = "\n".join(
+    f'[class*="st-key-{key}"] [role="radiogroup"] > label {{ margin-right: 0.6rem; }}'
+    for key in COMPACT_ROW_KEYS)
 
 
 class Sections:

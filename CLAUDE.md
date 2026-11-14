@@ -96,6 +96,32 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   kind of page that can be
   opened "on" something gets an entry kind here. It adds no number and
   renames nothing.
+- Player Profile (2026-11, `views/player_profile.py`): a SHORT header, then
+  the section row. Header: the name with the report button beside it
+  (`_pdf_slot`, filled further down once the ACP Index block has computed
+  what the report prints), the photo, ONE line of facts (`facts_line`,
+  pure, `tests/test_profile_header.py`: club, position, age, foot, height,
+  weight, nationality, birthplace: eight equal cards until then; a fact we
+  do not have is left out, never "N/A" / "0 cm") and
+  the value row (Projected value + its range caption, Available minutes
+  played, Role, Style). The section row is `page_sections.Sections` (key
+  `profile_active_tab`, label 'Profile section') and opens on "ACP Index":
+  the block that stood between the header and the row, unchanged, radar
+  card included. Lucas chose that order (2026-11-13); "Player Radar" is the
+  second section, exactly as it was. The ACP Index block is a
+  `sections.block(...)`: it RUNS on every section, because the report and
+  the later sections read `_erows` / `_eng_meta` / `_e`; closed, it writes
+  to the hidden container and skips the tendencies panel and the projection
+  chart (guard a new heavy part with `sections.drawing`). The radar card
+  PNG is NOT skipped (RULE): `_render_acp_index_card_png` is cached without
+  its row argument and the report asks for the same entry with another row,
+  so the on-screen call must come first on every section or the report's
+  card becomes the cached one; only its `st.image` is guarded. The other sections are plain `if / elif` and run
+  only when open. Rating and projection are NOT repeated in the header:
+  they need their notes beside them (career view, "not rated in the
+  selected season", the band) and are the first cards of the section the
+  page opens on. `page_sections.COMPACT_ROW_KEYS` keeps the nine options on
+  one line at 1440 px.
 - Match Analysis (2026-11): a scoreboard under the picker
   (`views/match_analysis._scoreboard_html`; crests through
   `app.crest_data_uri`, xG = the sum of `shot.xg` in the match events, the
