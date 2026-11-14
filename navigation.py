@@ -41,18 +41,34 @@ def _key(group):
 # buttons, and the only cue for where you are used to be the radio's small
 # dot; the circles are hidden and the checked label carries the highlight.
 # Scoped to the navigation's own radios by their keys (nav_group_<Group>).
-NAV_CSS = """
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] { width: 100% !important; }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] [data-testid="stRadio"] { padding: 0; width: 100%; }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] [role="radiogroup"] { gap: 2px; width: 100%; }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"] {
-    width: 100%; margin: 0; padding: 0.24rem 0.6rem; border-radius: 6px; cursor: pointer; }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"] > div:first-child { display: none; }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:hover { background: rgba(255,255,255,0.07); }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:has(input:checked) { background: rgba(255,255,255,0.15); }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:has(input:checked) p { color: #fff !important; font-weight: 600; }
-[data-testid="stSidebar"] [class*="st-key-nav_group_"] label[data-baseweb="radio"]:has(input:focus-visible) { outline: 2px solid rgba(255,255,255,0.6); outline-offset: 1px; }
-"""
+# Two markups (2026-11): Streamlit 1.50 draws a radio option as
+# <label data-baseweb="radio"><div circle/><input/><div text/></label>;
+# newer versions (seen on 1.67) as <div><label data-testid="stRadioOption">
+# <span><input/></span><div><div circle/><div text/></div></label></div>.
+# Every rule below names both, so the navigation looks the same whichever
+# version the Space pins.
+_NAV = '[data-testid="stSidebar"] [class*="st-key-nav_group_"]'
+_OPT = ('label[data-baseweb="radio"]', 'label[data-testid="stRadioOption"]')
+
+
+def _nav_rule(suffix, body):
+    return ", ".join(f"{_NAV} {opt}{suffix}" for opt in _OPT) + " { " + body + " }"
+
+
+NAV_CSS = "\n".join([
+    f"{_NAV} {{ width: 100% !important; }}",
+    f'{_NAV} [data-testid="stRadio"] {{ padding: 0; width: 100%; }}',
+    f'{_NAV} [role="radiogroup"] {{ gap: 2px; width: 100%; }}',
+    f'{_NAV} [role="radiogroup"] > div {{ width: 100%; }}',
+    _nav_rule("", "width: 100%; margin: 0; padding: 0.24rem 0.6rem; border-radius: 6px; cursor: pointer;"),
+    # the circle: the label's first box (1.50), or the first box beside the text (newer)
+    f'{_NAV} label[data-baseweb="radio"] > div:first-child, '
+    f'{_NAV} label[data-testid="stRadioOption"] > div > div:first-child:not([data-testid]) {{ display: none; }}',
+    _nav_rule(":hover", "background: rgba(255,255,255,0.07);"),
+    _nav_rule(":has(input:checked)", "background: rgba(255,255,255,0.15);"),
+    _nav_rule(":has(input:checked) p", "color: #fff !important; font-weight: 600;"),
+    _nav_rule(":has(input:focus-visible)", "outline: 2px solid rgba(255,255,255,0.6); outline-offset: 1px;"),
+])
 
 
 def _on_change(group):

@@ -43,8 +43,13 @@ SINK_CSS = f'[class*="st-key-{SINK_KEY}"] {{ display: none !important; }}'
 # need 1,000 px at Streamlit's 1 rem between options and the page gives 989 at
 # 1440 px, so "Career" stood alone on a second line. Listed rows sit closer.
 COMPACT_ROW_KEYS = ("profile_active_tab",)
+# Two markups: Streamlit 1.50 spaces the options with a margin on each label;
+# newer versions (seen on 1.67) wrap each label in a div and space them with
+# the group's gap (16 px, which put "Career" on a second line again).
 ROW_CSS = "\n".join(
-    f'[class*="st-key-{key}"] [role="radiogroup"] > label {{ margin-right: 0.6rem; }}'
+    f'[class*="st-key-{key}"] [role="radiogroup"] > label {{ margin-right: 0.6rem; }}\n'
+    f'[class*="st-key-{key}"] [role="radiogroup"]:has(> div > [data-testid="stRadioOption"]) '
+    f'{{ column-gap: 0.6rem; }}'
     for key in COMPACT_ROW_KEYS)
 
 

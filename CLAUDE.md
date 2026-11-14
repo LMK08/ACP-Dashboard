@@ -886,9 +886,30 @@ zero-size placement when the cursor sat on the bottom margin, 2026-09).
 `python -m pytest tests -v`. CI runs PYTHON 3.11 (the Space too) while
 the local base env is 3.13: never nest an f-string's own quote inside its
 braces (legal from 3.12 only) — `tests/test_py311_syntax.py` scans for it.
-The Space pins Streamlit 1.50.0 (README
-`sdk_version`, mirrored in deploy_to_hf.yml's smoke job) — the same version
-as the local base env. It was 1.41 until 2026-09: 1.41 measured a Plotly
+The Space pins Streamlit 1.67.0 since 2026-11 (README `sdk_version`,
+mirrored in the smoke jobs of deploy_to_hf.yml and scheduled_update.yml;
+Lucas asked for the move, UX item 9). The LOCAL base env still has 1.50.0, so
+a plain `python -m pytest` tests the old version: run the suite under the
+pinned one too (the venv recipe below) before a push, and keep the code
+working under BOTH until the base env is upgraded. What the move changed:
+(1) Streamlit rebuilt its widgets without BaseWeb: a radio option is
+`label[data-testid="stRadioOption"]` inside a wrapper div, a selectbox is a
+text input inside `[role="group"]`, widget text is 0.875rem and a metric
+label is nowrap again. Every rule that names `data-baseweb` misses the new
+markup; the block "NEWER STREAMLIT MARKUP" at the end of app.py's CSS,
+`navigation.NAV_CSS` and `page_sections.ROW_CSS` name both markups. A new
+CSS rule for a widget must be checked under both versions, on screen: the
+tests cannot see styling. (2) `AppTest.from_file` resolves a relative path
+against the test file, and the test session state has `keys()` instead of
+`filtered_state` (`_state_keys` in the smoke tests). (3) A keyed selectbox
+keeps a still-valid value when its options change; the widget-seeding rule
+stays. (4) `st.components.v1.html` (navigation's scroll-to-top) logs a
+deprecation and will go: `st.iframe` replaces it, not yet in 1.50.
+(5) The sidebar is about 40 px wider. NOT moved yet: precompute_caches.yml
+and engine_rebuild.yml still install 1.50.0 for `app.py --precompute`, which
+has not been run under 1.67 (the cache files are written by pandas, so the
+version there does not change them). pyarrow stays 24.0.0 (1.67 itself
+refuses 25.0.0). Before 1.50 it was 1.41 until 2026-09: 1.41 measured a Plotly
 chart's container once at first render and never again, leaving every
 chart ~20% narrower than the page, and it reset keyed widgets whose
 parameters changed between runs. Keep seeding widget defaults via session

@@ -60,7 +60,7 @@ jobs:
           pip install -r requirements.txt
           pip install requests python-dotenv
           # the Space's Streamlit + pytest for the smoke gate before commit
-          pip install streamlit==1.50.0 pytest
+          pip install streamlit==1.67.0 pytest
 
       - name: Run process_data.py
         env:

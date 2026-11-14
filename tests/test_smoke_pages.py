@@ -48,7 +48,9 @@ def app(request):
     os.chdir(DASHBOARD_DIR)
     sys.path.insert(0, DASHBOARD_DIR)
     try:
-        at = AppTest.from_file('app.py', default_timeout=1200)
+        # an absolute path: newer Streamlit resolves a relative one against THIS
+        # file's folder, 1.50 against the working directory
+        at = AppTest.from_file(os.path.join(DASHBOARD_DIR, 'app.py'), default_timeout=1200)
         at.run()
         total = '?'
         try:
@@ -122,6 +124,13 @@ def _free_memory_after_each_test(request):
     yield
     _release_memory()
     _say(request, f"[mem] {_rss_mb():>6} MB after {request.node.name}")
+
+
+def _state_keys(at):
+    """The keys of the app's session state. The test API changed between
+    Streamlit versions: 1.50 has `filtered_state`, newer ones `keys()`."""
+    state = at.session_state
+    return list(state.filtered_state) if hasattr(state, 'filtered_state') else list(state.keys())
 
 
 def _problems(at):
@@ -774,7 +783,7 @@ def test_match_analysis_scoreboard_and_sections(app):
     [b for b in app.button if b.label == 'Build match report PDF'][0].click()
     app.run()
     assert not _problems(app), _problems(app)
-    pdfs = [app.session_state[k] for k in app.session_state.filtered_state
+    pdfs = [app.session_state[k] for k in _state_keys(app)
             if str(k).startswith('match_report_pdf_')]
     assert pdfs and bytes(pdfs[0][:5]) == b'%PDF-', 'no match report PDF built from the Players section'
 

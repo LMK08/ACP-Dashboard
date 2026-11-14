@@ -552,6 +552,36 @@ pre code { background: transparent !important; padding: 0 !important; }
 [role="dialog"] { background: var(--card) !important; border: 1px solid var(--border) !important; }
 .stApp > header { background: var(--bg) !important; }
 
+/* === NEWER STREAMLIT MARKUP (seen on 1.67, 2026-11) ===========================
+   From 1.5x on Streamlit builds its radios, selectboxes and metric labels
+   differently (no BaseWeb): every rule above that names data-baseweb misses
+   them, widget text drops from 1rem to 0.875rem, a selectbox is a text
+   input inside [role="group"] (so the generic input rule below paints it
+   white with a border), and a metric label is nowrap again. These rules
+   name only the NEW markup and restore the 1.50 look; under 1.50 they match
+   nothing. Measured side by side on the Player Profile (2026-11-13). */
+[data-testid="stRadioOption"] p { font-size: 1rem; }
+[data-testid="stSelectbox"] [role="group"],
+[data-testid="stMultiSelect"] [role="group"] {
+    background: var(--bg-warm) !important;
+    border-color: var(--bg-warm) !important;
+}
+[data-testid="stSelectbox"] [role="group"]:hover,
+[data-testid="stMultiSelect"] [role="group"]:hover { border-color: var(--ink-2) !important; }
+[data-testid="stSelectbox"] input[role="combobox"],
+[data-testid="stMultiSelect"] input[role="combobox"] {
+    background: transparent !important;
+    border: 0 !important;
+    color: var(--ink) !important;
+    font-size: 1rem !important;
+}
+[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
+[data-testid="stMetric"] [data-testid="stMetricLabel"] div {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: break-word;
+}
 </style>
 """, unsafe_allow_html=True)
 # metric rows keyed theme.metric_fit_key: value font capped so the row's
