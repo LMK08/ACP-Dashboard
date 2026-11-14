@@ -100,15 +100,32 @@ def test_the_pages_use_these_rules_and_not_a_copy():
     assert 'keeping the cached tables' in pdata
 
 
-def test_a_match_that_could_not_be_computed_is_not_stamped_as_done():
+def test_a_match_that_could_not_be_computed_is_not_stamped_as_done(monkeypatch):
     """calculate_match_data swallows its own errors and returns empty tables.
     Such a result carries no stamp, so the cached tables are kept and the
     next run tries again (process_data.main)."""
     import contextlib
     import io
-    import process_data
-    broken = pd.DataFrame({'matchId': [1], 'team.name': ['A']})          # nothing a match needs
-    with contextlib.redirect_stdout(io.StringIO()):
-        out = process_data.calculate_match_data(broken, 'A', 'B')
+    import sys
+    import types
+    # process_data imports python-dotenv at the top, for its main(). Only the
+    # nightly job installs that package: the Space and the deploy check do
+    # not (this test failed the check for that reason, 2026-11-14). The
+    # function under test never reads the environment, so a stand-in will do.
+    try:
+        import dotenv  # noqa: F401
+    except ModuleNotFoundError:
+        monkeypatch.setitem(sys.modules, 'dotenv',
+                            types.SimpleNamespace(load_dotenv=lambda *a, **k: False))
+    # importing process_data switches a pandas warning off for the whole
+    # process; put the setting back for the tests that run after this one
+    _chained = pd.get_option('mode.chained_assignment')
+    try:
+        import process_data
+        broken = pd.DataFrame({'matchId': [1], 'team.name': ['A']})          # nothing a match needs
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = process_data.calculate_match_data(broken, 'A', 'B')
+    finally:
+        pd.set_option('mode.chained_assignment', _chained)
     assert out['stats_version'] is None
     assert not any(isinstance(df, pd.DataFrame) and not df.empty for df in out['team_stats'].values())
