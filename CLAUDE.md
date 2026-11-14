@@ -184,6 +184,17 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   is in the data — never guess "who is next" from it). The Table card is
   drawn in the first phase only (second-phase standings in the pickle leave
   out the FPF bonus points). A row opens that team's Opposition Report.
+  The next opponent is CHOSEN on the card (Lucas, 2026-11-14): a selectbox
+  of the clubs still to play (`opponent_choices`: the remaining legs; when
+  those are not known, every other club of the season, because between the
+  phases our group is still the first-phase série), then "Open Team
+  Analysis" (the button he asked for, primary) and "Open Opposition Report"
+  for the pick, drawn right under it.
+  The choice lives in `st.session_state[NEXT_OPP_KEY]`, a non-widget key
+  written by the box's on_change and used to seed the box every run, so it
+  survives a visit to another page but NOT a new session: there is no
+  shared storage on the Space. A choice that should hold for every visitor
+  needs a committed file.
 - `simulate_season.py` — the Monte Carlo season simulation behind Home's
   promotion tile and the Match Predictor's promotion / relegation tables
   (runs in scheduled_update.yml, writes season_simulation.pkl). Since

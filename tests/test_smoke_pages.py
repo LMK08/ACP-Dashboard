@@ -939,6 +939,44 @@ def test_coach_comparison_same_coach_and_other_league(app):
     assert b.value != seed
 
 
+def test_home_next_opponent_is_chosen_and_opens_that_team(app):
+    """The feed lists a fixture only once it is played, so the next opponent
+    is CHOSEN on Home: pick a club, and the card offers "Open Team Analysis"
+    (and the Opposition Report) for it; the choice is kept when you come back
+    to Home. Near the END of the module: the button sets the season context
+    to Home's season, and nothing after this test but the search test (which
+    sets its own) may inherit that."""
+    import views.home as home
+    _open_page(app, 'Home')
+    boxes = [s for s in app.selectbox if s.label == 'Next opponent']
+    if not boxes:
+        # only an empty season has no picker: no match played and no other club
+        assert any('No matches played yet' in str(c.value) for c in app.caption), 'the next-opponent picker is gone'
+        pytest.skip('no fixtures in the season yet')
+    box = boxes[0]
+    assert box.value is None and 'Atlético CP' not in box.options and len(box.options) >= 1
+    picked = box.options[-1]
+    box.set_value(picked).run()
+    assert not _problems(app), _problems(app)
+    assert app.session_state[home.NEXT_OPP_KEY] == picked
+    assert any(picked in str(m.value) for m in app.markdown)
+    assert len([b for b in app.button if b.key == 'home_open_opp']) == 1, 'the Opposition Report button'
+    assert len([b for b in app.button if b.key == 'home_open_team']) == 1
+    [b for b in app.button if b.key == 'home_open_team'][0].click().run()
+    app.run()
+    assert app.session_state.current_page == 'Team Analysis'
+    assert not _problems(app), _problems(app)
+    assert [s for s in app.selectbox if s.label == 'Team'][0].value == picked
+    _release_memory()
+    # back on Home the choice is still there; clearing it empties the box
+    _open_page(app, 'Home')
+    assert [s for s in app.selectbox if s.label == 'Next opponent'][0].value == picked
+    app.session_state[home.NEXT_OPP_KEY] = None
+    app.run()
+    assert [s for s in app.selectbox if s.label == 'Next opponent'][0].value is None
+    _release_memory()
+
+
 def test_search_opens_the_page_on_the_pick(app):
     """The sidebar search box: a pick opens the right page ON that player /
     team / coach, in the league and season where the data is, and the box

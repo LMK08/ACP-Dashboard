@@ -86,6 +86,48 @@ def phase_legs_played(season_matches, team):
     return list(zip(ours['homeTeamName'], ours['awayTeamName'])), started
 
 
+def opponent_choices(team, legs, group_teams, season_teams):
+    """The clubs that can be picked as the next opponent, alphabetical.
+
+    The clubs still to be played in this phase (`legs`, from remaining_legs)
+    when that is known. When it is not (the phase is complete, or the
+    simulation file and the feed disagree), EVERY other club of the season
+    and of our group: between the two phases the group is still our
+    first-phase série, and the next opponent may come from the other one.
+    Names are returned exactly as given (the legs, the results and Team
+    Analysis match on them)."""
+    for pool in ([opponent for opponent, _ in legs], list(group_teams) + list(season_teams)):
+        names = sorted({name for name in pool
+                        if isinstance(name, str) and name.strip() and name != team})
+        if names:
+            return names
+    return []
+
+
+def venue_note(opponent, legs):
+    """Where the next meeting with `opponent` can be, read from the legs
+    still to play: 'Home', 'Away', 'Home or away (both legs still to play)',
+    or '' when the legs are not known."""
+    venues = {venue for name, venue in legs if name == opponent}
+    if venues == {'H'}:
+        return 'Home'
+    if venues == {'A'}:
+        return 'Away'
+    return 'Home or away (both legs still to play)' if venues else ''
+
+
+# The next opponent is CHOSEN on the page (Lucas, 2026-11-14): the feed does
+# not hold it. NEXT_OPP_KEY remembers the choice for the visit; it is not a
+# widget key, so it survives a trip to another page (Streamlit drops the
+# state of a widget that is not drawn).
+NEXT_OPP_KEY = 'home_next_opponent'
+NEXT_OPP_BOX = 'home_next_opponent_box'
+
+
+def _remember_next_opponent():
+    st.session_state[NEXT_OPP_KEY] = st.session_state.get(NEXT_OPP_BOX)
+
+
 def table_window(standings, team, size=5):
     """`size` consecutive rows of `standings` with `team` as near the middle
     as the ends of the table allow (the whole table when it is shorter)."""
@@ -310,6 +352,21 @@ def render():
             st.subheader("Next opponent")
             nxt = next_fixture_for_team(matches_summary_df, season_id, OUR_TEAM)
             target = None
+
+            def _open_buttons(team):
+                """Team Analysis first: the button Lucas asked for (2026-11-14).
+                The Opposition Report, the scouting page, stays one click away."""
+                _b_team, _b_opp = st.columns(2)
+                if _b_team.button("Open Team Analysis", key="home_open_team", type="primary", width="stretch"):
+                    context_bar.set_context(league_name, season_label)
+                    # its team list is built after the stage filter: back to all stages
+                    st.session_state.pop('team_analysis_stage_selector', None)
+                    navigation.go_to('Team Analysis', nav_team=team)
+                if _b_opp.button("Open Opposition Report", key="home_open_opp", width="stretch"):
+                    context_bar.set_context(league_name, season_label)
+                    navigation.go_to('Opposition Report', opposition_report_team=team)
+
+            _buttons_drawn = False
             if nxt:
                 st.markdown(f"**{nxt['opponent']}** ({nxt['home_away']}) · GW {nxt['gameweek']} · {_fmt_date(nxt['date'])}")
                 target = nxt['opponent']
@@ -323,9 +380,38 @@ def render():
                 # match would not): every leg played has to be inside the group
                 _consistent = all(h in _group and a in _group for h, a in _phase_played)
                 _legs = remaining_legs(OUR_TEAM, _group, _phase_played) if _group and _consistent else []
+                # The picker: the feed cannot say who is next, so it is chosen
+                # here. The choice is kept for the visit and seeds the box on
+                # every run (widget-seeding rule: its options follow the data).
+                _season_teams = set(fixtures['homeTeamName'].dropna()) | set(fixtures['awayTeamName'].dropna())
+                _choices = opponent_choices(OUR_TEAM, _legs, _group, _season_teams)
+                if _choices:
+                    st.caption("The match feed lists a fixture only once it is played, so the next "
+                               "opponent is chosen here. The choice is kept until you close the page.")
+                    _kept = st.session_state.get(NEXT_OPP_KEY)
+                    st.session_state[NEXT_OPP_BOX] = _kept if _kept in _choices else None
+                    _picked = st.selectbox(
+                        "Next opponent", _choices, index=None, key=NEXT_OPP_BOX,
+                        placeholder="Choose the next opponent", label_visibility="collapsed",
+                        on_change=_remember_next_opponent)
+                    if _picked:
+                        target = _picked
+                        _where = venue_note(_picked, _legs)
+                        _earlier = next((f"{_o} {_gf}–{_ga} ({'H' if _r['homeTeamName'] == OUR_TEAM else 'A'})"
+                                         for _o, (_gf, _ga), _r in reversed(results)
+                                         if _picked in (_r['homeTeamName'], _r['awayTeamName'])), None)
+                        _crest = crest_data_uri(_picked)
+                        _img = (f'<img src="{_crest}" alt="" style="height:1.6rem;vertical-align:middle;'
+                                f'margin-right:0.45rem;">' if _crest else '')
+                        import html as _html
+                        st.markdown(f'{_img}<strong>{_html.escape(_picked)}</strong>', unsafe_allow_html=True)
+                        _facts = [_where, f"Already this season: {_earlier}" if _earlier else None]
+                        if any(_facts):
+                            st.caption(" · ".join(f for f in _facts if f))
+                        _open_buttons(_picked)          # right under the pick, above the list
+                        _buttons_drawn = True
                 if _legs:
-                    st.caption("The match feed lists a fixture only once it is played, so the date and order "
-                               "of the next one are not known here. Still to play in this phase:")
+                    st.caption("Still to play in this phase (the date and order are not in the data):")
                     _met = {}      # our latest meeting with each club this season
                     for _o, (_gf, _ga), _row in results:
                         _home = _row['homeTeamName'] == OUR_TEAM
@@ -347,15 +433,15 @@ def render():
                         context_bar.set_context(league_name, season_label)
                         navigation.go_to('Opposition Report',
                                          opposition_report_team=_left_df['Opponent'].iloc[_rows[0]])
-                else:
+                elif not target:
                     last = last_fixture_for_team(matches_summary_df, season_id, OUR_TEAM)
-                    st.caption("The fixture list only fills in as matches are played, so the next opponent isn't in the data yet.")
+                    if not _choices:     # with the picker above, its own caption has said this
+                        st.caption("The fixture list only fills in as matches are played, so the next opponent isn't in the data yet.")
                     if last:
                         st.markdown(f"Most recent opponent: **{last['opponent']}** ({last['home_away']})")
                         target = last['opponent']
-            if target and st.button("Open Opposition Report", key="home_open_opp", type="primary"):
-                context_bar.set_context(league_name, season_label)
-                navigation.go_to('Opposition Report', opposition_report_team=target)
+            if target and not _buttons_drawn:
+                _open_buttons(target)
 
     # ------------------------------------------------------------------
     # Results this season

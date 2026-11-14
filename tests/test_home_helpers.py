@@ -23,6 +23,30 @@ def test_remaining_legs_are_the_double_round_robin_minus_what_was_played():
     assert home.remaining_legs('Us', [], []) == []
 
 
+def test_opponent_choices_use_the_narrowest_list_the_data_supports():
+    legs = [('Beta', 'H'), ('Gama', 'H'), ('Gama', 'A')]
+    season = {'Us', 'Alfa', 'Beta', 'Gama', 'Delta'}
+    # still to play this phase: only those clubs can be next
+    assert home.opponent_choices('Us', legs, GROUP, season) == ['Beta', 'Gama']
+    # legs not known: every other club of the season AND the group (between the
+    # phases the group is still our first-phase série; Delta is in the other one)
+    assert home.opponent_choices('Us', [], GROUP, season) == ['Alfa', 'Beta', 'Delta', 'Gama']
+    assert home.opponent_choices('Us', [], [], season) == ['Alfa', 'Beta', 'Delta', 'Gama']
+    assert home.opponent_choices('Us', [], GROUP, set()) == ['Alfa', 'Beta', 'Gama']
+    assert home.opponent_choices('Us', [], [], {'Us', None, float('nan'), '  '}) == []     # no name, no choice
+    assert home.opponent_choices('Us', [], [], set()) == []
+    # a name is returned exactly as given: the legs and Team Analysis match on it
+    assert home.opponent_choices('Us', [('Mortágua ', 'H')], [], set()) == ['Mortágua ']
+
+
+def test_venue_note_reads_the_legs_still_to_play():
+    legs = [('Beta', 'H'), ('Gama', 'H'), ('Gama', 'A'), ('Alfa', 'A')]
+    assert home.venue_note('Beta', legs) == 'Home'
+    assert home.venue_note('Alfa', legs) == 'Away'
+    assert home.venue_note('Gama', legs) == 'Home or away (both legs still to play)'
+    assert home.venue_note('Delta', legs) == '' and home.venue_note('Beta', []) == ''
+
+
 def _matches(rows):
     return pd.DataFrame(rows, columns=['roundId', 'homeTeamName', 'awayTeamName'])
 
