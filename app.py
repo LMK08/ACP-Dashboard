@@ -540,15 +540,24 @@ pre code { background: transparent !important; padding: 0 !important; }
 /* === MISC === */
 ::selection { background: var(--ink); color: #fff; }
 [data-testid="stMarkdownContainer"] { color: var(--ink) !important; }
-/* Tooltip and popover bodies stay dark (Streamlit's base theme): the
-   cream-page ink rules (p, stMarkdownContainer) made their text
-   dark-on-dark. */
+/* Tooltips and popovers: BOTH the ground and the text are set here, so they
+   read the same whatever Streamlit paints underneath. Until 2026-11 only
+   the text was set (cream, for the dark body of Streamlit's old base
+   theme): with the light theme fixed in config.toml a "?" tooltip became
+   cream on cream, and in newer Streamlit a popover body is a white
+   [role="dialog"], cream on white. Tooltip: ink ground, cream text.
+   Popover: card ground, ink text. */
+[data-testid="stTooltipContent"] { background: var(--ink) !important; color: var(--bg) !important; }
 [data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"],
 [data-testid="stTooltipContent"] p,
 [data-testid="stTooltipContent"] li,
+[data-testid="stTooltipContent"] strong,
+[data-testid="stTooltipContent"] em { color: var(--bg) !important; }
+[data-testid="stPopoverBody"] { background: var(--card) !important; }
 [data-testid="stPopoverBody"] [data-testid="stMarkdownContainer"],
 [data-testid="stPopoverBody"] p,
-[data-testid="stPopoverBody"] li { color: var(--bg) !important; }
+[data-testid="stPopoverBody"] li { color: var(--ink) !important; }
+[data-testid="stPopoverBody"] [data-testid="stCaptionContainer"] p { color: var(--ink-2) !important; }
 [role="dialog"] { background: var(--card) !important; border: 1px solid var(--border) !important; }
 .stApp > header { background: var(--bg) !important; }
 
@@ -558,9 +567,12 @@ pre code { background: transparent !important; padding: 0 !important; }
    them, widget text drops from 1rem to 0.875rem, a selectbox is a text
    input inside [role="group"] (so the generic input rule below paints it
    white with a border), and a metric label is nowrap again. These rules
-   name only the NEW markup and restore the 1.50 look; under 1.50 they match
-   nothing. Measured side by side on the Player Profile (2026-11-13). */
-[data-testid="stRadioOption"] p { font-size: 1rem; }
+   restore the 1.50 look; under 1.50 they either match nothing or repeat
+   what is already so (its searchable select has an input[role="combobox"]
+   too). Measured side by side on the Player Profile (2026-11-13). */
+[data-testid="stRadioOption"] p,
+[data-testid="stCheckbox"] [data-testid="stMarkdownContainer"] p,
+[role="listbox"] [role="option"] { font-size: 1rem; }
 [data-testid="stSelectbox"] [role="group"],
 [data-testid="stMultiSelect"] [role="group"] {
     background: var(--bg-warm) !important;
@@ -568,6 +580,21 @@ pre code { background: transparent !important; padding: 0 !important; }
 }
 [data-testid="stSelectbox"] [role="group"]:hover,
 [data-testid="stMultiSelect"] [role="group"]:hover { border-color: var(--ink-2) !important; }
+/* the keyboard user still sees where the focus is */
+[data-testid="stSelectbox"] [role="group"]:focus-within,
+[data-testid="stMultiSelect"] [role="group"]:focus-within { border-color: var(--ink) !important; }
+/* the arrow and the clear button are buttons now: in the sidebar the
+   "everything is near-white" rule made them invisible on the cream box */
+[data-testid="stSelectbox"] div[role="group"] > button,
+[data-testid="stSelectbox"] div[role="group"] > button *,
+[data-testid="stMultiSelect"] div[role="group"] > button,
+[data-testid="stMultiSelect"] div[role="group"] > button * { color: var(--ink) !important; }
+/* ...but not the "x" of a chosen tag: that sits on the dark green chip
+   (a nested span[role="group"], hence the div / child selectors above) */
+[data-testid="stMultiSelectTagsContainer"] button,
+[data-testid="stMultiSelectTagsContainer"] button * { color: #fff !important; }
+[data-testid="stSelectbox"] input[role="combobox"]::placeholder,
+[data-testid="stMultiSelect"] input[role="combobox"]::placeholder { color: var(--ink) !important; opacity: 1; }
 [data-testid="stSelectbox"] input[role="combobox"],
 [data-testid="stMultiSelect"] input[role="combobox"] {
     background: transparent !important;
