@@ -171,7 +171,13 @@ PLAYER_GROUPS = {
     ],
 }
 
-# (Dribbles, Dribbles successful and Dribbles successful % are in PENDING: see there.)
+PLAYER_GROUPS['Dribbling and ball security'][:0] = [
+    ('Dribbles', "Dribble attempts: the duels Wyscout tags as his own dribble."),
+    ('Dribbles successful', "Dribbles after which his team has the ball closer to goal within 4 seconds (he "
+                            "carries on, he passes it forward accurately, or a team-mate picks it up), or on "
+                            "which he is fouled."),
+    ('Dribbles successful %', "Share of his dribbles that were successful."),
+]
 PLAYER_GROUPS['Off-ball defending'] = [
     ('Defensive Area', "Size in square metres of the zone he defends: the ellipse that holds about two thirds "
                        "(68%) of his open-play defensive actions at his main position (interceptions, "
@@ -215,6 +221,15 @@ TEAM_GROUPS = {
         ('xG per Shot', "xG divided by shots: the average quality of the team's chances.", HIGHER),
         ('Shots', "Shots per match.", HIGHER),
         ('Actions in Box', "Actions on the ball in the opponent's penalty area, per match.", HIGHER),
+        ('Passes into Box', "Passes that end in the opponent's penalty area, per match. Always counted from "
+                            "match events.", HIGHER),
+        ('Dribbles', "Dribble attempts per match: the duels Wyscout tags as a dribble by the team's own "
+                     "player. Always counted from match events.", HIGHER),
+        ('Progressive Passes', "Passes that take the ball clearly closer to the opponent's goal, per match: by "
+                               "30 or more (on Wyscout's 0 to 100 pitch scale) inside the own half, 15 when "
+                               "the pass crosses halfway, 10 inside the opponent's half. Always counted from "
+                               "match events.", HIGHER),
+        ('Directness', "Share of the team's passes played forward, in %. A style measure.", None),
         ('Crosses', "Crosses per match.", HIGHER),
         ('Passes', "Passes per match.", HIGHER),
         ('Ball Possession', "Share of possession, in %.", HIGHER),
@@ -340,9 +355,12 @@ TEAM_GROUPS = {
         ('Box Entries', "Possessions with an action in the opponent's penalty area.", None),
         ('Counterattacks', "Balls won at least 40 from the opponent's goal (0 to 100 pitch scale) after which "
                            "the team gets 30 or more closer to it within 5 seconds.", None),
-        ('Passes allowed per def. action (PPDA)', "Opposition passes per defensive action of the team "
-                                                  "(fouls, interceptions, defensive duels won, sliding "
-                                                  "tackles). Lower means more pressing.", LOWER),
+        ('Passes allowed per def. action (PPDA)', "The opponent's passes in its own 60% of the pitch per "
+                                                  "defensive action of the team there (interceptions, "
+                                                  "clearances, defensive duels, sliding tackles). Lower "
+                                                  "means more pressing.", LOWER),
+        ('Average shot distance (m)', "Average distance of the team's shots from the centre of the goal, in "
+                                      "metres.", None),
         ('Recoveries / low / medium / high', "Interceptions, clearances and ground duels won: the total, "
                                              "then by third of the pitch (own, middle, final).", None),
         ('Opponent half recoveries', "Those recoveries made in the opponent's half.", None),
@@ -356,6 +374,10 @@ TEAM_GROUPS = {
                                   "or stopped his progress.", None),
         ('Aerial duels / won', "Aerial duels, and those in which the team got the first touch.", None),
         ('Challenge intensity', "Defensive duels and interceptions per minute of opposition possession.", None),
+        ('Dribbles / successful', "Dribble attempts (the duels Wyscout tags as a dribble by the team's own "
+                                  "player) and the successful ones. Team table: the player got past with the "
+                                  "ball. Players table: the team has the ball closer to goal within 4 seconds, "
+                                  "or the player is fouled.", None),
         ('Possession %', "The team's share of the two sides' time on the ball.", None),
         ('Pure possession time', "Time the team had the ball.", None),
         ('Dead time', "Match time in which neither side had the ball.", None),
@@ -432,32 +454,6 @@ PENDING = {
         "A goalkeeper category of the action-value model; which actions it covers is not in this repository.",
     ('Goalkeeping', 'Sweeping Value'):
         "A goalkeeper category of the action-value model; which actions it covers is not in this repository.",
-    ('Team radars', 'Passes into Box'):
-        "Default view: Wyscout's passes to the FINAL THIRD per match (36.4 for us in 2026/27). With a stage "
-        "filter: passes ending in the penalty area, counted from events. Two different numbers under one name.",
-    ('Team radars', 'Progressive Passes'):
-        "Default view: Wyscout's progressive RUNS per match. With a stage filter: progressive passes counted "
-        "from events (30 / 15 / 10 rule on distance to goal).",
-    ('Team radars', 'Dribbles'):
-        "Default view: Wyscout's SUCCESSFUL dribbles per match. With a stage filter: take-on ATTEMPTS.",
-    ('Team radars', 'Directness'):
-        "Default view: share of passes played forward, in %. With a stage filter: average distance a pass "
-        "gains towards goal.",
-    ('Dribbling and ball security', 'Dribbles'):
-        "Counts every event Wyscout tags as a dribble PLUS every ground duel flagged as a take-on "
-        "(app.py add_custom_dribble_success). Wyscout sets that flag on the DEFENDER's row of the duel too "
-        "(5,891 of 19,463 counted attempts in a sample of the 2026 events), so a defender's Dribbles include "
-        "the take-ons he faced.",
-    ('Dribbling and ball security', 'Dribbles successful'):
-        "Follows Dribbles (see there): a counted attempt after which his team has the ball closer to goal "
-        "within 4 seconds, or on which he is fouled.",
-    ('Dribbling and ball security', 'Dribbles successful %'):
-        "Dribbles successful divided by Dribbles (see Dribbles).",
-    ('Match report', 'Dribbles / successful'):
-        "Team table: every ground duel flagged as a take-on, which includes the take-ons the team FACED "
-        "(the flag is on the defender's row too); successful = the player progressed with the ball.",
-    ('Match report', 'Average shot distance (m)'):
-        "The label says metres; the value is the distance on Wyscout's 0 to 100 pitch scale, not converted.",
 }
 
 INTRO = ("Names are shown exactly as on the pages. On the player pages a count is per 90 minutes unless the "
@@ -601,9 +597,11 @@ def table_markdown(rows):
 GROUP_NOTES = {
     ENGINE_GROUP: ("The \"%\" grades rank a player among players of the same role in the same league and "
                    "season: 0 to 100, 50 is the typical player of that role. It is a rank, not a success rate."),
-    'Team radars': ("Without a stage filter these are Wyscout's published season averages per match. With one "
-                    "they are counted from that stage's match events by the club's own rules, which are close "
-                    "to Wyscout's but not the same."),
+    'Team radars': ("Without a stage filter these are Wyscout's published season averages per match, except "
+                    "Passes into Box, Progressive Passes and Dribbles, which Wyscout's team file does not hold "
+                    "and which are always counted from match events. With a stage filter every axis is "
+                    "counted from that stage's events by the club's own rules, close to Wyscout's but not "
+                    "the same."),
     'Season report': ("Without a stage filter a figure Wyscout publishes is Wyscout's season average per match; "
                       "the others, and every figure under a stage filter, are counted from the events."),
     COACH_GROUP: "How a coach's teams play, not how well. The coach pages carry the fuller notes.",

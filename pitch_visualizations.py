@@ -19,6 +19,7 @@ from adjustText import adjust_text
 # ---------------------------------------------------------------------------
 # Pitch setup defaults
 # ---------------------------------------------------------------------------
+import team_rules
 import theme
 
 PITCH_COLOR = theme.FIGURE_BG
@@ -996,8 +997,10 @@ def plot_final_third_dribbles(events_df, team_name, title=None):
     te['location.x'] = pd.to_numeric(te['location.x'], errors='coerce')
     te['location.y'] = pd.to_numeric(te['location.y'], errors='coerce')
 
+    # team_rules.dribble_attempts: the stored flags of older events still
+    # count the defender's row of a take-on
     dribbles = te[
-        (te.get('is_custom_dribble_success') == True) &
+        (te.get('is_custom_dribble_success') == True) & team_rules.dribble_attempts(te) &
         (te['location.x'] >= 66.7)
     ].dropna(subset=['location.x', 'location.y'])
 
@@ -1061,8 +1064,10 @@ def plot_shot_assists_and_dribbles(events_df, team_name, player_name=None,
     te['location.x'] = pd.to_numeric(te['location.x'], errors='coerce')
     te['location.y'] = pd.to_numeric(te['location.y'], errors='coerce')
 
+    # the dribbler's own rows (team_rules): the stored flag of older events
+    # also marks the defender's row of a take-on
     all_dribble_attempts = te[
-        (te.get('is_dribble_attempt') == True) &
+        team_rules.dribble_attempts(te) &
         (te['location.x'] >= 66.7)
     ].dropna(subset=['location.x', 'location.y'])
 

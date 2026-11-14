@@ -11,6 +11,7 @@ import sys
 import streamlit as st
 import pandas as pd
 from event_tags import TagIndex
+import team_rules
 import numpy as np
 import pickle
 import logging
@@ -628,7 +629,9 @@ from league_config import COMPETITIONS, competition_for_season, all_season_id_ma
 SEASON_ID_MAP = all_season_id_map()
 CURRENT_SEASON_ID = 192831  # Liga 3 default (2026/27)
 STATS_CACHE_DIR = 'stats_cache'
-STATS_CACHE_VERSION = 'v17'  # Bump when stat COLUMNS or cached VALUES change (v17 = a season
+STATS_CACHE_VERSION = 'v18'  # Bump when stat COLUMNS or cached VALUES change (v18 = Dribbles
+                             # count the dribbler's own attempts only, 2026-11-14: the take-on
+                             # flag sits on the defender's row too; v17 = a season
                              # with no DefR keeps empty DefR columns, 2026-10-30; e.g. the
                              # 2026-06 minutes fixes: Camará alias dedup + Manuel Pedro
                              # override; v15 = the 2026-09 Calegari alias, which merges
@@ -637,7 +640,7 @@ STATS_CACHE_VERSION = 'v17'  # Bump when stat COLUMNS or cached VALUES change (v
                              # precompute_minutes.combine_season_minutes). v13 percentiles cache served
                              # stale minutes because the percentiles layer early-returns
                              # its disk cache and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v8'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v9'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -4439,9 +4442,11 @@ def add_custom_dribble_success(events_df):
     is_chain_intact = df['time_diff'] <= 4.0
 
     # 5. Identify Dribble Attempts
-    df['is_dribble_attempt'] = df.get('type.secondary', pd.Series(dtype='object')).apply(
-        lambda x: isinstance(x, (list, np.ndarray)) and 'dribble' in x
-    ) | (df.get('groundDuel.takeOn') == True)
+    # The dribbler's OWN rows only (team_rules.dribble_attempts). Until v18
+    # this also took every row with groundDuel.takeOn, a flag Wyscout sets
+    # on the defender's row too: a defender's Dribbles included the take-ons
+    # he faced (a third of all counted dribbles).
+    df['is_dribble_attempt'] = team_rules.dribble_attempts(df)
 
     # 6. Evaluate Success Conditions
     
@@ -6749,13 +6754,50 @@ def calculate_all_team_radars_stats(season_events_df, matches_summary_df, season
             # Only use Wyscout stats if they cover at least half the teams in the events
             if not raw_df.empty and (not event_teams or len(raw_df) >= len(event_teams) * 0.5):
                 print(f"Using Wyscout team advanced stats for radars ({len(raw_df)} teams)...")
-                return raw_df, pct_df
+                return _radars_with_event_axes(raw_df, season_events_df, matches_summary_df)
             print(f"Wyscout stats insufficient ({len(raw_df)} of {len(event_teams)} teams), falling back to events...")
     else:
         print("Stage filter active — forcing events-based radar stats")
 
     print("Calculating radar stats from events...")
     return _calculate_radars_from_events(season_events_df, matches_summary_df)
+
+# Wyscout's team file has 23 fields and none of these three. Until 2026-11
+# the default view filled the axes with the nearest field: passes to the
+# FINAL THIRD under "Passes into Box", progressive RUNS under "Progressive
+# Passes", SUCCESSFUL dribbles under "Dribbles" (our Progressive Passes read
+# 60th percentile; counted, it is the 5th). They are counted from the
+# season's events, by the rules the stage-filter view already uses, so a
+# label shows the same thing in both views (Lucas, 2026-11-14).
+RADAR_AXES_FROM_EVENTS = ('Passes into Box', 'Progressive Passes', 'Dribbles')
+RADAR_AXES_LOWER_IS_BETTER = ('Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses')
+
+
+def _radar_percentiles(stats_df_raw):
+    """Percentile of each team on each radar axis (the lower-is-better axes flipped)."""
+    stats_df_pct = stats_df_raw.copy()
+    flipped = [col for col in RADAR_AXES_LOWER_IS_BETTER if col in stats_df_pct.columns]
+    stats_df_pct[flipped] = -stats_df_pct[flipped]
+    for col in stats_df_pct.columns:
+        stats_df_pct[col] = stats_df_pct[col].rank(pct=True) * 100
+    return stats_df_pct
+
+
+def _radars_with_event_axes(wyscout_raw, season_events_df, matches_summary_df):
+    """The default view's radar table: Wyscout's published figures, with the
+    RADAR_AXES_FROM_EVENTS counted from the season's events; percentiles
+    recomputed over the same teams."""
+    raw = wyscout_raw.copy()
+    # No try / except: if the count fails the page shows the error. Zeros on
+    # three axes for every team would be cached and read as real numbers.
+    events_raw, _ = _calculate_radars_from_events(season_events_df, matches_summary_df)
+    for axis in RADAR_AXES_FROM_EVENTS:
+        if axis in events_raw.columns:
+            raw[axis] = events_raw[axis].reindex(raw.index).fillna(0).round(2)
+        else:
+            raw[axis] = 0.0       # a season with no events: never the mislabelled Wyscout figure
+    return raw, _radar_percentiles(raw)
+
 
 def _build_radars_from_wyscout(df, season_id=None):
     """Build radar DataFrames from Wyscout team advanced stats.
@@ -6785,11 +6827,12 @@ def _build_radars_from_wyscout(df, season_id=None):
             'xG per Shot': xg / shots if shots > 0 else 0,
             'Shots': shots,
             'Actions in Box': row.get('touch_in_box', 0),
-            'Passes into Box': row.get('passes_to_final_third', 0),
+            # RADAR_AXES_FROM_EVENTS: placeholders, filled by _radars_with_event_axes
+            'Passes into Box': 0.0,
             'Crosses': row.get('crosses', 0),
-            'Dribbles': row.get('successful_dribbles', 0),
+            'Dribbles': 0.0,
             'Passes': passes,
-            'Progressive Passes': row.get('progressive_run', 0),
+            'Progressive Passes': 0.0,
             'Directness': (forward_passes / passes * 100) if passes > 0 else 0,
             'Ball Possession': row.get('possession_percent', 0),
             'Losses': row.get('ball_losses', 0),
@@ -6806,13 +6849,7 @@ def _build_radars_from_wyscout(df, season_id=None):
 
     stats_df_raw = pd.DataFrame.from_dict(all_teams_stats, orient='index').fillna(0).round(2)
     stats_df_raw.replace([np.inf, -np.inf], 999, inplace=True)
-    stats_df_pct = stats_df_raw.copy()
-    metrics_to_invert_pct = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses']
-    valid_metrics_to_invert = [col for col in metrics_to_invert_pct if col in stats_df_pct.columns]
-    stats_df_pct[valid_metrics_to_invert] = -stats_df_pct[valid_metrics_to_invert]
-    for col in stats_df_pct.columns:
-        stats_df_pct[col] = stats_df_pct[col].rank(pct=True) * 100
-    return stats_df_raw, stats_df_pct
+    return stats_df_raw, _radar_percentiles(stats_df_raw)
 
 def _calculate_radars_from_events(season_events_df, matches_summary_df):
     """Fallback: calculate radar stats from raw events data."""
@@ -6822,6 +6859,12 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
     if 'team.name' not in season_events_df.columns:
          print("Warning: 'team.name' column missing from events_df, cannot calculate radar stats.")
          return pd.DataFrame(), pd.DataFrame()
+
+    # A shallow copy: this function ADDS columns (possession.duration_sec,
+    # next_possession.id, numeric x / y). Since 2026-11-14 the default view
+    # calls it too, with the frame every session shares (get_filtered_events,
+    # "never mutate in place"); only stage-filtered copies reached it before.
+    season_events_df = season_events_df.copy(deep=False)
 
     teams = season_events_df['team.name'].unique()
     matches_played = season_events_df.groupby('team.name')['matchId'].nunique() if 'matchId' in season_events_df.columns else pd.Series(dtype='int')
@@ -6876,8 +6919,8 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
         team_passes = team_events[team_events.get('type.primary') == 'pass']
         passes_into_box = team_passes[(team_passes['pass.endLocation.x'].fillna(0) >= PENALTY_AREA_X) & (team_passes['pass.endLocation.y'].fillna(0).between(PENALTY_AREA_Y1, PENALTY_AREA_Y2))].shape[0] / games
         crosses = team_passes[team_passes.get('type.secondary','').astype(str).str.contains('cross', na=False)].shape[0] / games
-        team_duels_off = team_events[team_events.get('type.primary') == 'duel']
-        dribbles = team_duels_off[team_duels_off.get('groundDuel.takeOn') == True].shape[0] / games
+        # the team's OWN dribble attempts (the take-on flag is on the defender's row too)
+        dribbles = int(team_rules.dribble_attempts(team_events).sum()) / games
 
         passes_per_match = team_passes.shape[0] / games
         team_passes['start_dist_to_goal'] = np.sqrt((100 - team_passes['location.x'])**2 + (50 - team_passes['location.y'])**2)
@@ -6887,7 +6930,10 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
         cond2 = (team_passes['location.x'] <= 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 15)
         cond3 = (team_passes['location.x'] > 50) & (team_passes['pass.endLocation.x'] > 50) & (team_passes['progression'] >= 10)
         progressive_passes = team_passes[cond1 | cond2 | cond3].shape[0] / games
-        directness = team_passes['progression'].mean()
+        # Directness = share of passes played forward, in %, as the default
+        # view has always shown (it was the mean distance gained here: one
+        # label, two units, until 2026-11-14)
+        directness = team_rules.forward_pass_share(team_passes)
 
         ball_possession_pct = avg_possession_per_team.get(team, 0)
 
@@ -6927,34 +6973,10 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
         interceptions = team_events[team_events.get('type.primary') == 'interception'].shape[0] / games
         fouls = team_events[team_events.get('type.primary') == 'infraction'].shape[0] / games
 
-        PRESS_ZONE_X = 40
-        opponent_passes_count = opponent_events[
-            (opponent_events.get('type.primary') == 'pass') &
-            (opponent_events.get('location.x', 0) >= PRESS_ZONE_X)
-        ].shape[0]
-
-        team_press_events = team_events[team_events.get('location.x', 0) >= PRESS_ZONE_X]
-
-        if not team_press_events.empty:
-            fouls_press = team_press_events[team_press_events.get('type.primary') == 'infraction'].shape[0]
-            interceptions_press = team_press_events[team_press_events.get('type.primary') == 'interception'].shape[0]
-            def_duels_press = team_press_events[
-                (team_press_events.get('type.primary') == 'duel') &
-                (team_press_events.get('groundDuel.duelType') == 'defensive_duel')
-            ]
-            won_def_duels_press = def_duels_press[
-                (def_duels_press.get('groundDuel.recoveredPossession') == True) |
-                (def_duels_press.get('groundDuel.stoppedProgress') == True)
-            ].shape[0]
-            sliding_tackles_press = team_press_events[
-                (team_press_events.get('type.primary') == 'duel') &
-                (team_press_events.get('groundDuel.duelType', '').astype(str).str.contains('sliding_tackle', na=False))
-            ].shape[0]
-
-            total_def_actions = fouls_press + interceptions_press + won_def_duels_press + sliding_tackles_press
-            ppda = opponent_passes_count / total_def_actions if total_def_actions > 0 else np.inf
-        else:
-            ppda = np.inf
+        # ONE PPDA rule (team_rules.ppda, the season report's): the opponent's
+        # passes in its own 60 % per defensive action of ours there
+        _ppda = team_rules.ppda(team_events, opponent_events)
+        ppda = _ppda if _ppda is not None else np.inf
 
         all_teams_stats[team] = {
             'Goals': goals, 'xG': xg, 'xG per Shot': xg_per_shot, 'Shots': shots,
@@ -6971,13 +6993,7 @@ def _calculate_radars_from_events(season_events_df, matches_summary_df):
 
     stats_df_raw = pd.DataFrame.from_dict(all_teams_stats, orient='index').fillna(0).round(2)
     stats_df_raw.replace([np.inf, -np.inf], 999, inplace=True)
-    stats_df_pct = stats_df_raw.copy()
-    metrics_to_invert_pct = ['Goals Against', 'xG Against', 'xG per Shot Against', 'Shots Against', 'PPDA', 'Losses']
-    valid_metrics_to_invert = [col for col in metrics_to_invert_pct if col in stats_df_pct.columns]
-    stats_df_pct[valid_metrics_to_invert] = -stats_df_pct[valid_metrics_to_invert]
-    for col in stats_df_pct.columns:
-        stats_df_pct[col] = stats_df_pct[col].rank(pct=True) * 100
-    return stats_df_raw, stats_df_pct
+    return stats_df_raw, _radar_percentiles(stats_df_raw)
 
 # --- Radar Plotting Function (Unchanged) ---
 def _scope_label(league=None, season=None, sep=" "):
@@ -8060,7 +8076,13 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
         cache_path = os.path.join(STATS_CACHE_DIR, f'expanded_team_stats_{season_id}.parquet')
         try:
             _sm = _matches_summary_df.loc[_matches_summary_df['seasonId'] == season_id, 'matchId']
-            _exp_fp = {'n_matches': int(sum(1 for m in _sm if m in _all_match_data))}
+            # 'rules': the stamps process_data puts on each match
+            # (MATCH_STATS_VERSION). When the matches are recomputed by a new
+            # rule the stamps change, and so does this fingerprint: the file
+            # held the old PPDA and shot distance otherwise.
+            _in = [m for m in _sm if m in _all_match_data]
+            _exp_fp = {'n_matches': int(len(_in)),
+                       'rules': sorted({str((_all_match_data[m] or {}).get('stats_version')) for m in _in})}
         except Exception:
             _exp_fp = {'n_matches': -1}
         if os.path.exists(cache_path) and _cache_is_fresh(cache_path, _exp_fp):

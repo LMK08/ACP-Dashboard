@@ -3,6 +3,7 @@
 # ==============================================================================
 import pandas as pd
 import numpy as np
+import team_rules      # the rules the match report shares with the team pages
 import datetime
 import requests
 from requests.auth import HTTPBasicAuth
@@ -906,9 +907,8 @@ def add_custom_dribble_success(events_df):
     is_chain_intact = df['time_diff'] <= 4.0
 
     # 5. Identify Dribble Attempts
-    df['is_dribble_attempt'] = df.get('type.secondary', pd.Series(dtype='object')).apply(
-        lambda x: isinstance(x, (list, np.ndarray)) and 'dribble' in x
-    ) | (df.get('groundDuel.takeOn') == True)
+    # the dribbler's own rows only: groundDuel.takeOn is on the defender's row too
+    df['is_dribble_attempt'] = team_rules.dribble_attempts(df)
 
     # 6. Evaluate Success Conditions
     
@@ -951,6 +951,14 @@ def add_custom_dribble_success(events_df):
     return df
 
 
+# The per-match tables are cached in all_match_data.pkl and only the current
+# season is recomputed on a run. When a RULE of calculate_match_data changes,
+# bump this: every cached match without the current stamp is recomputed once
+# on the next run, then cached again. 2 (2026-11-14): PPDA by the one rule,
+# shot distance in metres, dribbles = the dribbler's own attempts.
+MATCH_STATS_VERSION = 2
+
+
 def calculate_match_data(match_df, home_team, away_team):
     """Calculates all team and player stats for a single match."""
 
@@ -983,7 +991,8 @@ def calculate_match_data(match_df, home_team, away_team):
                 team_shots = shots_df[shots_df.get('team.name') == team].copy()
                 # Use .loc with check for non-empty DataFrame before calculating distance
                 if not team_shots.empty and 'location.x' in team_shots.columns and 'location.y' in team_shots.columns:
-                     team_shots.loc[:, 'distance'] = np.sqrt((100 - team_shots['location.x'].fillna(100))**2 + (50 - team_shots['location.y'].fillna(50))**2)
+                     # in METRES (the label says so; it was on Wyscout's 0-100 scale until MATCH_STATS_VERSION 2)
+                     team_shots.loc[:, 'distance'] = team_rules.shot_distance_m(team_shots['location.x'], team_shots['location.y'])
                 else:
                      team_shots['distance'] = np.nan # Add column if needed
 
@@ -1124,18 +1133,13 @@ def calculate_match_data(match_df, home_team, away_team):
                 opponent = away_team if team == home_team else home_team
                 interceptions = match_df[(match_df.get('type.primary') == 'interception') & (match_df.get('team.name') == team)].shape[0]
                 clearances = match_df[(match_df.get('type.primary') == 'clearance') & (match_df.get('team.name') == team)].shape[0]
-                in_press_zone = match_df.get('location.x', 0) >= 40
-                opponent_passes_df = match_df[(match_df.get('team.name') == opponent) & (match_df.get('type.primary') == 'pass') & in_press_zone]
-                num_opponent_passes = opponent_passes_df.shape[0]
-                team_def_actions_df = match_df[(match_df.get('team.name') == team) & in_press_zone]
-                fouls = team_def_actions_df[team_def_actions_df.get('type.primary') == 'infraction'].shape[0]
-                def_interceptions = team_def_actions_df[team_def_actions_df.get('type.primary') == 'interception'].shape[0]
-                duels_in_zone_df = team_def_actions_df[team_def_actions_df.get('type.primary') == 'duel']
-                defensive_duels_in_zone = duels_in_zone_df[duels_in_zone_df.get('groundDuel.duelType') == 'defensive_duel']
-                won_defensive_duels = defensive_duels_in_zone[(defensive_duels_in_zone.get('groundDuel.recoveredPossession') == True) | (defensive_duels_in_zone.get('groundDuel.stoppedProgress') == True)].shape[0]
-                sliding_tackles = duels_in_zone_df[duels_in_zone_df.get('groundDuel.duelType','').astype(str).str.contains('sliding_tackle', na=False)].shape[0]
-                num_defensive_actions = fouls + def_interceptions + won_defensive_duels + sliding_tackles
-                ppda = round(num_opponent_passes / num_defensive_actions, 1) if num_defensive_actions > 0 else 0
+                # ONE PPDA rule (team_rules.ppda, the season report's): the
+                # opponent's passes in its own 60 % of the pitch per defensive
+                # action of ours there. Until MATCH_STATS_VERSION 2 the passes
+                # were counted in the opponent's ATTACKING 60 %.
+                _ppda = team_rules.ppda(match_df[match_df.get('team.name') == team],
+                                        match_df[match_df.get('team.name') == opponent])
+                ppda = round(_ppda, 1) if _ppda is not None else 0
                 defence_stats[team] = {
                     "Interceptions": interceptions, "Clearances": clearances,
                     "Passes allowed per def. action (PPDA)": ppda,
@@ -1200,7 +1204,8 @@ def calculate_match_data(match_df, home_team, away_team):
                 won_offensive_duels = offensive_duels[(offensive_duels.get('groundDuel.keptPossession') == True) | (offensive_duels.get('groundDuel.recoveredPossession') == True)].shape[0]
                 defensive_duels = team_duels[team_duels.get('groundDuel.duelType') == 'defensive_duel']
                 won_defensive_duels = defensive_duels[(defensive_duels.get('groundDuel.recoveredPossession') == True) | (defensive_duels.get('groundDuel.stoppedProgress') == True)].shape[0]
-                dribbles = team_duels[team_duels.get('groundDuel.takeOn') == True]
+                # the team's OWN dribble attempts (the take-on flag is on the defender's row too)
+                dribbles = team_duels[team_rules.dribble_attempts(team_duels)]
                 successful_dribbles = dribbles[dribbles.get('groundDuel.progressedWithBall') == True].shape[0]
                 defensive_duels_ci = defensive_duels.shape[0]
                 interceptions_ci = match_df[(match_df.get('type.primary') == 'interception') & (match_df.get('team.name') == team)].shape[0]
@@ -1519,7 +1524,12 @@ def calculate_match_data(match_df, home_team, away_team):
          print(f"  -> ⚠️ Warning: Player stats calculation returned empty or invalid data for {home_team} vs {away_team}")
 
 
-    return {'team_stats': team_stats, 'player_stats': player_stats}
+    # Stamped only when the team tables were really computed: both nested
+    # functions swallow their exceptions and return empty tables, and a
+    # stamped failure would count as "done" for ever (see the main loop).
+    _computed = bool(team_stats) and any(isinstance(df, pd.DataFrame) and not df.empty for df in team_stats.values())
+    return {'team_stats': team_stats, 'player_stats': player_stats,
+            'stats_version': MATCH_STATS_VERSION if _computed else None}
 
 
 # ==============================================================================
@@ -1810,6 +1820,10 @@ def main():
         return
     print("📂 Loading full event data for downstream processing...")
     all_raw_events_df = pd.read_parquet('raw_events.parquet')
+    # the stored dribble flags of older events follow the old rule (the
+    # defender's row counted as a dribble): corrected here for everything
+    # this run computes from the frame
+    all_raw_events_df = team_rules.correct_dribble_flags(all_raw_events_df)
 
     # Ensure seasonId and competitionId are set (for old cached rows that may lack them)
     match_id_to_season_map = all_matches_summary_df.set_index('matchId')['seasonId']
@@ -1833,7 +1847,10 @@ def main():
     current_season_match_ids = set(
         played_matches_for_data[played_matches_for_data['seasonId'].isin(CURRENT_SEASON_IDS)]['matchId']
     )
-    cached_match_data_ids = set(all_match_data.keys()) - current_season_match_ids
+    # a cached match computed by an older set of rules is recomputed (MATCH_STATS_VERSION)
+    _current_rules = {mid for mid, data in all_match_data.items()
+                      if isinstance(data, dict) and data.get('stats_version') == MATCH_STATS_VERSION}
+    cached_match_data_ids = _current_rules - current_season_match_ids
     matches_to_process = played_matches_for_data[~played_matches_for_data['matchId'].isin(cached_match_data_ids)]
     print(f"   {len(matches_to_process)} matches to process (current season always refreshed).")
 
@@ -1847,12 +1864,20 @@ def main():
 
         match_events_df = all_raw_events_df[all_raw_events_df['matchId'] == match_id].copy()
 
+        _had_tables = bool((all_match_data.get(match_id) or {}).get('team_stats'))
         if match_events_df.empty:
             print(f"  -> ℹ️ Info: No event data for match {match_id}. Skipping stats.")
-            all_match_data[match_id] = {'team_stats': {}, 'player_stats': {'home': pd.DataFrame(), 'away': pd.DataFrame()}}
+            if not _had_tables:      # never replace tables we have with nothing
+                all_match_data[match_id] = {'team_stats': {}, 'player_stats': {'home': pd.DataFrame(), 'away': pd.DataFrame()},
+                                            'stats_version': MATCH_STATS_VERSION}
             continue
 
         match_data = calculate_match_data(match_events_df, home_team, away_team)
+        if match_data.get('stats_version') != MATCH_STATS_VERSION and _had_tables:
+            # the recompute failed: keep the cached tables (unstamped, so the
+            # next run tries again) instead of overwriting them with empty ones
+            print(f"  -> ⚠️ Recompute failed for match {match_id}: keeping the cached tables.")
+            continue
         all_match_data[match_id] = match_data
 
     with open('all_match_data.pkl', 'wb') as f: pickle.dump(all_match_data, f)

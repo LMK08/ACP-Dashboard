@@ -262,6 +262,31 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   model on the Match Predictor page; never quote its probabilities without
   the calibration expander next to them. Tests: `tests/test_dixon_coles.py`,
   `tests/test_season_sim.py`.
+- `team_rules.py` — the rules MORE THAN ONE PAGE shares (pure pandas; 2026-11-14,
+  Lucas's decisions after the metric tracing): `dribble_attempts` (the
+  dribbler's OWN rows, tag 'dribble'; Wyscout sets `groundDuel.takeOn` on
+  the defender's row too, and counting the flag made a third of all
+  "dribbles" take-ons FACED), `correct_dribble_flags` (raw_events.parquet
+  STORES `is_dribble_attempt` / `is_custom_dribble_success` per event,
+  written when the event was fetched: older events carry the old flag, so a
+  reader of the stored flags goes through this or `dribble_attempts`),
+  `ppda` (ONE rule, the season report's: the opponent's passes in its own
+  60 % per defensive action of ours there), `forward_pass_share`
+  (Directness, % of passes forward, both radar views), `shot_distance_m`.
+  RULE: a number shown on two pages is computed by ONE function here, used
+  by app.py AND process_data.py; never a second copy.
+  `tests/test_team_rules.py`.
+  TEAM RADARS: the default view is Wyscout's team file EXCEPT
+  `app.RADAR_AXES_FROM_EVENTS` (Passes into Box, Progressive Passes,
+  Dribbles), which that file does not hold and which are counted from the
+  season's events (`_radars_with_event_axes`), so they equal the
+  stage-filter view. Until then they showed passes to the final third,
+  progressive runs and successful dribbles under those labels. Never fill a
+  radar axis from a Wyscout field with another meaning.
+  MATCH FILES: `process_data.MATCH_STATS_VERSION` stamps every match in
+  all_match_data.pkl; a cached match without the current stamp is
+  recomputed once on the next scheduled run (0.2 s a match). Bump it when a
+  rule of `calculate_match_data` changes.
 - `event_tags.py` — `TagIndex` / `has_tag`: vectorised membership tests on
   the `type.secondary` tag lists. NEVER write
   `sec.apply(lambda x: tag in x)` on an events frame again: those per-row
