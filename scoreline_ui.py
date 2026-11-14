@@ -88,7 +88,7 @@ def _reliability_fig(rel_rows):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', line=dict(color='#9a948d', dash='dot'),
                              hoverinfo='skip', showlegend=False))
-    colours = {'home': theme.HOME_BLUE, 'draw': theme.CONTEXT, 'away': theme.AWAY_RED}
+    colours = {'home': theme.HOME_BLUE, 'draw': theme.CONTEXT, 'away': theme.AWAY}
     for outcome, g in rel.groupby('outcome'):
         g = g[g['n'] >= 20]
         fig.add_trace(go.Scatter(x=g['predicted'], y=g['observed'], mode='lines+markers', name=outcome,

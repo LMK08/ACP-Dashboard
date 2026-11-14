@@ -1024,8 +1024,8 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             with st.expander("📊 Season Report — performance across 7 dimensions",
                              expanded=False):
                 st.caption(
-                    "Each row shows every team in the current league as a green dot, "
-                    f"with **{selected_opponent}** highlighted as a white hexagon. "
+                    "Each row shows every other team in the current league as a grey dot, "
+                    f"with **{selected_opponent}** as the green hexagon. "
                     "Values are the team's raw per-match / per-90 numbers."
                 )
                 # Same cache-key format as Team Analysis (stage 'all'), so the same
@@ -1483,7 +1483,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
         if form_results:
             form_str = ' '.join(
-                f":{'green' if r['result'] == 'W' else 'red' if r['result'] == 'L' else 'orange'}[{r['result']}]"
+                f":{'green' if r['result'] == 'W' else 'red' if r['result'] == 'L' else 'gray'}[{r['result']}]"
                 for r in form_results
             )
             st.markdown(f"**Last {len(form_results)} results:** {form_str}")

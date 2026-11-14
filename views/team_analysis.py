@@ -283,8 +283,8 @@ def render():
         with st.expander("📊 Season Report — performance across 7 dimensions",
                           expanded=False):
             st.caption(
-                "Each row shows every team in the current league/stage as a green dot, "
-                f"with **{selected_team_t}** highlighted as a white hexagon. "
+                "Each row shows every other team in the current league/stage as a grey dot, "
+                f"with **{selected_team_t}** as the green hexagon. "
                 "Values are the team's raw per-match / per-90 numbers."
             )
             _sr_cache_key = app.season_report_cache_key(

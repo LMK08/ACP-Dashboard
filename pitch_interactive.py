@@ -45,10 +45,10 @@ SCA_SYMBOLS = [
 _SCA_SYMBOL_MAP = dict(SCA_SYMBOLS)
 
 # Diverging pass-value scale with a warm-gray midpoint (visible on cream):
-# cold blue = value conceded/negative, warm red = value created
+# blue = value conceded / negative, orange = value created (theme.py)
 VAL_CMAP = mcolors.LinearSegmentedColormap.from_list(
     'gpa_div', [theme.VALUE_NEG, theme.VALUE_MID, theme.VALUE_POS])
-VAL_COLORSCALE = [[0.0, '#2166ac'], [0.5, '#b8b2a7'], [1.0, '#b2182b']]
+VAL_COLORSCALE = theme.VALUE_COLORSCALE
 
 
 # Wyscout coordinates are 0-100 on BOTH axes of a 105 m x 68 m pitch, so one

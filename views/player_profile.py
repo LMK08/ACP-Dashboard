@@ -2607,7 +2607,7 @@ def render():
                         "Value / pass",
                         f"{pd.to_numeric(_bp_view['action_value'], errors='coerce').mean():+.4f}")
                     st.caption(
-                        "Arrow color = GPA pass value (red = value created, "
+                        "Arrow color = GPA pass value (orange = value created, "
                         "blue = negative value); arrow weight scales with "
                         "|value|. Hover an endpoint for pass details.")
 

@@ -580,7 +580,7 @@ STATS_CACHE_VERSION = 'v17'  # Bump when stat COLUMNS or cached VALUES change (v
                              # precompute_minutes.combine_season_minutes). v13 percentiles cache served
                              # stale minutes because the percentiles layer early-returns
                              # its disk cache and only this version key invalidates it.
-FIGURE_CACHE_VERSION = 'v7'  # Bump when any DRAWING code behind the cached-PNG figure
+FIGURE_CACHE_VERSION = 'v8'  # Bump when any DRAWING code behind the cached-PNG figure
                              # renderers changes (_render_match_figure_png /
                              # _render_team_figure_png / _render_league_figure_png /
                              # opposition_report._render_opp_figure_png, and
@@ -7704,8 +7704,8 @@ def plot_xg_flowchart(match_events_df, match_info):
     # 1. Get team names and set colors
     home_team = match_info.get('homeTeamName', 'Home')
     away_team = match_info.get('awayTeamName', 'Away')
-    home_color = '#0077b6' # Blue
-    away_color = '#e63946' # Red
+    home_color = theme.HOME_BLUE
+    away_color = theme.AWAY     # orange: the away side may be us, so never red
     
     # 2. Filter for relevant events (shots, penalties, own goals, and red cards)
     # --- UPDATED: Include 'own_goal' type ---
@@ -7888,7 +7888,7 @@ def plot_match_xg_history(all_matches_df, selected_team, rolling_window=5):
     """
     Plots 5-game rolling average xG with:
     1. Ordinal X-Axis (removes summer/off-season gaps visually).
-    2. Conditional Fill (Blue for positive xG diff, Red for negative).
+    2. Conditional Fill (green while xG for is ahead, red while behind).
     """
     # 1. Filter for selected team
     team_df = all_matches_df[all_matches_df['teamName'] == selected_team].copy()
@@ -7918,8 +7918,10 @@ def plot_match_xg_history(all_matches_df, selected_team, rolling_window=5):
     ax.set_facecolor('#f5f1e9')
 
     # Plot rolling average lines (smooth, no markers)
-    ax.plot(team_df['match_seq'], team_df['xG_For_Roll'], label=f'{rolling_window}-Game Rolling xG For', color='#0077b6', lw=2.5, zorder=3)
-    ax.plot(team_df['match_seq'], team_df['xG_Against_Roll'], label=f'{rolling_window}-Game Rolling xG Against', color='#e63946', lw=2.5, zorder=3)
+    # colour rule (theme.py): xG for = the team (green), against = the other
+    # side (red); the band is green while the team is ahead, red while behind
+    ax.plot(team_df['match_seq'], team_df['xG_For_Roll'], label=f'{rolling_window}-Game Rolling xG For', color=theme.FOCUS, lw=2.5, zorder=3)
+    ax.plot(team_df['match_seq'], team_df['xG_Against_Roll'], label=f'{rolling_window}-Game Rolling xG Against', color=theme.OPPONENT, lw=2.5, zorder=3)
 
     # Conditional shading on rolling averages
     ax.fill_between(
@@ -7927,14 +7929,14 @@ def plot_match_xg_history(all_matches_df, selected_team, rolling_window=5):
         team_df['xG_For_Roll'],
         team_df['xG_Against_Roll'],
         where=(team_df['xG_For_Roll'] >= team_df['xG_Against_Roll']),
-        interpolate=True, color='#0077b6', alpha=0.2
+        interpolate=True, color=theme.GOOD, alpha=0.2
     )
     ax.fill_between(
         team_df['match_seq'],
         team_df['xG_For_Roll'],
         team_df['xG_Against_Roll'],
         where=(team_df['xG_For_Roll'] < team_df['xG_Against_Roll']),
-        interpolate=True, color='#e63946', alpha=0.2
+        interpolate=True, color=theme.BAD, alpha=0.2
     )
 
     # 6. Formatting the X-Axis to show DATES instead of numbers
@@ -8883,8 +8885,8 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
                                 dimension_name: str):
     """Interactive Plotly dot-plot for one of the 7 dimensions.
 
-    Each metric becomes one row: every team plotted as a small green dot at
-    its value position, the selected team plotted as a white hexagon. Hover
+    Each metric becomes one row: every other team plotted as a small grey dot
+    at its value position, the selected team as a green hexagon. Hover
     over any dot to see the team name and its raw value."""
     import plotly.graph_objects as go
 
@@ -8942,15 +8944,15 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
             line=dict(color="#bbb", width=0.5), layer="below",
         )
 
-        # All teams as green dots (excluding selected)
+        # Every other team as a grey dot (context; green is the selected team)
         other_idx = [j for j, t in enumerate(teams) if t != team_name]
         if other_idx:
             fig.add_trace(go.Scatter(
                 x=[float(normed.iloc[j]) for j in other_idx],
                 y=[i] * len(other_idx),
                 mode='markers',
-                marker=dict(size=11, color='#3a8a3a', opacity=0.65,
-                             line=dict(width=1, color='#1f4f1f')),
+                marker=dict(size=11, color=theme.CONTEXT, opacity=0.6,
+                             line=dict(width=1, color='#5f6861')),
                 hovertext=[hover_texts[j] for j in other_idx],
                 hoverinfo='text',
                 customdata=[[teams[j]] for j in other_idx],  # click -> that team
@@ -8958,15 +8960,15 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
                 name='',
             ))
 
-        # Selected team as white hexagon
+        # Selected team as a green hexagon
         if team_name in col.index:
             sel_idx = teams.index(team_name)
             fig.add_trace(go.Scatter(
                 x=[float(normed.iloc[sel_idx])],
                 y=[i],
                 mode='markers',
-                marker=dict(size=18, color='white', symbol='hexagon',
-                             line=dict(width=2, color='#0a0a0a')),
+                marker=dict(size=18, color=theme.FOCUS, symbol='hexagon',
+                             line=dict(width=2, color='white')),
                 hovertext=[hover_texts[sel_idx]],
                 hoverinfo='text',
                 customdata=[[team_name]],
@@ -8980,7 +8982,7 @@ def render_dimension_dot_plot(team_metrics_df: pd.DataFrame, team_name: str,
         fig.add_annotation(
             xref="x", yref="y", x=1.05, y=i,
             text=f"<b>{team_val_str}</b>",
-            showarrow=False, font=dict(size=11, color='#0077b6'),
+            showarrow=False, font=dict(size=11, color=theme.FOCUS),
             xanchor='left', yanchor='middle',
         )
 

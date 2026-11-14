@@ -34,14 +34,41 @@ PITCH_LINE_MPL = 'black'     # mplsoccer line colour
 PITCH_LINE_PLOTLY = '#5a5a5a'
 
 # ---------------------------------------------------------------------------
-# Team semantics (who is who on a chart)
+# ONE MEANING PER COLOUR (RULE, 2026-11 UX pass)
+#
+#   green   FOCUS     the team or player the chart is about, and a GOOD
+#                     outcome for it: won, accurate, successful, ahead
+#   red     OPPONENT  the other side / "against", and a BAD outcome:
+#                     lost, failed, behind, a red card
+#   grey    CONTEXT   everyone else: other teams, the league average, a draw
+#   blue + orange     a PAIR with no good or bad in it: home and away in a
+#                     match, the two leagues, the two ends of a value scale
+#                     (blue below zero, orange above)
+#
+# So: never draw a good outcome in red, another team in green, or the away
+# side in red (the away side may be us). Two families are outside the rule
+# and say so in their own legend: the HEAT ramps, which run cold to hot and
+# end in red for "more" (xG of a shot, density maps), and the RADAR colours
+# below, which name a kind of metric. A radar colour changes only after
+# Lucas has seen it (radar rule).
 # ---------------------------------------------------------------------------
 FOCUS = '#1a472a'          # the team the chart is about (dark green)
 OPPONENT = '#a63a46'       # the other side / "against"
 CONTEXT = '#8d968e'        # league average, other teams
 GRID = '#ddd8c9'           # gridlines on the cream ground
-HOME_BLUE = '#0077b6'      # match charts: home / team A
-AWAY_RED = '#e63946'       # match charts: away / team B, negatives
+GOOD = FOCUS               # a good outcome for the subject of the chart
+BAD = OPPONENT             # a bad outcome for it
+ORANGE = '#e8590c'         # the partner of blue in a pair
+HOME_BLUE = '#0077b6'      # match charts: the home side
+AWAY = ORANGE              # match charts: the away side (red until 2026-11)
+# The two leagues, wherever both are on one chart
+LEAGUE_COLORS = {'L3': HOME_BLUE, 'Camp': ORANGE}
+
+
+def rgba(hex_colour, alpha):
+    """'#1a472a', 0.18 -> 'rgba(26,71,42,0.18)' (a Plotly fill)."""
+    h = hex_colour.lstrip('#')
+    return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{alpha})"
 
 # ---------------------------------------------------------------------------
 # The four team radars — SAME colours on Team Analysis, Opposition Report, PDF
@@ -72,10 +99,11 @@ XG_COLORS = ['#03045e', '#ade8f4', '#fff3b0', '#ff8c00', '#e63946', '#800f2f']
 XG_NODES = [0.0, 0.125, 0.25, 0.5, 0.75, 1.0]   # = xG 0 / .1 / .2 / .4 / .6 / .8 over XG_MAX
 XG_COLORSCALE = [[n, c] for n, c in zip(XG_NODES, XG_COLORS)]   # plotly form
 
-# GPA / OBV action value: diverging, negative <- grey -> positive
+# GPA / OBV action value: diverging, negative <- grey -> positive. Blue to
+# ORANGE since 2026-11: the positive end was red, which read as "bad".
 VALUE_NEG = '#2166ac'
 VALUE_MID = '#b8b2a7'
-VALUE_POS = '#b2182b'
+VALUE_POS = ORANGE
 VALUE_COLORSCALE = [[0.0, VALUE_NEG], [0.5, VALUE_MID], [1.0, VALUE_POS]]
 
 # ---------------------------------------------------------------------------

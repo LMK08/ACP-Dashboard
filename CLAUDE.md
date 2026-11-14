@@ -21,6 +21,17 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   app.py, opposition_report.py, obv_viz.py, pitch_visualizations.py and
   pitch_interactive.py. New plotters import `theme`; never re-type a hex.
   A colour change is a drawing change: bump `FIGURE_CACHE_VERSION`.
+  ONE MEANING PER COLOUR (RULE, 2026-11, written out at the top of theme.py):
+  green (`FOCUS` / `GOOD`) = the team or player the chart is about and a
+  good outcome for it; red (`OPPONENT` / `BAD`) = the other side and a bad
+  outcome; grey (`CONTEXT`) = everyone else and a draw; blue + orange
+  (`HOME_BLUE` / `AWAY`, `LEAGUE_COLORS`, `VALUE_NEG` / `VALUE_POS`) = a
+  pair with no good or bad in it. Never a good outcome in red, another team
+  in green, or the away side in red (it may be us). Outside the rule, and
+  saying so in their legends: the heat ramps (xG of a shot, density maps:
+  cold to hot, red = more) and the radar colours (a kind of metric; a radar
+  colour changes only after Lucas has seen it). Percentile cells run red to
+  green because low is the bad end there. `tests/test_colour_rule.py`.
 - `views/<page>.py` — one module per analysis type; app.py's chain is now
   nine one-line `views.<page>.render()` calls. A view reads its collaborators
   from the running app module (`sys.modules['__main__']`) in the binding

@@ -134,7 +134,7 @@ def _fee_scatter(calib):
     fig.add_trace(go.Scatter(x=xs, y=xs, mode='lines', name='fee = value',
                              line=dict(color=theme.FOCUS, width=1.2, dash='dot'),
                              hoverinfo='skip'))
-    colours = {'L3': theme.FOCUS, 'Camp': theme.AWAY_RED}
+    colours = theme.LEAGUE_COLORS     # the two leagues are a pair: blue and orange
     for league, grp in rows.groupby('league'):
         fig.add_trace(go.Scatter(
             x=grp['value_eur'], y=grp['fee_eur'], mode='markers',

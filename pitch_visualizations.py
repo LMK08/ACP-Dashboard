@@ -977,7 +977,7 @@ def plot_through_passes(events_df, team_name, title=None):
                          accurate['pass.endLocation.x'],
                          accurate['pass.endLocation.y'],
                          width=2, headwidth=5, headlength=4,
-                         color='#e63946', alpha=0.8, zorder=3, ax=ax,
+                         color=theme.GOOD, alpha=0.8, zorder=3, ax=ax,
                          label=f'Accurate ({len(accurate)})')
 
     ax.legend(loc='upper left', fontsize=9)
@@ -1020,11 +1020,11 @@ def plot_final_third_dribbles(events_df, team_name, title=None):
                          pd.to_numeric(arrows_df['carry.endLocation.x'], errors='coerce'),
                          pd.to_numeric(arrows_df['carry.endLocation.y'], errors='coerce'),
                          width=2, headwidth=5, headlength=4,
-                         color='#e63946', alpha=0.7, zorder=3, ax=ax)
+                         color=theme.GOOD, alpha=0.7, zorder=3, ax=ax)
 
         if not dots_df.empty:
             pitch.scatter(dots_df['location.x'], dots_df['location.y'],
-                          s=50, color='#e63946', edgecolors='white',
+                          s=50, color=theme.GOOD, edgecolors='white',
                           linewidth=0.5, zorder=3, ax=ax, alpha=0.8)
 
     ax.set_title(title or f'{team_name} — Dribbles in Final Third ({len(dribbles)})',
@@ -1090,10 +1090,10 @@ def plot_shot_assists_and_dribbles(events_df, team_name, player_name=None,
                            arrows_sa['pass.endLocation.x'],
                            arrows_sa['pass.endLocation.y'],
                            width=2, headwidth=5, headlength=4,
-                           color='#e63946', alpha=0.7, zorder=3, ax=ax_l)
+                           color=theme.GOOD, alpha=0.7, zorder=3, ax=ax_l)
         if not dots_sa.empty:
             pitch_l.scatter(dots_sa['location.x'], dots_sa['location.y'],
-                            s=50, color='#e63946', edgecolors='white',
+                            s=50, color=theme.GOOD, edgecolors='white',
                             linewidth=0.5, zorder=3, ax=ax_l, alpha=0.8)
 
     who = _short_name(player_name) if player_name else team_name
@@ -1121,17 +1121,17 @@ def plot_shot_assists_and_dribbles(events_df, team_name, player_name=None,
                            pd.to_numeric(arrows_d['carry.endLocation.x'], errors='coerce'),
                            pd.to_numeric(arrows_d['carry.endLocation.y'], errors='coerce'),
                            width=2, headwidth=5, headlength=4,
-                           color='#2a9d8f', alpha=0.7, zorder=3, ax=ax_r,
+                           color=theme.GOOD, alpha=0.7, zorder=3, ax=ax_r,
                            label=f'Successful ({len(dribbles_success)})')
         if not dots_d.empty:
             pitch_r.scatter(dots_d['location.x'], dots_d['location.y'],
-                            s=50, color='#2a9d8f', edgecolors='white',
+                            s=50, color=theme.GOOD, edgecolors='white',
                             linewidth=0.5, zorder=3, ax=ax_r, alpha=0.8)
 
     # Failed dribbles as 'x' markers
     if not dribbles_failed.empty:
         ax_r.scatter(dribbles_failed['location.x'], dribbles_failed['location.y'],
-                     s=60, color='#e63946', marker='x', linewidths=2,
+                     s=60, color=theme.BAD, marker='x', linewidths=2,
                      zorder=4, alpha=0.8,
                      label=f'Failed ({len(dribbles_failed)})')
 

@@ -321,18 +321,18 @@ def plotly_rolling_xg(all_matches_df, team, matches_summary_df=None, window=5, h
     # sign-coloured band between the rolling lines
     fig.add_trace(go.Scatter(x=x, y=ag_r, mode='lines', line=dict(width=0), hoverinfo='skip', showlegend=False))
     fig.add_trace(go.Scatter(x=x, y=np.where(for_r >= ag_r, for_r, ag_r), mode='lines', line=dict(width=0),
-                             fill='tonexty', fillcolor='rgba(0,119,182,0.18)', hoverinfo='skip', showlegend=False))
+                             fill='tonexty', fillcolor=theme.rgba(theme.GOOD, 0.18), hoverinfo='skip', showlegend=False))
     fig.add_trace(go.Scatter(x=x, y=ag_r, mode='lines', line=dict(width=0), hoverinfo='skip', showlegend=False))
     fig.add_trace(go.Scatter(x=x, y=np.where(for_r < ag_r, for_r, ag_r), mode='lines', line=dict(width=0),
-                             fill='tonexty', fillcolor='rgba(230,57,70,0.18)', hoverinfo='skip', showlegend=False))
+                             fill='tonexty', fillcolor=theme.rgba(theme.BAD, 0.18), hoverinfo='skip', showlegend=False))
     hover = ('<b>%{customdata[0]}</b> vs %{customdata[1]} %{customdata[2]}<br>'
              'match xG %{customdata[3]} for · %{customdata[4]} against<br>'
              f'{window}-game rolling: ' + '%{y:.2f}<extra>%{fullData.name}</extra>')
     fig.add_trace(go.Scatter(x=x, y=for_r, mode='lines+markers', name='xG for',
-                             line=dict(color=theme.HOME_BLUE, width=2.5), marker=dict(size=6),
+                             line=dict(color=theme.FOCUS, width=2.5), marker=dict(size=6),
                              customdata=custom, hovertemplate=hover))
     fig.add_trace(go.Scatter(x=x, y=ag_r, mode='lines+markers', name='xG against',
-                             line=dict(color=theme.AWAY_RED, width=2.5), marker=dict(size=6),
+                             line=dict(color=theme.OPPONENT, width=2.5), marker=dict(size=6),
                              customdata=custom, hovertemplate=hover))
     # season / second-stage separators, as in the matplotlib version
     if 'seasonId' in df.columns:

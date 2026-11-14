@@ -85,8 +85,12 @@ def plot_obv_momentum(minute_df, home_id, away_id, home_name, away_name,
     _style_axes(ax)
     ax.grid(False)
     mins = np.arange(max_min + 1)
-    ax.bar(mins, home_s.values, width=0.85, color=ACCENT, zorder=3)
-    ax.bar(mins, -away_s.values, width=0.85, color=OPP, alpha=0.85, zorder=3)
+    # home and away are a pair (theme.py's colour rule): blue and orange,
+    # as on the xG flow chart. They were green and red, which read as good
+    # and bad, and the away side may be us.
+    HOME, AWAY = theme.HOME_BLUE, theme.AWAY
+    ax.bar(mins, home_s.values, width=0.85, color=HOME, zorder=3)
+    ax.bar(mins, -away_s.values, width=0.85, color=AWAY, alpha=0.85, zorder=3)
     ax.axhline(0, color=INK, linewidth=0.8)
 
     ht = 45.5 if max_min >= 90 else max_min / 2
@@ -99,16 +103,16 @@ def plot_obv_momentum(minute_df, home_id, away_id, home_name, away_name,
             continue
         is_home = g.get('teamId') == home_id
         y = top * 0.88 if is_home else -top * 0.88
-        ax.scatter([gm], [y], s=60, color=ACCENT if is_home else OPP,
+        ax.scatter([gm], [y], s=60, color=HOME if is_home else AWAY,
                    edgecolors='white', linewidths=1.4, zorder=6)
         ax.annotate(f"{int(gm)}'", (gm, y), textcoords='offset points',
                     xytext=(0, 9 if is_home else -13), ha='center', fontsize=7.5,
-                    fontweight='bold', color=ACCENT if is_home else OPP, zorder=7)
+                    fontweight='bold', color=HOME if is_home else AWAY, zorder=7)
 
     ax.text(0.005, 0.98, home_name, transform=ax.transAxes, ha='left', va='top',
-            fontsize=10, fontweight='bold', color=ACCENT)
+            fontsize=10, fontweight='bold', color=HOME)
     ax.text(0.005, 0.02, away_name, transform=ax.transAxes, ha='left', va='bottom',
-            fontsize=10, fontweight='bold', color=OPP)
+            fontsize=10, fontweight='bold', color=AWAY)
     ax.set_ylim(-top, top)
     ax.set_xlim(-1, max_min + 1)
     ax.set_yticks([])
