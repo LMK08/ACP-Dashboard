@@ -109,7 +109,19 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   a section. A new block goes into a section, not below them.
 - `views/home.py` — the club's Home page (position, form, promotion odds
   from season_simulation.pkl, last match, next opponent, squad ACP Index,
-  data freshness). Every card deep-links into the detail page.
+  data freshness). Every card deep-links into the detail page. 2026-11:
+  the form tile is W / D / L chips (`form_tile_html`, an HTML tile styled as
+  an `st.metric` in the same row), a "Table" card shows five rows of our
+  série around us with crests (`table_window`), and the "Next opponent"
+  card is always filled: the match feed lists a fixture only once it is
+  PLAYED, so when it names no next fixture the card lists who is still to
+  be played in this phase (`remaining_legs`: the group's double round-robin
+  minus the legs we played IN THIS PHASE — `phase_legs_played` tells the
+  phases apart by roundId as simulate_season.py does, and the list is drawn
+  only when the simulation's group and those legs agree; no date or order
+  is in the data — never guess "who is next" from it). The Table card is
+  drawn in the first phase only (second-phase standings in the pickle leave
+  out the FPF bonus points). A row opens that team's Opposition Report.
 - `simulate_season.py` — the Monte Carlo season simulation behind Home's
   promotion tile and the Match Predictor's promotion / relegation tables
   (runs in scheduled_update.yml, writes season_simulation.pkl). Since

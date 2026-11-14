@@ -150,6 +150,29 @@ def _newest_season_label(at):
 
 def test_landing_page_renders_clean(app):
     assert not _problems(app), _problems(app)
+    # Home's cards, on the run the app booted with (no extra page run):
+    # the form chips, the table around us, and who is still to play.
+    tiles = [str(m.value) for m in app.markdown if 'class="acp-tile"' in str(m.value)]
+    assert tiles and 'Form (last 5)' in tiles[0].split('</style>')[-1]
+    frames = [d.value for d in app.dataframe]
+    table = [f for f in frames if {'Pos', 'Team', 'Pts'} <= {str(c) for c in f.columns}]
+    still = [f for f in frames if {'Opponent', 'Venue'} <= {str(c) for c in f.columns}]
+    # The table is drawn when the simulation has standings for this season
+    # (the "League position" tile then shows a place) and the season is in
+    # its first phase; at a season rollover there is neither, validly.
+    placed = any(m.label == 'League position' and str(m.value) != '—' for m in app.metric)
+    if table:
+        assert placed and 'Atlético CP' in set(table[0]['Team']) and len(table[0]) <= 5
+    if still:   # absent when the feed names the next fixture, the phase is complete or there is no group
+        assert set(still[0]['Venue']) <= {'Home', 'Away'}
+        assert 'Atlético CP' not in set(still[0]['Opponent']) and len(still[0]) >= 1
+    # today's data (first phase under way, simulation present): both cards are there
+    import pickle
+    with open(os.path.join(DASHBOARD_DIR, 'season_simulation.pkl'), 'rb') as fh:
+        sim = pickle.load(fh)
+    groups = [g for g in sim.get('groups', {}).values() if 'Atlético CP' in g.get('teams', [])]
+    if placed and groups and groups[0].get('matches_remaining', 0) > 0 and len(groups[0]['teams']) == 10:
+        assert table and still, 'first phase under way: the table and the still-to-play list are expected'
 
 
 @pytest.mark.parametrize('page', PAGES)
