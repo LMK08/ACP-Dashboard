@@ -111,6 +111,59 @@ def all_season_id_map():
     return result
 
 
+# ============================================================================
+# SEASON_GROUPS — Liga 3's first-phase séries, by season: the ONE place these
+# club lists live. Until 2026-11 there were three copies, and the Opposition
+# Report's was still the 2025/26 one a third of the way into 2026/27 (it
+# offered Amora, Académica and 1º Dezembro as opponents: no match, an empty
+# report).
+#   read by: views/league_analysis.py (the group tables and highlights),
+#            opposition_report.py (the Opponent list, via group_of),
+#            simulate_season.py (the current season's two séries).
+# AT EVERY SEASON TURNOVER: add the new season HERE as soon as the séries are
+# known. Until then no page shows last season's clubs: the Opposition Report
+# lists only clubs that have played, League Analysis shows one table, and
+# simulate_season.py skips Liga 3 (no promotion odds) with a ::warning:: line
+# on the nightly run's page; the tests that need the séries skip. Checked by
+# running the tests and simulate_season.main with a new current season that
+# has no entry (2026-11-15).
+# 'Group A' is Série A (North), 'Group B' is Série B (South). The ORDER is
+# kept as it was in the three copies (simulate_season builds its tables from
+# these lists). SPELLING: simulate_season matches these names against the
+# stored match list, the pages against the events' spelling. The two agree
+# for every club here; should they ever differ for a club, do not guess: see
+# team_rules.match_list_in_events_spelling.
+SEASON_GROUPS = {
+    191782: {  # 2025/26
+        'Group A': ('Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
+                    'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'),
+        'Group B': ('1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+                    'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'),
+    },
+    192831: {  # 2026/27
+        'Group A': ('Fafe', 'Varzim', 'Paredes', 'Paços de Ferreira', 'São João Ver',
+                    'Leça', 'Vitória Guimarães II', 'Trofense', 'Vianense', 'AD Marco 09'),
+        'Group B': ('Louletano', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
+                    'UD Oliveirense', 'Vitória de Sernache', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'),
+    },
+}
+
+
+def group_of(season_id, team):
+    """The clubs of `team`'s group in `season_id`, `team` included, in the
+    stored order. An empty tuple when the season has no groups here (every
+    season before 2025/26, every Campeonato season), when the team is in
+    none, or when `season_id` is not one season (None, a list of seasons)."""
+    try:
+        groups = SEASON_GROUPS.get(season_id, {})
+    except TypeError:          # unhashable: a list of seasons
+        return ()
+    for clubs in groups.values():
+        if team in clubs:
+            return tuple(clubs)
+    return ()
+
+
 def is_reserve_team(team_name):
     """A club's B side ('<club> II': Sporting CP II, Sporting Braga II,
     Vitória Guimarães II, FC Alverca II, Chaves II, Portimonense II,

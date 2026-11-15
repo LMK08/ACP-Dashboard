@@ -37,7 +37,7 @@ from itertools import product
 import numpy as np
 import pandas as pd
 
-from league_config import COMPETITIONS
+from league_config import COMPETITIONS, SEASON_GROUPS
 from models.scoreline import season_sim
 from models.scoreline.season_sim import ScorelineSampler
 
@@ -47,16 +47,19 @@ DASH_DIR = os.path.dirname(os.path.abspath(__file__))
 
 N_SIMULATIONS = 10000
 
-# SEASON-SPECIFIC — update at every season turnover (must match the current
-# season's Série A/B rosters; app.py SEASON_GROUPS carries the same lists).
-# 2026/27 (seasonId 192831):
-FIRST_STAGE_GROUPS = {
-    'North': ['Fafe', 'Varzim', 'Paredes', 'Paços de Ferreira', 'São João Ver',
-              'Leça', 'Vitória Guimarães II', 'Trofense', 'Vianense', 'AD Marco 09'],
-    'South': ['Louletano', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-              'UD Oliveirense', 'Vitória de Sernache', 'CF Os Belenenses',
-              'Lusitano Évora 1911', 'Atlético CP'],
-}
+# SEASON-SPECIFIC — the current season's Série A/B rosters. They are read from
+# league_config.SEASON_GROUPS, the one place the group lists live: update
+# THERE at every season turnover (until 2026-11 this file had its own copy,
+# which a turnover could leave on last season's séries without a sound).
+# A current season with no entry there gives two EMPTY lists: simulate_liga3
+# then skips Liga 3 with a ::warning:: line and the rest of the job goes on.
+def _first_stage_groups(season_id):
+    groups = SEASON_GROUPS.get(season_id) or {}
+    return {'North': list(groups.get('Group A', ())),
+            'South': list(groups.get('Group B', ()))}
+
+
+FIRST_STAGE_GROUPS = _first_stage_groups(COMPETITIONS[43324]["current_season"])
 
 # Head-to-head tiebreaker overrides for first-stage positions.
 # calculate_league_table uses GD, but FPF rules use head-to-head first.
@@ -1077,6 +1080,12 @@ def simulate_liga3(matches_df, sampler, n_sims=None):
     print("=" * 60)
     print("Liga 3 Season Simulation")
     print("=" * 60)
+
+    if not (FIRST_STAGE_GROUPS['North'] and FIRST_STAGE_GROUPS['South']):
+        # GitHub shows a line that starts with ::warning:: on the run's page
+        print(f"::warning::simulate_season: league_config.SEASON_GROUPS has no séries for the "
+              f"current Liga 3 season {SEASON_ID}. Liga 3 simulation skipped: add them in league_config.py.")
+        return {}
 
     season_matches = matches_df[matches_df['seasonId'] == SEASON_ID].copy()
     # Only a match with a result counts as played: should the schedule ever

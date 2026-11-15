@@ -32,6 +32,20 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   cold to hot, red = more) and the radar colours (a kind of metric; a radar
   colour changes only after Lucas has seen it). Percentile cells run red to
   green because low is the bad end there. `tests/test_colour_rule.py`.
+- `league_config.SEASON_GROUPS` — Liga 3's two first-phase séries, by
+  season: the ONE place the group lists live (2026-11; before, three copies,
+  and the Opposition Report's was still last season's a third of the way
+  into 2026/27). Read by views/league_analysis.py, by the Opposition
+  Report's Opponent list (`opposition_report._season_opponents`: the clubs
+  with a match in the chosen season plus our own group of THAT season,
+  never another season's) and by simulate_season.py (the current season).
+  SEASON TURNOVER: add the new season's groups there as soon as the séries
+  are known. Until then no page shows last season's clubs: the picker lists
+  only clubs that have played, League Analysis shows one table,
+  simulate_season.py skips Liga 3 (no promotion odds) with a `::warning::`
+  line on the nightly run's page, and the tests that need the séries skip.
+  A club with no match in the season gets "No matches yet", never a rating.
+  Never spell out a group in a page (`tests/test_season_groups.py`).
 - `views/<page>.py` — one module per analysis type; app.py's chain is now
   nine one-line `views.<page>.render()` calls. A view reads its collaborators
   from the running app module (`sys.modules['__main__']`) in the binding

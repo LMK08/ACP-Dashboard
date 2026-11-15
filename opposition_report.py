@@ -16,6 +16,7 @@ import sys
 import io
 import pitch_visualizations as pv
 import context_bar
+import league_config
 import page_sections
 import team_interactive as ti
 import theme
@@ -39,16 +40,6 @@ def _get_transferred_players():
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-# Liga 3 ONLY — ACP's own 2025/26 group, seeded into the opponent list so the
-# rivals that matter are pickable before they have played. Meaningless for any
-# other competition: see the guard at the all_opponents union.
-GROUP_B_TEAMS = [
-    '1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra',
-    'União Santarém', 'Amora', 'Académica', 'CF Os Belenenses',
-    'Lusitano Évora 1911',
-]
-LIGA3_COMP_ID = 43324
-
 OUR_TEAM = 'Atlético CP'
 
 OFFENSIVE_METRICS = [
@@ -611,10 +602,45 @@ def _generate_team_synopsis(stats_pct_df, team_name):
     return strengths, weaknesses, profiles
 
 
+def _season_opponents(season_matches_df, season_id, our_team=OUR_TEAM):
+    """The clubs the Opponent picker offers for ONE season, sorted: every club
+    with a match in that season's match list, plus the clubs of our own group
+    in THAT season where league_config.SEASON_GROUPS has one. The match feed
+    lists a fixture only once it is played, so early in a season the group's
+    clubs that have not played yet would be missing without it.
+
+    Never another season's group. Until 2026-11 a hard-coded copy of the
+    2025/26 Série B was added to every Liga 3 season. In every season but
+    2025/26 the picker then offered three to six clubs with no match in it
+    (2026/27: 1º Dezembro, Amora, Académica), kept such a club across a
+    season switch (it was "in the list") and drew an empty report for it."""
+    clubs = set()
+    for col in ('homeTeamName', 'awayTeamName'):
+        if col in season_matches_df.columns:
+            clubs |= set(season_matches_df[col].dropna().unique())
+    clubs |= set(league_config.group_of(season_id, our_team))
+    clubs.discard(our_team)
+    return sorted(clubs)
+
+
+def _club_has_match(season_matches_df, team):
+    """True when `team` is in the season's match list at all, home or away."""
+    for col in ('homeTeamName', 'awayTeamName'):
+        if col in season_matches_df.columns and (season_matches_df[col] == team).any():
+            return True
+    return False
+
+
 def _generate_key_takeaways(team_name, strengths, weaknesses, profiles,
                             form_results, key_players, set_piece_df,
-                            stats_pct_df):
-    """5-8 auto-generated bullet points combining all analysis."""
+                            stats_pct_df, has_matches=True):
+    """5-8 auto-generated bullet points combining all analysis.
+
+    has_matches=False: the club is not in the season's match list at all (a
+    club of our own group that has not played yet; the Opponent list offers
+    those). It gets a line that says so, not a rating: until 2026-11 it got
+    "Offensive Threat: Average", a verdict on nothing. A club that is in the
+    match list gets exactly the lines it always did."""
     takeaways = []
 
     # 1. Tactical profile
@@ -629,10 +655,15 @@ def _generate_key_takeaways(team_name, strengths, weaknesses, profiles,
     if off_str:
         ms = ', '.join(f"{s[0]} ({s[1]:.0f}th pct)" for s in off_str[:3])
         takeaways.append(f"**Offensive Strengths:** Strong in {ms}.")
-    else:
+    elif has_matches:
         takeaways.append(
             "**Offensive Threat:** Average; no standout attacking "
             "metrics above 65th percentile."
+        )
+    else:
+        takeaways.append(
+            f"**No matches yet:** {str(team_name).strip()} has no match in this "
+            "season's data, so there is nothing to rate."
         )
 
     # 3. Defensive vulnerabilities
@@ -752,20 +783,11 @@ def render_opposition_report(raw_events_df, matches_summary_df,
 
     next_fixture = _find_next_fixture(matches_summary_df, selected_season_id)
 
-    # Seed the list with ACP's group only when Liga 3 is actually selected.
-    # Unioned unconditionally, those 9 Liga 3 sides also landed in Campeonato's
-    # opponent list — and since the list is sorted, '1º Dezembro' became
-    # Campeonato's DEFAULT opponent: a team with no matches in the competition
-    # being viewed.
-    _seed_teams = (set(GROUP_B_TEAMS)
-                   if comp_ids is None or LIGA3_COMP_ID in comp_ids
-                   else set())
-    all_opponents = sorted(
-        _seed_teams
-        | set(season_matches_df['homeTeamName'].dropna().unique())
-        | set(season_matches_df['awayTeamName'].dropna().unique())
-    )
-    all_opponents = [t for t in all_opponents if t != OUR_TEAM]
+    # The season's clubs, plus our own group of THIS season where one is
+    # defined (see _season_opponents). A group is keyed by season, and a
+    # Wyscout season belongs to one competition, so a Campeonato season never
+    # gets Liga 3 clubs and an older Liga 3 season never gets today's group.
+    all_opponents = _season_opponents(season_matches_df, selected_season_id)
 
     if not all_opponents:
         st.warning("No opponent teams found for this season.")
@@ -1634,6 +1656,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
             selected_opponent, strengths, weaknesses, profiles,
             form_results, key_players, set_piece_df if not set_piece_df.empty else None,
             stats_df_pct,
+            has_matches=_club_has_match(season_matches_df, selected_opponent),
         )
 
         for t in takeaways:

@@ -10,6 +10,8 @@ import pandas as pd
 import streamlit as st
 import sys
 
+from league_config import SEASON_GROUPS
+
 
 def _app():
     return sys.modules['__main__']
@@ -70,28 +72,16 @@ def render():
         st.warning(f"Could not calculate set piece metrics: {e}")
 
     # --- 2. Define Team Lists (Season-dependent groups) ---
-    # Seasons with defined Group A/B; other seasons show all teams together
-    SEASON_GROUPS = {
-        191782: {
-            'Group A': ['Fafe', 'Varzim', 'Paredes', 'Sanjoanense', 'São João Ver',
-                        'Amarante', 'Vitória Guimarães II', 'Trofense', 'Sporting Braga II', 'AD Marco 09'],
-            'Group B': ['1º Dezembro', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-                        'Amora', 'Académica', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
-        },
-        192831: {
-            'Group A': ['Fafe', 'Varzim', 'Paredes', 'Paços de Ferreira', 'São João Ver',
-                        'Leça', 'Vitória Guimarães II', 'Trofense', 'Vianense', 'AD Marco 09'],
-            'Group B': ['Louletano', 'Caldas', 'Sporting Covilhã', 'Mafra', 'União Santarém',
-                        'UD Oliveirense', 'Vitória de Sernache', 'CF Os Belenenses', 'Lusitano Évora 1911', 'Atlético CP'],
-        }
-    }
-
+    # Seasons with defined Group A/B; other seasons show all teams together.
+    # The lists live in league_config.SEASON_GROUPS (one place for this page,
+    # the Opposition Report and the season simulation; until 2026-11 this
+    # page had its own copy). Same clubs in the same order.
     has_groups = selected_season_id in SEASON_GROUPS
     all_season_teams = sorted(pd.concat([league_matches_df.get('homeTeamName'), league_matches_df.get('awayTeamName')]).dropna().unique())
 
     if has_groups:
-        GROUP_A_TEAMS = SEASON_GROUPS[selected_season_id]['Group A']
-        GROUP_B_TEAMS = SEASON_GROUPS[selected_season_id]['Group B']
+        GROUP_A_TEAMS = list(SEASON_GROUPS[selected_season_id]['Group A'])
+        GROUP_B_TEAMS = list(SEASON_GROUPS[selected_season_id]['Group B'])
         valid_group_a_teams = [t for t in GROUP_A_TEAMS if t in combined_stats_df.index]
         valid_group_b_teams = [t for t in GROUP_B_TEAMS if t in combined_stats_df.index]
         ALL_TEAMS_TO_HIGHLIGHT = list(set(GROUP_A_TEAMS + GROUP_B_TEAMS))

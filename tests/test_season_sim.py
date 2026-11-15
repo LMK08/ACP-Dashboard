@@ -23,6 +23,15 @@ needs_data = pytest.mark.skipif(not (os.path.exists(PARAMS) and os.path.exists(M
                                 reason='dc_params.json / matches_summary.parquet not present')
 
 
+def _needs_current_groups(ss):
+    """The tests that run the Liga 3 simulation on the CURRENT season need its
+    two séries (league_config.SEASON_GROUPS). A new season whose séries are
+    not entered yet has none: the simulation skips Liga 3 by design
+    (tests/test_season_groups.py), and so do these tests."""
+    if not (ss.FIRST_STAGE_GROUPS['North'] and ss.FIRST_STAGE_GROUPS['South']):
+        pytest.skip('league_config.SEASON_GROUPS has no séries for the current Liga 3 season yet')
+
+
 def _toy_model():
     return dc.DixonColes(teams=['A', 'B', 'C', 'D'], leagues=[1],
                          att=np.array([0.3, 0.0, -0.2, 0.1]), dfn=np.array([0.1, -0.1, 0.0, 0.2]),
@@ -99,6 +108,7 @@ def test_apply_results_bookkeeping_is_exact():
 @needs_data
 def test_liga3_run_matches_the_format():
     import simulate_season as ss
+    _needs_current_groups(ss)
     matches = pd.read_parquet(MATCHES)
     sampler = ScorelineSampler(season_sim.load_params(PARAMS), 43324)
     res = ss.simulate_liga3(matches, sampler, n_sims=300)
@@ -158,6 +168,7 @@ def test_refit_keeps_the_tuned_hyperparameters():
 def test_main_writes_the_pickle_the_pages_read(tmp_path):
     import simulate_season as ss
     from league_config import COMPETITIONS
+    _needs_current_groups(ss)
     out = tmp_path / 'sim.pkl'
     ss.main(['--sims', '40', '--no-refit', '--out', str(out)])
     with open(out, 'rb') as fh:
@@ -200,6 +211,7 @@ def test_liga3_counts_only_matches_with_a_result_as_played():
     """A fixture listed ahead of time (no score) stays in the remaining set."""
     import simulate_season as ss
     from league_config import COMPETITIONS
+    _needs_current_groups(ss)
     sid = COMPETITIONS[43324]['current_season']
     north = ss.FIRST_STAGE_GROUPS['North']
     rows = [
