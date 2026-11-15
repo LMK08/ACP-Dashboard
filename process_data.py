@@ -864,6 +864,60 @@ def calculate_team_corner_stats(events_df, matches_summary_df, selected_team):
 
     return corner_stats_df
 
+def compute_season_team_stats(season_team_stats, events_df, matches_summary_df, current_season_ids, historical_season_ids):
+    """The season-long corner tables, {season_id: {club: {'corners': table}}}.
+
+    The season in progress is computed on every run. A finished season is
+    computed once, and AGAIN when a club of its match list that took corners
+    has no table (team_rules.clubs_missing_corner_entry): until 2026-11-15
+    the file held 10 of the 56 clubs of 2023/24 and no table for the two
+    clubs the match list spells differently from the events.
+
+    A club's table is found by its NAME in the events, and the page asks for
+    it under the events' spelling, so the match list is read in that spelling
+    here (team_rules.match_list_in_events_spelling). The stored match list is
+    not changed. Returns (the dict, the seasons computed in this run)."""
+    stats_matches_df, _ = team_rules.match_list_in_events_spelling(matches_summary_df, events_df)
+    corner_cols = [c for c in ('seasonId', 'team.name', 'possession.id', 'possession.eventIndex') if c in events_df.columns]
+    if 'type.primary' in events_df.columns:
+        corner_rows = events_df.loc[events_df['type.primary'] == 'corner', corner_cols]
+    else:
+        corner_rows = events_df.iloc[0:0][corner_cols]
+
+    seasons_to_compute = list(current_season_ids)  # Always recompute current seasons
+    for sid in historical_season_ids:
+        if sid in seasons_to_compute:
+            continue
+        if sid not in season_team_stats:
+            seasons_to_compute.append(sid)  # First run: also compute missing historical
+            continue
+        missing = team_rules.clubs_missing_corner_entry(
+            stats_matches_df[stats_matches_df['seasonId'] == sid],
+            corner_rows[corner_rows['seasonId'] == sid] if 'seasonId' in corner_rows.columns else corner_rows.iloc[0:0],
+            season_team_stats.get(sid))
+        if missing:
+            print(f"   Season {sid}: no corner table for {len(missing)} club(s) that took corners "
+                  f"({', '.join(repr(m) for m in missing[:4])}{', ...' if len(missing) > 4 else ''}): computing the season again.")
+            seasons_to_compute.append(sid)
+    print(f"   Recomputing team stats for {len(seasons_to_compute)} season(s): {seasons_to_compute}")
+
+    for season_id in seasons_to_compute:
+        # the season's own copy: calculate_team_corner_stats writes an
+        # 'is_corner' column into the frame it is given. One copy per SEASON
+        # is enough (it was one per club: 56 copies of a 1.3-million-row frame
+        # for a Campeonato season).
+        season_events = events_df[events_df['seasonId'] == season_id].copy()
+        season_matches = stats_matches_df[stats_matches_df['seasonId'] == season_id].copy()
+        all_teams = pd.concat([season_matches['homeTeamName'], season_matches['awayTeamName']]).dropna().unique()
+        season_team_stats[season_id] = {}
+        for team in tqdm(all_teams, desc=f"Processing Season {season_id} Team Stats"):
+            team_corners = calculate_team_corner_stats(season_events, season_matches, team)
+            if team_corners is not None:
+                season_team_stats[season_id][team] = {'corners': team_corners}
+        del season_events
+    return season_team_stats, seasons_to_compute
+
+
 def add_custom_dribble_success(events_df):
     """
     Applies custom logic to determine if a dribble was successful.
@@ -1898,22 +1952,8 @@ def main():
             season_team_stats = pickle.load(f)
         print(f"   Cached stats for {len(season_team_stats)} seasons.")
 
-    # Determine which seasons need (re)computing
-    seasons_to_compute = list(CURRENT_SEASON_IDS)  # Always recompute current seasons
-    for sid in HISTORICAL_SEASON_IDS:
-        if sid not in season_team_stats:
-            seasons_to_compute.append(sid)  # First run: also compute missing historical
-    print(f"   Recomputing team stats for {len(seasons_to_compute)} season(s): {seasons_to_compute}")
-
-    for season_id in seasons_to_compute:
-        season_events = all_raw_events_df[all_raw_events_df['seasonId'] == season_id].copy()
-        season_matches = all_matches_summary_df[all_matches_summary_df['seasonId'] == season_id].copy()
-        all_teams = pd.concat([season_matches['homeTeamName'], season_matches['awayTeamName']]).dropna().unique()
-        season_team_stats[season_id] = {}
-        for team in tqdm(all_teams, desc=f"Processing Season {season_id} Team Stats"):
-            team_corners = calculate_team_corner_stats(season_events.copy(), season_matches, team)
-            if team_corners is not None:
-                season_team_stats[season_id][team] = {'corners': team_corners}
+    season_team_stats, _recomputed = compute_season_team_stats(
+        season_team_stats, all_raw_events_df, all_matches_summary_df, CURRENT_SEASON_IDS, HISTORICAL_SEASON_IDS)
 
     with open('season_team_stats.pkl', 'wb') as f: pickle.dump(season_team_stats, f)
     print("✅ Per-season team stats saved to 'season_team_stats.pkl'")

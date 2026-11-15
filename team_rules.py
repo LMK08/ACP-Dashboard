@@ -246,6 +246,32 @@ def relabel_match_tables(match_data, renames):
     return changed
 
 
+def clubs_missing_corner_entry(season_matches, season_corner_rows, entries):
+    """The clubs of one season's match list that took a corner in the events
+    and have no entry in `entries` ({club: stats}), sorted.
+
+    The pipeline computes a finished season's corner tables ONCE
+    (season_team_stats.pkl). This says when that file is incomplete: a club
+    was spelt differently when it was built, or the season's events were not
+    all in yet (2026-11-15: 10 of the 56 clubs of 2023/24 had an entry).
+    Only a corner the table can use counts (it needs the possession and the
+    event's place in it), so a club that can never get a table does not send
+    the season round again on every run."""
+    if season_matches is None or len(season_matches) == 0:
+        return []
+    listed = (set(season_matches['homeTeamName'].dropna().astype(str))
+              | set(season_matches['awayTeamName'].dropna().astype(str)))
+    rows = season_corner_rows
+    if rows is None or len(rows) == 0 or 'team.name' not in rows.columns:
+        return []
+    for col in ('possession.id', 'possession.eventIndex'):
+        if col not in rows.columns:
+            return []
+        rows = rows[rows[col].notna()]
+    took = set(rows['team.name'].dropna().astype(str))
+    return sorted((listed & took) - set(entries or {}))
+
+
 def entry_for_team(by_team, team):
     """`by_team[team]` for a dict keyed by club name (a match's line-up
     sheets are keyed by the events' spelling), also when the two spellings

@@ -316,11 +316,19 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   `scoreline_ui.load_model` sets: the pipeline's lookups (season
   simulation, build_dc) stay exact. Nothing on disk changes: the pipeline
   still reads the stored spelling, and the rule does nothing once the
-  stored list agrees with the events. NOT fixed by it: Team Analysis's
-  "Corner Kick Summary" reads `season_team_stats.pkl`, which process_data
-  builds ONCE per finished season under the stored spelling, so it has no
-  entry for these two clubs (a pipeline change plus a refresh would be
-  needed). A cache keyed by team NAME carries the season's
+  stored list agrees with the events. Team Analysis's "Corner Kick
+  Summary" reads `season_team_stats.pkl`, built by the pipeline
+  (`process_data.compute_season_team_stats`): the season in progress on
+  every run, a finished season ONCE, and again when a club of its match
+  list that took corners has no table
+  (`team_rules.clubs_missing_corner_entry`). That step reads the match
+  list in the events' spelling too, so its keys are the names the app
+  asks for. Until 2026-11-15 the file had no table for the two clubs and
+  held only 10 of the 56 clubs of the 2023/24 Campeonato (built before
+  that season's events were all in). A club with no usable corner gets no
+  entry, and must not get an empty one: `app.get_season_team_stats` merges
+  seasons with `dict.update`, so an empty entry of a later season would
+  hide an earlier season's table. A cache keyed by team NAME carries the season's
   names in its stamp (`app._season_team_names_fp`). Still in the stored
   spelling, by design: `models/coaches/coach_team_match.parquet` (the
   coach pages read their own names) and `dc_params.json`.

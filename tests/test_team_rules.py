@@ -415,3 +415,84 @@ def test_a_bold_caption_never_ends_in_an_untrimmed_team_name():
             for m in raw.finditer(line):
                 assert '.strip()' in m.group(0), f'{path}:{n}: {m.group(0)}'
 
+
+# --- the nightly job's season corner tables (season_team_stats.pkl) -------------
+
+def _corner(season, match, team, possession, xg=0.1):
+    """One corner possession: the corner, then a shot from it."""
+    base = {'seasonId': season, 'matchId': match, 'team.name': team, 'possession.id': possession,
+            'pass.endLocation.x': None, 'pass.endLocation.y': None, 'shot.xg': None, 'shot.isGoal': None}
+    return [dict(base, **{'type.primary': 'corner', 'possession.eventIndex': 0, 'location.x': 100.0, 'location.y': 0.0,
+                          'pass.endLocation.x': 95.0, 'pass.endLocation.y': 50.0}),
+            dict(base, **{'type.primary': 'shot', 'possession.eventIndex': 1, 'location.x': 95.0, 'location.y': 50.0,
+                          'shot.xg': xg, 'shot.isGoal': False})]
+
+
+def test_a_club_that_took_corners_and_has_no_table_is_reported():
+    matches = pd.DataFrame({'homeTeamName': ['Montalegre', 'Fafe'], 'awayTeamName': ['Pevidém', 'Anadia']})
+    corners = pd.DataFrame({'team.name': ['Montalegre', 'Pevidém', 'Fafe', 'Anadia', 'Elsewhere'],
+                            'possession.id': [1, 2, 3, None, 5], 'possession.eventIndex': [0, 0, 0, 0, 0]})
+    have = {'Montalegre': {'corners': 'table'}}
+    # Anadia's only corner cannot be used (no possession): it can never get a table, so it is not asked for
+    assert team_rules.clubs_missing_corner_entry(matches, corners, have) == ['Fafe', 'Pevidém']
+    # nor is a club whose only corner has no place in its possession (the table needs the next event)
+    no_index = corners.assign(**{'possession.eventIndex': [0, 0, None, 0, 0]})
+    assert team_rules.clubs_missing_corner_entry(matches, no_index, have) == ['Pevidém']
+    assert team_rules.clubs_missing_corner_entry(matches, corners, dict(have, Fafe={}, **{'Pevidém': {}})) == []
+    assert team_rules.clubs_missing_corner_entry(matches, corners, None) == ['Fafe', 'Montalegre', 'Pevidém']
+    assert team_rules.clubs_missing_corner_entry(matches, corners.iloc[0:0], have) == []
+    assert team_rules.clubs_missing_corner_entry(matches.iloc[0:0], corners, have) == []
+    assert team_rules.clubs_missing_corner_entry(matches, corners[['team.name']], have) == []
+
+
+def test_the_job_fills_a_finished_season_that_lacks_a_club(monkeypatch):
+    """Season 10 is finished and its file lacks the club the match list spells
+    differently: it is computed again, under the events' spelling. Season 20
+    is finished and complete: not touched. Season 30 is in progress: always
+    computed."""
+    import contextlib
+    import io
+    events = pd.DataFrame(
+        _corner(10, 1, 'Montalegre', 101) + _corner(10, 1, 'Pevidém', 102, xg=0.3) + _corner(10, 1, 'Pevidém', 103)
+        + _corner(20, 2, 'Fafe', 201) + [dict(_corner(20, 2, 'Anadia', 202)[1], **{'type.primary': 'pass'})]
+        + _corner(30, 3, 'Braga', 301) + _corner(30, 3, 'Amora', 302)
+        + [dict(_corner(30, 4, 'Canelas', 303)[1], **{'type.primary': 'pass'})])     # Canelas took no corner
+    matches = pd.DataFrame({'matchId': [1, 2, 3, 4], 'seasonId': [10, 20, 30, 30],
+                            'homeTeamName': ['Montalegre', 'Fafe', 'Braga', 'Braga'],
+                            'awayTeamName': ['Pevidem', 'Anadia', 'Amora', 'Canelas'], 'status': ['Played'] * 4})
+    untouched = {'Fafe': {'corners': 'the table computed once'}}        # Anadia took no corner: nothing is missing
+    stored = {10: {'Montalegre': {'corners': 'an old table'}}, 20: untouched}
+    events_before, matches_before = events.copy(), matches.copy()
+
+    _, version = _calculate_match_data(monkeypatch, pd.DataFrame({'matchId': [1], 'team.name': ['A']}), 'A', 'B')
+    import process_data                                               # importable now (see _calculate_match_data)
+    chained = pd.get_option('mode.chained_assignment')
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            out, computed = process_data.compute_season_team_stats(stored, events, matches, [30], [10, 20])
+    finally:
+        pd.set_option('mode.chained_assignment', chained)
+    assert computed == [30, 10]
+    assert out[20] is untouched
+    assert sorted(out[10]) == ['Montalegre', 'Pevidém'] and sorted(out[30]) == ['Amora', 'Braga']
+    # a club with no table gets NO entry, not an empty one: the app merges seasons
+    # with dict.update, and an empty entry of a later season would hide an earlier table
+    assert 'Canelas' not in out[30] and all(entry.get('corners') is not None for entry in out[30].values())
+    table = out[10]['Pevidém']['corners']
+    assert list(table.columns) == ['Pevidém']                         # the name the page asks for
+    assert table.at['Total Corners', 'Pevidém'] == 2 and table.at['Total xG', 'Pevidém'] == '0.400'
+    assert table.at['Corners/Match', 'Pevidém'] == '2.0'              # its ONE match in the list is found
+    pd.testing.assert_frame_equal(events, events_before)              # the events given are not written into
+    pd.testing.assert_frame_equal(matches, matches_before)            # nor is the stored match list
+    # a second run finds nothing to fill
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        again, computed = process_data.compute_season_team_stats(out, events, matches, [], [10, 20])
+    assert computed == [] and again[10] is out[10]
+
+
+def test_the_job_builds_the_corner_tables_through_the_one_step():
+    pdata = _source('process_data.py')
+    assert 'season_team_stats, _recomputed = compute_season_team_stats(' in pdata
+    assert 'team_rules.clubs_missing_corner_entry(' in pdata
+    assert 'calculate_team_corner_stats(season_events.copy(), season_matches, team)' not in pdata
+
