@@ -177,6 +177,14 @@ def team_leagues(df):
     return both.sort_values('date', kind='stable').groupby('team')['league'].last()
 
 
+def _name_key(name):
+    """A club's name without accents, capitals or stray spaces (the rule of
+    team_rules.team_name_key; kept here so this module stays free of pandas-side imports)."""
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(name))
+    return ' '.join(''.join(c for c in s if not unicodedata.combining(c)).casefold().split())
+
+
 @dataclass
 class DixonColes:
     teams: list = field(default_factory=list)
@@ -194,6 +202,10 @@ class DixonColes:
     weight_sum: float = 0.0
     prior: str = 'zero'              # 'zero' | 'league_mean' — what the L2 penalty shrinks toward
     league_means: dict = None        # league -> (mean attack, mean defence); zeros under 'zero'
+    # APP ONLY (scoreline_ui sets it): find a fitted club under a name that
+    # differs only by accents, capitals or spaces. Off by default, so the
+    # pipeline (season simulation, build_dc) looks a team up exactly as before.
+    loose_names: bool = False
 
     # ---- fitting ---------------------------------------------------------
     @classmethod
@@ -270,9 +282,31 @@ class DixonColes:
             m = self.league_means.get(self.leagues[0] if self.leagues else None, (0.0, 0.0))
         return float(m[0]), float(m[1])
 
-    def _team_params(self, team, league=None):
+    def _team_index(self, team):
+        """Where `team` sits in the fit, or None. The exact name first; else,
+        with `loose_names` (the app), the ONE fitted team whose name differs
+        only by accents, capitals or spaces. The fit is keyed by the stored match list's spelling and the
+        app names a club as the events do ('Mortágua' / 'Mortágua '): without
+        this the app would show a fitted club as one the fit has never seen.
+        Two fitted names with the same key ('Pevidem', 'Pevidém') are never
+        guessed between."""
         if team in self.teams:
-            i = self.teams.index(team)
+            return self.teams.index(team)
+        if not self.loose_names or not isinstance(team, str):
+            return None
+        cache = self.__dict__.get('_by_key')
+        if cache is None or cache[0] != len(self.teams):
+            by_key = {}
+            for i, name in enumerate(self.teams):
+                by_key.setdefault(_name_key(name), []).append(i)
+            cache = (len(self.teams), by_key)
+            self.__dict__['_by_key'] = cache
+        same = cache[1].get(_name_key(team), [])
+        return same[0] if len(same) == 1 else None
+
+    def _team_params(self, team, league=None):
+        i = self._team_index(team)
+        if i is not None:
             return float(self.att[i]), float(self.dfn[i]), True
         m_att, m_def = self.league_mean(league)
         return m_att, m_def, False

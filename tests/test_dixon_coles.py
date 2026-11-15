@@ -295,3 +295,34 @@ def test_league_mean_prior_rejects_teams_without_matches():
     # the zero prior still accepts extras (they sit at zero, as before)
     m = dc.DixonColes.fit(df, prior='zero', teams=['Ghost FC'])
     assert 'Ghost FC' in m.teams
+
+
+def test_a_fitted_club_is_found_under_another_spelling_of_its_name():
+    """The fit is keyed by the stored match list's spelling; the app names a
+    club as the events do. A name that differs only by accents, capitals or
+    spaces is the fitted club, never 'a team the fit has never seen'; two
+    fitted names with one key are not guessed between."""
+    model = dc.DixonColes(teams=['Mortágua', 'Pevidem', 'Pevidém', 'Fafe'], leagues=[1],
+                          att=np.array([0.30, -0.20, 0.10, 0.05]), dfn=np.array([0.40, -0.10, 0.20, 0.00]),
+                          base=np.array([0.1]), league_means={1: (0.0, 0.0)})
+    # off by default: the pipeline (season simulation, build_dc) looks a team up exactly
+    assert model.loose_names is False
+    assert model._team_params('Mortágua ', 1)[2] is False
+    assert 'loose_names' not in model.to_dict()
+    model.loose_names = True                                             # what scoreline_ui.load_model sets
+    assert model._team_params('Mortágua', 1) == (0.30, 0.40, True)
+    assert model._team_params('Mortágua ', 1) == (0.30, 0.40, True)      # the events' trailing space
+    assert model._team_params('Pevidém', 1) == (0.10, 0.20, True)        # exact name wins
+    assert model._team_params('Pevidem', 1) == (-0.20, -0.10, True)
+    assert model._team_params('PEVIDEM', 1)[2] is False                  # two candidates: no guess
+    assert model._team_params('Fafe II', 1)[2] is False                  # another club
+    assert model._team_params(None, 1)[2] is False
+    table = model.strength_table(teams=['Mortágua ', 'Fafe'], league=1)
+    assert bool(table.set_index('team').at['Mortágua ', 'known']) is True
+
+
+def test_only_the_app_loads_the_model_with_loose_names():
+    src = lambda path: open(os.path.join(DASHBOARD_DIR, path), encoding='utf-8').read()
+    assert 'model.loose_names = True' in src('scoreline_ui.py')
+    for pipeline in ('simulate_season.py', 'models/scoreline/build_dc.py', 'models/scoreline/season_sim.py'):
+        assert 'loose_names' not in src(pipeline), pipeline

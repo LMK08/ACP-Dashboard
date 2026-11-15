@@ -26,7 +26,13 @@ BACKTEST_PATH = os.path.join(_HERE, 'models', 'scoreline', 'dc_backtest.json')
 @st.cache_resource(show_spinner=False)
 def load_model(mtime):
     """mtime is part of the key so a rebuilt params file is picked up."""
-    return DixonColes.load(PARAMS_PATH)
+    model = DixonColes.load(PARAMS_PATH)
+    # The fit is keyed by the STORED match list's spelling; the app names a
+    # club as the events do (team_rules.match_list_in_events_spelling):
+    # 'Mortágua ' must find the fitted 'Mortágua', not read as a club the fit
+    # has never seen. Set here only: the pipeline's lookups stay exact.
+    model.loose_names = True
+    return model
 
 
 @st.cache_data(show_spinner=False)

@@ -694,6 +694,19 @@ def _cache_is_fresh(cache_path, fingerprint):
         return False
 
 
+def _season_team_names_fp(matches_summary_df, season_id):
+    """A short stamp of a season's club names in the match list, for the
+    caches that are keyed by team name (cumulative and expanded team stats)."""
+    try:
+        m = matches_summary_df
+        if 'seasonId' in m.columns:
+            m = m[m['seasonId'] == season_id]
+        names = sorted(set(m['homeTeamName'].dropna().astype(str)) | set(m['awayTeamName'].dropna().astype(str)))
+        return hashlib.sha1('|'.join(names).encode('utf-8')).hexdigest()[:12]
+    except Exception:
+        return 'unknown'
+
+
 def _stats_scope_key(season_id, frame):
     """Cache-key suffix: the season_id itself, or for All-Seasons
     (season_id is None) the league(s) present in the frame, so the
@@ -830,6 +843,26 @@ def load_data():
 
         with open('season_team_stats.pkl', 'rb') as f:
             season_team_stats = pickle.load(f)
+
+        # ONE spelling of each club (2026-11-15). The match list spells two
+        # clubs differently from the events and from every other file here
+        # ('Pevidem' / 'Pevidém' in 2021/22, 'Mortágua' / 'Mortágua '), so the
+        # season pages, which pick a team from the match list, found none of
+        # its events, players or line-ups. The match list takes the events'
+        # spelling in memory, and the stored match tables' columns follow it.
+        # Nothing on disk changes. See team_rules.
+        matches_summary_df, _club_renames = team_rules.match_list_in_events_spelling(
+            matches_summary_df, raw_events_df)
+        if _club_renames:
+            _n_tables = sum(1 for _m in _club_renames
+                            if ((all_match_data.get(_m) or {}).get('team_stats') or {}))
+            _n_relabelled = team_rules.relabel_match_tables(all_match_data, _club_renames)
+            if _n_relabelled != _n_tables:
+                # a table left under the old name is skipped by every reader of `table[team]`
+                logger.warning(f"Club names: {_n_tables} renamed matches have stored tables but "
+                               f"{_n_relabelled} were relabelled")
+            logger.info(f"Club names: {len(_club_renames)} matches of the match list take the events' "
+                        f"spelling; {_n_relabelled} stored match tables relabelled")
 
         # Load pre-computed complete player minutes (all 3 sources merged)
         # Falls back to API-only minutes if pre-computed file doesn't exist
@@ -7452,7 +7485,9 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
         'n_matches': int((matches_summary_df['seasonId'] == season_id).sum())
         if 'seasonId' in matches_summary_df.columns else int(len(matches_summary_df)),
         'n_events': int((raw_events_df['seasonId'] == season_id).sum())
-        if 'seasonId' in raw_events_df.columns else int(len(raw_events_df))}
+        if 'seasonId' in raw_events_df.columns else int(len(raw_events_df)),
+        # the file is keyed by team NAME: a club whose spelling changed must not be served the old key
+        'teams': _season_team_names_fp(matches_summary_df, season_id)}
     if os.path.exists(cache_path) and _cache_is_fresh(cache_path, _cum_fp):
         try:
             with open(cache_path, 'rb') as f:
@@ -8082,7 +8117,9 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
             # held the old PPDA and shot distance otherwise.
             _in = [m for m in _sm if m in _all_match_data]
             _exp_fp = {'n_matches': int(len(_in)),
-                       'rules': sorted({str((_all_match_data[m] or {}).get('stats_version')) for m in _in})}
+                       'rules': sorted({str((_all_match_data[m] or {}).get('stats_version')) for m in _in}),
+                       # the rows are team NAMES (the match tables' columns)
+                       'teams': _season_team_names_fp(_matches_summary_df, season_id)}
         except Exception:
             _exp_fp = {'n_matches': -1}
         if os.path.exists(cache_path) and _cache_is_fresh(cache_path, _exp_fp):

@@ -99,6 +99,10 @@ def shot_distance_m(x, y):
 # and figures were empty and the other side's PPDA read 0 (2026-11-14).
 # The match list holds no team ids (homeTeamId / awayTeamId are empty for every
 # match), so the sides cannot be matched on an id.
+# Since 2026-11-15 the app gives its match list the events' spelling when it
+# loads the data (match_list_in_events_spelling, app.load_data), so in the app
+# the names agree before a page asks; the pipeline (process_data) still
+# computes with the stored match list and needs align_match_team_names.
 
 TEAM_NAME_COLUMNS = ('team.name', 'opponentTeam.name', 'possession.team.name')
 
@@ -146,6 +150,100 @@ def align_match_team_names(match_df, home_team, away_team):
             # the app stores these columns as categories: rewrite them as text
             out[col] = out[col].astype(object).replace(mapping)
     return out
+
+
+def match_list_in_events_spelling(matches_df, events_df):
+    """The match list with each club named as the EVENTS name it.
+
+    Every other file the dashboard reads (player stats, minutes, line-ups,
+    the engine's tables, the phase profiles, Wyscout's team file) carries
+    the events' spelling; the match list is the odd one out, so a SEASON
+    page that picked a team from the match list found none of its events
+    (2026-11-15: Team Analysis and the Opposition Report were empty for
+    'Pevidem' 2021/22 and 'Mortágua').
+
+    Returns (frame, renames). `renames` is {matchId: {old name: new name}}
+    for the rows that changed; the frame is the one given when nothing did.
+    A row is renamed when its match's events hold exactly ONE other name
+    with the same key (match_team_name_map). A club that is not in its
+    match's events at all (a match with no events, a fixture) follows its
+    SEASON: renamed when that name is spelt ONE other way in that season's
+    events and never as the match list spells it."""
+    need = {'matchId', 'homeTeamName', 'awayTeamName'}
+    if matches_df is None or len(matches_df) == 0 or not need.issubset(matches_df.columns):
+        return matches_df, {}
+    if events_df is None or len(events_df) == 0 or not {'matchId', 'team.name'}.issubset(events_df.columns):
+        return matches_df, {}
+    pairs = events_df[['matchId', 'team.name']].drop_duplicates().dropna()
+    names_by_match = {}
+    for mid, name in zip(pairs['matchId'].tolist(), pairs['team.name'].tolist()):
+        names_by_match.setdefault(mid, []).append(name)
+
+    has_season = 'seasonId' in matches_df.columns
+    mids = matches_df['matchId'].tolist()
+    homes, aways = matches_df['homeTeamName'].tolist(), matches_df['awayTeamName'].tolist()
+    seasons = matches_df['seasonId'].tolist() if has_season else [None] * len(mids)
+
+    per_match = {}            # row position -> {old: new}
+    learned = {}              # (season, old) -> {new, ...}
+    as_listed = set()         # (season, name) found in a match's events exactly as listed
+    for i, (mid, home, away, season) in enumerate(zip(mids, homes, aways, seasons)):
+        present = names_by_match.get(mid)
+        if not present:
+            continue
+        for name in (home, away):
+            if isinstance(name, str) and name in present:
+                as_listed.add((season, name))
+        to_list = match_team_name_map(present, home, away)      # {events: list}
+        if to_list:
+            per_match[i] = {old: new for new, old in to_list.items()}
+            for new, old in to_list.items():
+                learned.setdefault((season, old), set()).add(new)
+    by_season = {k: next(iter(v)) for k, v in learned.items() if len(v) == 1 and k not in as_listed}
+
+    renames, new_home, new_away = {}, list(homes), list(aways)
+    for i, (mid, home, away, season) in enumerate(zip(mids, homes, aways, seasons)):
+        row = dict(per_match.get(i, {}))
+        present = names_by_match.get(mid) or ()
+        for name in (home, away):
+            # not in this match's events (it has none, or only the other
+            # side's): the club follows its season
+            if (isinstance(name, str) and name not in row and name not in present
+                    and (season, name) in by_season):
+                row[name] = by_season[(season, name)]
+        if not row:
+            continue
+        new_home[i], new_away[i] = row.get(home, home), row.get(away, away)
+        if new_home[i] == new_away[i]:                          # never two sides with one name
+            new_home[i], new_away[i] = home, away
+            continue
+        renames[mid] = row
+    if not renames:
+        return matches_df, {}
+    out = matches_df.copy()
+    out['homeTeamName'], out['awayTeamName'] = new_home, new_away
+    return out, renames
+
+
+def relabel_match_tables(match_data, renames):
+    """The stored match tables (all_match_data.pkl) are labelled with the
+    names the match list had when they were computed. After
+    match_list_in_events_spelling their columns take the same new names, so
+    a page can go on reading `table[team]`. `match_data` is changed in place
+    (each renamed table is a new frame); returns how many matches changed."""
+    changed = 0
+    for mid, mapping in (renames or {}).items():
+        md = (match_data or {}).get(mid)
+        tables = md.get('team_stats') if isinstance(md, dict) else None
+        if not isinstance(tables, dict):
+            continue
+        hit = False
+        for key, table in list(tables.items()):
+            if isinstance(table, pd.DataFrame) and any(c in mapping for c in table.columns):
+                tables[key] = table.rename(columns=mapping)
+                hit = True
+        changed += int(hit)
+    return changed
 
 
 def entry_for_team(by_team, team):

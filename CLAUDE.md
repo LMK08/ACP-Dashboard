@@ -298,9 +298,32 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   is not clearly the same club is left alone); `calculate_match_data` and
   `views/match_analysis.py` both call it, and the view finds a line-up
   sheet through `team_rules.entry_for_team` (sheets are keyed by the
-  events' spelling). The stored names are NOT changed anywhere: the season
-  pages still read each file's own spelling. Any new code that takes one
-  match's events and the match list's names goes through the same call.
+  events' spelling). Any new pipeline code that takes one match's events
+  and the stored match list's names goes through the same call.
+  IN THE APP (2026-11-15) the match list takes the EVENTS' spelling when
+  the data is loaded (`team_rules.match_list_in_events_spelling` in
+  `app.load_data`; a match without events follows its season), because
+  every other file the app reads (player stats and minutes, line-ups,
+  engine tables, phase profiles, Wyscout's team file, the strength caches)
+  carries the events' spelling: the season pages pick a team from the
+  match list and found none of its events, so Team Analysis and the
+  Opposition Report were empty for 'Pevidem' 2021/22 and 'Mortágua', and
+  those clubs' xG read 0 in the other teams' schedule strength. The stored
+  match tables' columns follow (`team_rules.relabel_match_tables`), and
+  `DixonColes._team_index` finds a fitted club under a name that differs
+  only by accents, capitals or spaces (the fit is keyed by the STORED
+  list: 'Mortágua'), but ONLY with `loose_names`, which
+  `scoreline_ui.load_model` sets: the pipeline's lookups (season
+  simulation, build_dc) stay exact. Nothing on disk changes: the pipeline
+  still reads the stored spelling, and the rule does nothing once the
+  stored list agrees with the events. NOT fixed by it: Team Analysis's
+  "Corner Kick Summary" reads `season_team_stats.pkl`, which process_data
+  builds ONCE per finished season under the stored spelling, so it has no
+  entry for these two clubs (a pipeline change plus a refresh would be
+  needed). A cache keyed by team NAME carries the season's
+  names in its stamp (`app._season_team_names_fp`). Still in the stored
+  spelling, by design: `models/coaches/coach_team_match.parquet` (the
+  coach pages read their own names) and `dc_params.json`.
 - `event_tags.py` — `TagIndex` / `has_tag`: vectorised membership tests on
   the `type.secondary` tag lists. NEVER write
   `sec.apply(lambda x: tag in x)` on an events frame again: those per-row

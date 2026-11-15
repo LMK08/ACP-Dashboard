@@ -272,3 +272,131 @@ def test_a_club_spelt_differently_gets_its_match_tables(monkeypatch):
             assert general.at['Shots / on target', team] != '0/0', (match_id, team)
             assert float(defence.at['Passes allowed per def. action (PPDA)', team]) > 0, (match_id, team)
         assert len(out['player_stats']['home']) >= 11 and len(out['player_stats']['away']) >= 11, match_id
+
+
+# --- the app's match list takes the events' spelling (season pages) ------------
+
+def _list_and_events():
+    matches = pd.DataFrame({
+        'matchId':      [1, 2, 3, 4, 5, 6],
+        'seasonId':     [10, 10, 10, 20, 20, 30],
+        'homeTeamName': ['Montalegre', 'Pevidem', 'Fafe', 'Pevidém', 'Gouveia', 'Pevidem'],
+        'awayTeamName': ['Pevidem', 'Fafe', 'Pevidem', 'Fafe', 'Mortágua', 'Fafe'],
+        'status':       ['Played'] * 6,
+    })
+    events = pd.DataFrame({
+        'matchId':   [1, 1, 2, 2, 4, 4, 5, 5, 6, 6],          # match 3 has no events
+        'team.name': ['Montalegre', 'Pevidém', 'Pevidém', 'Fafe', 'Pevidém', 'Fafe',
+                      'Gouveia', 'Mortágua ', 'Pevidem', 'Fafe'],
+    })
+    return matches, events
+
+
+def test_the_match_list_takes_the_events_spelling():
+    matches, events = _list_and_events()
+    before = matches.copy()
+    for as_category in (False, True):
+        ev = events.copy()
+        if as_category:
+            ev['team.name'] = ev['team.name'].astype('category')
+        out, renames = team_rules.match_list_in_events_spelling(matches, ev)
+        pd.testing.assert_frame_equal(matches, before)                     # the frame given is untouched
+        assert out['homeTeamName'].tolist() == ['Montalegre', 'Pevidém', 'Fafe', 'Pevidém', 'Gouveia', 'Pevidem']
+        # match 3 has no events and follows its season (10); season 30 spells the
+        # club 'Pevidem' in its events too, so nothing is changed there
+        assert out['awayTeamName'].tolist() == ['Pevidém', 'Fafe', 'Pevidém', 'Fafe', 'Mortágua ', 'Fafe']
+        assert renames == {1: {'Pevidem': 'Pevidém'}, 2: {'Pevidem': 'Pevidém'}, 3: {'Pevidem': 'Pevidém'},
+                           5: {'Mortágua': 'Mortágua '}}
+        again, none = team_rules.match_list_in_events_spelling(out, ev)
+        assert again is out and none == {}                                 # a second pass changes nothing
+
+
+def test_a_match_without_events_is_renamed_only_when_its_season_is_clear():
+    matches, events = _list_and_events()
+    # season 10 now also has a match whose events spell the club as the list does
+    matches.loc[len(matches)] = [7, 10, 'Pevidem', 'Anadia', 'Played']
+    events = pd.concat([events, pd.DataFrame({'matchId': [7, 7], 'team.name': ['Pevidem', 'Anadia']})],
+                       ignore_index=True)
+    out, renames = team_rules.match_list_in_events_spelling(matches, events)
+    assert 3 not in renames and out.set_index('matchId').at[3, 'awayTeamName'] == 'Pevidem'
+    assert renames[1] == {'Pevidem': 'Pevidém'}                           # a match WITH events is still its own proof
+    # nothing to do: the frame itself comes back
+    same, none = team_rules.match_list_in_events_spelling(out, events)
+    assert same is out and none == {}
+    assert team_rules.match_list_in_events_spelling(None, events) == (None, {})
+    empty_events = events.iloc[0:0]
+    assert team_rules.match_list_in_events_spelling(matches, empty_events)[0] is matches
+
+
+def test_a_club_missing_from_its_matchs_events_follows_its_season():
+    """Events that hold only the OTHER side: the match itself proves nothing
+    about the club's spelling, the season does."""
+    matches, events = _list_and_events()
+    matches.loc[len(matches)] = [8, 10, 'Pevidem', 'Anadia', 'Played']
+    events = pd.concat([events, pd.DataFrame({'matchId': [8], 'team.name': ['Anadia']})], ignore_index=True)
+    out, renames = team_rules.match_list_in_events_spelling(matches, events)
+    assert renames[8] == {'Pevidem': 'Pevidém'}
+    row = out.set_index('matchId').loc[8]
+    assert (row['homeTeamName'], row['awayTeamName']) == ('Pevidém', 'Anadia')
+
+
+def test_the_stored_match_tables_follow_the_renamed_list():
+    table = pd.DataFrame({'Montalegre': [7, 5.6], 'Pevidem': [9, 5.0]}, index=['Shots', 'PPDA'])
+    untouched = pd.DataFrame({'Fafe': [1], 'Anadia': [2]}, index=['Shots'])
+    data = {1: {'team_stats': {'General': table, 'Defence': table.copy()},
+                'player_stats': {'home': pd.DataFrame(), 'away': pd.DataFrame()}, 'stats_version': 3},
+            2: {'team_stats': {'General': untouched}},
+            3: {'team_stats': {}}, 4: None}
+    n = team_rules.relabel_match_tables(data, {1: {'Pevidem': 'Pevidém'}, 3: {'Pevidem': 'Pevidém'}, 9: {'A': 'B'}})
+    assert n == 1
+    assert list(data[1]['team_stats']['General'].columns) == ['Montalegre', 'Pevidém']
+    assert list(data[1]['team_stats']['Defence'].columns) == ['Montalegre', 'Pevidém']
+    assert data[1]['team_stats']['General']['Pevidém'].tolist() == [9, 5.0]
+    assert list(table.columns) == ['Montalegre', 'Pevidem']               # the old frame was not written into
+    assert data[2]['team_stats']['General'] is untouched and data[1]['stats_version'] == 3
+    assert team_rules.relabel_match_tables(None, {1: {'a': 'b'}}) == 0 and team_rules.relabel_match_tables(data, {}) == 0
+
+
+def test_the_app_loads_one_spelling_and_its_name_keyed_caches_know_it():
+    app = _source('app.py')
+    assert 'team_rules.match_list_in_events_spelling(' in app
+    assert 'team_rules.relabel_match_tables(all_match_data, _club_renames)' in app
+    assert app.count("'teams': _season_team_names_fp(") == 2
+
+
+def test_the_real_match_list_agrees_with_the_events_after_the_rule():
+    """On the shipped files: the two clubs take the events' spelling, and
+    every match with events then names its two sides as its events do.
+    (The stored tables are not loaded here: 0.5 GB, and the check is
+    memory-bound. Their relabelling is tested above on small frames.)"""
+    import warnings
+    import pytest
+    import pyarrow.parquet as pq
+    paths = [os.path.join(ROOT, f) for f in ('raw_events.parquet', 'matches_summary.parquet')]
+    if not all(os.path.exists(p) for p in paths):
+        pytest.skip('needs raw_events.parquet and matches_summary.parquet')
+    # two columns, the names as a dictionary column
+    events = pq.read_table(paths[0], columns=['matchId', 'team.name'], read_dictionary=['team.name']).to_pandas()
+    matches = pd.read_parquet(paths[1])
+    out, renames = team_rules.match_list_in_events_spelling(matches, events)
+
+    def listed(frame, season, name):
+        return int(((frame['seasonId'] == season)
+                    & ((frame['homeTeamName'] == name) | (frame['awayTeamName'] == name))).sum())
+
+    for season, old, new in ((188221, 'Pevidem', 'Pevidém'), (190230, 'Mortágua', 'Mortágua '),
+                             (191779, 'Mortágua', 'Mortágua ')):
+        n_before = listed(matches, season, old)
+        if n_before:                      # a match list already in the events' spelling needs nothing
+            assert listed(out, season, old) == 0 and listed(out, season, new) >= n_before, (season, old)
+    pairs = events.drop_duplicates()
+    del events
+    names = {}
+    for mid, name in zip(pairs['matchId'].tolist(), pairs['team.name'].astype(str).tolist()):
+        names.setdefault(mid, set()).add(name)
+    left = [mid for mid, h, a in zip(out['matchId'], out['homeTeamName'], out['awayTeamName'])
+            if mid in names and len(names[mid]) == 2 and {h, a} != names[mid]]
+    if left:                              # a NEW spelling: reported, not a reason to block every deploy
+        warnings.warn(f'{len(left)} matches still name a club differently from their events: {left[:5]}')
+    assert len(left) <= 5
+    assert set(renames) <= set(out['matchId'])
