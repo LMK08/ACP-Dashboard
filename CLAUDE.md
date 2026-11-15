@@ -940,7 +940,12 @@ Analysis (primary formation + roster) and in the Opposition Report's
   copying the league's events on every run (fixed 2026-11-13, see
   views/opposition.py): the same walk then ended at 7.0 GB and the module
   peaked at 9.0 GB of 16. A heavy page: look for per-run copies of the
-  events frame first. Run the full suite locally before every push.
+  events frame first. The Match Predictor had the same line until
+  2026-11-15 (0.8 GB of new memory a run for Liga 3; pandas' "deep" count
+  says 2.0 GB because it includes text shared with the master);
+  `tests/test_shared_event_frames.py` now fails on
+  `filter_by_league(<master events>, …)` in any page. Run the full suite
+  locally before every push.
 - Summary's three parts (takeaways, strengths & weaknesses, line-up) are
   drawn in that order through containers created at the top
   (`_takeaways_slot` / `_synopsis_slot` / `_lineup_slot`), although their

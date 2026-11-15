@@ -31,10 +31,13 @@ def render():
     # The league's events, all seasons: the SHARED cached frame the other
     # pages read (get_filtered_events, scope (None, comps) — the "All Seasons"
     # scope of the player pages), not a copy of our own. Until 2026-11 this
-    # line was filter_by_league(raw_events_df, comps): a fresh 1.9 GB copy of
-    # Liga 3 on EVERY run of the page, and the report then cut a second copy
-    # (the season, up to 0.9 GB) from it. Same rows, same order (checked on
-    # the data for every league and season); the report only reads the frame.
+    # line was filter_by_league(raw_events_df, comps): a fresh copy of Liga 3
+    # on EVERY run of the page, and the report then cut a second copy (the
+    # season) from it. Sizes: 1.9 GB and up to 0.9 GB by pandas' "deep"
+    # count, which includes the text a copy shares with the master; the new
+    # memory of the league copy is 0.8 GB (measured 2026-11-15). Same rows,
+    # same order (checked on the data for every league and season); the
+    # report only reads the frame.
     opp_events = app.get_filtered_events(raw_events_df, None, selected_comp_ids)
     opp_matches = filter_by_league(matches_summary_df, selected_comp_ids)
     # Build season map for selected leagues

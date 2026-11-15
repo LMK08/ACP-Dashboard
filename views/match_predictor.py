@@ -333,7 +333,24 @@ def render():
     for cid in selected_comp_ids:
         if cid in COMPETITIONS:
             available_sids.update(COMPETITIONS[cid]["seasons"].keys())
-    pred_events = filter_by_league(raw_events_df, selected_comp_ids)
+    # The league's events, all seasons: the SHARED cached frame the other
+    # pages read (get_filtered_events, scope (None, comps), the entry the
+    # Opposition Report and the "All Seasons" scope use), not a copy of our
+    # own. Until 2026-11-15 this line was filter_by_league(raw_events_df,
+    # comps): a new copy of the league on EVERY run of the page, only to be
+    # handed to a function whose answer is cached. Measured: 0.8 GB of new
+    # memory for Liga 3 and 0.7 GB for the Campeonato (pandas' "deep" count
+    # says 2.0 and 1.7 GB, but that includes the text the copy shares with
+    # the master), and 0.3-0.6 s each time. Same rows in the same order and
+    # the same Streamlit cache key (both checked on the data, both leagues),
+    # so the season totals are unchanged. READ-ONLY: never assign into this
+    # frame.
+    # Known cost: with the rating toggle above on and FIVE Liga 3 seasons
+    # picked, this is a sixth scope in a cache that keeps five, so that one
+    # case filters again on every run (measured 1.6 -> 2.3 s a run; with six
+    # seasons picked it already did, 2.8 -> 2.4 s). Every other case is
+    # faster (defaults 1.0 -> 0.7 s a run).
+    pred_events = get_filtered_events(raw_events_df, None, selected_comp_ids)
     pred_matches = filter_by_league(matches_summary_df, selected_comp_ids)
     for sid in sorted(available_sids, reverse=True):
         season_cum = build_season_cumulative_stats(pred_events, pred_matches, sid)
