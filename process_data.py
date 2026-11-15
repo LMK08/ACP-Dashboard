@@ -956,13 +956,20 @@ def add_custom_dribble_success(events_df):
 # bump this: every cached match without the current stamp is recomputed once
 # on the next run, then cached again. 2 (2026-11-14): PPDA by the one rule,
 # shot distance in metres, dribbles = the dribbler's own attempts.
-MATCH_STATS_VERSION = 2
+# 3 (2026-11-14): a side whose name is spelt differently in the match list and
+# in the events ('Pevidem' / 'Pevidém', 'Mortágua' / 'Mortágua ') is found.
+MATCH_STATS_VERSION = 3
 
 
 def calculate_match_data(match_df, home_team, away_team):
     """Calculates all team and player stats for a single match."""
 
     print(f"\n---> Processing Match: {home_team} vs {away_team}") # ADDED PRINT
+
+    # Every rule below picks a side by NAME, with the match list's names. Where
+    # the events spell a club differently, that side's column was all zeros and
+    # the other side's PPDA read 0 (75 matches). Only the spelling is changed.
+    match_df = team_rules.align_match_team_names(match_df, home_team, away_team)
 
     # --- NESTED FUNCTION: TEAM STATS (FULL LOGIC) ---
     def _calculate_team_stats(match_df, home_team, away_team):

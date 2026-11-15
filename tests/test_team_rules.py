@@ -100,17 +100,14 @@ def test_the_pages_use_these_rules_and_not_a_copy():
     assert 'keeping the cached tables' in pdata
 
 
-def test_a_match_that_could_not_be_computed_is_not_stamped_as_done(monkeypatch):
-    """calculate_match_data swallows its own errors and returns empty tables.
-    Such a result carries no stamp, so the cached tables are kept and the
-    next run tries again (process_data.main)."""
+def _calculate_match_data(monkeypatch, match_df, home, away):
+    """process_data.calculate_match_data, quietly, where python-dotenv may be missing."""
     import contextlib
     import io
-    import sys
     import types
     # process_data imports python-dotenv at the top, for its main(). Only the
     # nightly job installs that package: the Space and the deploy check do
-    # not (this test failed the check for that reason, 2026-11-14). The
+    # not (a test failed the check for that reason, 2026-11-14). The
     # function under test never reads the environment, so a stand-in will do.
     try:
         import dotenv  # noqa: F401
@@ -122,10 +119,156 @@ def test_a_match_that_could_not_be_computed_is_not_stamped_as_done(monkeypatch):
     _chained = pd.get_option('mode.chained_assignment')
     try:
         import process_data
-        broken = pd.DataFrame({'matchId': [1], 'team.name': ['A']})          # nothing a match needs
         with contextlib.redirect_stdout(io.StringIO()):
-            out = process_data.calculate_match_data(broken, 'A', 'B')
+            return process_data.calculate_match_data(match_df, home, away), process_data.MATCH_STATS_VERSION
     finally:
         pd.set_option('mode.chained_assignment', _chained)
+
+
+def test_a_match_that_could_not_be_computed_is_not_stamped_as_done(monkeypatch):
+    """calculate_match_data swallows its own errors and returns empty tables.
+    Such a result carries no stamp, so the cached tables are kept and the
+    next run tries again (process_data.main)."""
+    broken = pd.DataFrame({'matchId': [1], 'team.name': ['A']})          # nothing a match needs
+    out, _ = _calculate_match_data(monkeypatch, broken, 'A', 'B')
     assert out['stats_version'] is None
     assert not any(isinstance(df, pd.DataFrame) and not df.empty for df in out['team_stats'].values())
+
+
+# --- one match, one spelling of each club -------------------------------------
+
+def _match(home='Montalegre', away='Pevidém', as_category=False):
+    df = pd.DataFrame({
+        'matchId': [1] * 4,
+        'team.name': [home, away, away, home],
+        'opponentTeam.name': [away, home, home, away],
+        'possession.team.name': [home, home, away, None],
+        'player.name': ['a', 'b', 'c', 'd'],
+    })
+    if as_category:
+        for c in team_rules.TEAM_NAME_COLUMNS:
+            df[c] = df[c].astype('category')
+    return df
+
+
+def test_two_spellings_of_a_club_share_a_key():
+    assert team_rules.team_name_key('Pevidém') == team_rules.team_name_key('Pevidem')
+    assert team_rules.team_name_key('Mortágua ') == team_rules.team_name_key('Mortágua')
+    assert team_rules.team_name_key('Sporting CP') != team_rules.team_name_key('Sporting CP II')
+    assert team_rules.team_name_key('Atlético CP') != team_rules.team_name_key('Atlético')
+
+
+def test_a_match_whose_names_agree_is_returned_as_it_is():
+    """No copy and no change for every match but the 75: the page calls this on every run."""
+    df = _match(away='Pevidem')
+    assert team_rules.align_match_team_names(df, 'Montalegre', 'Pevidem') is df
+    empty = df.iloc[0:0]
+    assert team_rules.align_match_team_names(empty, 'Montalegre', 'Pevidem') is empty
+    assert team_rules.align_match_team_names(None, 'Montalegre', 'Pevidem') is None
+
+
+def test_a_club_spelt_differently_takes_the_match_lists_name():
+    """Only the spelling changes, in every team-name column; the frame given is not written into."""
+    for as_category in (False, True):
+        df = _match(as_category=as_category)
+        before = df.copy()
+        out = team_rules.align_match_team_names(df, 'Montalegre', 'Pevidem')
+        assert out is not df and len(out) == len(df)
+        assert out['team.name'].tolist() == ['Montalegre', 'Pevidem', 'Pevidem', 'Montalegre']
+        assert out['opponentTeam.name'].tolist() == ['Pevidem', 'Montalegre', 'Montalegre', 'Pevidem']
+        assert out['possession.team.name'].tolist()[:3] == ['Montalegre', 'Montalegre', 'Pevidem']
+        assert pd.isna(out['possession.team.name'].iloc[3])
+        assert out['player.name'].tolist() == ['a', 'b', 'c', 'd']
+        pd.testing.assert_frame_equal(df, before)                      # the shared frame is untouched
+        assert (out['team.name'] == 'Pevidem').sum() == 2              # a plain comparison finds the side
+    spaced = team_rules.align_match_team_names(_match(home='Gouveia', away='Mortágua '), 'Gouveia', 'Mortágua')
+    assert set(spaced['team.name']) == {'Gouveia', 'Mortágua'}
+
+
+def test_a_name_that_is_not_clearly_the_same_club_is_left_alone():
+    # another club altogether: nothing in the events has the key
+    df = _match(away='Fafe')
+    assert team_rules.align_match_team_names(df, 'Montalegre', 'Pevidem') is df
+    # two names in the events with the key: no guess
+    assert team_rules.match_team_name_map(['Montalegre', 'Pevidém', 'PEVIDEM'], 'Montalegre', 'Pevidem') == {}
+    # the other side of the match is never renamed, whatever its key
+    assert team_rules.match_team_name_map(['Braga', 'Braga '], 'Braga', 'Braga ') == {}
+    assert team_rules.match_team_name_map(['Montalegre', 'Pevidém'], None, float('nan')) == {}
+
+
+def test_a_line_up_sheet_is_found_under_the_events_spelling():
+    sheets = {'Montalegre': 'home sheet', 'Pevidém': 'away sheet'}
+    assert team_rules.entry_for_team(sheets, 'Montalegre') == 'home sheet'
+    assert team_rules.entry_for_team(sheets, 'Pevidem') == 'away sheet'
+    assert team_rules.entry_for_team({'Mortágua ': 1, 'Eléctrico': 2}, 'Mortágua') == 1
+    assert team_rules.entry_for_team(sheets, 'Fafe') is None
+    assert team_rules.entry_for_team({}, 'Fafe') is None and team_rules.entry_for_team(None, 'Fafe') is None
+    assert team_rules.entry_for_team(sheets, None) is None
+
+
+def test_the_match_report_uses_the_one_spelling():
+    """Both builders of a match report go through the rule: the stored tables
+    (process_data) and the page's events and line-up sheets (the view)."""
+    pdata, view = _source('process_data.py'), _source('views/match_analysis.py')
+    assert 'match_df = team_rules.align_match_team_names(match_df, home_team, away_team)' in pdata
+    assert 'match_events_df = team_rules.align_match_team_names(' in view
+    assert 'team_rules.entry_for_team(match_lineup_data, home_team)' in view
+    assert 'team_rules.entry_for_team(match_lineup_data, away_team)' in view
+    assert 'match_lineup_data.get(' not in view
+
+
+# One match of each kind: the events say 'Pevidém' (Montalegre v Pevidem, Liga 3
+# 2021/22) and 'Mortágua ' with a trailing space (Mortágua v Eléctrico, Campeonato 2025/26).
+MISMATCHED_MATCHES = (5263405, 5740512)
+
+
+def _one_match_events(path, match_id, batch_size=20_000):
+    """One match's events, read in small batches. The deploy check is
+    memory-bound: a filtered pd.read_parquet decodes a whole row group of a
+    million events (1.2 GB at its peak, measured 2026-11-14); this peaks at
+    0.24 GB and returns the same frame."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+    f = pq.ParquetFile(path)
+    groups = []
+    for i in range(f.metadata.num_row_groups):
+        rg = f.metadata.row_group(i)
+        # the column is looked up by its PATH: a position in the Arrow schema
+        # is not a position among the file's leaf columns once one is nested
+        st = next((rg.column(j).statistics for j in range(rg.num_columns)
+                   if rg.column(j).path_in_schema == 'matchId'), None)
+        if st is None or not st.has_min_max or st.min <= match_id <= st.max:
+            groups.append(i)
+    parts = []
+    for batch in f.iter_batches(batch_size=batch_size, row_groups=groups, use_threads=False):
+        keep = batch.filter(pc.equal(batch.column('matchId'), match_id))
+        if keep.num_rows:
+            parts.append(keep)
+    return pa.Table.from_batches(parts).to_pandas() if parts else pd.DataFrame()
+
+
+def test_a_club_spelt_differently_gets_its_match_tables(monkeypatch):
+    """On the real events of two of the 75 matches: both columns are filled
+    and neither side's PPDA reads 0. Until 2026-11-14 the club's column was
+    all zeros and both PPDA cells read 0.0."""
+    import pytest
+    events_path = os.path.join(ROOT, 'raw_events.parquet')
+    list_path = os.path.join(ROOT, 'matches_summary.parquet')
+    if not (os.path.exists(events_path) and os.path.exists(list_path)):
+        pytest.skip('needs raw_events.parquet and matches_summary.parquet')
+    match_list = pd.read_parquet(list_path).set_index('matchId')
+    for match_id in MISMATCHED_MATCHES:
+        events = _one_match_events(events_path, match_id)
+        # a finished season's match is in every copy of the events: an empty
+        # read means the reader broke, and a skip here would hide it
+        assert len(events) > 1000, match_id
+        home, away = match_list.at[match_id, 'homeTeamName'], match_list.at[match_id, 'awayTeamName']
+        out, version = _calculate_match_data(monkeypatch, events, home, away)
+        assert out['stats_version'] == version, match_id
+        general, defence = out['team_stats']['General'], out['team_stats']['Defence']
+        assert list(general.columns) == [home, away]                      # still the match list's names
+        for team in (home, away):
+            assert general.at['Shots / on target', team] != '0/0', (match_id, team)
+            assert float(defence.at['Passes allowed per def. action (PPDA)', team]) > 0, (match_id, team)
+        assert len(out['player_stats']['home']) >= 11 and len(out['player_stats']['away']) >= 11, match_id

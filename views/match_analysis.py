@@ -11,6 +11,8 @@ import pandas as pd
 import streamlit as st
 import sys
 
+import team_rules      # one spelling of each club per match
+
 
 def _app():
     return sys.modules['__main__']
@@ -235,6 +237,11 @@ def render():
 
     # --- Get the match events ONCE ---
     match_events_df = raw_events_df[raw_events_df['matchId'] == selected_match_id]
+    # Everything below picks a side by the match list's name. Two clubs are
+    # spelt differently in the events ('Pevidem' / 'Pevidém', 'Mortágua' /
+    # 'Mortágua '): their side of the page was empty (team_rules, 2026-11-14).
+    match_events_df = team_rules.align_match_team_names(
+        match_events_df, selected_match_info.get('homeTeamName'), selected_match_info.get('awayTeamName'))
 
     # --- Scoreboard (2026-11): the score used to appear only in the small
     # print above the first shot map. It carries the "Match Report" line
@@ -251,8 +258,9 @@ def render():
         away_team = selected_match_info['awayTeamName']
         # Get lineup/substitution data for this match (if available)
         match_lineup_data = match_lineups.get(selected_match_id, {}) if match_lineups else {}
-        home_lineup = match_lineup_data.get(home_team)
-        away_lineup = match_lineup_data.get(away_team)
+        # the sheets are keyed by the events' spelling of the club
+        home_lineup = team_rules.entry_for_team(match_lineup_data, home_team)
+        away_lineup = team_rules.entry_for_team(match_lineup_data, away_team)
 
         # --- Sections (2026-11): ONE is drawn at a time; the page was 12 screens
         # of everything. The PDF button sits beside the row and builds the

@@ -9212,7 +9212,9 @@ def _render_match_figure_png(kind, match_id, team_name, fig_ver,
 
     Why that key is complete — every render input is a function of match_id
     and team_name:
-      * _match_events_df is always raw_events_df[matchId == match_id].
+      * _match_events_df is always raw_events_df[matchId == match_id], with
+        each club named as the match list names it
+        (team_rules.align_match_team_names: a spelling change, in 75 matches).
         raw_events_df is the UNSCOPED master frame (assigned once in
         load_data, never reassigned), and Match Analysis never scopes it —
         it slices by matchId directly. A matchId belongs to exactly one

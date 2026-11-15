@@ -287,6 +287,20 @@ image assets on that LFS+exempt path or the deploy will silently drop them.
   all_match_data.pkl; a cached match without the current stamp is
   recomputed once on the next scheduled run (0.2 s a match). Bump it when a
   rule of `calculate_match_data` changes.
+  CLUB NAMES IN A MATCH (2026-11-14): a match report picks each side's
+  events BY NAME, with the match list's names (matches_summary: read from
+  Wyscout's match label; `homeTeamId` / `awayTeamId` are EMPTY for every
+  match, so a side cannot be matched on an id). The events spell two clubs
+  differently ('Pevidem' / 'Pevidém', 'Mortágua' / 'Mortágua ' with a
+  trailing space): in 75 matches one side was empty and the other's PPDA
+  read 0. `team_rules.align_match_team_names` gives ONE match's events the
+  match list's spelling (accents, capitals and spaces ignored; a name that
+  is not clearly the same club is left alone); `calculate_match_data` and
+  `views/match_analysis.py` both call it, and the view finds a line-up
+  sheet through `team_rules.entry_for_team` (sheets are keyed by the
+  events' spelling). The stored names are NOT changed anywhere: the season
+  pages still read each file's own spelling. Any new code that takes one
+  match's events and the match list's names goes through the same call.
 - `event_tags.py` — `TagIndex` / `has_tag`: vectorised membership tests on
   the `type.secondary` tag lists. NEVER write
   `sec.apply(lambda x: tag in x)` on an events frame again: those per-row

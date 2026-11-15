@@ -88,3 +88,74 @@ def shot_distance_m(x, y):
     dx = (100.0 - pd.to_numeric(x, errors='coerce')) * PITCH_LENGTH_M / 100.0
     dy = (50.0 - pd.to_numeric(y, errors='coerce')) * PITCH_WIDTH_M / 100.0
     return np.sqrt(dx ** 2 + dy ** 2)
+
+
+# --- One match, one spelling of each club -------------------------------------
+# A match report picks each side's events BY NAME, with the names of the match
+# list (matches_summary: read from Wyscout's match label, and stripped). The
+# events carry their own spelling, and for two clubs the two differ:
+# 'Pevidem' / 'Pevidém' (27 matches) and 'Mortágua' / 'Mortágua ' with a
+# trailing space (48 matches). In those 75 matches one side's tables, shot map
+# and figures were empty and the other side's PPDA read 0 (2026-11-14).
+# The match list holds no team ids (homeTeamId / awayTeamId are empty for every
+# match), so the sides cannot be matched on an id.
+
+TEAM_NAME_COLUMNS = ('team.name', 'opponentTeam.name', 'possession.team.name')
+
+
+def team_name_key(name):
+    """A club's name without accents, capitals or stray spaces: 'Pevidém' and
+    'Pevidem' share a key, 'Mortágua ' and 'Mortágua' too. (The same rule as
+    models/value/availability._norm_name.)"""
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(name))
+    return ' '.join(''.join(c for c in s if not unicodedata.combining(c)).casefold().split())
+
+
+def match_team_name_map(event_names, home_team, away_team):
+    """{spelling in the events: spelling in the match list}, for a side whose
+    match-list name is not in the events. A side is mapped only when exactly
+    ONE other name in the events has its key; anything else is left alone."""
+    present = [n for n in event_names if isinstance(n, str)]
+    listed = [n for n in (home_team, away_team) if isinstance(n, str)]
+    out = {}
+    for want in listed:
+        if want in present:
+            continue
+        key = team_name_key(want)
+        same = [n for n in present if n not in listed and team_name_key(n) == key]
+        if len(same) == 1:
+            out[same[0]] = want
+    return out
+
+
+def align_match_team_names(match_df, home_team, away_team):
+    """ONE match's events, with each club named as the match list names it.
+
+    Returns the frame itself when the names already agree (every match but
+    the 75 above), else a copy whose team-name columns are rewritten. Only
+    the spelling changes: no row is added, dropped or moved to another side."""
+    if match_df is None or len(match_df) == 0 or 'team.name' not in match_df.columns:
+        return match_df
+    mapping = match_team_name_map(list(match_df['team.name'].dropna().unique()), home_team, away_team)
+    if not mapping:
+        return match_df
+    out = match_df.copy()
+    for col in TEAM_NAME_COLUMNS:
+        if col in out.columns:
+            # the app stores these columns as categories: rewrite them as text
+            out[col] = out[col].astype(object).replace(mapping)
+    return out
+
+
+def entry_for_team(by_team, team):
+    """`by_team[team]` for a dict keyed by club name (a match's line-up
+    sheets are keyed by the events' spelling), also when the two spellings
+    differ. None when the club is not there."""
+    if not by_team or not isinstance(team, str):
+        return None
+    if team in by_team:
+        return by_team[team]
+    key = team_name_key(team)
+    same = [k for k in by_team if isinstance(k, str) and team_name_key(k) == key]
+    return by_team[same[0]] if len(same) == 1 else None
