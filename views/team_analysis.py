@@ -284,7 +284,7 @@ def render():
                           expanded=False):
             st.caption(
                 "Each row shows every other team in the current league/stage as a grey dot, "
-                f"with **{selected_team_t}** as the green hexagon. "
+                f"with **{str(selected_team_t).strip()}** as the green hexagon. "
                 "Values are the team's raw per-match / per-90 numbers."
             )
             _sr_cache_key = app.season_report_cache_key(
@@ -436,13 +436,13 @@ def render():
         # Full width, stacked: the half-pitch locks its aspect, so in a half-width
         # column it rendered a few hundred px tall.
         if True:
-            st.markdown(f"**Shots FOR {selected_team_t}**")
+            st.markdown(f"**Shots FOR {str(selected_team_t).strip()}**")
             _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'for', height=context_bar.pitch_height()),
                                   use_container_width=True, key='ta_shots_for', on_select='rerun',
                                   selection_mode='points', config=app._PLOTLY_CFG, theme=None)
             app.open_match_from_selection(_ev)
         if True:
-            st.markdown(f"**Shots AGAINST {selected_team_t}**")
+            st.markdown(f"**Shots AGAINST {str(selected_team_t).strip()}**")
             _ev = st.plotly_chart(ti.plotly_season_shot_map(team_events_df, team_matches_df, selected_team_t, 'against', height=context_bar.pitch_height()),
                                   use_container_width=True, key='ta_shots_against', on_select='rerun',
                                   selection_mode='points', config=app._PLOTLY_CFG, theme=None)

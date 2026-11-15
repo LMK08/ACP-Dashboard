@@ -64,7 +64,7 @@ def facts_line(team=None, position=None, age=None, foot=None, height=None, weigh
     nationality, birthplace = text(nationality), text(birthplace)
     age, height, weight = number(age, completed=True), number(height), number(weight)
     parts = [
-        f"**{team}**" if team else None,
+        f"**{str(team).strip()}**" if team else None,
         position,
         f"{age} years" if age else None,
         f"{foot} foot" if foot else None,

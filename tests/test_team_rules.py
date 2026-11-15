@@ -400,3 +400,18 @@ def test_the_real_match_list_agrees_with_the_events_after_the_rule():
         warnings.warn(f'{len(left)} matches still name a club differently from their events: {left[:5]}')
     assert len(left) <= 5
     assert set(renames) <= set(out['matchId'])
+
+
+def test_a_bold_caption_never_ends_in_an_untrimmed_team_name():
+    """Markdown does not close `**` after a space, and the events spell one
+    club with a trailing space ('Mortágua '): its captions printed as
+    "**Shots FOR Mortágua **" with the asterisks showing (2026-11-15). A team
+    name that sits right before the closing `**` is trimmed."""
+    import re
+    raw = re.compile(r"\{[^{}]*(team|opponent)[^{}]*\}\*\*", re.IGNORECASE)
+    for path in ('views/team_analysis.py', 'opposition_report.py', 'views/match_analysis.py',
+                 'views/player_profile.py'):
+        for n, line in enumerate(_source(path).splitlines(), 1):
+            for m in raw.finditer(line):
+                assert '.strip()' in m.group(0), f'{path}:{n}: {m.group(0)}'
+

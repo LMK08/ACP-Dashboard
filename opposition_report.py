@@ -807,7 +807,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
         )
         fixture_info = next_fixture
     else:
-        st.info(f"Analysing: **{selected_opponent}**")
+        st.info(f"Analysing: **{str(selected_opponent).strip()}**")
 
     st.divider()
 
@@ -1025,7 +1025,7 @@ def render_opposition_report(raw_events_df, matches_summary_df,
                              expanded=False):
                 st.caption(
                     "Each row shows every other team in the current league as a grey dot, "
-                    f"with **{selected_opponent}** as the green hexagon. "
+                    f"with **{str(selected_opponent).strip()}** as the green hexagon. "
                     "Values are the team's raw per-match / per-90 numbers."
                 )
                 # Same cache-key format as Team Analysis (stage 'all'), so the same

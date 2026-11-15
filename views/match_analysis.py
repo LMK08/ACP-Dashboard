@@ -410,11 +410,11 @@ def render():
             st.subheader("Shot Details")
             col1_table, col2_table = st.columns(2)
             with col1_table:
-                st.markdown(f"**{home_team}**")
+                st.markdown(f"**{str(home_team).strip()}**")
                 st.dataframe(home_shots_table, column_config=auto_column_config(home_shots_table))
 
             with col2_table:
-                st.markdown(f"**{away_team}**")
+                st.markdown(f"**{str(away_team).strip()}**")
                 st.dataframe(away_shots_table, column_config=auto_column_config(away_shots_table))
 
         if _section == "Summary":
@@ -458,10 +458,10 @@ def render():
         if _section == "Players":
             st.subheader("Player Stats")
             if 'home' in _disp_player_stats and 'away' in _disp_player_stats:
-                st.markdown(f"**{selected_match_info['homeTeamName']}**")
+                st.markdown(f"**{str(selected_match_info['homeTeamName']).strip()}**")
                 if isinstance(_disp_player_stats['home'], pd.DataFrame): st.dataframe(_disp_player_stats['home'])
                 else: st.warning("Home player stats data not a DataFrame.")
-                st.markdown(f"**{selected_match_info['awayTeamName']}**")
+                st.markdown(f"**{str(selected_match_info['awayTeamName']).strip()}**")
                 if isinstance(_disp_player_stats['away'], pd.DataFrame): st.dataframe(_disp_player_stats['away'])
                 else: st.warning("Away player stats data not a DataFrame.")
             else: st.warning("Player stats data not found.")
