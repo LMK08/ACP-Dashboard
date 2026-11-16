@@ -265,6 +265,12 @@ def test_league_analysis_offers_no_metric_that_is_never_a_number(app):
     for picker in pickers:
         offered = set(picker.options)
         assert 'xG Against' in offered, f"{picker.key} offers {len(offered)} metrics and not 'xG Against'"
+        # one number per name: no "xG_x" / "xG_y", and the chart opens on xG
+        doubled = sorted(o for o in offered if o.endswith('_x') or o.endswith('_y'))
+        assert not doubled, f"{picker.key} lists metrics twice: {doubled}"
+        assert 'xG' in offered
+        if picker.key.startswith('x_metric'):
+            assert picker.value == 'xG', f"{picker.key} opens on {picker.value!r}, not xG"
         assert not offered & never, f"{picker.key} offers metrics that are never a number: {sorted(offered & never)}"
 
 

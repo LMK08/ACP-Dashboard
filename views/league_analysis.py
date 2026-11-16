@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 import sys
 
+import team_rules
 from league_config import SEASON_GROUPS
 
 
@@ -57,19 +58,26 @@ def render():
     season_match_ids = set(league_matches_df['matchId'].dropna().unique())
     season_match_data = {mid: data for mid, data in all_match_data.items() if mid in season_match_ids}
 
-    try:
-        expanded_stats_df = calculate_expanded_team_stats(season_match_data, league_matches_df, season_id=selected_season_id)
-        combined_stats_df = pd.merge(stats_df_raw, expanded_stats_df, left_index=True, right_index=True, how='outer').fillna(0)
-    except Exception as e:
-        st.warning(f"Could not calculate expanded match stats: {e}")
-        combined_stats_df = stats_df_raw.copy()
-
-    # Calculate and merge set piece metrics
+    # Three tables by club feed the custom charts and the raw table: the radar
+    # numbers, the set-piece table and the season averages of the match tables.
+    # ONE number per name (team_rules.join_club_tables): where the match
+    # tables repeat a name the radars or the set-piece table already have
+    # (Goals, xG, Interceptions, Corners; Final 1/3 Entries in the
+    # Campeonato), the match-table version is left out. Until 2026-11 both
+    # were kept as "xG_x" / "xG_y" (two different numbers, nothing to tell
+    # them apart) and plain "xG" was not offered, so the charts opened on the
+    # first name of the list. Lucas, 2026-11-16: the radar version only.
     try:
         set_piece_df = calculate_set_piece_metrics(league_events_df, season_id=selected_season_id)
-        combined_stats_df = pd.merge(combined_stats_df, set_piece_df, left_index=True, right_index=True, how='outer').fillna(0)
     except Exception as e:
         st.warning(f"Could not calculate set piece metrics: {e}")
+        set_piece_df = None
+    try:
+        expanded_stats_df = calculate_expanded_team_stats(season_match_data, league_matches_df, season_id=selected_season_id)
+    except Exception as e:
+        st.warning(f"Could not calculate expanded match stats: {e}")
+        expanded_stats_df = None
+    combined_stats_df = team_rules.join_club_tables(stats_df_raw, set_piece_df, expanded_stats_df)
 
     # --- 2. Define Team Lists (Season-dependent groups) ---
     # Seasons with defined Group A/B; other seasons show all teams together.

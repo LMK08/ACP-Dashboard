@@ -283,3 +283,27 @@ def entry_for_team(by_team, team):
     key = team_name_key(team)
     same = [k for k in by_team if isinstance(k, str) and team_name_key(k) == key]
     return by_team[same[0]] if len(same) == 1 else None
+
+
+def join_club_tables(*tables):
+    """Join tables that have one row per club (the index) into one, keeping
+    ONE column per name: the first table that has a name keeps it, a later
+    table's column of the same name is left out. Clubs missing from a table
+    get 0, as the page always did. None and empty tables are skipped.
+
+    League Analysis joins the radar numbers, the set-piece table and the
+    match-table averages. pandas' default for a repeated name is to keep both
+    as "name_x" / "name_y": two different numbers under one metric name, and
+    the plain name gone."""
+    import pandas as pd
+    combined = None
+    for table in tables:
+        if table is None or not isinstance(table, pd.DataFrame):
+            continue
+        if combined is None:
+            combined = table.copy()
+            continue
+        extra = table[[c for c in table.columns if c not in combined.columns]]
+        combined = pd.merge(combined, extra, left_index=True, right_index=True, how='outer').fillna(0)
+    return combined if combined is not None else pd.DataFrame()
+

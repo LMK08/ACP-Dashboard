@@ -496,3 +496,43 @@ def test_the_job_builds_the_corner_tables_through_the_one_step():
     assert 'team_rules.clubs_missing_corner_entry(' in pdata
     assert 'calculate_team_corner_stats(season_events.copy(), season_matches, team)' not in pdata
 
+
+
+# ---------------------------------------------------------------------------
+# League Analysis: one number per metric name (2026-11-16)
+# ---------------------------------------------------------------------------
+# The page joins the radar numbers, the set-piece table and the match-table
+# averages by club. pandas kept a repeated name twice, as "xG_x" / "xG_y":
+# two different numbers, and plain "xG" was not offered. Lucas: the radar
+# version only.
+
+def test_join_club_tables_keeps_the_first_table_that_has_a_name():
+    import pandas as pd
+    radar = pd.DataFrame({'xG': [1.17, 0.9], 'Goals': [1.84, 1.0]}, index=['A', 'B'])
+    set_pieces = pd.DataFrame({'Corners': [5.0, 3.0], 'xG from Corners': [0.2, 0.1]}, index=['A', 'B'])
+    match_tables = pd.DataFrame({'xG': [1.25, 0.95], 'Corners': [4.0, 3.5], 'Offsides': [2.0, 1.0]},
+                                index=['A', 'B'])
+    before = [t.copy() for t in (radar, set_pieces, match_tables)]
+    got = team_rules.join_club_tables(radar, set_pieces, match_tables)
+    assert list(got.columns) == ['xG', 'Goals', 'Corners', 'xG from Corners', 'Offsides']
+    assert got.loc['A', 'xG'] == 1.17 and got.loc['A', 'Corners'] == 5.0 and got.loc['B', 'Offsides'] == 1.0
+    assert not [c for c in got.columns if c.endswith('_x') or c.endswith('_y')]
+    for t, b in zip((radar, set_pieces, match_tables), before):
+        pd.testing.assert_frame_equal(t, b)          # the tables given are not changed
+
+
+def test_join_club_tables_fills_missing_clubs_and_skips_missing_tables():
+    import pandas as pd
+    radar = pd.DataFrame({'xG': [1.0]}, index=['A'])
+    other = pd.DataFrame({'Offsides': [2.0]}, index=['B'])
+    got = team_rules.join_club_tables(radar, None, other)
+    assert set(got.index) == {'A', 'B'}
+    assert got.loc['B', 'xG'] == 0 and got.loc['A', 'Offsides'] == 0
+    assert team_rules.join_club_tables(None, None).empty
+    pd.testing.assert_frame_equal(team_rules.join_club_tables(radar, None), radar)
+
+
+def test_league_analysis_joins_its_tables_through_the_rule():
+    src = open(os.path.join(ROOT, 'views', 'league_analysis.py'), encoding='utf-8').read()
+    assert 'team_rules.join_club_tables(' in src
+    assert 'pd.merge(stats_df_raw' not in src and 'pd.merge(combined_stats_df' not in src
