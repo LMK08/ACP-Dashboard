@@ -89,9 +89,8 @@ def test_the_season_averages_leave_the_stored_tables_as_they_were(app):
     assert got.loc['A', 'Goals'] == pytest.approx(1.0) and got.loc['B', 'Goals'] == pytest.approx(0.5)
     assert got.loc['A', 'xG'] == pytest.approx(1.25) and got.loc['B', 'xG'] == pytest.approx(0.375)
     assert got.loc['A', 'Corners'] == pytest.approx(6.0) and got.loc['B', 'Corners'] == pytest.approx(2.0)
-    # a row that is not one number still counts as 0 in the averages (as it
-    # always did: what League Analysis offers was not changed with this fix)
-    assert got.loc['A', 'Shots / on target'] == 0 and got.loc['A', 'Pure possession time'] == 0
+    # a row that is never one number is not averaged at all (see the tests below)
+    assert 'Shots / on target' not in got.columns and 'Pure possession time' not in got.columns
 
 
 def test_with_a_saved_file_too(app, tmp_path, monkeypatch):
@@ -106,6 +105,79 @@ def test_with_a_saved_file_too(app, tmp_path, monkeypatch):
     second = build(stored, matches, season_id=SEASON)
     pd.testing.assert_frame_equal(first, second)
     assert _same(stored, before)
+
+
+# ---------------------------------------------------------------------------
+# Rows that are never one number are left out of the averages
+# ---------------------------------------------------------------------------
+# Until 2026-11 they came out as 0 for every club, and League Analysis offered
+# 27 always-zero metrics ("Shots / on target", "Total passes / accurate",
+# "Pure possession time" ...) in its custom charts and raw table. Lucas,
+# 2026-11-16: leave them out.
+
+def _mixed_data():
+    matches = pd.DataFrame([
+        {'matchId': 1, 'seasonId': SEASON, 'homeTeamName': 'A', 'awayTeamName': 'B'},
+        {'matchId': 2, 'seasonId': SEASON, 'homeTeamName': 'B', 'awayTeamName': 'A'},
+    ])
+    stored = {
+        1: {'stats_version': 3, 'team_stats': {'General': _table('A', 'B', [
+            ('Goals', 2, 1), ('Shots / on target', '14/5', '7/2'), ('Corners', '5', '3'),
+            ('Offsides', 0, 0), ('Pure possession time', '24:53', '17:51'),
+            ('Sometimes a number', 4, '-'), ('Yellow / red cards', '1/0', '4/0')])}},
+        2: {'stats_version': 3, 'team_stats': {'General': _table('B', 'A', [
+            ('Goals', 0, 0), ('Shots / on target', '9/4', '11/6'), ('Corners', '1', '7'),
+            ('Offsides', 0, 0), ('Pure possession time', '20:00', '21:00'),
+            ('Sometimes a number', '-', '-'), ('Yellow / red cards', '0/0', '2/1')])}},
+    }
+    return stored, matches
+
+
+def test_rows_that_are_never_one_number_are_left_out(app):
+    build = app.calculate_expanded_team_stats.__wrapped__
+    stored, matches = _mixed_data()
+    got = build(stored, matches, season_id=None)
+
+    # the order of the rows that stay is the order they are stored in
+    assert list(got.columns) == ['Goals', 'Corners', 'Offsides', 'Sometimes a number']
+    for row in ('Shots / on target', 'Pure possession time', 'Yellow / red cards'):
+        assert row not in got.columns, f"{row!r} is never one number and must not be averaged"
+    # numbers written as text are numbers
+    assert got.loc['A', 'Corners'] == pytest.approx(6.0) and got.loc['B', 'Corners'] == pytest.approx(2.0)
+    # a number that is 0 for every club is data, and stays
+    assert (got['Offsides'] == 0).all()
+    # a row that is a number in ONE cell stays; its other cells count as 0, as before
+    assert got.loc['A', 'Sometimes a number'] == pytest.approx(2.0) and got.loc['B', 'Sometimes a number'] == 0
+
+
+def test_a_season_with_no_number_at_all_gives_an_empty_table_not_an_error(app):
+    build = app.calculate_expanded_team_stats.__wrapped__
+    matches = pd.DataFrame([{'matchId': 1, 'seasonId': SEASON, 'homeTeamName': 'A', 'awayTeamName': 'B'}])
+    stored = {1: {'team_stats': {'General': _table('A', 'B', [('Shots / on target', '14/5', '7/2')])}}}
+    got = build(stored, matches, season_id=None)
+    assert list(got.columns) == [] and set(got.index) == {'A', 'B'}
+
+
+def test_a_saved_file_from_before_is_not_served(app, tmp_path, monkeypatch):
+    """Files saved before this change hold the 27 zero columns under a stamp
+    without a version: the stamp must differ, so they are built again."""
+    import json
+    monkeypatch.setattr(app, 'STATS_CACHE_DIR', str(tmp_path))
+    build = app.calculate_expanded_team_stats.__wrapped__
+    stored, matches = _mixed_data()
+    fresh = build(stored, matches, season_id=SEASON)
+    path = tmp_path / f'expanded_team_stats_{SEASON}.parquet'
+    stamp = json.load(open(str(path) + '.meta.json'))
+    assert stamp.get('v', 0) >= 2
+
+    old_file = fresh.copy()
+    old_file['Shots / on target'] = 0.0                    # what the old code saved
+    old_file.to_parquet(path)
+    with open(str(path) + '.meta.json', 'w') as fh:
+        json.dump({k: v for k, v in stamp.items() if k != 'v'}, fh)
+    again = build(stored, matches, season_id=SEASON)
+    assert 'Shots / on target' not in again.columns
+    pd.testing.assert_frame_equal(again, fresh)
 
 
 def test_the_function_never_assigns_into_a_table():

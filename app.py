@@ -8105,6 +8105,14 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     Aggregates all per-match team stats from all_match_data into a
     season-long per-game average.
     season_id is used as a cache key so Streamlit recomputes when the season changes.
+
+    Only rows that are ONE number can be averaged. A row whose cells are never
+    one number in the season ("Shots / on target" '14/5', "Total passes /
+    accurate" '450/317', "Pure possession time" '24:53'; 27 kinds of rows) is
+    LEFT OUT of the result. Until 2026-11 each of them came out as 0 for every
+    club, and League Analysis offered 27 always-zero metrics in its custom
+    charts and its raw table (Lucas, 2026-11-16: leave them out). A row that
+    is a number and happens to be 0 for every club stays: that is data.
     """
     _exp_fp = None
     if season_id is not None:
@@ -8116,7 +8124,8 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
             # rule the stamps change, and so does this fingerprint: the file
             # held the old PPDA and shot distance otherwise.
             _in = [m for m in _sm if m in _all_match_data]
-            _exp_fp = {'n_matches': int(len(_in)),
+            _exp_fp = {'v': 2,   # v2 (2026-11): rows that are never one number are left out
+                       'n_matches': int(len(_in)),
                        'rules': sorted({str((_all_match_data[m] or {}).get('stats_version')) for m in _in}),
                        # the rows are team NAMES (the match tables' columns)
                        'teams': _season_team_names_fp(_matches_summary_df, season_id)}
@@ -8130,6 +8139,7 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
     # Use defaultdict for easy aggregation
     all_stats_agg = defaultdict(lambda: defaultdict(float))
     games_played = defaultdict(int)
+    numeric_rows = set()     # metric names with at least one cell that is one number
 
     # Get team names from matches_summary
     team_name_map = {} # map matchId to (homeName, awayName)
@@ -8169,14 +8179,20 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
                             # possession time" '24:53'; 27 kinds of rows) became 0.0 in the stored
                             # table, and Match Analysis and the match report PDF showed 0.0 for
                             # every match of the season until the app restarted.
-                            home_vals = pd.to_numeric(df[home_team], errors='coerce').fillna(0).to_numpy()
-                            away_vals = pd.to_numeric(df[away_team], errors='coerce').fillna(0).to_numpy()
+                            home_num = pd.to_numeric(df[home_team], errors='coerce')
+                            away_num = pd.to_numeric(df[away_team], errors='coerce')
+                            home_vals = home_num.fillna(0).to_numpy()
+                            away_vals = away_num.fillna(0).to_numpy()
+                            is_number = home_num.notna().to_numpy() | away_num.notna().to_numpy()
 
                             # Loop through each metric row (metric name is the index)
-                            for metric_name, home_val, away_val in zip(df.index, home_vals, away_vals):
+                            for metric_name, home_val, away_val, a_number in zip(
+                                    df.index, home_vals, away_vals, is_number):
                                 # Add to the aggregate totals
                                 all_stats_agg[home_team][metric_name] += home_val
                                 all_stats_agg[away_team][metric_name] += away_val
+                                if a_number:
+                                    numeric_rows.add(metric_name)
                         except Exception as e:
                             print(f"Warning: Could not process df in match {match_id}. Error: {e}")
                     else:
@@ -8188,7 +8204,14 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
         return pd.DataFrame()
         
     stats_df = pd.DataFrame.from_dict(all_stats_agg, orient='index').fillna(0)
-    
+
+    # Rows that were never one number in any match of the season cannot be
+    # averaged (see the docstring): leave them out instead of showing 0.
+    _not_numbers = [c for c in stats_df.columns if c not in numeric_rows]
+    if _not_numbers:
+        stats_df = stats_df.drop(columns=_not_numbers)
+        print(f"Expanded team stats: {len(_not_numbers)} rows that are not one number left out.")
+
     # --- Normalize to Per-Game ---
     games_series = pd.Series(games_played, name='games')
     

@@ -243,6 +243,31 @@ def test_no_page_rewrites_the_stored_match_tables(app):
     assert shots_cells(given) == shots_cells(tables)
 
 
+def test_league_analysis_offers_no_metric_that_is_never_a_number(app):
+    """League Analysis's custom charts offer every column of its season
+    table as an axis. Until 2026-11 that included 27 rows of the match tables
+    that are never one number ("Shots / on target" 14/5, "Pure possession
+    time" 24:53): each was 0 for every club. They are left out now."""
+    import pandas as pd
+    _open_page(app, 'League Analysis')
+    assert not _problems(app), _problems(app)
+    pickers = [s for s in app.selectbox if s.key in ('x_metric_all', 'y_metric_all', 'x_metric_group_b', 'y_metric_group_b')]
+    assert pickers, 'no metric picker on League Analysis'
+    # the rows of the stored match tables that are never one number, worked out here from the tables
+    main = sys.modules['__main__']
+    ever_number = {}
+    for data in main.all_match_data.values():
+        for df in ((data or {}).get('team_stats') or {}).values():
+            flags = df.apply(pd.to_numeric, errors='coerce').notna().any(axis=1)
+            for metric, flag in zip(df.index, flags.tolist()):
+                ever_number[metric] = ever_number.get(metric, False) or bool(flag)
+    never = {m for m, seen in ever_number.items() if not seen}
+    for picker in pickers:
+        offered = set(picker.options)
+        assert 'xG Against' in offered, f"{picker.key} offers {len(offered)} metrics and not 'xG Against'"
+        assert not offered & never, f"{picker.key} offers metrics that are never a number: {sorted(offered & never)}"
+
+
 def test_glossary_page_and_the_explainer_at_the_foot_of_a_page(app):
     """Metric names are never changed; they are explained on the Glossary
     page and in ONE expander at the foot of every page that shows metrics
