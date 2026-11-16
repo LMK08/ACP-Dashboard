@@ -7477,11 +7477,23 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
     """Build end-of-season cumulative stats for all teams in a season.
     Returns: {team_name: {matches, wins, draws, losses, points, goals_for, goals_against,
               xG_for, xG_against, shots_for, sot_for, home_matches, home_wins, home_goals,
-              away_matches, away_wins, away_goals, clean_sheets, last_5_results, last_5_xG,
-              prior_stats}}
+              away_matches, away_wins, away_goals, clean_sheets, last_5_results, last_5_xG}}
+
+    ONE season, from that season's rows only. Until 2026-11 every club also
+    carried 'prior_stats', its totals of the "prior" season, taken as the
+    next-lower season id across BOTH leagues: Liga 3 2025/26 got the
+    Campeonato 2025/26 (so no club had any), the Campeonato 2023/24 a LATER
+    Liga 3 season. Nothing read the key (the one caller, the Match Predictor,
+    reads 'matches'), and working it out saved each league's seasons from the
+    other league's frames: empty files over the other's saved totals. Removed.
+    If a prior season is ever wanted, take the previous season of the SAME
+    league (COMPETITIONS[comp]['seasons']), never an id order.
     """
     cache_path = os.path.join(STATS_CACHE_DIR, f'season_cum_stats_{season_id}.pkl')
     _cum_fp = {
+        # v2 (2026-11): no 'prior_stats' key. A file saved before carries one
+        # (wrong for two seasons): the stamp differs, so it is built again.
+        'v': 2,
         'n_matches': int((matches_summary_df['seasonId'] == season_id).sum())
         if 'seasonId' in matches_summary_df.columns else int(len(matches_summary_df)),
         'n_events': int((raw_events_df['seasonId'] == season_id).sum())
@@ -7601,9 +7613,6 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
 
     team_stats = dict(team_stats)
 
-    # Attach prior_stats from previous season
-    sorted_sids = sorted(SEASON_ID_MAP.keys())
-    sid_idx = sorted_sids.index(season_id) if season_id in sorted_sids else -1
     # Phase-2 opponent adjustment (dormant during the first phase): once a
     # second stage exists, unbalanced schedules bias raw totals — overwrite
     # the aggregate goal/xG totals with SOS-adjusted ones (see schedule_adjust)
@@ -7632,15 +7641,6 @@ def build_season_cumulative_stats(raw_events_df, matches_summary_df, season_id):
                     team_stats[_t].update(_vals)
     except Exception as _e:
         print(f"phase-2 adjustment skipped: {_e}")
-
-    if sid_idx > 0:
-        prior_sid = sorted_sids[sid_idx - 1]
-        prior_cum = build_season_cumulative_stats(raw_events_df, matches_summary_df, prior_sid)
-        for team in team_stats:
-            team_stats[team]['prior_stats'] = prior_cum.get(team)
-    else:
-        for team in team_stats:
-            team_stats[team]['prior_stats'] = None
 
     # Cache
     os.makedirs(STATS_CACHE_DIR, exist_ok=True)
