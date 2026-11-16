@@ -190,6 +190,59 @@ def test_page_renders_on_defaults(app, page):
     assert not _problems(app), _problems(app)
 
 
+def test_no_page_rewrites_the_stored_match_tables(app):
+    """all_match_data is ONE object for every page and visitor, and Match
+    Analysis shows its tables as stored ("Shots / on target" 14/5). Until
+    2026-11 League Analysis's season averages converted the stored tables in
+    place and every such row became 0.0 for the whole season, until a restart.
+
+    Runs after every page has been drawn once on its defaults (the tests just
+    above; on the deploy check League Analysis has no saved season averages,
+    so it has worked them out by now). No page is opened here. Nothing here
+    depends on which season is current or on how many matches it has: a new
+    season with fixtures only has no tables, and that is not a failure."""
+    import copy
+    main = sys.modules['__main__']
+    assert hasattr(main, 'all_match_data'), 'the booted app is not the __main__ module'
+
+    def shots_cells(data):
+        """Every stored "Shots / on target" cell (the pipeline writes it as text, 'shots/on target')."""
+        return [v for md in data.values()
+                for cat, df in ((md or {}).get('team_stats') or {}).items()
+                if cat == 'General' and 'Shots / on target' in df.index
+                for v in df.loc['Shots / on target'].tolist()]
+
+    def text_cells(data):
+        return sum(isinstance(v, str)
+                   for md in data.values()
+                   for df in ((md or {}).get('team_stats') or {}).values()
+                   for col in df.columns for v in df[col].tolist())
+
+    # 1. whatever the pages did so far: every match of every season
+    cells = shots_cells(main.all_match_data)
+    if not cells:
+        pytest.skip('no stored match table has a "Shots / on target" row')
+    rewritten = [v for v in cells if not (isinstance(v, str) and '/' in v)]
+    assert not rewritten, (f'a page has rewritten the stored match tables: {len(rewritten)} of {len(cells)} '
+                           f'"Shots / on target" cells are no longer text, e.g. {rewritten[:4]}')
+
+    # 2. the function itself, made to work the averages out (no season: no
+    #    saved file is used), on a COPY of the newest Liga 3 season that has
+    #    tables, so a failure here cannot spoil the tests that follow
+    ms = main.matches_summary_df
+    for season in sorted(main.COMPETITIONS[43324]['seasons'], reverse=True):
+        matches = main.filter_by_league(main.get_season_matches(ms, season), [43324])
+        ids = set(matches['matchId'].dropna())
+        tables = {mid: data for mid, data in main.all_match_data.items() if mid in ids}   # as League Analysis builds it
+        if shots_cells(tables):
+            break
+    given = copy.deepcopy(tables)
+    averages = main.calculate_expanded_team_stats.__wrapped__(given, matches, season_id=None)
+    assert not averages.empty
+    assert text_cells(given) == text_cells(tables), 'calculate_expanded_team_stats changed the tables it was given'
+    assert shots_cells(given) == shots_cells(tables)
+
+
 def test_glossary_page_and_the_explainer_at_the_foot_of_a_page(app):
     """Metric names are never changed; they are explained on the Glossary
     page and in ONE expander at the foot of every page that shows metrics

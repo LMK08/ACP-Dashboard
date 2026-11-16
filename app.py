@@ -8161,15 +8161,22 @@ def calculate_expanded_team_stats(_all_match_data, _matches_summary_df, season_i
                 if isinstance(df, pd.DataFrame) and not df.empty:
                     if home_team in df.columns and away_team in df.columns:
                         try:
-                            # Convert all stats to numeric, coercing errors
-                            df[home_team] = pd.to_numeric(df[home_team], errors='coerce').fillna(0)
-                            df[away_team] = pd.to_numeric(df[away_team], errors='coerce').fillna(0)
+                            # Numbers for the totals, worked out BESIDE the table. `df` is the
+                            # stored match table itself (all_match_data is one object for every
+                            # page and visitor): NEVER assign into it. Until 2026-11 these two
+                            # lines were `df[home_team] = pd.to_numeric(...)`: every row that is
+                            # text and not one number ("Shots / on target" '14/5', "Pure
+                            # possession time" '24:53'; 27 kinds of rows) became 0.0 in the stored
+                            # table, and Match Analysis and the match report PDF showed 0.0 for
+                            # every match of the season until the app restarted.
+                            home_vals = pd.to_numeric(df[home_team], errors='coerce').fillna(0).to_numpy()
+                            away_vals = pd.to_numeric(df[away_team], errors='coerce').fillna(0).to_numpy()
 
                             # Loop through each metric row (metric name is the index)
-                            for metric_name, row in df.iterrows():
+                            for metric_name, home_val, away_val in zip(df.index, home_vals, away_vals):
                                 # Add to the aggregate totals
-                                all_stats_agg[home_team][metric_name] += row[home_team]
-                                all_stats_agg[away_team][metric_name] += row[away_team]
+                                all_stats_agg[home_team][metric_name] += home_val
+                                all_stats_agg[away_team][metric_name] += away_val
                         except Exception as e:
                             print(f"Warning: Could not process df in match {match_id}. Error: {e}")
                     else:
