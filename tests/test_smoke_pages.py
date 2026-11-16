@@ -274,6 +274,33 @@ def test_league_analysis_offers_no_metric_that_is_never_a_number(app):
         assert not offered & never, f"{picker.key} offers metrics that are never a number: {sorted(offered & never)}"
 
 
+def test_player_analysis_scatter_highlights_several_players(app):
+    """The Scatter view of Player Analysis highlights any number of players
+    (it was one). Each chosen player is one named trace of the chart. A name
+    the filters have removed is dropped from the choice, not an error."""
+    import json
+    _open_page(app, 'Player Analysis')
+    next(r for r in app.radio if r.key == 'player_analysis_mode').set_value('Scatter').run()
+    assert not _problems(app), _problems(app)
+    pick = next(m for m in app.multiselect if m.key == 'peer_scatter_highlights')
+    assert pick.value == [] and len(pick.options) >= 5
+    chosen = list(pick.options)[:3]
+    pick.set_value(chosen).run()
+    assert not _problems(app), _problems(app)
+    assert next(m for m in app.multiselect if m.key == 'peer_scatter_highlights').value == chosen
+    charts = app.get('plotly_chart')
+    assert charts, 'no chart in the Scatter view'
+    names = {t.get('name') for t in json.loads(charts[-1].proto.spec)['data']}
+    assert set(chosen) <= names, f"highlighted {chosen}, traces {sorted(n for n in names if n)}"
+
+    # a name that is no longer in the chart (a filter took the player out)
+    app.session_state['peer_scatter_highlights'] = chosen[:1] + ['No Such Player']
+    app.run()
+    assert not _problems(app), _problems(app)
+    assert next(m for m in app.multiselect if m.key == 'peer_scatter_highlights').value == chosen[:1]
+    next(r for r in app.radio if r.key == 'player_analysis_mode').set_value('Overview').run()
+
+
 def test_glossary_page_and_the_explainer_at_the_foot_of_a_page(app):
     """Metric names are never changed; they are explained on the Glossary
     page and in ONE expander at the foot of every page that shows metrics

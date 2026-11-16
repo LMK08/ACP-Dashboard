@@ -1063,10 +1063,20 @@ def render():
         st.subheader(f"{_sc_y} vs {_sc_x} (per 90)")
         _sc_c1, _sc_c2 = st.columns([2, 1])
         with _sc_c1:
-            _sc_hl = st.selectbox(
-                "Highlight player:",
-                ["(none)"] + sorted(_sc_df['playerName'].dropna().unique().tolist()),
-                key="peer_scatter_highlight")
+            # Several players can be highlighted at once (Lucas, 2026-11-16;
+            # it was one, in a selectbox). A name that the filters have
+            # taken out of the chart is dropped from the choice BEFORE the
+            # widget is drawn: a multiselect must not hold a value that is
+            # not among its options.
+            _sc_hl_options = sorted(_sc_df['playerName'].dropna().unique().tolist())
+            if 'peer_scatter_highlights' in st.session_state:
+                st.session_state['peer_scatter_highlights'] = [
+                    n for n in (st.session_state['peer_scatter_highlights'] or [])
+                    if n in _sc_hl_options]
+            _sc_hl = st.multiselect(
+                "Highlight players:", _sc_hl_options,
+                key="peer_scatter_highlights",
+                placeholder="Choose one or more players")
         with _sc_c2:
             _sc_fit = st.checkbox("Show line of best fit", value=True,
                                   key="peer_scatter_fit")
@@ -1115,17 +1125,19 @@ def render():
                 x=_xline, y=_b * _xline + _a, mode='lines',
                 line=dict(color='#3987e5', width=2, dash='dash'),
                 hoverinfo='skip', name=f'fit (r = {_r:+.2f})'))
-        if _sc_hl != "(none)":
-            _hrow = _sc_df[_sc_df['playerName'] == _sc_hl]
+        # one trace per highlighted player: each has its name on the chart
+        # and its own entry in the legend (same marker as when it was one)
+        for _hl_name in _sc_hl:
+            _hrow = _sc_df[_sc_df['playerName'] == _hl_name]
             _sc_fig.add_trace(go.Scatter(
                 x=pd.to_numeric(_hrow[_sc_x], errors='coerce'),
                 y=pd.to_numeric(_hrow[_sc_y], errors='coerce'),
                 mode='markers+text',
                 marker=dict(size=14, color='#2aa876',
                             line=dict(color='white', width=2)),
-                text=[_sc_hl] * len(_hrow), textposition='top center',
+                text=[_hl_name] * len(_hrow), textposition='top center',
                 textfont=dict(size=12),
-                hoverinfo='skip', name=_sc_hl))
+                hoverinfo='skip', name=_hl_name))
         _sc_fig.update_layout(
             height=640, showlegend=True,
             legend=dict(orientation='h', yanchor='bottom', y=1.01),
