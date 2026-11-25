@@ -1,12 +1,12 @@
 {
  "version": "eur_interval_v1",
- "built": "2026-11-22",
+ "built": "2026-11-25",
  "method": "split-conformal-log",
  "engine_meta": {
-  "data_through": "2026-11-08",
+  "data_through": "2026-11-21",
   "rating_version": "v7.1",
   "projection_version": "v2.2-full",
-  "built_at": "2026-11-22 14:20"
+  "built_at": "2026-11-25 18:00"
  },
  "point_model": {
   "coef": 1.1,
